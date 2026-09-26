@@ -3,7 +3,11 @@ import { mountEmpire } from './ui/empire';
 import { officeCode, DEFAULT_KEYS, keyLabel, type Action } from './controls';
 import './style.css';
 import * as THREE from 'three';
-import { OutlineEffect } from 'three/examples/jsm/effects/OutlineEffect.js';
+import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { SSAOPass } from 'three/examples/jsm/postprocessing/SSAOPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { sameLook } from '../shared/avatar';
 import { DESK_BY_ID, DESKS, SPAWN, deskSeat } from '../shared/layout';
 import type { PeerInfo, WorkerInfo } from '../shared/protocol';
@@ -12,7 +16,6 @@ import { store, loadProfile, loadSettings, saveSettings, type Profile } from './
 import { EYE_HEIGHT, PlayerController, groundAt, isTyping } from './player';
 import { buildOffice, type InteractKind, type Interactable } from './world/office';
 import { Person, Worker } from './world/character';
-import { Hands } from './world/hands';
 import { Laptop } from './world/laptop';
 import { BoardTexture, QueueBoardTexture, ServicesBoardTexture } from './world/boards';
 import { Gallery } from './world/gallery';
@@ -41,32 +44,49 @@ const canvas = $('scene') as HTMLCanvasElement;
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = THREE.PCFShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.15;
+renderer.toneMappingExposure = 1.05;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
-const effect = new OutlineEffect(renderer, { defaultThickness: 0.0032, defaultColor: [0.17, 0.18, 0.26] });
+
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color('#bfe3ff');
-scene.fog = new THREE.Fog('#c2d2d0', 65, 200);
-const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 350);
+scene.background = new THREE.Color('#bed0dd');
+scene.fog = new THREE.Fog('#bdcad0', 140, 430);
+const camera = new THREE.PerspectiveCamera(64, 1, 0.08, 1500);
 
-scene.add(new THREE.HemisphereLight('#fff5e6', '#c9a27a', 1.5));
-scene.add(new THREE.AmbientLight('#ffffff', 0.5));
-const sun = new THREE.DirectionalLight('#fff1d6', 2.2);
+scene.add(new THREE.HemisphereLight('#d8e7f3', '#6a6250', .55));
+const sun = new THREE.DirectionalLight('#fff1db', 3.2);
 sun.position.set(-8, 18, 10);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
-Object.assign(sun.shadow.camera, { left: -22, right: 22, top: 16, bottom: -16, near: 1, far: 50 });
-sun.shadow.bias = -0.0008;
+sun.shadow.mapSize.set(4096, 4096);
+Object.assign(sun.shadow.camera, { left: -22, right: 22, top: 22, bottom: -22, near: 1, far: 100 });
+sun.shadow.bias = -0.00008;
 sun.shadow.normalBias = 0.02;
-scene.add(sun);
+scene.add(sun, sun.target);
+const environment = new THREE.PMREMGenerator(renderer);
+new HDRLoader().load('/textures/coastal-sky.hdr', hdr => {
+  hdr.mapping = THREE.EquirectangularReflectionMapping;
+  scene.background = hdr;
+  scene.backgroundIntensity = .85;
+  scene.environment = environment.fromEquirectangular(hdr).texture;
+  scene.environmentIntensity = .7;
+  environment.dispose();
+}, undefined, error => console.warn('HDR sky unavailable', error));
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const ao = new SSAOPass(scene, camera, window.innerWidth, window.innerHeight);
+ao.kernelRadius = .55;
+ao.minDistance = .001;
+ao.maxDistance = .075;
+composer.addPass(ao);
+composer.addPass(new OutputPass());
 
 const office = buildOffice();
 scene.add(office.group);
 const city = buildCity();
 scene.add(city.group);
+office.group.add(city.chief);
 office.colliders.push(...city.colliders);
 store.on('empire', () => city.sync(store.empire));
 city.sync(store.empire);
@@ -140,15 +160,15 @@ const tvIdle = (() => {
   c.height = 720;
   const g = c.getContext('2d')!;
   const grad = g.createLinearGradient(0, 0, 1280, 720);
-  grad.addColorStop(0, '#3a0ca3');
-  grad.addColorStop(1, '#4cc9f0');
+  grad.addColorStop(0, '#172b31');
+  grad.addColorStop(1, '#45665e');
   g.fillStyle = grad;
   g.fillRect(0, 0, 1280, 720);
   g.fillStyle = '#fff';
   g.textAlign = 'center';
-  g.font = '900 88px Nunito, ui-rounded, system-ui, sans-serif';
-  g.fillText('📺 Office TV', 640, 330);
-  g.font = '700 44px Nunito, ui-rounded, system-ui, sans-serif';
+  g.font = '500 78px system-ui, sans-serif';
+  g.fillText('AGENT EMPIRE', 640, 330);
+  g.font = '400 36px system-ui, sans-serif';
   g.fillText('Click “Share screen” to put something up here', 640, 420);
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace;
@@ -172,21 +192,24 @@ const player = new PlayerController(camera, canvas, office.colliders);
 player.pos.set(SPAWN.x, 0, SPAWN.z);
 player.view = settings.view;
 player.bindings = settings.keys;
-const hands = new Hands(store.profile.color, me.skinColor);
 const sound = new OfficeSound();
 sound.setVolume(settings.volume, settings.muted);
 const empireUI = mountEmpire(net, player, place => {
   if (player.driving) { player.driving = false; city.car.position.copy(player.pos); }
   player.clearKeys(); player.vy = 0; player.grounded = true;
-  if (place === 'office') { player.pos.set(SPAWN.x, 0, SPAWN.z); player.camDist = 7.5; }
-  else { player.pos.set(place === 'home' ? 24 : 0, 0, place === 'home' ? 56 : 42); player.camDist = 36; player.camPitch = .6; player.camYaw = Math.PI; }
+  if (place === 'office') { player.pos.set(SPAWN.x, 0, SPAWN.z); player.camDist = 4.6; player.camPitch = .16; }
+  else { player.pos.set(place === 'home' ? 24 : -6, 0, place === 'home' ? 58 : 55); player.camDist = 4.6; player.camPitch = .16; player.camYaw = place === 'home' ? 0 : Math.PI; player.lookPitch = -.02; player.facing = player.camYaw + Math.PI; }
   player.updateCamera(true);
   if (place !== 'office' && !store.empire.delegated) net.send({ t: 'empire.action', action: { kind: 'delegate', enabled: true } });
 }, () => {
   if (player.driving) { player.driving=false; player.pos.x += 2; player.clearKeys(); return; }
   if (player.pos.z < 30 || player.pos.distanceTo(city.car.position)>5) { toast('Walk to your car on the central avenue, near the headquarters.','info'); return; }
   player.driving=true;player.setView('third');player.facing=city.car.rotation.y;player.camDist=12;
-}, () => showQueue());
+}, () => showQueue(), () => {
+  player.setView(player.view==='first'?'third':'first');
+  if(player.view==='third'){player.camDist=4.6;player.camPitch=.16;}
+  settings.view=player.view;saveSettings(settings);
+});
 const hanger = new Hanger(net, camera, canvas, player, office, gallery);
 scene.add(hanger.ghost.group);
 hanger.onChange = () => {
@@ -200,8 +223,6 @@ hanger.onChange = () => {
 function showMyProfile(p: Profile) {
   me.setColor(p.color);
   me.setLook(p.look);
-  hands.setColor(p.color);
-  hands.setSkin(me.skinColor);
 }
 
 interface RemotePeer {
@@ -374,10 +395,10 @@ function syncWorkers() {
     if (!v) {
       const model = new Worker(w.name, w.color);
       model.root.position.copy(desk.seatAnchor.position);
-      model.root.position.y = 0.4;
+      model.root.position.y = 0;
       model.root.position.z += 0.08;
       model.root.rotation.y = Math.PI;
-      model.root.scale.setScalar(0.82);
+      model.root.scale.setScalar(1);
       desk.group.add(model.root);
       const laptop = new Laptop();
       laptop.root.position.copy(desk.laptopAnchor.position);
@@ -703,7 +724,7 @@ function renderHint() {
   else if (target.kind === 'tv') {
     const any = currentShares().length > 0;
     k += any;
-    parts = [h('span.title', {}, '📺 Office TV'), key('E', any ? 'Watch full screen' : 'Share your screen')];
+    parts = [h('span.title', {}, 'AGENT EMPIRE'), key('E', any ? 'Watch full screen' : 'Share your screen')];
   } else if (target.kind === 'coffee') parts = [h('span.title', {}, '☕ Coffee machine'), key('E', 'Grab a cup')];
   else if (target.kind === 'decor') {
     const id = target.decorId;
@@ -743,9 +764,8 @@ function renderCrosshair() {
 
 // ---- Reaching out ---------------------------------------------------------------------------------
 let lastActSent = 0;
-/** Plays the reach on your hands and your character, and shows it to everyone else. */
+/** Plays the interaction gesture on your character, and shows it to everyone else. */
 function reach() {
-  if (player.view === 'first') hands.reach();
   me.reach();
   const now = performance.now();
   if (now - lastActSent > 120) {
@@ -1044,9 +1064,9 @@ function resize() {
   const w = window.innerWidth;
   const hgt = window.innerHeight;
   renderer.setSize(w, hgt, false);
+  composer.setSize(w, hgt);
   camera.aspect = w / hgt;
   camera.updateProjectionMatrix();
-  hands.setAspect(w / hgt);
 }
 window.addEventListener('resize', resize);
 resize();
@@ -1066,15 +1086,22 @@ function frame(ts?: number) {
   const t = timer.getElapsed();
 
   player.update(dt);
-  city.update(t, store.empire.delegated);
+  city.update(t, store.empire.delegated, dt);
   empireUI.update(dt);
+  canvas.dataset.position = `${player.pos.x.toFixed(1)}, ${player.pos.y.toFixed(1)}, ${player.pos.z.toFixed(1)}`;
+  canvas.dataset.view = player.view;
+  canvas.dataset.assets = me.ready && city.car.userData.ready && scene.environment ? 'ready' : 'loading';
+  canvas.dataset.fps = String(Math.round(1 / Math.max(dt,.001)));
+  canvas.dataset.drawCalls = String(renderer.info.render.calls);
+
   if (player.driving) { city.car.position.copy(player.pos); city.car.rotation.y=player.facing; }
   const outside = player.pos.z >= 30;
   office.group.visible = !outside;
-  sun.position.set(player.pos.x-20, 35, player.pos.z+15);
+  city.group.visible = outside;
+  sun.position.set(player.pos.x-24, 40, player.pos.z+24);
   sun.target.position.set(player.pos.x,0,player.pos.z);
   sun.target.updateMatrixWorld();
-  scene.background = new THREE.Color(outside ? '#c2d2d0' : '#bfe3ff');
+
   me.root.position.copy(player.pos);
   me.root.position.y += player.stepOffset;
   me.root.rotation.y = player.facing;
@@ -1083,7 +1110,6 @@ function frame(ts?: number) {
   const firstPerson = player.view === 'first';
   // In first person you are the camera; in third, hide yourself when it's zoomed in right behind your head.
   me.root.visible = !player.driving && !firstPerson && camera.position.distanceTo(new THREE.Vector3(player.pos.x, player.pos.y + 1.3, player.pos.z)) > 1.5;
-  if (firstPerson) hands.update(dt, t, { yaw: player.camYaw, pitch: player.lookPitch, walkPhase: player.walkPhase, walking: player.moving && player.grounded, airborne: !player.grounded });
 
   // Your ears are in your head, facing wherever the camera looks.
   camera.getWorldDirection(lookDir);
@@ -1157,12 +1183,7 @@ function frame(ts?: number) {
     updateSpeaking(voice);
   }
 
-  renderer.render(scene, camera);
-  if (firstPerson) {
-    // Hands go on top of everything, so they never clip into a desk you walk up to.
-    renderer.clearDepth();
-    effect.render(hands.scene, hands.camera);
-  }
+  composer.render();
   requestAnimationFrame(frame);
 }
 
@@ -1192,6 +1213,6 @@ if (saved?.look) {
 }
 
 // Debug handle for quick checks from the console / headless screenshots.
-(window as any).__office = { store, player, camera, workerViews, scene, net, renderer, hands, me, remotes, settings, gallery, hanger, city, empireUI };
+(window as any).__office = { store, player, camera, workerViews, scene, net, renderer, me, remotes, settings, gallery, hanger, city, empireUI };
 (window as any).__voice = voice;
 (window as any).__sound = sound;

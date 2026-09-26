@@ -23,8 +23,8 @@ interface Arm {
 export class Hands {
   readonly scene = new THREE.Scene();
   readonly camera = new THREE.PerspectiveCamera(55, 1, 0.01, 5);
-  private sleeve: THREE.MeshToonMaterial;
-  private skin: THREE.MeshToonMaterial;
+  private sleeve: THREE.MeshStandardMaterial;
+  private skin: THREE.MeshStandardMaterial;
   private right: Arm;
   private left: Arm;
   private reachT = -1;

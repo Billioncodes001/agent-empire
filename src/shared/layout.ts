@@ -71,4 +71,4 @@ export const LOFT = { minX: 9, maxX: FLOOR.maxX, minZ: 8, maxZ: FLOOR.maxZ, y: 3
 /** Its stairs climb east along the south wall and arrive at the loft's west door. */
 export const STAIRS = { fromX: 3, toX: LOFT.minX, minZ: 11.2, maxZ: FLOOR.maxZ, steps: 15 } as const;
 
-export const SPAWN = { x: 8, z: 7 } as const;
+export const SPAWN = { x: 3, z: 7 } as const;

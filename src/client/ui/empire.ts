@@ -5,20 +5,23 @@ import type { Net } from '../net';
 import type { PlayerController } from '../player';
 import { h, openModal, toast } from './dom';
 
-export function mountEmpire(net: Net, player: PlayerController, travel: (place: 'office'|'city'|'home') => void, toggleCar: () => void, research: () => void) {
+export function mountEmpire(net: Net, player: PlayerController, travel: (place: 'office'|'city'|'home') => void, toggleCar: () => void, research: () => void, changeView: () => void) {
   const status = h('div.empire-status');
   const map = h('canvas.empire-map', { width: 240, height: 200, 'aria-label': 'District map. The gold marker shows your position.' });
   const caption = h('p.empire-caption');
-  const panel = h('section.empire-dock', {}, h('div.empire-eyebrow', {}, 'AGENT EMPIRE / FOUNDING DISTRICT'), h('h2', {}, 'Your world, at work.'),status,
+  const panel = h('section.empire-dock', {}, h('div.empire-eyebrow', {}, 'AGENT EMPIRE / FOUNDING DISTRICT'), h('h2', {}, 'Founding district'),status,
     h('div.empire-actions', {},
       h('button.btn.primary', { onclick: () => openOperations() }, 'Operations'),
       h('button.btn', { onclick: () => travel(player.pos.z<30?'city':'office') }, 'Office ↔ City'),
       h('button.btn', { onclick: () => travel('home') }, 'Go home'),
       h('button.btn', { onclick: toggleCar }, 'Enter / exit car'),
-      h('button.btn', { onclick: () => {if(player.pos.z<30)travel('city');player.setView('third');player.camDist=player.camDist>50?24:70;player.camPitch=.8;} }, 'District view'),
+      h('button.btn', { 'aria-label':'Switch camera view', onclick: changeView }, 'First / third person'),
+      h('button.btn', { onclick: () => {if(player.pos.z<30)travel('city');player.setView('third');const overview=player.camDist<50;player.camDist=overview?70:4.6;player.camPitch=overview?.8:.16;} }, 'District view'),
     ), map,
     caption,
   );
+  const collapse=h('button.empire-collapse', { 'aria-label':'Collapse district controls', 'aria-expanded':'true', onclick:()=>{const collapsed=panel.classList.toggle('collapsed');collapse.textContent=collapsed?'＋':'−';collapse.setAttribute('aria-label',collapsed?'Expand district controls':'Collapse district controls');collapse.setAttribute('aria-expanded',String(!collapsed));}}, '−');
+  panel.prepend(collapse);
   const touch = h('div.empire-touch', { 'aria-label': 'Touch movement controls' });
   for (const [action, symbol] of [['forward','↑'],['left','←'],['backward','↓'],['right','→']] as [Action,string][]) {
     const button=h('button.btn',{'aria-label':`Move ${action}`},symbol);

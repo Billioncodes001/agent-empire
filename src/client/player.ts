@@ -10,12 +10,12 @@ const RADIUS = 0.32;
 const HEIGHT = 1.7;
 /** The tallest ledge you walk up (or down) without jumping, like a stair. */
 const STEP = 0.3;
-const WALK = 4.6;
-const RUN = 7.5;
+const WALK = 2.8;
+const RUN = 5.8;
 const JUMP_V = 6.4;
 const GRAVITY = 18;
 /** Camera height above your feet in first person (the Person's eyes). */
-export const EYE_HEIGHT = 1.4;
+export const EYE_HEIGHT = 1.66;
 const LOOK_SPEED = 0.0022; // radians per pixel of mouse movement while the pointer is locked
 const DRAG_LOOK_SPEED = 0.005;
 const CENTER = new THREE.Vector2(0, 0);
@@ -28,10 +28,10 @@ export class PlayerController {
   grounded = true;
   /** Heading of the camera. You look along (-sin, -cos) of it on the XZ plane. */
   camYaw = Math.PI * 0.15;
-  camPitch = 0.42;
-  camDist = 7.5;
+  camPitch = 0.16;
+  camDist = 4.6;
   /** First-person look up (+) / down (-). */
-  lookPitch = -0.08;
+  lookPitch = -0.02;
   view: ViewMode = 'first';
   /** Walk cycle phase, shared by the camera bob and the first-person hands. */
   walkPhase = 0;
@@ -149,7 +149,7 @@ export class PlayerController {
   setView(view: ViewMode) {
     if (view === this.view) return;
     if (view === 'first') {
-      this.lookPitch = -0.08;
+      this.lookPitch = -0.02;
       this.facing = this.camYaw + Math.PI;
     } else {
       // Start the orbit camera behind where you were looking.
@@ -299,6 +299,21 @@ export class PlayerController {
     const floorY = groundAt(this.colliders, this.pos.x, this.pos.z, this.pos.y);
     const roof = ceilingAt(this.colliders, cam.x, cam.z, floorY) - 0.3;
     cam.y = THREE.MathUtils.clamp(cam.y, floorY + 0.6, Math.max(floorY + 0.6, Math.min(floorY + (this.pos.z >= CITY.minZ ? 65 : 3.5), roof)));
+    // Pull the shoulder camera forward before it crosses any solid building/furniture face.
+    // An explicit district overview (>20m) is intentionally free of street-level occlusion.
+    if (this.camDist < 20) {
+      const direction = cam.clone().sub(target).normalize();
+      const ray = new THREE.Ray(target, direction);
+      let distance = cam.distanceTo(target);
+      for (const c of this.colliders) {
+        if (c.top <= (c.bottom ?? 0)) continue;
+        const bounds = new THREE.Box3(new THREE.Vector3(c.minX-.12,c.bottom??0,c.minZ-.12),new THREE.Vector3(c.maxX+.12,c.top,c.maxZ+.12));
+        if (bounds.containsPoint(target)) continue;
+        const hit=ray.intersectBox(bounds,new THREE.Vector3());
+        if(hit)distance=Math.min(distance,Math.max(.35,hit.distanceTo(target)-.18));
+      }
+      cam.copy(target).addScaledVector(direction,distance);
+    }
     if (snap) this.camera.position.copy(cam);
     else this.camera.position.lerp(cam, 0.25);
     this.camera.lookAt(target);

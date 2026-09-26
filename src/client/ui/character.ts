@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { OutlineEffect } from 'three/examples/jsm/effects/OutlineEffect.js';
-import { HAIR_COLOR_NAMES, HAIR_COLORS, HAIR_STYLES, SKIN_TONES, randomLook, type Look } from '../../shared/avatar';
+
+import { randomLook, type Look } from '../../shared/avatar';
 import { AVATAR_COLORS, saveProfile, store, type Profile } from '../state';
 import { Person } from '../world/character';
 import { toonUnique } from '../world/toon';
@@ -10,7 +10,7 @@ import { h, openModal } from './dom';
 class Preview {
   readonly person: Person;
   private renderer: THREE.WebGLRenderer;
-  private effect: OutlineEffect;
+
   private scene = new THREE.Scene();
   private camera = new THREE.PerspectiveCamera(28, 1, 0.1, 20);
   private raf = 0;
@@ -28,7 +28,7 @@ class Preview {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.shadowMap.enabled = true;
-    this.effect = new OutlineEffect(this.renderer, { defaultThickness: 0.0045, defaultColor: [0.17, 0.18, 0.26] });
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
 
     this.scene.add(new THREE.HemisphereLight('#fff5e6', '#c9a27a', 1.5));
     this.scene.add(new THREE.AmbientLight('#ffffff', 0.5));
@@ -112,22 +112,20 @@ class Preview {
     }
     this.person.root.position.y = y;
     this.person.update(dt, t, false, y > 0.01);
-    this.effect.render(this.scene, this.camera);
+    this.renderer.render(this.scene, this.camera);
   }
 
   dispose() {
     cancelAnimationFrame(this.raf);
     this.resize.disconnect();
-    this.scene.traverse((o) => {
-      if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).geometry.dispose();
-    });
+    this.person.dispose();
     this.renderer.dispose();
     this.renderer.forceContextLoss();
   }
 }
 
 /**
- * The character select screen: your name, skin tone, hair and shirt, with a live preview.
+ * The character select screen: your name, human model and profile accent, with a live preview.
  * `first` is the one you see when you join, which can't be skipped.
  */
 export function openCharacter(first: boolean, onSave: (p: Profile) => void) {
@@ -138,10 +136,8 @@ export function openCharacter(first: boolean, onSave: (p: Profile) => void) {
   const input = h('input', { type: 'text', maxlength: 24, value: first ? '' : pick.name, placeholder: 'e.g. Ada', 'aria-label': 'Your name' }) as HTMLInputElement;
   if (first && pick.name !== 'Guest') input.value = pick.name;
 
-  const skinRow = h('div.swatches', { role: 'radiogroup', 'aria-label': 'Skin tone' });
-  const styleRow = h('div.seg', { role: 'radiogroup', 'aria-label': 'Hair style' });
-  const hairRow = h('div.swatches', { role: 'radiogroup', 'aria-label': 'Hair color' });
-  const shirtRow = h('div.swatches', { role: 'radiogroup', 'aria-label': 'Shirt color' });
+  const styleRow = h('div.seg', { role: 'radiogroup', 'aria-label': 'Character model' });
+  const shirtRow = h('div.swatches', { role: 'radiogroup', 'aria-label': 'Profile accent' });
 
   const swatch = (color: string, label: string, on: boolean, choose: () => void) =>
     h('button.swatch', { type: 'button', role: 'radio', 'aria-checked': String(on), style: `background:${color}`, class: on ? 'sel' : '', 'aria-label': label, title: label, onclick: choose });
@@ -156,27 +152,25 @@ export function openCharacter(first: boolean, onSave: (p: Profile) => void) {
   };
 
   const paint = () => {
-    const { skin, hair, style } = pick.look;
-    skinRow.replaceChildren(...SKIN_TONES.map((c, i) => swatch(c, `Skin tone ${i + 1} of ${SKIN_TONES.length}`, i === skin, () => change({ skin: i }))));
+    const { style } = pick.look;
     styleRow.replaceChildren(
-      ...HAIR_STYLES.map((name, i) =>
-        h('button.btn', { type: 'button', role: 'radio', 'aria-checked': String(i === style), class: i === style ? 'on' : '', onclick: () => change({ style: i }) }, name),
+      ...['Founder · Joe', 'Founder · Marta'].map((name, i) =>
+        h('button.btn', { type: 'button', role: 'radio', 'aria-checked': String(i === style % 2), class: i === style % 2 ? 'on' : '', onclick: () => change({ style: i }) }, name),
       ),
     );
-    hairRow.replaceChildren(...HAIR_COLORS.map((c, i) => swatch(c, HAIR_COLOR_NAMES[i], i === hair, () => change({ hair: i }))));
-    shirtRow.replaceChildren(...AVATAR_COLORS.map((c) => swatch(c, `Shirt ${c}`, c === pick.color, () => change({}, c))));
+    shirtRow.replaceChildren(...AVATAR_COLORS.map((c) => swatch(c, `Profile accent ${c}`, c === pick.color, () => change({}, c))));
   };
   paint();
 
-  const surprise = h('button.btn', { type: 'button', title: 'Random look' }, '🎲 Surprise me');
+  const surprise = h('button.btn', { type: 'button', title: 'Random look' }, 'Random profile');
   surprise.addEventListener('click', () => change(randomLook(), AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)]));
-  const save = h('button.btn.primary', { type: 'submit' }, first ? 'Enter the office 🚪' : 'Save');
+  const save = h('button.btn.primary', { type: 'submit' }, first ? 'Enter the office' : 'Save');
   const close = first ? null : h('button.btn.close', { type: 'button', 'aria-label': 'Close' }, '✕');
 
   const form = h(
     'form.modal.charsel',
     { role: 'dialog', 'aria-label': 'Pick your character' },
-    h('header', {}, h('h2', {}, first ? '👋 Pick your character' : '🧍 Your character'), close),
+    h('header', {}, h('h2', {}, first ? 'Choose your founder' : 'Your founder'), close),
     h(
       'div.body',
       {},
@@ -186,13 +180,9 @@ export function openCharacter(first: boolean, onSave: (p: Profile) => void) {
         {},
         h('label', {}, 'Your name'),
         input,
-        h('label', {}, 'Skin tone'),
-        skinRow,
-        h('label', {}, 'Hair'),
+        h('label', {}, 'Character model'),
         styleRow,
-        h('label', {}, 'Hair color'),
-        hairRow,
-        h('label', {}, 'Shirt'),
+        h('label', {}, 'Profile accent'),
         shirtRow,
       ),
     ),

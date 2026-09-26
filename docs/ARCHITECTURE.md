@@ -5,7 +5,10 @@
 - `src/shared/empire.ts`: shared site catalog, action types, versioned district state.
 - `src/server/empire.ts`: authoritative construction, staffing, bounded report history, real workforce counters, atomic saves. One simulated minute passes per server second; there is no fabricated catch-up after downtime.
 - `src/server/server.ts`: authenticated WebSocket commands and five-second state broadcasts, integrated with existing worker manager and queue.
-- `src/client/world/city.ts`: procedural district, colliders, landmarks, vehicle, ambient residents, and realistic chief asset.
+- `src/client/world/city.ts`: procedural district, colliders, landmarks, vehicle, ambient residents and construction visibility.
+- `src/client/world/human.ts`: cached GLTF assets, independent cloned rigs, evaluated-skeleton normalization, walking/seated/interaction poses.
+- `src/client/world/materials.ts`, `vegetation.ts`, `batching.ts`: photographed PBR surfaces, instanced leaves and material-based static batches.
+- `src/client/player.ts`: eye-height first person, shoulder camera with collider obstruction, walking/driving collision.
 - `src/client/ui/empire.ts`: operations, minimap, home needs, sector task entry and touch movement.
 - `src/client/controls.ts`: arrow defaults, saved mapping validation and canonical office-action routing.
 
@@ -17,7 +20,7 @@ The office continues running real PTY processes. Agent completion is derived fro
 
 Introduce a database-backed fixed-tick engine with event history and migrations. Add construction duration, wages, income, utility dependencies and service demand. Give workers persistent identities, roles, shifts, paths, needs and building assignments. Replace ambient loops with navigation and schedules. Define explicit formulas and balance tests for health, education and happiness.
 
-Add seamless office entry portals, more interiors and parcels, car parking, road routing and vehicle synchronization. Extend realistic character models to the CEO and workforce with compatible walking/sitting/typing rigs and appearance options. Add texture detail, environmental lighting, audio zones, weather and adjustable quality/LOD budgets.
+Add seamless office entry portals, more interiors and parcels, car parking, road routing and vehicle synchronization. Replace procedural locomotion with retargeted motion-capture clips, expand human appearance options, and add detailed furnishing assets. HDR lighting, texture detail, human rigs and camera obstruction are implemented; next add audio zones, weather and adjustable quality/LOD budgets.
 
 ### 2. Chief of staff and reporting
 
