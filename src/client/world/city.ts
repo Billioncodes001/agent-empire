@@ -1,3 +1,7 @@
+import { buildTerrain } from './terrain';
+import { slidingDoor } from './doors';
+import { entranceAccess, assignedWorkers } from '../navigation';
+import { store } from '../state';
 import { batchStaticMeshes } from './batching';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
@@ -22,12 +26,23 @@ function seat(g: THREE.Object3D, x: number, z: number) {
   for (const d of [-0.7, 0.7]) box(g, 0.055, 0.43, 0.5, S.frame, x + d, 0.24, z + 0.2);
   for (let i = 0; i < 3; i++) box(g, 1.8, 0.07, 0.07, S.wood, x, 0.72 + i * 0.12, z + 0.48);
 }
-function curtain(g: THREE.Group, w: number, h: number, d: number, floors: number) {
+function curtain(g: THREE.Group, w: number, h: number, d: number, floors: number, accessible = false) {
   // Set glazing in front of a recessed core: reflections coexist with visible structural depth.
-  box(g, w - 0.7, h, d - 0.7, solid('#303a3a'), 0, h / 2, 0);
+  if (!accessible) box(g, w - 0.7, h, d - 0.7, solid('#303a3a'), 0, h / 2, 0);
+  else {
+    if (h > 3.3) box(g, w - 0.7, h - 3.3, d - 0.7, solid('#303a3a'), 0, 3.3 + (h - 3.3) / 2, 0);
+    box(g, w, 0.14, d, S.stone, 0, 0, 0);
+    box(g, w, 0.14, d, S.plaster, 0, 3.2, 0);
+    box(g, w, 3.2, 0.16, S.plaster, 0, 1.6, -d / 2 + 0.15);
+  }
   for (const face of [-1, 1]) {
-    box(g, w, h - 0.3, 0.035, S.glass, 0, h / 2, (face * d) / 2);
-    for (let x = -w / 2; x <= w / 2 + 0.01; x += 1.5) box(g, 0.07, h, 0.16, S.frame, x, h / 2, face * (d / 2 + 0.06));
+    if (accessible && face === 1) {
+      box(g, 9.6, 2.95, 0.035, S.glass, -4.2, 1.5, d / 2);
+      box(g, 5.2, 2.95, 0.035, S.glass, 6.4, 1.5, d / 2);
+      if (h > 3.15) box(g, w, h - 3.15, 0.035, S.glass, 0, 3.15 + (h - 3.15) / 2, d / 2);
+    } else box(g, w, h - 0.3, 0.035, S.glass, 0, h / 2, (face * d) / 2);
+    for (let x = -w / 2; x <= w / 2 + 0.01; x += 1.5)
+      if (!accessible || face !== 1 || x < 0.6 || x > 3.8) box(g, 0.07, h, 0.16, S.frame, x, h / 2, face * (d / 2 + 0.06));
     for (let f = 0; f <= floors; f++) box(g, w + 0.2, 0.15, 0.4, S.stone, 0, 0.12 + (f * h) / floors, (face * d) / 2);
   }
   for (const side of [-1, 1]) {
@@ -76,13 +91,16 @@ export function buildCity() {
   group.name = 'Coastal city';
   const colliders: Collider[] = [];
   const siteColliders = new Map<string, Collider>();
+  const sectorCollision = new Map<string, { collider: Collider; top: number }[]>();
   const buildings = new Map<string, THREE.Group>();
   const plots = new Map<string, THREE.Group>();
+  const doors = new Map<string, ReturnType<typeof slidingDoor>>();
+  const staffViews = new Map<string, Person>();
   const foliage = new Vegetation();
   group.add(foliage.group);
-  box(group, 2000, 0.2, 2000, solid('#697458'), 944, -0.22, 80);
-  box(group, 15, 0.13, 130, S.road, 0, -0.03, -40);
-  box(group, 15, 0.13, 210, S.road, 0, -0.03, 238);
+  buildTerrain(group, foliage);
+  box(group, 15, 0.13, 98, S.road, 0, -0.03, -24);
+  box(group, 15, 0.13, 86, S.road, 0, -0.03, 172);
   // Continuous asphalt, raised stone kerbs, measured paving joints and storm drains.
   box(group, 15, 0.13, 112, S.road, 0, -0.03, 77);
   for (const z of [62, 90]) box(group, 107, 0.13, 10, S.road, 0, -0.029, z);
@@ -123,7 +141,7 @@ export function buildCity() {
     fog: true,
   });
   water.rotation.x = -Math.PI / 2;
-  water.position.set(-757, -0.32, 80);
+  water.position.set(0, -0.32, 80);
   group.add(water);
   for (let z = 31; z < 126; z += 12) {
     foliage.tree(-48, z, 6.5);
@@ -131,6 +149,7 @@ export function buildCity() {
   }
   // Buildings remain tied to the actual construction state.
   for (const site of SITES) {
+    const colliderStart = colliders.length;
     const plot = new THREE.Group();
     group.add(plot);
     plots.set(site.id, plot);
@@ -147,6 +166,13 @@ export function buildCity() {
     const height = hq ? 11.4 : hospital ? 8 : 4;
     if (home) {
       residence(b);
+      const door = slidingDoor(b, 0, 6, 4);
+      doors.set(site.id, door);
+      door.collider.minX += site.x;
+      door.collider.maxX += site.x;
+      door.collider.minZ += site.z;
+      door.collider.maxZ += site.z;
+      colliders.push(door.collider);
       for (const dx of [-9, 9])
         colliders.push({ minX: site.x + dx - 0.2, maxX: site.x + dx + 0.2, minZ: site.z - 6, maxZ: site.z + 6, top: 3.6 });
       colliders.push({ minX: site.x - 9, maxX: site.x + 9, minZ: site.z - 6.2, maxZ: site.z - 5.8, top: 3.6 });
@@ -154,15 +180,36 @@ export function buildCity() {
         colliders.push({ minX: site.x + dx - 3.5, maxX: site.x + dx + 3.5, minZ: site.z + 5.9, maxZ: site.z + 6.1, top: 3.6 });
       colliders.push({ minX: site.x - 9, maxX: site.x + 9, minZ: site.z - 6, maxZ: site.z + 6, bottom: 3.58, top: 3.85 });
     } else {
-      curtain(b, 18, height, 12, hq ? 3 : hospital ? 2 : 1);
+      curtain(b, 18, height, 12, hq ? 3 : hospital ? 2 : 1, !hq);
       // Solid vertical service spine and an articulated entrance portico.
       box(b, 3, height + 0.4, 12.6, S.concrete, -6.5, (height + 0.4) / 2, 0);
       box(b, 3, height + 0.4, 0.12, S.wood, -6.5, (height + 0.4) / 2, 6.36);
       for (let x = -7.9; x < -5.1; x += 0.18) box(b, 0.035, height + 0.4, 0.12, S.frame, x, (height + 0.4) / 2, 6.44);
       box(b, 7, 0.18, 3.2, S.frame, 2.2, 3.4, 7.3);
       for (const x of [-1, 5.4]) box(b, 0.13, 3.4, 0.13, S.frame, x, 1.7, 8.8);
-      box(b, 3.2, 2.8, 0.06, S.glass, 2.2, 1.4, 6.2);
-      for (const x of [0.6, 2.2, 3.8]) box(b, 0.06, 2.8, 0.1, S.frame, x, 1.4, 6.25);
+      const door = slidingDoor(b, 2.2, 6.4);
+      doors.set(site.id, door);
+      door.collider.minX += site.x;
+      door.collider.maxX += site.x;
+      door.collider.minZ += site.z;
+      door.collider.maxZ += site.z;
+      colliders.push(door.collider);
+      if (!hq) {
+        for (const x of [-2, 3, 6]) {
+          box(b, 2, 0.09, 0.9, S.wood, x, 0.77, -2.8);
+          for (const dx of [-0.8, 0.8]) box(b, 0.06, 0.73, 0.7, S.frame, x + dx, 0.37, -2.8);
+          box(b, 0.66, 0.42, 0.055, S.frame, x, 1.06, -3);
+          box(b, 0.59, 0.35, 0.012, solid('#7e9697'), x, 1.06, -2.965);
+          box(b, 0.04, 0.25, 0.04, S.frame, x, 0.86, -3);
+          box(b, 0.58, 0.12, 0.58, S.fabric, x, 0.46, -1.9);
+          box(b, 0.58, 0.48, 0.08, S.fabric, x, 0.73, -1.63);
+        }
+        box(b, 3, 0.85, 1, S.wood, -2, 0.42, 2.8);
+        sign(b, site.sector.toUpperCase(), 2, 2.4, -5.75, 5);
+        const light = new THREE.PointLight('#fff2dc', 35, 14, 2);
+        light.position.set(1, 2.9, 0);
+        b.add(light);
+      }
       sign(b, site.name.toUpperCase(), 2.2, 3.05, 6.4, hq ? 7 : 6);
       if (hospital) {
         box(b, 1.4, 0.35, 0.12, solid('#9a3933'), -6.5, 5.7, 6.52);
@@ -185,9 +232,23 @@ export function buildCity() {
           const p = box(b, 3, 0.08, 5, solid('#173042', 0.2, 0.45), -6 + i * 4, height + 0.6, 0);
           p.rotation.x = 0.25;
         }
-      const c = { minX: site.x - 9.2, maxX: site.x + 9.2, minZ: site.z - 6.3, maxZ: site.z + 6.3, top: height };
-      siteColliders.set(site.id, c);
-      colliders.push(c);
+      if (hq) {
+        const c = { minX: site.x - 9.2, maxX: site.x + 9.2, minZ: site.z - 6.3, maxZ: site.z + 6.3, top: height };
+        siteColliders.set(site.id, c);
+        colliders.push(c);
+      } else {
+        for (const dx of [-9, 9])
+          colliders.push({ minX: site.x + dx - 0.15, maxX: site.x + dx + 0.15, minZ: site.z - 6, maxZ: site.z + 6, top: height });
+        colliders.push({ minX: site.x - 9, maxX: site.x + 9, minZ: site.z - 6.2, maxZ: site.z - 5.8, top: height });
+        for (const [a, b] of [
+          [-9, 0.6],
+          [3.8, 9],
+        ])
+          colliders.push({ minX: site.x + a, maxX: site.x + b, minZ: site.z + 5.9, maxZ: site.z + 6.1, top: height });
+        colliders.push({ minX: site.x - 9, maxX: site.x + 9, minZ: site.z - 6, maxZ: site.z + 6, bottom: 3.1, top: height });
+        for (const x of [-2, 3, 6])
+          colliders.push({ minX: site.x + x - 1, maxX: site.x + x + 1, minZ: site.z - 3.3, maxZ: site.z - 2.3, top: 0.82 });
+      }
     }
     box(b, 22, 0.1, 3, S.concrete, 0, 0.015, 8.2);
     for (const dx of [-10, 10]) {
@@ -196,6 +257,10 @@ export function buildCity() {
     }
     foliage.tree(site.x + 10, site.z - 7, 7);
     foliage.tree(site.x - 10, site.z - 7, 6);
+    sectorCollision.set(
+      site.id,
+      colliders.slice(colliderStart).map((collider) => ({ collider, top: collider.top })),
+    );
   }
   // Layered urban horizon: setback towers, balconies and glazing, rather than flat silhouettes.
   for (let i = 0; i < 13; i++) {
@@ -234,6 +299,8 @@ export function buildCity() {
   const car = new THREE.Group();
   car.name = 'Executive sedan';
   car.position.set(5, 0, 45);
+  const carCollider: Collider = { minX: 4, maxX: 6, minZ: 42.6, maxZ: 47.4, top: 1.55 };
+  colliders.push(carCollider);
   group.add(car);
   new GLTFLoader().load(
     '/models/executive-sedan.glb',
@@ -248,6 +315,13 @@ export function buildCity() {
         if (o instanceof THREE.Mesh) {
           o.castShadow = true;
           o.receiveShadow = true;
+          for (const mat of Array.isArray(o.material) ? o.material : [o.material]) {
+            if (mat.name === 'Smoked panoramic glass') {
+              mat.transparent = true;
+              mat.opacity = 0.38;
+              mat.depthWrite = false;
+            }
+          }
         }
       });
     },
@@ -258,26 +332,79 @@ export function buildCity() {
     group,
     colliders,
     car,
+    carCollider,
+    doors,
+    setCarDoor(amount: number) {
+      const hinge = car.getObjectByName('Driver_door_hinge');
+      if (hinge) hinge.rotation.y = amount * 1.08;
+    },
     chief: chief.root,
     sync(state: EmpireState) {
       for (const sector of state.sectors) {
         buildings.get(sector.id)!.visible = sector.built;
         plots.get(sector.id)!.visible = !sector.built;
+        for (const item of sectorCollision.get(sector.id) ?? []) item.collider.top = sector.built ? item.top : 0;
         const c = siteColliders.get(sector.id);
         if (c) c.top = sector.built ? (sector.id === 'hq' ? 11.4 : sector.id === 'hospital' ? 8 : 4) : 0;
       }
     },
-    update(t: number, delegated: boolean, dt = 0.016) {
+    update(t: number, delegated: boolean, dt = 0.016, playerPosition = new THREE.Vector3(), driving = false) {
+      const yaw = car.rotation.y,
+        halfX = Math.abs(Math.cos(yaw)) * 1.03 + Math.abs(Math.sin(yaw)) * 2.35,
+        halfZ = Math.abs(Math.sin(yaw)) * 1.03 + Math.abs(Math.cos(yaw)) * 2.35;
+      Object.assign(carCollider, {
+        minX: car.position.x - halfX,
+        maxX: car.position.x + halfX,
+        minZ: car.position.z - halfZ,
+        maxZ: car.position.z + halfZ,
+        top: driving ? 0 : 1.55,
+      });
       foliage.update(t);
+      const displayedWorkers = new Set<string>();
+      for (const site of SITES) {
+        const allowed = entranceAccess(site.id, store.empire, store.workers.values()).allowed;
+        const x = site.x + (site.id === 'home' ? 0 : 2.2);
+        const near = !driving && Math.abs(playerPosition.x - x) < 2.7 && Math.abs(playerPosition.z - site.z - 6.4) < 3.6;
+        const inside = playerPosition.z < site.z + 6.3 && Math.abs(playerPosition.x - site.x) < 8.8;
+        doors.get(site.id)?.update(dt, (allowed || inside) && near);
+        if (!store.empire.sectors.find((s) => s.id === site.id)?.built) doors.get(site.id)!.collider.top = 0;
+        if (site.id === 'hq' || site.id === 'home') continue;
+        const assigned = assignedWorkers(site.id, store.workers.values()).slice(0, 3);
+        for (let i = 0; i < assigned.length; i++) {
+          const worker = assigned[i];
+          displayedWorkers.add(worker.id);
+          let person = staffViews.get(worker.id);
+          if (!person) {
+            person = new Person(worker.name, worker.color, lookFromSeed(worker.id));
+            person.pose = 'type';
+            group.add(person.root);
+            staffViews.set(worker.id, person);
+          }
+          person.root.position.set(site.x + [-2, 3, 6][i], 0, site.z - 1.9);
+          person.root.rotation.y = Math.PI;
+          person.root.visible = allowed;
+          person.update(dt, t, false, false);
+        }
+      }
+      for (const [id, person] of staffViews)
+        if (!displayedWorkers.has(id)) {
+          person.root.removeFromParent();
+          person.dispose();
+          staffViews.delete(id);
+        }
       water.material.uniforms.time.value = t * 0.35;
       chief.root.position.set(delegated ? 5 : 8, 0, 9);
       chief.update(dt, t, false, false);
       citizens.forEach((p, i) => {
-        const phase = (t * 0.85 + i * 11) % 160;
-        const z = phase < 80 ? 35 + phase : 195 - phase;
-        p.root.position.set(i % 2 ? 9.4 : -9.4, 0, z);
-        p.root.rotation.y = phase < 80 ? 0 : Math.PI;
-        p.update(dt, t, true, false);
+        const a = t * 0.022 + (i * Math.PI) / 4,
+          side = i % 2 ? 1 : -1;
+        const x = side * (9.6 + Math.sin(a) * 0.65),
+          z = 77 + Math.cos(a) * 37;
+        const dx = side * Math.cos(a) * 0.65 * 0.022,
+          dz = -Math.sin(a) * 37 * 0.022;
+        p.root.position.set(x, 0, z);
+        p.root.rotation.y = Math.atan2(dx, dz);
+        p.update(dt, t, true, false, Math.hypot(dx, dz));
       });
     },
   };

@@ -24,7 +24,7 @@ test('arrow input moves forward; opening a modal can stop held movement', () => 
   const { player, key } = setup();
   key('keydown', 'ArrowUp');
   for (let i = 0; i < 10; i++) player.update(0.02);
-  assert.ok(player.pos.z < 59.5);
+  assert.ok(player.pos.z < 59.75);
   key('keyup', 'ArrowUp');
   const stopped = player.pos.clone();
   player.update(0.02);
@@ -64,4 +64,24 @@ test('walking and driving cannot pass through a built sector', () => {
   player.facing = Math.PI;
   for (let i = 0; i < 180; i++) player.update(1 / 60);
   assert.ok(player.pos.z >= 59.69);
+});
+test('blocked movement stops animation speed; first person steering does not follow head look',()=>{
+ const {player}=setup([{minX:-9,maxX:9,minZ:50,maxZ:58,top:8}]);
+ player.setAction('forward',true);
+ for(let i=0;i<240;i++)player.update(1/60);
+ assert.equal(player.moving,false);assert.equal(player.speed,0);
+ player.clearKeys();player.pos.set(0,0,70);player.driving=true;player.view='first';player.facing=0;player.camYaw=.8;
+ player.update(.02);assert.equal(player.facing,0);
+});
+test('driver eye turns with the vehicle while retaining the head-look offset', () => {
+  const { player } = setup();
+  player.driving = true;
+  player.view = 'first';
+  player.facing = 0;
+  player.camYaw = -Math.PI + 0.4;
+  player.setAction('forward', true);
+  player.setAction('right', true);
+  for (let i = 0; i < 60; i++) player.update(1 / 60);
+  assert.ok(Math.abs(player.facing) > 0.5);
+  assert.ok(Math.abs(player.camYaw - player.facing - (-Math.PI + 0.4)) < 1e-8);
 });

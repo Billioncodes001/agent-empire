@@ -1,27 +1,19 @@
-# Grounded 3D graphics pass
+# Graphics and physical navigation
 
-The original distant city camera and stylized people made the prototype read as a toy diorama. This pass replaces that presentation while preserving the real agent office and authoritative district state.
+The scene uses meter-scale PBR geometry, local photographed material maps, an HDR environment, sun shadows and ambient occlusion. The coastal district has a bounded shoreline, rocks, perimeter roads, paths and a planted greenbelt. Scrolling out automatically raises the third-person camera; it no longer reveals an infinite flat green plane.
 
-## Implemented
+The old location/travel panel is removed. A circular local minimap tracks heading and destinations; G expands it, and selection sets a waypoint without moving the player. N switches first/third person. These shortcuts and the arrow movement keys are remappable. Management remains available for actual task assignment, construction and reports.
 
-- Physically based materials throughout the office and city; photographed color/normal/roughness maps at meter-scaled UV density.
-- HDR sky, PMREM image-based illumination/reflections, ACES output, sun shadows and screen-space ambient occlusion.
-- Curtain-wall architecture with recessed cores, floor slabs, mullions, porticos, service spines, rooftop equipment and architectural signage. The house has front glazing, an open doorway and an accessible interior. Sector visibility still follows actual construction state.
-- Palm fronds, branching trees and individual instanced leaves, benches, kerbs, crosswalks, paving joints, drainage grilles and a reflective waterfront. The surrounding skyline is scenery.
-- Enclosed office ceiling, task lighting, wood flooring, neutral furniture and potted palms.
-- Independent adult human rigs for the CEO, peers, chief, workers and pedestrians. The model's skeleton is evaluated before calculating its size; this avoids a 100x scale error from stale cloned bone matrices. Idle clips are native to the assets; locomotion and seated/typing poses are procedural.
-- Authored GLB sedan with modeled wheels, trim, cabin, mirrors, grille and lamps; it uses the existing driving/collision system.
-- Eye-height first person and close third person. The shoulder camera retracts before collider obstacles. District overview is an explicit toggle, rather than the default street camera.
-- Collapsible translucent HUD and a direct camera-switch button. Existing arrow defaults and saved remapping remain intact.
+Glass entrances slide open on approach. Walking through headquarters triggers a visible walking transition with a short fade between the differently sized interior and exterior scenes. Home and business ground floors are directly walkable in the city. Businesses require completed construction plus a live assigned AI worker; simulated service staff cannot unlock them. Three visible workstations display up to three actual assigned workers in each business; the full workforce remains in the server reports.
 
-## Performance and verification
+Both adult rigs now contain original Rocketbox locomotion and seated clips, retargeted in Blender using Tidewater's world-space technique. The controller supplies horizontal motion and the clips supply hip, knee, heel/toe and arm movement. Playback follows measured movement speed, crossfades to idle when blocked, and uses a separate running clip. Seated workers use a recorded seated clip. Hand contact IK and detailed typing remain future work.
 
-Static siblings are merged by material within their own construction/visibility group. Leaves use an InstancedMesh; human clones share texture and geometry data, but not skeletons. Assets are local, so no external API is required to render the world. Initial asset load is exposed through the scene canvas's `data-assets` attribute for repeatable QA.
+The Higgsfield-authored sedan now has a separate hinged driver door, a cut aperture/footwell, seats, steering wheel and transparent glazing. Entry/exit plays an approach, door opening, recorded seated/standing motion and door closing sequence. Exit is refused while moving or when the driver's side is obstructed. First person uses the driver-eye position and follows steering while retaining independent head look; third person follows the vehicle. Seated driving uses arm IK targets at the wheel. This is a composed animation sequence, not a dedicated vehicle-entry motion-capture take.
 
-Automated checks cover actual GLB dimensions after animation, independent skeletons, sedan export boundaries, arrow input, camera eye height/obstruction, walking/driving collision, construction/state persistence, reporting and key mappings. `npm run typecheck`, `npm test` and `npm run build` are the core checks.
+## Validation
 
-Manual desktop-browser checks cover first/third person, orbit, office/city/home travel, home meals, the real research queue, operations and character settings. Screenshots are saved locally in ignored `artifacts/realistic-*.png`. A settled street view measured about 60 fps on this development machine; this is not a device-independent performance guarantee. Native/mobile graphics have not been qualified.
+`npm run typecheck`, `npm test`, and `npm run build` check the shipped model rigs, grounded animation bounds, independent skeletons, hinged door, movement/camera collision, entry eligibility, key migration, map projection and traversal state transitions.
 
-## Remaining work
+`npm exec vite -- --host 127.0.0.1 --port 4611` serves `/visual-review.html`, a development-only graphics inspection page. It has explicit walk/run, doorway, vehicle and camera scenarios plus a playback speed control. It reuses production scene/controller/animation code, uses local construction fixtures, and starts no AI workers. The production Vite build excludes this page. Use it to inspect contacts and transitions, then check real server state and HUD behavior in the normal application.
 
-This is a more realistic 3D foundation, not a claim of photorealistic game quality. Add motion-captured locomotion and seated IK, varied wardrobes, detailed interior furniture/props, richer terrain, dynamic weather/daylight, local reflection probes, level-of-detail streaming and device-specific quality settings. Current window reflections use the HDR environment; water reflects the scene. The car has no detailed first-person cockpit. The two human models cannot yet change clothing, skin or hair independently.
+This remains a developing 3D simulation. It does not claim photorealistic or GTA-level character interaction. Remaining art work includes sector-specific furniture/equipment, greater character variety, hand/foot IK, local reflection probes, weather, traffic, quality settings and mobile performance qualification. Vehicle state is still local to the browser; always-on cloud execution and laptop synchronization are separate unfinished systems.

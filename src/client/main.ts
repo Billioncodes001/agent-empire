@@ -1,3 +1,4 @@
+import { Traversal } from './traversal';
 import { buildCity } from './world/city';
 import { mountEmpire } from './ui/empire';
 import { officeCode, DEFAULT_KEYS, keyLabel, type Action } from './controls';
@@ -43,6 +44,7 @@ import { hiringPaused, renderUsage, usageLabel, usageTitle } from './ui/usage';
 const canvas = $('scene') as HTMLCanvasElement;
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.info.autoReset=false;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -194,22 +196,15 @@ player.view = settings.view;
 player.bindings = settings.keys;
 const sound = new OfficeSound();
 sound.setVolume(settings.volume, settings.muted);
-const empireUI = mountEmpire(net, player, place => {
-  if (player.driving) { player.driving = false; city.car.position.copy(player.pos); }
-  player.clearKeys(); player.vy = 0; player.grounded = true;
-  if (place === 'office') { player.pos.set(SPAWN.x, 0, SPAWN.z); player.camDist = 4.6; player.camPitch = .16; }
-  else { player.pos.set(place === 'home' ? 24 : -6, 0, place === 'home' ? 58 : 55); player.camDist = 4.6; player.camPitch = .16; player.camYaw = place === 'home' ? 0 : Math.PI; player.lookPitch = -.02; player.facing = player.camYaw + Math.PI; }
-  player.updateCamera(true);
-  if (place !== 'office' && !store.empire.delegated) net.send({ t: 'empire.action', action: { kind: 'delegate', enabled: true } });
-}, () => {
-  if (player.driving) { player.driving=false; player.pos.x += 2; player.clearKeys(); return; }
-  if (player.pos.z < 30 || player.pos.distanceTo(city.car.position)>5) { toast('Walk to your car on the central avenue, near the headquarters.','info'); return; }
-  player.driving=true;player.setView('third');player.facing=city.car.rotation.y;player.camDist=12;
-}, () => showQueue(), () => {
-  player.setView(player.view==='first'?'third':'first');
-  if(player.view==='third'){player.camDist=4.6;player.camPitch=.16;}
-  settings.view=player.view;saveSettings(settings);
+const empireUI = mountEmpire(net,player,()=>showQueue(),()=>{if(!traversal.interactCar()&&!empireUI.interact())use(target,'E');},()=>changeView());
+const traversal = new Traversal(player,me,office,city,()=>{
+  if(!store.empire.delegated)net.send({t:'empire.action',action:{kind:'delegate',enabled:true}});
 });
+function changeView() {
+  player.setView(player.view==='first'?'third':'first');
+  if(player.view==='third'){player.camDist=player.driving?7:4.6;player.camPitch=.16;}
+  settings.view=player.view;saveSettings(settings);
+}
 const hanger = new Hanger(net, camera, canvas, player, office, gallery);
 scene.add(hanger.ghost.group);
 hanger.onChange = () => {
@@ -784,14 +779,14 @@ function use(it: Interactable | null, key: DeskKey) {
 
 // ---- Input ----------------------------------------------------------------------------------------
 window.addEventListener('keydown', (e) => {
-  if (modalOpen() || isTyping(e) || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (modalOpen() || player.scripted || isTyping(e) || e.metaKey || e.ctrlKey || e.altKey) return;
   if (hanger.active && hangingKey(officeCode(e.code, settings.keys))) {
     e.preventDefault();
     return;
   }
   switch (officeCode(e.code, settings.keys)) {
     case 'KeyE':
-      if (empireUI.interact()) break;
+      if (traversal.interactCar() || empireUI.interact()) break;
       use(target, 'E');
       break;
     case 'KeyP':
@@ -824,6 +819,10 @@ window.addEventListener('keydown', (e) => {
     case 'KeyM':
       voice.toggleMute();
       break;
+    case 'KeyG':
+      empireUI.openMap();break;
+    case 'KeyN':
+      changeView();break;
     case 'KeyH':
       openHelp(settings.keys);
       break;
@@ -1085,14 +1084,18 @@ function frame(ts?: number) {
   const dt = Math.min(timer.getDelta(), 0.1);
   const t = timer.getElapsed();
 
+  renderer.info.reset();
   player.update(dt);
-  city.update(t, store.empire.delegated, dt);
+  traversal.update(dt);
+  city.update(t, store.empire.delegated, dt,player.pos,player.driving);
   empireUI.update(dt);
   canvas.dataset.position = `${player.pos.x.toFixed(1)}, ${player.pos.y.toFixed(1)}, ${player.pos.z.toFixed(1)}`;
   canvas.dataset.view = player.view;
+  canvas.dataset.traversal = traversal.state;
+  canvas.dataset.motion = String(me.root.children[0]?.userData.motion??'loading');
   canvas.dataset.assets = me.ready && city.car.userData.ready && scene.environment ? 'ready' : 'loading';
   canvas.dataset.fps = String(Math.round(1 / Math.max(dt,.001)));
-  canvas.dataset.drawCalls = String(renderer.info.render.calls);
+
 
   if (player.driving) { city.car.position.copy(player.pos); city.car.rotation.y=player.facing; }
   const outside = player.pos.z >= 30;
@@ -1105,11 +1108,12 @@ function frame(ts?: number) {
   me.root.position.copy(player.pos);
   me.root.position.y += player.stepOffset;
   me.root.rotation.y = player.facing;
-  me.update(dt, t, player.moving && player.grounded, !player.grounded);
+  me.update(dt,t,player.moving&&player.grounded,!player.grounded,player.speed);
+  traversal.placeDriver();
   me.setVoiceLevel(voice.inVoice ? voice.localLevel : 0);
   const firstPerson = player.view === 'first';
   // In first person you are the camera; in third, hide yourself when it's zoomed in right behind your head.
-  me.root.visible = !player.driving && !firstPerson && camera.position.distanceTo(new THREE.Vector3(player.pos.x, player.pos.y + 1.3, player.pos.z)) > 1.5;
+  me.root.visible = !firstPerson && camera.position.distanceTo(new THREE.Vector3(player.pos.x, player.pos.y + 1.3, player.pos.z)) > 1.5;
 
   // Your ears are in your head, facing wherever the camera looks.
   camera.getWorldDirection(lookDir);
@@ -1184,6 +1188,7 @@ function frame(ts?: number) {
   }
 
   composer.render();
+  canvas.dataset.drawCalls=String(renderer.info.render.calls);
   requestAnimationFrame(frame);
 }
 

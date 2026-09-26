@@ -10,8 +10,8 @@ const RADIUS = 0.32;
 const HEIGHT = 1.7;
 /** The tallest ledge you walk up (or down) without jumping, like a stair. */
 const STEP = 0.3;
-const WALK = 2.8;
-const RUN = 5.8;
+const WALK = 1.65;
+const RUN = 4.3;
 const JUMP_V = 6.4;
 const GRAVITY = 18;
 /** Camera height above your feet in first person (the Person's eyes). */
@@ -25,6 +25,8 @@ export class PlayerController {
   vy = 0;
   facing = Math.PI;
   moving = false;
+  speed = 0;
+  scripted = false;
   grounded = true;
   /** Heading of the camera. You look along (-sin, -cos) of it on the XZ plane. */
   camYaw = Math.PI * 0.15;
@@ -169,6 +171,8 @@ export class PlayerController {
     else this.keys.delete(this.bindings[action]);
   }
 
+  get drivingSpeed() { return this.vehicleSpeed; }
+
   clearKeys() {
     this.keys.clear();
   }
@@ -201,6 +205,8 @@ export class PlayerController {
 
   update(dt: number) {
     dt = Math.min(dt, 0.05);
+    if (this.scripted) { this.updateCamera(); return; }
+    const before = this.pos.clone();
     const k = this.keys;
     let ix = 0;
     let iz = 0;
@@ -211,20 +217,22 @@ export class PlayerController {
       if (k.has(this.bindings.right)) ix += 1;
     }
     this.moving = ix !== 0 || iz !== 0;
-    if (this.view === 'first') this.facing = Math.atan2(Math.sin(this.camYaw + Math.PI), Math.cos(this.camYaw + Math.PI));
+    if (this.view === 'first' && !this.driving) this.facing = Math.atan2(Math.sin(this.camYaw + Math.PI), Math.cos(this.camYaw + Math.PI));
     if (this.driving) {
       const throttle = this.enabled ? -iz : 0;
       const targetSpeed = throttle * (k.has(this.bindings.run) ? 15 : 9);
       this.vehicleSpeed += (targetSpeed - this.vehicleSpeed) * Math.min(1, dt * 2.2);
       if (Math.abs(this.vehicleSpeed) < .03) this.vehicleSpeed = 0;
-      this.facing -= ix * dt * 1.6 * Math.min(1, Math.abs(this.vehicleSpeed)/3) * Math.sign(this.vehicleSpeed);
+      const turn = -ix * dt * 1.6 * Math.min(1, Math.abs(this.vehicleSpeed)/3) * Math.sign(this.vehicleSpeed);
+      this.facing += turn;
+      if (this.view === 'first') this.camYaw += turn;
       const oldX=this.pos.x, oldZ=this.pos.z;
       this.tryMove(oldX + Math.sin(this.facing)*this.vehicleSpeed*dt, oldZ);
       this.tryMove(this.pos.x, oldZ + Math.cos(this.facing)*this.vehicleSpeed*dt);
       if (Math.hypot(this.pos.x-oldX,this.pos.z-oldZ)<.001) this.vehicleSpeed=0;
       this.moving = Math.abs(this.vehicleSpeed)>.1;
       const desired = this.facing - Math.PI;
-      this.camYaw += Math.atan2(Math.sin(desired-this.camYaw),Math.cos(desired-this.camYaw))*Math.min(1,dt*3);
+      if(this.view==='third')this.camYaw += Math.atan2(Math.sin(desired-this.camYaw),Math.cos(desired-this.camYaw))*Math.min(1,dt*3);
     } else this.vehicleSpeed = 0;
     if (this.moving && !this.driving) {
       const len = Math.hypot(ix, iz);
@@ -271,8 +279,10 @@ export class PlayerController {
       this.vy = Math.min(this.vy, 0);
     }
     this.stepOffset *= Math.exp(-dt * 16);
+    this.speed = Math.hypot(this.pos.x-before.x,this.pos.z-before.z)/Math.max(dt,.001);
+    this.moving = this.speed > .04;
     const walking = this.moving && this.grounded;
-    this.walkPhase += dt * (walking ? (k.has(this.bindings.run) ? 14 : 11) : 0);
+    this.walkPhase += walking ? dt*this.speed*Math.PI*2/(this.speed>2.5?2.9:1.55) : 0;
     const bob = walking ? Math.abs(Math.sin(this.walkPhase)) * 0.035 : 0;
     this.bob += (bob - this.bob) * Math.min(1, dt * 18);
     this.updateCamera();
@@ -280,15 +290,17 @@ export class PlayerController {
 
   updateCamera(snap = false) {
     if (this.view === 'first') {
-      this.camera.position.set(this.pos.x, this.pos.y + EYE_HEIGHT + this.bob + this.stepOffset, this.pos.z);
+      const eye=this.driving?new THREE.Vector3(-.43,1.22,.3).applyAxisAngle(new THREE.Vector3(0,1,0),this.facing):new THREE.Vector3(0,EYE_HEIGHT+this.bob+this.stepOffset,0);
+      this.camera.position.copy(this.pos).add(eye);
       this.camera.rotation.set(this.lookPitch, this.camYaw, 0);
       return;
     }
     const target = new THREE.Vector3(this.pos.x, this.pos.y + this.stepOffset + 1.3, this.pos.z);
+    const pitch = Math.max(this.camPitch, THREE.MathUtils.smoothstep(this.camDist,14,60)*.88);
     const off = new THREE.Vector3(
-      Math.sin(this.camYaw) * Math.cos(this.camPitch),
-      Math.sin(this.camPitch),
-      Math.cos(this.camYaw) * Math.cos(this.camPitch),
+      Math.sin(this.camYaw) * Math.cos(pitch),
+      Math.sin(pitch),
+      Math.cos(this.camYaw) * Math.cos(pitch),
     ).multiplyScalar(this.camDist);
     const cam = target.clone().add(off);
     // Keep the camera inside the room so walls never block the view, and under the loft or its roof.

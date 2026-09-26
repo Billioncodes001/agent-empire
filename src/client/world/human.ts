@@ -15,8 +15,10 @@ export class Human {
   private model?: THREE.Object3D;
   private bones = new Map<string, THREE.Bone>();
   private disposed = false;
-  private gait = 0;
-  private blend = 0;
+  private actions = new Map<string, THREE.AnimationAction>();
+  private current?: THREE.AnimationAction;
+  private motion = '';
+  private transition: { name: string; progress: number } | null = null;
   private reachRemaining = 0;
   constructor(variant = 0) {
     this.root.name = 'Realistic human';
@@ -25,6 +27,9 @@ export class Human {
         if (this.disposed) return;
         const model = clone(gltf.scene);
         this.mixer = prepareHumanModel(model, gltf.animations);
+        for (const clip of gltf.animations) this.actions.set(clip.name, this.mixer.clipAction(clip));
+        this.current = this.actions.get('idle_neutral_01');
+        this.motion = 'idle_neutral_01';
         model.traverse((o) => {
           if (o instanceof THREE.Mesh) {
             o.castShadow = true;
@@ -55,36 +60,69 @@ export class Human {
   reach() {
     this.reachRemaining = 0.6;
   }
-  update(dt: number, moving = false, seated = false, typing = false) {
-    this.mixer?.update(dt);
-    this.gait += dt * 7.5;
-    this.blend = THREE.MathUtils.damp(this.blend, moving ? 1 : 0, 9, dt);
-    if (!this.model) return;
-    if (seated) {
-      this.root.position.y = -0.48;
-      this.rotate('bip01lthigh', -1.48);
-      this.rotate('bip01rthigh', -1.48);
-      this.rotate('bip01lcalf', 1.45);
-      this.rotate('bip01rcalf', 1.45);
-      this.rotate('bip01lupperarm', -0.6);
-      this.rotate('bip01rupperarm', -0.6);
-      this.rotate('bip01lforearm', -0.9 + (typing ? Math.sin(this.gait * 3) * 0.025 : 0));
-      this.rotate('bip01rforearm', -0.9 + (typing ? Math.cos(this.gait * 3) * 0.025 : 0));
-    } else {
-      this.root.position.y = 0;
-      const s = Math.sin(this.gait) * this.blend;
-      this.rotate('bip01lthigh', s * 0.48);
-      this.rotate('bip01rthigh', -s * 0.48);
-      this.rotate('bip01lcalf', Math.max(0, -s) * 0.75);
-      this.rotate('bip01rcalf', Math.max(0, s) * 0.75);
-      this.rotate('bip01lupperarm', -s * 0.3);
-      this.rotate('bip01rupperarm', s * 0.3);
+  private steeringHand(side: 'l' | 'r', x: number) {
+    const hand = this.bones.get(`bip01${side}hand`);
+    if (!hand) return;
+    this.root.updateWorldMatrix(true, true);
+    const target = this.root.localToWorld(new THREE.Vector3(x, 0.9, 0.57));
+    for (let iteration = 0; iteration < 4; iteration++)
+      for (const part of ['forearm', 'upperarm']) {
+        const bone = this.bones.get(`bip01${side}${part}`);
+        if (!bone?.parent) continue;
+        const origin = bone.getWorldPosition(new THREE.Vector3());
+        const current = hand.getWorldPosition(new THREE.Vector3()).sub(origin).normalize();
+        const desired = target.clone().sub(origin).normalize();
+        const delta = new THREE.Quaternion().setFromUnitVectors(current, desired);
+        const parent = bone.parent.getWorldQuaternion(new THREE.Quaternion());
+        bone.quaternion.premultiply(parent.clone().invert().multiply(delta).multiply(parent));
+        bone.updateWorldMatrix(true, true);
+      }
+  }
+  setTransition(name: string | null, progress = 0) {
+    this.transition = name ? { name, progress } : null;
+  }
+  update(dt: number, moving: number | boolean = false, seated = false, typing = false, driving = false) {
+    if (!this.mixer || !this.model) return;
+    const speed = typeof moving === 'number' ? moving : moving ? 1.65 : 0;
+    const name =
+      this.transition?.name ??
+      (seated ? 'sit_chair_idle_neutral_01' : speed > 0.08 ? (speed > 2.5 ? 'run_neutral' : 'walk_neutral') : 'idle_neutral_01');
+    const next = this.actions.get(name) ?? this.actions.get('idle_neutral_01');
+    if (next && name !== this.motion) {
+      const old = this.current;
+      next.reset().setEffectiveWeight(1).setEffectiveTimeScale(1).play();
+      next.paused = false;
+      next.setLoop(THREE.LoopRepeat, Infinity);
+      if (old && old !== next) old.crossFadeTo(next, this.transition ? 0.16 : 0.22, false);
+      this.current = next;
+      this.motion = name;
     }
-    if (this.reachRemaining > 0) {
+    if (this.current) {
+      if (this.transition) {
+        this.current.setLoop(THREE.LoopOnce, 1);
+        this.current.clampWhenFinished = true;
+        this.current.paused = true;
+        this.current.time = Math.min(0.9999, Math.max(0, this.transition.progress)) * this.current.getClip().duration;
+      } else {
+        this.current.paused = false;
+        this.current.setEffectiveTimeScale(
+          name === 'walk_neutral' ? Math.max(0.15, speed / 1.45) : name === 'run_neutral' ? Math.max(0.3, speed / 3.8) : 1,
+        );
+      }
+    }
+    this.mixer.update(dt);
+    if (driving) {
+      this.steeringHand('l', 0.13);
+      this.steeringHand('r', -0.13);
+    }
+    this.root.userData.motion = name;
+    // The source clips contain hip settling, knee flexion and planted heel/toe motion.
+    // No synthetic thigh or calf rotations are added on top of recorded locomotion.
+    if (this.reachRemaining > 0 && !seated) {
       this.reachRemaining = Math.max(0, this.reachRemaining - dt);
       const reach = Math.sin((1 - this.reachRemaining / 0.6) * Math.PI);
-      this.rotate('bip01rupperarm', -reach * 0.9);
-      this.rotate('bip01rforearm', -reach * 0.5);
+      this.rotate('bip01rupperarm', -reach * 0.7);
+      this.rotate('bip01rforearm', -reach * 0.45);
     }
   }
   dispose() {

@@ -20,7 +20,7 @@ The office continues running real PTY processes. Agent completion is derived fro
 
 Introduce a database-backed fixed-tick engine with event history and migrations. Add construction duration, wages, income, utility dependencies and service demand. Give workers persistent identities, roles, shifts, paths, needs and building assignments. Replace ambient loops with navigation and schedules. Define explicit formulas and balance tests for health, education and happiness.
 
-Add seamless office entry portals, more interiors and parcels, car parking, road routing and vehicle synchronization. Replace procedural locomotion with retargeted motion-capture clips, expand human appearance options, and add detailed furnishing assets. HDR lighting, texture detail, human rigs and camera obstruction are implemented; next add audio zones, weather and adjustable quality/LOD budgets.
+Doorway traversal, business ground floors, a waypoint minimap, and retargeted walk/run/seated clips are implemented. Next add more parcels, car parking and road routing, vehicle synchronization, hand/foot contact IK, expanded appearance options, and specialized furnishing assets. HDR lighting, texture detail, human rigs and camera obstruction are implemented; next add audio zones, weather and adjustable quality/LOD budgets.
 
 ### 2. Chief of staff and reporting
 
@@ -48,3 +48,13 @@ The shared web client connects to the cloud backend. Add reconnect/resume tests,
 4. Dirty local files survive synchronization and conflicts are exposed.
 5. Secrets do not appear in browser storage, Git, task logs or telemetry.
 6. Spend limits, authority checks and approvals hold across retries and reconnects.
+
+## Traversal and animation
+
+`src/client/navigation.ts` defines shared entry eligibility and map projection. A business must be built and have a live `agent` worker whose sector assignment prefix matches; service staff, shells, offline agents and queued-but-not-started tasks cannot open an entrance. Home and headquarters are bootstrap exceptions.
+
+`src/client/traversal.ts` owns timed headquarters doorway and vehicle entry/exit sequences. Scripted movement suspends controller input, preserves the selected view, clears held keys, and resumes collision-based movement afterward. The office interior uses a doorway fade because its floor plan is larger than its street shell. Home and business doors slide in place with corresponding collision changes. Exit remains possible if a worker disconnects while the player is inside.
+
+`Human` crossfades independent `AnimationAction` instances. Locomotion time scales with actual controller displacement, so blocked movement returns to idle. Animation retargeting uses world-space bone orientation and vertical pelvis location; the controller supplies horizontal displacement. `tools/retarget-motion.py` records the Blender conversion process.
+
+The minimap and full map only set a waypoint. They never change player position. New map/camera shortcuts migrate older complete key maps without discarding saved remaps. `visual-review.html` is a development-only scenario viewer and is excluded from production Vite entries; it uses the same scene, controller and traversal modules and never starts real workers.

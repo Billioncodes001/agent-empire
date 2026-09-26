@@ -24,7 +24,7 @@ async function geometryAsset(name: string) {
   return new GLTFLoader().parseAsync(JSON.stringify(data), '');
 }
 function bounds(model: THREE.Object3D) {
-  model.updateMatrixWorld(true);
+  model.updateWorldMatrix(true, true);
   model.traverse((o) => {
     if (o instanceof THREE.SkinnedMesh) {
       o.skeleton.update();
@@ -63,4 +63,37 @@ test('sedan export contains a standalone vehicle at road scale', async () => {
   assert.ok(size.y > 1.3 && size.y < 1.9);
   assert.ok(size.z > 4 && size.z < 5.2);
   assert.equal(car.getObjectByName('Preview_ground'), undefined);
+});
+for (const name of ['founder.glb', 'chief-of-staff.glb'])
+  test(`${name}: recorded locomotion and sit clips have finite grounded poses`, async () => {
+    const gltf = await geometryAsset(name),
+      model = clone(gltf.scene),
+      mixer = prepareHumanModel(model, gltf.animations);
+    for (const clipName of ['walk_neutral', 'run_neutral', 'sit_chair_idle_neutral_01', 'sit_down_chair_01', 'sit_stand_up_chair_01']) {
+      const clip = gltf.animations.find((c) => c.name === clipName);
+      assert.ok(clip, clipName);
+      mixer.stopAllAction();
+      mixer.clipAction(clip).reset().play();
+      for (let frame = 0; frame < 30; frame++) {
+        mixer.update(clip.duration / 30);
+        const b = bounds(model),
+          size = b.getSize(new THREE.Vector3());
+        assert.ok(size.toArray().every(Number.isFinite), `${clipName} finite`);
+        assert.ok(size.y > 0.7 && size.y < 2.1, `${clipName} height ${size.y}`);
+        assert.ok(b.min.y > -0.18 && b.min.y < 0.5, `${clipName} feet ${b.min.y}`);
+        assert.ok(Math.abs(b.getCenter(new THREE.Vector3()).x) < 0.6, `${clipName} remains in place`);
+      }
+    }
+  });
+test('sedan driver door pivots separately from the shell', async () => {
+  const gltf = await geometryAsset('executive-sedan.glb'),
+    hinge = gltf.scene.getObjectByName('Driver_door_hinge');
+  assert.ok(hinge);
+  const panel = hinge.getObjectByName('Driver_door_panel');
+  assert.ok(panel);
+  const before = bounds(panel).getCenter(new THREE.Vector3());
+  hinge.rotation.y = 1.08;
+  const after = bounds(panel).getCenter(new THREE.Vector3());
+  assert.ok(before.distanceTo(after) > 0.35);
+  assert.ok(gltf.scene.getObjectByName('Steering_wheel'));
 });

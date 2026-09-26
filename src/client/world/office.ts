@@ -1,3 +1,5 @@
+import { batchStaticMeshes } from './batching';
+import { slidingDoor } from './doors';
 import * as THREE from 'three';
 import { SURFACE, boxMesh } from './materials';
 import { Vegetation } from './vegetation';
@@ -49,6 +51,7 @@ export interface Office {
   fixtures(): WallRect[];
   setProjectName(name: string): void;
   update(t: number): void;
+  entranceDoor: ReturnType<typeof slidingDoor>;
 }
 
 const PALETTE = {
@@ -69,11 +72,11 @@ const PALETTE = {
   ink: '#2b2d42',
 };
 
-function floorTexture(width = FLOOR.maxX - FLOOR.minX, depth = FLOOR.maxZ - FLOOR.minZ): THREE.Texture {
-  const t = new THREE.TextureLoader().load('/textures/wood-color.jpg');
+function floorTexture(width = FLOOR.maxX - FLOOR.minX, depth = FLOOR.maxZ - FLOOR.minZ, kind='color'): THREE.Texture {
+  const t = new THREE.TextureLoader().load(`/textures/oak-${kind}.jpg`);
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  t.repeat.set(width/4, depth/4);
-  t.colorSpace = THREE.SRGBColorSpace;
+  t.repeat.set(width/3.4, depth/3.4);
+  if(kind==='color')t.colorSpace = THREE.SRGBColorSpace;
   t.anisotropy = 8;
   return t;
 }
@@ -103,11 +106,12 @@ function pendant(): THREE.Group {
 
 /** An outside window: frame, sky-blue glass and a mullion, facing +z (or +x when `side`). */
 function outsideWindow(x: number, y: number, z: number, side = false): THREE.Group {
-  const glass = SURFACE.glass;
+  const glass = SURFACE.glass.clone();glass.opacity=.28;glass.color.set('#b8cdd1');glass.roughness=.12;
   const frameMat = toon('#ffffff');
   const w = new THREE.Group();
-  w.add(mesh(box(3.2, 2, 0.1), frameMat, 0, 0, 0, false));
-  w.add(mesh(box(2.9, 1.7, 0.12), glass, 0, 0, 0, false));
+  for(const y of [-1,1])w.add(mesh(box(3.2,.10,.12),frameMat,0,y,0,false));
+  for(const x of [-1.55,1.55])w.add(mesh(box(.10,2,.12),frameMat,x,0,0,false));
+  w.add(mesh(box(3.02,1.9,.025),glass,0,0,0,false));
   w.add(mesh(box(0.08, 1.7, 0.14), frameMat, 0, 0, 0, false));
   w.position.set(x, y, z);
   if (side) w.rotation.y = Math.PI / 2;
@@ -223,20 +227,23 @@ export function buildOffice(): Office {
   ceiling(FLOOR.minX,3,FLOOR.minZ,FLOOR.maxZ,4.2);
   ceiling(3,FLOOR.maxX,FLOOR.minZ,8,4.2);
   ceiling(3,FLOOR.maxX,8,FLOOR.maxZ,5.8);
+  boxMesh(group,6,1.6,.04,SURFACE.glass,6,5,13.1);
+  for(const y of [4.2,5.8])boxMesh(group,6,.12,.14,SURFACE.frame,6,y,13.1);
+  for(const x of [3,6,9])boxMesh(group,.09,1.6,.14,SURFACE.frame,x,5,13.1);
   const strip=new THREE.MeshStandardMaterial({color:'#ffeed6',emissive:'#ffeed6',emissiveIntensity:2});
   for(const x of [-13,-6,1,8])for(const z of [-8,0,7]) {
     boxMesh(group,3.8,.03,.09,strip,x,4.12,z);
   }
   for(let x=-17;x<18;x+=2.8)boxMesh(group,.03,.04,20,SURFACE.frame,x,4.15,-2.5);
   // Floor
-  const floor = new THREE.Mesh(new THREE.PlaneGeometry(width, depth), new THREE.MeshStandardMaterial({ map: floorTexture(), roughness: .65 }));
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(width, depth), new THREE.MeshStandardMaterial({map:floorTexture(),normalMap:floorTexture(width,depth,'normal'),roughnessMap:floorTexture(width,depth,'rough'),roughness:.66,normalScale:new THREE.Vector2(.22,.22)}));
   floor.rotation.x = -Math.PI / 2;
   floor.position.set(cx, 0, cz);
   floor.receiveShadow = true;
   group.add(floor);
 
   // Outside ground so windows don't look into the void
-  const lawn = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), toon('#748064'));
+  const lawn = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), SURFACE.concrete);
   lawn.rotation.x = -Math.PI / 2;
   lawn.position.y = -0.02;
   group.add(lawn);
@@ -259,18 +266,41 @@ export function buildOffice(): Office {
   const walls: [number, number, number, number][] = [
     // x, z, w, d
     [cx, FLOOR.minZ - T / 2, width + T * 2, T],
-    [cx, FLOOR.maxZ + T / 2, width + T * 2, T],
+    [-9.85, FLOOR.maxZ + T / 2, 16.9, T],
+    [9.85, FLOOR.maxZ + T / 2, 16.9, T],
     [FLOOR.minX - T / 2, cz, T, depth],
     [FLOOR.maxX + T / 2, cz, T, depth],
   ];
   for (const [x, z, w, d] of walls) {
-    group.add(mesh(box(w, WALL_HEIGHT, d), wallMat, x, WALL_HEIGHT / 2, z));
+    const horizontal=d<w;
+    const openings=z>FLOOR.maxZ&&x<0?[-14,-9,-5]:x<FLOOR.minX?[-9,-3,3]:[];
+    const put=(length:number,center:number,y:number,height:number)=>group.add(mesh(box(horizontal?length:w,height,horizontal?d:length),wallMat,horizontal?center:x,y,horizontal?z:center));
+    if(!openings.length)put(horizontal?w:d,horizontal?x:z,WALL_HEIGHT/2,WALL_HEIGHT);
+    else {
+      put(horizontal?w:d,horizontal?x:z,.6,1.2);
+      put(horizontal?w:d,horizontal?x:z,3.2+(WALL_HEIGHT-3.2)/2,WALL_HEIGHT-3.2);
+      let cursor=(horizontal?x-w/2:z-d/2);const end=horizontal?x+w/2:z+d/2;
+      for(const center of openings){const a=center-1.62,b=center+1.62;if(a>cursor)put(a-cursor,(a+cursor)/2,WALL_HEIGHT/2,WALL_HEIGHT);cursor=b;}
+      if(cursor<end)put(end-cursor,(end+cursor)/2,WALL_HEIGHT/2,WALL_HEIGHT);
+    }
     group.add(mesh(box(w + 0.02, 0.25, d + 0.04), trimMat, x, 0.125, z, false));
     colliders.push({ minX: x - w / 2, maxX: x + w / 2, minZ: z - d / 2, maxZ: z + d / 2, top: 99 });
   }
 
+  boxMesh(group,2.8,1.3,.3,SURFACE.plaster,0,3.55,13.15);
+  const entranceDoor = slidingDoor(group,0,12.95,2.8);
+  const exitSign=textPlane('EXIT / WATERFRONT', {size:48,color:'#c6d9cc'});
+  exitSign.position.set(0,3.18,12.9);exitSign.rotation.y=Math.PI;group.add(exitSign);
+  boxMesh(group,3,.08,3,SURFACE.stone,0,-.01,14);
+  fixture('south',0,1.8,3.2,3.6);
+  for(const x of [-2.6,2.6]) {
+    boxMesh(group,1.4,3.9,.12,SURFACE.wood,x,1.95,12.91);
+    for(let dx=-.6;dx<.7;dx+=.18)boxMesh(group,.045,3.9,.09,SURFACE.frame,x+dx,1.95,12.81);
+  }
+
+
   // Windows on the south and west walls (none behind the loft's stairs)
-  for (let x = -14; x <= 14; x += 5) {
+  for (const x of [-14,-9,-5]) {
     if (x + 1.6 > STAIRS.fromX) continue;
     group.add(outsideWindow(x, 2.2, FLOOR.maxZ - 0.02));
     fixture('south', x, 2.2, 3.2, 2);
@@ -279,6 +309,19 @@ export function buildOffice(): Office {
     group.add(outsideWindow(FLOOR.minX + 0.02, 2.2, z, true));
     fixture('west', z, 2.2, 3.2, 2);
   }
+
+  // A planted terrace and adjacent facades give the real window openings spatial depth.
+  const terrace=new Vegetation(131);group.add(terrace.group);
+  for(const z of [-11,-2,8])terrace.tree(-24,z,6.5);
+  for(const x of [-12,-5,7])terrace.palm(x,21,7);
+  terrace.finish();
+  for(const z of [-10,4,18]) {
+    boxMesh(group,10,9,9,SURFACE.concrete,-37,4.5,z);
+    boxMesh(group,.04,7.8,8.7,SURFACE.glass,-31.97,4.5,z);
+    for(let dz=-4;dz<=4;dz+=1.4)boxMesh(group,.1,8,.05,SURFACE.frame,-31.9,4.5,z+dz);
+    for(const y of [1,4,7,9])boxMesh(group,.3,.14,9.3,SURFACE.stone,-31.9,y,z);
+  }
+  boxMesh(group,4,.1,38,SURFACE.wood,-21,-.03,0);
 
   // Desks
   const desks = new Map<string, DeskView>();
@@ -338,12 +381,12 @@ export function buildOffice(): Office {
   fixture('east', TV.z, TV.y, TV.width + 0.3, TV.height + 0.3);
 
   const couch = new THREE.Group();
-  const couchMat = toon('#5b8def');
+  const couchMat = SURFACE.fabric;
   couch.add(mesh(roundedBox(1, 0.45, 4.2, 0.2), couchMat, 0, 0.3, 0));
   couch.add(mesh(roundedBox(0.35, 0.9, 4.2, 0.15), couchMat, -0.45, 0.55, 0));
   couch.add(mesh(roundedBox(1, 0.7, 0.35, 0.15), couchMat, 0, 0.45, -2.0));
   couch.add(mesh(roundedBox(1, 0.7, 0.35, 0.15), couchMat, 0, 0.45, 2.0));
-  ['#343a3c', '#ef476f'].forEach((c, i) => couch.add(mesh(roundedBox(0.2, 0.45, 0.5, 0.1), toon(c), -0.2, 0.75, i ? 0.9 : -0.9)));
+  ['#b1a18a', '#7c8f88'].forEach((c, i) => couch.add(mesh(roundedBox(0.2, 0.45, 0.5, 0.1), toon(c), -0.2, 0.75, i ? 0.9 : -0.9)));
   couch.position.set(10.5, 0, 0);
   group.add(couch);
   colliders.push({ minX: 10, maxX: 11, minZ: -2.2, maxZ: 2.2, top: 0.55 });
@@ -460,7 +503,11 @@ export function buildOffice(): Office {
     }
   };
 
-  return { group, colliders, interactables, desks, boardMeshes, tvScreen, fixtures: () => (signRect ? [...fixtures, signRect] : fixtures), setProjectName, update };
+  // Merge only stationary siblings, preserving desk, fixture and sliding-leaf groups.
+  const optimize=(node:THREE.Group)=>{for(const child of [...node.children])if(child instanceof THREE.Group)optimize(child);batchStaticMeshes(node);};
+  optimize(group);
+
+  return { group, colliders, interactables, desks, boardMeshes, tvScreen, entranceDoor, fixtures: () => (signRect ? [...fixtures, signRect] : fixtures), setProjectName, update };
 }
 
 /**
@@ -593,7 +640,7 @@ function buildLoft(group: THREE.Group, colliders: Collider[]) {
   desk.add(mesh(box(0.08, 0.2, 0.08), toon(PALETTE.ink), 0, 0.93, -0.2));
   desk.add(mesh(new THREE.PlaneGeometry(0.8, 0.45), new THREE.MeshBasicMaterial({ color: '#4cc9f0' }), 0, 1.18, -0.165, false));
   desk.add(mesh(new THREE.CylinderGeometry(0.06, 0.05, 0.12, 10), toon('#343a3c'), 0.9, 0.89, 0.15));
-  const plate = textPlane('👑 BOSS', { bg: '#343a3c', size: 48 });
+  const plate = textPlane('FOUNDER', { bg: '#343a3c', size: 48 });
   plate.scale.multiplyScalar(0.55);
   plate.position.set(0, 0.5, -0.55);
   plate.rotation.y = Math.PI;
@@ -607,7 +654,7 @@ function buildLoft(group: THREE.Group, colliders: Collider[]) {
   colliders.push({ minX: deskX - 1.3, maxX: deskX + 1.3, minZ: deskZ - 0.6, maxZ: deskZ + 0.6, bottom: floorY, top: floorY + 0.8 });
 
   const couch = new THREE.Group();
-  const couchMat = toon('#ef476f');
+  const couchMat = SURFACE.fabric;
   couch.add(mesh(roundedBox(1, 0.45, 2.4, 0.2), couchMat, 0, 0.3, 0));
   couch.add(mesh(roundedBox(0.35, 0.9, 2.4, 0.15), couchMat, 0.45, 0.55, 0));
   for (const sz of [-1, 1]) couch.add(mesh(roundedBox(1, 0.7, 0.3, 0.15), couchMat, 0, 0.45, sz * 1.1));
@@ -616,7 +663,7 @@ function buildLoft(group: THREE.Group, colliders: Collider[]) {
   group.add(couch);
   colliders.push({ minX: maxX - 1.15, maxX, minZ: cz - 1.2, maxZ: cz + 1.2, bottom: floorY, top: floorY + 0.55 });
 
-  const rug = mesh(roundedBox(4.6, 0.02, 3.2, 0.6), toon('#caffbf'), deskX - 0.3, floorY + 0.015, cz + 0.1, false);
+  const rug = mesh(roundedBox(4.6, 0.02, 3.2, 0.6), toon('#66716b'), deskX - 0.3, floorY + 0.015, cz + 0.1, false);
   group.add(rug);
 
   const scope = new THREE.Group();
@@ -654,12 +701,12 @@ function buildLoft(group: THREE.Group, colliders: Collider[]) {
   group.add(lamp);
 
   // Signs: one on the back wall inside, one over the glass for everyone downstairs.
-  const inside = textPlane('👑 Boss Office', { bg: '#fffaf3', size: 64 });
+  const inside = textPlane('EXECUTIVE OFFICE', { bg: '#fffaf3', size: 64 });
   inside.scale.multiplyScalar(0.8);
   inside.position.set(maxX - 3, floorY + 1.9, maxZ - 0.04);
   inside.rotation.y = Math.PI;
   group.add(inside);
-  const outside = textPlane('👑 Boss Office', { bg: '#2b2d42', color: '#fffaf3', size: 64, border: '#fffaf3' });
+  const outside = textPlane('EXECUTIVE OFFICE', { bg: '#2b2d42', color: '#fffaf3', size: 64, border: '#fffaf3' });
   outside.scale.multiplyScalar(1.4);
   outside.position.set(cx, roofY + 0.2, minZ - 0.02);
   outside.rotation.y = Math.PI;

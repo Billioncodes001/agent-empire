@@ -67,6 +67,10 @@ export function openHelp(keys: KeyBindings = DEFAULT_KEYS) {
   const rows: [string, string][] = [
     [[keys.forward,keys.left,keys.backward,keys.right].map(keyLabel).join(' '), `Walk (hold ${keyLabel(keys.run)} to run)`],
     [keyLabel(keys.jump), 'Jump'],
+    [keyLabel(keys.map), 'Expand the minimap and set a destination waypoint'],
+    [keyLabel(keys.camera), 'Switch between first person and third person'],
+    ['Doors', 'Walk through entrances. Businesses require construction and an assigned AI worker.'],
+    [keyLabel(keys.interact), 'Enter or exit your parked car at the driver’s door'],
     ['Mouse', 'Look around in first person (click to capture the mouse, Esc to free it)'],
     [`Click / ${keyLabel(keys.interact)}`, 'Use what you look at: hire a worker, open its terminal, read a board, watch the TV'],
     ['Drag / wheel', 'Orbit and zoom the camera in third person'],

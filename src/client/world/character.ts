@@ -4,7 +4,7 @@ import { SKIN_TONES, type Look } from '../../shared/avatar';
 import type { WorkerTask } from '../../shared/protocol';
 import { cardSprite, disposeSprite, textSprite } from './toon';
 
-export type Pose = 'stand' | 'walk' | 'sit' | 'type';
+export type Pose = 'stand' | 'walk' | 'sit' | 'type' | 'drive';
 
 /** Voice loudness (RMS) above which someone counts as speaking. */
 const SPEAKING = 0.04;
@@ -46,7 +46,8 @@ export class Person {
   setVoiceLevel(level:number){this.root.userData.voiceLevel=level;}
   showLabel(v:boolean){if(this.label)this.label.visible=v;}
   reach(){this.human.reach();}
-  update(dt:number,t:number,moving:boolean,airborne:boolean){this.human.update(dt,moving&&!airborne,this.pose==='sit'||this.pose==='type',this.pose==='type');}
+  setTransition(name:string|null,progress=0){this.human.setTransition(name,progress);}
+  update(dt:number,t:number,moving:boolean,airborne:boolean,speed=1.65){this.human.update(dt,moving&&!airborne?speed:0,this.pose==='sit'||this.pose==='type'||this.pose==='drive',this.pose==='type',this.pose==='drive');}
   dispose(){this.human.dispose();if(this.label)disposeSprite(this.label);}
 }
 

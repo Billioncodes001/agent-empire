@@ -4,7 +4,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 /** Merge stationary siblings that share a material without crossing visibility/state boundaries. */
 export function batchStaticMeshes(group: THREE.Group) {
   group.updateMatrixWorld(true);
-  const batches = new Map<THREE.Material, THREE.Mesh[]>();
+  const batches = new Map<string, { material: THREE.Material; items: THREE.Mesh[] }>();
   for (const child of [...group.children]) {
     if (
       !(child instanceof THREE.Mesh) ||
@@ -16,11 +16,16 @@ export function batchStaticMeshes(group: THREE.Group) {
     )
       continue;
     if (child.material.transparent) continue;
-    const items = batches.get(child.material) ?? [];
-    items.push(child);
-    batches.set(child.material, items);
+    const signature = (Object.entries(child.geometry.attributes) as [string, THREE.BufferAttribute | THREE.InterleavedBufferAttribute][])
+      .map(([name, attribute]) => `${name}:${attribute.itemSize}:${attribute.normalized}`)
+      .sort()
+      .join('|');
+    const key = `${child.material.uuid}:${!!child.geometry.index}:${signature}`;
+    const batch: { material: THREE.Material; items: THREE.Mesh[] } = batches.get(key) ?? { material: child.material, items: [] };
+    batch.items.push(child);
+    batches.set(key, batch);
   }
-  for (const [material, items] of batches) {
+  for (const { material, items } of batches.values()) {
     if (items.length < 3) continue;
     const geometries = items.map((m) => {
       m.updateMatrix();
