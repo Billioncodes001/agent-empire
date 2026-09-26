@@ -1,9 +1,11 @@
+import { DEFAULT_KEYS, sanitizeKeys, type KeyBindings } from './controls';
+import { initialEmpire } from '../shared/empire';
 import type { ChatLine, GhIssue, GhPull, GhState, PeerInfo, ProjectInfo, QueueState, QueueTask, ServerMsg, ServicesState, TeamState, UpgradeState, Usage, UsageState, WorkerInfo } from '../shared/protocol';
 import type { ScreenState } from './world/laptop';
 import { randomLook, sanitizeLook, type Look } from '../shared/avatar';
 import type { Decoration } from '../shared/decor';
 
-type Topic = 'peers' | 'workers' | 'issues' | 'pulls' | 'chat' | 'project' | 'screens' | 'team' | 'upgrade' | 'services' | 'decor' | 'usage' | 'queue';
+type Topic = 'empire' | 'peers' | 'workers' | 'issues' | 'pulls' | 'chat' | 'project' | 'screens' | 'team' | 'upgrade' | 'services' | 'decor' | 'usage' | 'queue';
 
 const zeroUsage = (): Usage => ({ input: 0, output: 0, cacheWrite: 0, cacheRead: 0, cost: 0, calls: 0 });
 
@@ -40,6 +42,7 @@ export function saveProfile(p: Profile) {
 export type ViewMode = 'first' | 'third';
 
 export interface Settings {
+  keys: KeyBindings;
   view: ViewMode;
   /** Office sounds, 0–1. */
   volume: number;
@@ -49,9 +52,10 @@ export interface Settings {
 const SETTINGS_KEY = 'agent-office.settings';
 
 export function loadSettings(): Settings {
-  const s: Settings = { view: 'first', volume: 0.7, muted: false };
+  const s: Settings = { view: 'third', volume: 0.7, muted: false, keys: { ...DEFAULT_KEYS } };
   try {
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? 'null');
+    s.keys = sanitizeKeys(saved?.keys);
     if (saved?.view === 'first' || saved?.view === 'third') s.view = saved.view;
     if (typeof saved?.volume === 'number' && Number.isFinite(saved.volume)) s.volume = Math.max(0, Math.min(1, saved.volume));
     if (typeof saved?.muted === 'boolean') s.muted = saved.muted;
@@ -76,6 +80,7 @@ export function workerForPull(workers: Iterable<WorkerInfo>, pr: { number: numbe
 }
 
 class Store {
+  empire = initialEmpire();
   you = '';
   profile: Profile = { name: 'Guest', color: AVATAR_COLORS[1], look: randomLook() };
   peers = new Map<string, PeerInfo>();
@@ -121,6 +126,10 @@ class Store {
 
   apply(msg: ServerMsg) {
     switch (msg.t) {
+      case 'empire':
+        this.empire = msg.state;
+        this.emit('empire');
+        break;
       case 'welcome':
         this.you = msg.you;
         this.peers = new Map(msg.peers.map((p) => [p.id, p]));

@@ -1,3 +1,5 @@
+import { DEFAULT_KEYS, type KeyBindings, type Action } from './controls';
+import { CITY } from '../shared/empire';
 import * as THREE from 'three';
 import { FLOOR } from '../shared/layout';
 import type { ViewMode } from './state';
@@ -48,6 +50,9 @@ export class PlayerController {
   private lockPending = false;
   private everLocked = false;
   enabled = true;
+  bindings: KeyBindings = { ...DEFAULT_KEYS };
+  driving = false;
+  private vehicleSpeed = 0;
 
   constructor(
     private camera: THREE.PerspectiveCamera,
@@ -56,9 +61,9 @@ export class PlayerController {
   ) {
     camera.rotation.order = 'YXZ';
     window.addEventListener('keydown', (e) => {
-      if (!this.enabled || isTyping(e)) return;
+      if (!this.enabled || isTyping(e) || e.metaKey || e.ctrlKey || e.altKey) return;
       this.keys.add(e.code);
-      if (e.code === 'Space') e.preventDefault();
+      if (Object.values(this.bindings).includes(e.code)) e.preventDefault();
     });
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
     window.addEventListener('blur', () => this.keys.clear());
@@ -125,7 +130,7 @@ export class PlayerController {
     dom.addEventListener(
       'wheel',
       (e) => {
-        if (this.view === 'third') this.camDist = THREE.MathUtils.clamp(this.camDist + e.deltaY * 0.01, 2.5, 16);
+        if (this.view === 'third') this.camDist = THREE.MathUtils.clamp(this.camDist + e.deltaY * 0.01, 2.5, 75);
         e.preventDefault();
       },
       { passive: false },
@@ -157,6 +162,11 @@ export class PlayerController {
 
   unlock() {
     if (this.locked) document.exitPointerLock();
+  }
+
+  setAction(action: Action, pressed: boolean) {
+    if (pressed && this.enabled) this.keys.add(this.bindings[action]);
+    else this.keys.delete(this.bindings[action]);
   }
 
   clearKeys() {
@@ -195,14 +205,28 @@ export class PlayerController {
     let ix = 0;
     let iz = 0;
     if (this.enabled) {
-      if (k.has('KeyW') || k.has('ArrowUp')) iz -= 1;
-      if (k.has('KeyS') || k.has('ArrowDown')) iz += 1;
-      if (k.has('KeyA') || k.has('ArrowLeft')) ix -= 1;
-      if (k.has('KeyD') || k.has('ArrowRight')) ix += 1;
+      if (k.has(this.bindings.forward)) iz -= 1;
+      if (k.has(this.bindings.backward)) iz += 1;
+      if (k.has(this.bindings.left)) ix -= 1;
+      if (k.has(this.bindings.right)) ix += 1;
     }
     this.moving = ix !== 0 || iz !== 0;
     if (this.view === 'first') this.facing = Math.atan2(Math.sin(this.camYaw + Math.PI), Math.cos(this.camYaw + Math.PI));
-    if (this.moving) {
+    if (this.driving) {
+      const throttle = this.enabled ? -iz : 0;
+      const targetSpeed = throttle * (k.has(this.bindings.run) ? 15 : 9);
+      this.vehicleSpeed += (targetSpeed - this.vehicleSpeed) * Math.min(1, dt * 2.2);
+      if (Math.abs(this.vehicleSpeed) < .03) this.vehicleSpeed = 0;
+      this.facing -= ix * dt * 1.6 * Math.min(1, Math.abs(this.vehicleSpeed)/3) * Math.sign(this.vehicleSpeed);
+      const oldX=this.pos.x, oldZ=this.pos.z;
+      this.tryMove(oldX + Math.sin(this.facing)*this.vehicleSpeed*dt, oldZ);
+      this.tryMove(this.pos.x, oldZ + Math.cos(this.facing)*this.vehicleSpeed*dt);
+      if (Math.hypot(this.pos.x-oldX,this.pos.z-oldZ)<.001) this.vehicleSpeed=0;
+      this.moving = Math.abs(this.vehicleSpeed)>.1;
+      const desired = this.facing - Math.PI;
+      this.camYaw += Math.atan2(Math.sin(desired-this.camYaw),Math.cos(desired-this.camYaw))*Math.min(1,dt*3);
+    } else this.vehicleSpeed = 0;
+    if (this.moving && !this.driving) {
       const len = Math.hypot(ix, iz);
       ix /= len;
       iz /= len;
@@ -211,7 +235,7 @@ export class PlayerController {
       const cos = Math.cos(this.camYaw);
       const dx = ix * cos + iz * sin;
       const dz = -ix * sin + iz * cos;
-      const speed = k.has('ShiftLeft') || k.has('ShiftRight') ? RUN : WALK;
+      const speed = this.driving ? (k.has(this.bindings.run) ? 15 : 10) : k.has(this.bindings.run) ? RUN : WALK;
       this.tryMove(this.pos.x + dx * speed * dt, this.pos.z);
       this.tryMove(this.pos.x, this.pos.z + dz * speed * dt);
       if (this.view === 'third') {
@@ -223,7 +247,7 @@ export class PlayerController {
     }
 
     const ground = groundAt(this.colliders, this.pos.x, this.pos.z, this.pos.y);
-    const jump = this.enabled && k.has('Space') && this.grounded;
+    const jump = this.enabled && k.has(this.bindings.jump) && !this.driving && this.grounded;
     if (jump) {
       this.vy = JUMP_V;
       this.grounded = false;
@@ -248,7 +272,7 @@ export class PlayerController {
     }
     this.stepOffset *= Math.exp(-dt * 16);
     const walking = this.moving && this.grounded;
-    this.walkPhase += dt * (walking ? (k.has('ShiftLeft') || k.has('ShiftRight') ? 14 : 11) : 0);
+    this.walkPhase += dt * (walking ? (k.has(this.bindings.run) ? 14 : 11) : 0);
     const bob = walking ? Math.abs(Math.sin(this.walkPhase)) * 0.035 : 0;
     this.bob += (bob - this.bob) * Math.min(1, dt * 18);
     this.updateCamera();
@@ -269,11 +293,12 @@ export class PlayerController {
     const cam = target.clone().add(off);
     // Keep the camera inside the room so walls never block the view, and under the loft or its roof.
     const m = 0.4;
-    cam.x = THREE.MathUtils.clamp(cam.x, FLOOR.minX + m, FLOOR.maxX - m);
-    cam.z = THREE.MathUtils.clamp(cam.z, FLOOR.minZ + m, FLOOR.maxZ - m);
+    const bounds = this.pos.z >= CITY.minZ ? CITY : FLOOR;
+    cam.x = THREE.MathUtils.clamp(cam.x, bounds.minX + m - (bounds === CITY ? 35 : 0), bounds.maxX - m + (bounds === CITY ? 35 : 0));
+    cam.z = THREE.MathUtils.clamp(cam.z, bounds.minZ + m - (bounds === CITY ? 35 : 0), bounds.maxZ - m + (bounds === CITY ? 35 : 0));
     const floorY = groundAt(this.colliders, this.pos.x, this.pos.z, this.pos.y);
     const roof = ceilingAt(this.colliders, cam.x, cam.z, floorY) - 0.3;
-    cam.y = THREE.MathUtils.clamp(cam.y, floorY + 0.6, Math.max(floorY + 0.6, Math.min(floorY + 3.5, roof)));
+    cam.y = THREE.MathUtils.clamp(cam.y, floorY + 0.6, Math.max(floorY + 0.6, Math.min(floorY + (this.pos.z >= CITY.minZ ? 65 : 3.5), roof)));
     if (snap) this.camera.position.copy(cam);
     else this.camera.position.lerp(cam, 0.25);
     this.camera.lookAt(target);
@@ -290,13 +315,16 @@ export class PlayerController {
     for (const c of this.colliders) {
       // Stood on top of it, or passing beneath it.
       if (y >= c.top - 0.05 || y + HEIGHT <= (c.bottom ?? 0)) continue;
-      if (!touches(c, x, z, RADIUS)) continue;
+      if (!touches(c, x, z, this.driving ? 1.7 : RADIUS)) continue;
       if (!hit || c.top > hit.top) hit = c;
     }
     return hit;
   }
 
   private tryMove(x: number, z: number) {
+    const bounds = this.pos.z >= CITY.minZ ? CITY : FLOOR;
+    x = THREE.MathUtils.clamp(x, bounds.minX + RADIUS, bounds.maxX - RADIUS);
+    z = THREE.MathUtils.clamp(z, bounds.minZ + RADIUS, bounds.maxZ - RADIUS);
     const hit = this.blocker(x, z, this.pos.y);
     if (!hit) {
       this.pos.x = x;
@@ -304,6 +332,7 @@ export class PlayerController {
       return;
     }
     // A stair: step up onto it if there's room there.
+    if (this.driving) return;
     const up = hit.top - this.pos.y;
     if (!this.grounded || up > STEP || this.blocker(x, z, hit.top) || this.pos.y + HEIGHT + up > ceilingAt(this.colliders, x, z, this.pos.y)) return;
     this.pos.set(x, hit.top, z);

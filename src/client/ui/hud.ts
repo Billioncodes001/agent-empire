@@ -1,3 +1,4 @@
+import { DEFAULT_KEYS, keyLabel, type KeyBindings } from '../controls';
 import { store } from '../state';
 import type { Voice } from '../voice';
 import { $, h, openModal, STATUS_LABEL } from './dom';
@@ -62,25 +63,25 @@ export function renderChat() {
   log.scrollTop = log.scrollHeight;
 }
 
-export function openHelp() {
+export function openHelp(keys: KeyBindings = DEFAULT_KEYS) {
   const rows: [string, string][] = [
-    ['W A S D', 'Walk (hold Shift to run)'],
-    ['Space', 'Jump'],
+    [[keys.forward,keys.left,keys.backward,keys.right].map(keyLabel).join(' '), `Walk (hold ${keyLabel(keys.run)} to run)`],
+    [keyLabel(keys.jump), 'Jump'],
     ['Mouse', 'Look around in first person (click to capture the mouse, Esc to free it)'],
-    ['Click / E', 'Use what you look at: hire a worker, open its terminal, read a board, watch the TV'],
+    [`Click / ${keyLabel(keys.interact)}`, 'Use what you look at: hire a worker, open its terminal, read a board, watch the TV'],
     ['Drag / wheel', 'Orbit and zoom the camera in third person'],
-    ['P', 'Prompt: give a task to a new or existing worker at the desk you face'],
-    ['C', 'Changes: what the worker at the desk you face changed — files and diff, commit, discard, open a PR'],
-    ['B', 'Open a shared shell (dev servers, git, tests) at an empty desk'],
-    ['R', 'Resume a sleeping worker'],
-    ['X', 'Send a worker home (frees the desk)'],
-    ['F', 'Hang a picture from the web on a wall. Look at a picture and press E to move, edit or take it down'],
-    ['O', 'Open a pull request for a worker on its own branch, or see the one it has'],
-    ['T', 'Chat'],
-    ['V / M', 'Join voice / mute'],
+    [keyLabel(keys.task), 'Prompt: give a task to a new or existing worker at the desk you face'],
+    [keyLabel(keys.changes), 'Changes: what the worker at the desk you face changed — files and diff, commit, discard, open a PR'],
+    [keyLabel(keys.shell), 'Open a shared shell (dev servers, git, tests) at an empty desk'],
+    [keyLabel(keys.resume), 'Resume a sleeping worker'],
+    [keyLabel(keys.dismiss), 'Send a worker home (frees the desk)'],
+    [keyLabel(keys.decorate), 'Hang a picture from the web on a wall. Look at a picture and press E to move, edit or take it down'],
+    [keyLabel(keys.open), 'Open a pull request for a worker on its own branch, or see the one it has'],
+    [keyLabel(keys.chat), 'Chat'],
+    [`${keyLabel(keys.voice)} / ${keyLabel(keys.mute)}`, 'Join voice / mute'],
     ['Esc', 'Close any window and get back to looking around'],
     ['Ctrl + [', 'Send Esc to a terminal (e.g. to interrupt Claude)'],
-    ['⚙️', 'Settings: switch between first and third person'],
+    ['⚙️', 'Settings: remap controls, change camera and volume'],
   ];
   const close = h('button.btn.close', { 'aria-label': 'Close' }, '✕');
   const el = h(

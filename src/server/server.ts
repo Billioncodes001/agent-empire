@@ -1,3 +1,4 @@
+import { Empire } from './empire.js';
 import http from 'node:http';
 import https from 'node:https';
 import { randomBytes } from 'node:crypto';
@@ -134,6 +135,8 @@ export async function startServer(cfg: Config) {
       c.ws.send(json);
     }
   };
+
+  const empire = new Empire(cfg.dataDir, state => broadcast({ t: 'empire', state }));
 
   // --- Loopback-only endpoint that Claude Code hooks POST to --------------------------------
   let workers!: WorkerManager;
@@ -484,6 +487,7 @@ export async function startServer(cfg: Config) {
       usage: ledger.state(),
       queue: queue.state(),
     });
+    sendTo(client, { t: 'empire', state: empire.state });
     for (const { workerId, frame } of workers.fullScreens()) sendTo(client, { t: 'screen', workerId, ...frame, full: true });
     broadcast({ t: 'peer.join', peer: client.peer }, id);
     // Anyone whose process ended since (exited, or failed to resume) gets up as you walk in.
@@ -511,6 +515,14 @@ export async function startServer(cfg: Config) {
   const handleMessage = (c: Client, msg: ClientMsg) => {
     const who = c.peer.name;
     switch (msg.t) {
+      case 'empire.action': {
+        if (!msg.action || typeof msg.action !== 'object') break;
+        if (Date.now() - c.lastActAt < 250) break;
+        c.lastActAt = Date.now();
+        const error = empire.action(msg.action);
+        if (error) sendTo(c, { t: 'toast', text: error, level: 'error' });
+        break;
+      }
       case 'move': {
         const p = c.peer;
         p.x = num(msg.x);
@@ -766,6 +778,7 @@ export async function startServer(cfg: Config) {
   }, 1000);
 
   // Drop dead connections so ghosts don't linger in the office.
+  const empireTimer = setInterval(() => empire.tick(workers.list(), queue.state()), 5000);
   const heartbeat = setInterval(() => {
     for (const c of clients.values()) {
       if ((c.ws as any).isAlive === false) {
@@ -784,6 +797,8 @@ export async function startServer(cfg: Config) {
   services.start();
 
   const shutdown = () => {
+    clearInterval(empireTimer);
+    empire.flush();
     clearInterval(heartbeat);
     clearInterval(resync);
     github.stop();

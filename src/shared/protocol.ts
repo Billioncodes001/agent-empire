@@ -1,3 +1,4 @@
+import type { EmpireAction, EmpireState } from './empire.js';
 // Wire protocol between browser and server. Every WebSocket frame is one JSON object.
 
 import type { Look } from './avatar.js';
@@ -402,6 +403,7 @@ export interface ChatLine {
 }
 
 export type ClientMsg =
+  | { t: 'empire.action'; action: EmpireAction }
   | { t: 'move'; x: number; y: number; z: number; rotY: number; moving: boolean }
   /** You reached out to use something; everyone else sees your character's arm do it. */
   | { t: 'act' }
@@ -454,6 +456,7 @@ export type ClientMsg =
   | { t: 'ping'; at: number };
 
 export type ServerMsg =
+  | { t: 'empire'; state: EmpireState }
   | {
       t: 'welcome';
       you: string;

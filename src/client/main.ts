@@ -1,3 +1,6 @@
+import { buildCity } from './world/city';
+import { mountEmpire } from './ui/empire';
+import { officeCode, DEFAULT_KEYS, keyLabel, type Action } from './controls';
 import './style.css';
 import * as THREE from 'three';
 import { OutlineEffect } from 'three/examples/jsm/effects/OutlineEffect.js';
@@ -38,14 +41,16 @@ const canvas = $('scene') as HTMLCanvasElement;
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFShadowMap;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 const effect = new OutlineEffect(renderer, { defaultThickness: 0.0032, defaultColor: [0.17, 0.18, 0.26] });
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color('#bfe3ff');
-scene.fog = new THREE.Fog('#bfe3ff', 40, 90);
-const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 200);
+scene.fog = new THREE.Fog('#c2d2d0', 65, 200);
+const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 350);
 
 scene.add(new THREE.HemisphereLight('#fff5e6', '#c9a27a', 1.5));
 scene.add(new THREE.AmbientLight('#ffffff', 0.5));
@@ -60,6 +65,11 @@ scene.add(sun);
 
 const office = buildOffice();
 scene.add(office.group);
+const city = buildCity();
+scene.add(city.group);
+office.colliders.push(...city.colliders);
+store.on('empire', () => city.sync(store.empire));
+city.sync(store.empire);
 
 const noOutline = (obj: THREE.Object3D) =>
   obj.traverse((o) => {
@@ -161,9 +171,22 @@ const settings = loadSettings();
 const player = new PlayerController(camera, canvas, office.colliders);
 player.pos.set(SPAWN.x, 0, SPAWN.z);
 player.view = settings.view;
+player.bindings = settings.keys;
 const hands = new Hands(store.profile.color, me.skinColor);
 const sound = new OfficeSound();
 sound.setVolume(settings.volume, settings.muted);
+const empireUI = mountEmpire(net, player, place => {
+  if (player.driving) { player.driving = false; city.car.position.copy(player.pos); }
+  player.clearKeys(); player.vy = 0; player.grounded = true;
+  if (place === 'office') { player.pos.set(SPAWN.x, 0, SPAWN.z); player.camDist = 7.5; }
+  else { player.pos.set(place === 'home' ? 24 : 0, 0, place === 'home' ? 56 : 42); player.camDist = 36; player.camPitch = .6; player.camYaw = Math.PI; }
+  player.updateCamera(true);
+  if (place !== 'office' && !store.empire.delegated) net.send({ t: 'empire.action', action: { kind: 'delegate', enabled: true } });
+}, () => {
+  if (player.driving) { player.driving=false; player.pos.x += 2; player.clearKeys(); return; }
+  if (player.pos.z < 30 || player.pos.distanceTo(city.car.position)>5) { toast('Walk to your car on the central avenue, near the headquarters.','info'); return; }
+  player.driving=true;player.setView('third');player.facing=city.car.rotation.y;player.camDist=12;
+}, () => showQueue());
 const hanger = new Hanger(net, camera, canvas, player, office, gallery);
 scene.add(hanger.ghost.group);
 hanger.onChange = () => {
@@ -625,7 +648,8 @@ function pickTarget(): Interactable | null {
 }
 
 function key(k: string, label: string) {
-  return h('span', {}, h('span.key', {}, k), label);
+  const action = (Object.keys(DEFAULT_KEYS) as Action[]).find(a => DEFAULT_KEYS[a] === `Key${k}`);
+  return h('span', {}, h('span.key', {}, action ? keyLabel(settings.keys[action]) : k), label);
 }
 
 function renderHint() {
@@ -741,12 +765,13 @@ function use(it: Interactable | null, key: DeskKey) {
 // ---- Input ----------------------------------------------------------------------------------------
 window.addEventListener('keydown', (e) => {
   if (modalOpen() || isTyping(e) || e.metaKey || e.ctrlKey || e.altKey) return;
-  if (hanger.active && hangingKey(e.code)) {
+  if (hanger.active && hangingKey(officeCode(e.code, settings.keys))) {
     e.preventDefault();
     return;
   }
-  switch (e.code) {
+  switch (officeCode(e.code, settings.keys)) {
     case 'KeyE':
+      if (empireUI.interact()) break;
       use(target, 'E');
       break;
     case 'KeyP':
@@ -780,7 +805,7 @@ window.addEventListener('keydown', (e) => {
       voice.toggleMute();
       break;
     case 'KeyH':
-      openHelp();
+      openHelp(settings.keys);
       break;
     case 'KeyF':
       hanger.start();
@@ -988,7 +1013,7 @@ mountServicesButton($('btn-services'));
 mountQueueButton($('btn-queue'), showQueue);
 $('btn-team').addEventListener('click', () => openTeam(net));
 $('btn-upgrade').addEventListener('click', () => openUpgrade(net));
-$('btn-help').addEventListener('click', () => openHelp());
+$('btn-help').addEventListener('click', () => openHelp(settings.keys));
 $('btn-decor').addEventListener('click', () => (hanger.active ? hanger.cancel() : hanger.start()));
 $('btn-settings').addEventListener('click', () =>
   openSettings(
@@ -997,6 +1022,9 @@ $('btn-settings').addEventListener('click', () =>
       Object.assign(settings, s);
       saveSettings(settings);
       player.setView(settings.view);
+      player.bindings = settings.keys;
+      player.clearKeys();
+      hintKey = '';
       sound.setVolume(settings.volume, settings.muted);
     },
     editProfile,
@@ -1038,6 +1066,15 @@ function frame(ts?: number) {
   const t = timer.getElapsed();
 
   player.update(dt);
+  city.update(t, store.empire.delegated);
+  empireUI.update(dt);
+  if (player.driving) { city.car.position.copy(player.pos); city.car.rotation.y=player.facing; }
+  const outside = player.pos.z >= 30;
+  office.group.visible = !outside;
+  sun.position.set(player.pos.x-20, 35, player.pos.z+15);
+  sun.target.position.set(player.pos.x,0,player.pos.z);
+  sun.target.updateMatrixWorld();
+  scene.background = new THREE.Color(outside ? '#c2d2d0' : '#bfe3ff');
   me.root.position.copy(player.pos);
   me.root.position.y += player.stepOffset;
   me.root.rotation.y = player.facing;
@@ -1045,7 +1082,7 @@ function frame(ts?: number) {
   me.setVoiceLevel(voice.inVoice ? voice.localLevel : 0);
   const firstPerson = player.view === 'first';
   // In first person you are the camera; in third, hide yourself when it's zoomed in right behind your head.
-  me.root.visible = !firstPerson && camera.position.distanceTo(new THREE.Vector3(player.pos.x, player.pos.y + 1.3, player.pos.z)) > 1.5;
+  me.root.visible = !player.driving && !firstPerson && camera.position.distanceTo(new THREE.Vector3(player.pos.x, player.pos.y + 1.3, player.pos.z)) > 1.5;
   if (firstPerson) hands.update(dt, t, { yaw: player.camYaw, pitch: player.lookPitch, walkPhase: player.walkPhase, walking: player.moving && player.grounded, airborne: !player.grounded });
 
   // Your ears are in your head, facing wherever the camera looks.
@@ -1120,7 +1157,7 @@ function frame(ts?: number) {
     updateSpeaking(voice);
   }
 
-  effect.render(scene, camera);
+  renderer.render(scene, camera);
   if (firstPerson) {
     // Hands go on top of everything, so they never clip into a desk you walk up to.
     renderer.clearDepth();
@@ -1155,6 +1192,6 @@ if (saved?.look) {
 }
 
 // Debug handle for quick checks from the console / headless screenshots.
-(window as any).__office = { store, player, camera, workerViews, scene, net, renderer, hands, me, remotes, settings, gallery, hanger };
+(window as any).__office = { store, player, camera, workerViews, scene, net, renderer, hands, me, remotes, settings, gallery, hanger, city, empireUI };
 (window as any).__voice = voice;
 (window as any).__sound = sound;

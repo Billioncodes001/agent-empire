@@ -1,10 +1,11 @@
 {
-  "name": "agent-office",
+  "name": "agent-empire",
   "version": "0.1.0",
-  "description": "A cartoon 3D multiplayer office where your team spawns Claude Code workers at desks, shares live terminals, talks over voice, and tracks GitHub issues and PRs.",
+  "description": "A persistent agent-powered office and founding city district",
   "type": "module",
   "bin": {
-    "agent-office": "bin/agent-office.js"
+    "agent-office": "bin/agent-office.js",
+    "agent-empire": "bin/agent-office.js"
   },
   "files": [
     "bin",
@@ -17,7 +18,9 @@
     "build:server": "tsc -p tsconfig.server.json",
     "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.client.json --noEmit",
     "start": "node bin/agent-office.js",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "test": "tsx --test tests/*.test.ts",
+    "test:browser": "node tests/browser-smoke.mjs"
   },
   "engines": {
     "node": ">=20"

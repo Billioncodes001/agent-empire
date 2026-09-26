@@ -1,3 +1,4 @@
+import { DEFAULT_KEYS, ACTION_LABELS, keyLabel, validKey, type Action } from '../controls';
 import type { Settings, ViewMode } from '../state';
 import { h, openModal } from './dom';
 
@@ -63,6 +64,30 @@ export function openSettings(settings: Settings, onChange: (s: Settings) => void
     if (!settings.muted) previewSound();
   });
 
+  const keyRows = h('div.key-bindings');
+  const keyNote = h('p.setting-note', {}, 'Select a control, then press a key. Conflicting controls swap automatically. Escape cancels.');
+  const paintKeys = () => {
+    keyRows.replaceChildren(...(Object.keys(DEFAULT_KEYS) as Action[]).map(action => {
+      const button = h('button.btn', { type: 'button', 'aria-label': `Remap ${ACTION_LABELS[action]}` }, keyLabel(settings.keys[action]));
+      button.addEventListener('click', () => { button.textContent = 'Press a key…'; button.dataset.listening = 'true'; });
+      button.addEventListener('keydown', e => {
+        if (!button.dataset.listening) return;
+        e.preventDefault(); e.stopPropagation();
+        if (e.code === 'Escape') { delete button.dataset.listening; button.textContent = keyLabel(settings.keys[action]); return; }
+        if (e.metaKey || e.ctrlKey || e.altKey || !validKey(e.code)) { keyNote.textContent = 'Use letters, numbers, arrows, Shift, or Space.'; return; }
+        const keys = { ...settings.keys };
+        const duplicate = (Object.keys(keys) as Action[]).find(a => keys[a] === e.code);
+        if (duplicate) keys[duplicate] = keys[action];
+        keys[action] = e.code;
+        settings = { ...settings, keys }; onChange(settings); paintKeys();
+      });
+      button.addEventListener('blur', () => { delete button.dataset.listening; button.textContent = keyLabel(settings.keys[action]); });
+      return h('div.key-row', {}, h('span', {}, ACTION_LABELS[action]), button);
+    }));
+  };
+  paintKeys();
+  const resetKeys = h('button.btn', { type: 'button', onclick: () => { settings = { ...settings, keys: { ...DEFAULT_KEYS } }; onChange(settings); paintKeys(); } }, 'Restore arrow-key defaults');
+
   const character = h('button.btn', { type: 'button' }, '🧍 Change your look & name');
   const close = h('button.btn.close', { 'aria-label': 'Close' }, '✕');
   const el = h(
@@ -78,6 +103,7 @@ export function openSettings(settings: Settings, onChange: (s: Settings) => void
       h('label', { style: 'margin-top:18px' }, 'Office sounds'),
       soundRow,
       h('p.setting-note', {}, 'Workers typing, footsteps, the coffee machine, birds outside, and the ding when a worker is done. Voice chat isn’t affected.'),
+      h('label', { style: 'margin-top:18px' }, 'Keyboard controls'), keyNote, keyRows, resetKeys,
       h('label', { style: 'margin-top:18px' }, 'Your character'),
       character,
     ),
