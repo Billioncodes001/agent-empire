@@ -98,7 +98,7 @@ export function openFounding(net: Net) {
           {},
           h('strong', {}, 'Always included'),
           h('span', {}, 'Headquarters · Private residence · Chief of staff'),
-          h('p', {}, 'Your chief of staff monitors every sector, reports progress and brings decisions back to you.'),
+          h('p', {}, 'Rule-based server checks report on every sector; your chief of staff’s agent jobs and any blocked work come back to you for decisions.'),
         ),
         cards,
         summary,

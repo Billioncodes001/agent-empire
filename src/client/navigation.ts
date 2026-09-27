@@ -11,7 +11,7 @@ export function entranceAccess(id: SiteId, state: EmpireState, workers: Iterable
   if (id === 'hq' || id === 'home') return { allowed: true, reason: id === 'home' ? 'Private residence' : 'Headquarters' };
   const count = assignedWorkers(id, workers).length;
   const sector = state.sectors.find(s => s.id === id)!;
-  if (managerAvailable(sector)) return { allowed: true, reason: `${sector.manager!.name} · ${sector.manager!.status === 'ready' ? 'ready' : 'on duty'}` };
+  if (managerAvailable(sector)) return { allowed: true, reason: `${sector.manager!.name} · assigned` };
   return {
     allowed: count > 0,
     reason: count ? `${count} assigned AI worker${count === 1 ? '' : 's'}` : sector.manager ? `Manager ${sector.manager.status} · ${sector.manager.status === 'offline' ? 'retry in Management' : 'awaiting agent startup'}` : 'Assign an AI worker to open this building',
