@@ -61,7 +61,7 @@ This machine has Command Line Tools rather than full Xcode. Project syntax can b
 
 ## Evidence for this build
 
-The Windows x64 ZIP passed PE/Node-API/dependency checks and archive integrity testing. Its `index.html` and `assets/main-DAeoDxTZ.js` match the final camera/furnishing client byte-for-byte (JS SHA256 `3bf84448536664986204c3cf058e015b39b2627e8ca87e73af0dc7c0cf3a6aa5`). No Windows runtime is available on this build host.
+The Windows x64 ZIP passed PE/Node-API/dependency checks and archive integrity testing. Its `index.html` and referenced JavaScript bundle are checked against the final client build byte-for-byte. The adjacent artifact verification record identifies the archived bundle and its SHA256. No Windows runtime is available on this build host.
 
 The Android origin-policy harness passed. Both the initial build and a rebuild containing deliberate stale class/source/Dex sentinels passed; the sentinels were removed before compilation. APK alignment and v2/v3 signature checks passed. It installed on a new isolated Android 35 ARM64 emulator; Activity startup returned `Status: ok`, the app process was present and the AndroidRuntime error log was empty. Existing emulator profiles were untouched.
 
