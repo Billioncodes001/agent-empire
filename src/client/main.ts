@@ -204,7 +204,7 @@ sound.setVolume(settings.volume, settings.muted);
 const empireUI = mountEmpire(net,player,()=>showQueue(),()=>{if(!traversal.interactCar()&&!empireUI.interact())use(target,'E');},()=>changeView());
 const traversal = new Traversal(player,me,office,city,()=>{
   if(!store.empire.delegated)net.send({t:'empire.action',action:{kind:'delegate',enabled:true}});
-});
+}, (cue, at) => sound.carCue(cue, at));
 function changeView() {
   player.setView(player.view==='first'?'third':'first');
   if(player.view==='third'){player.camDist=player.driving?7:4.6;player.camPitch=.16;}
@@ -1125,6 +1125,11 @@ function frame(ts?: number) {
 
   if (player.driving) { city.car.position.copy(player.pos); city.car.rotation.y=player.facing; }
   const outside = player.pos.z >= 30;
+  city.animateCar(dt, player.vehicle, player.driving);
+  sound.environment(outside);
+  sound.vehicle(player.vehicle, player.driving, city.car.position, player.view === 'first');
+  canvas.dataset.audio = sound.recordings;
+  canvas.dataset.vehicle = `${(Math.abs(player.drivingSpeed)*3.6).toFixed(0)} km/h · ${player.vehicle.rpm.toFixed(0)} rpm`;
   office.group.visible = !outside;
   city.chief.visible = office.floor === 0;
   gallery.group.visible = office.floor === 0;
@@ -1149,7 +1154,7 @@ function frame(ts?: number) {
   const s = Math.floor(player.walkPhase / Math.PI);
   if (s !== stride) {
     stride = s;
-    if (player.moving && player.grounded) sound.step();
+    if (player.moving && player.grounded && !player.driving) sound.step('walk', player.speed > 2.5);
   }
   if (!player.grounded) fallV = Math.min(fallV, player.vy);
   else {

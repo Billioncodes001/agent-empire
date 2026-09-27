@@ -1,3 +1,4 @@
+import { VehicleRig, type VehicleMotion } from '../vehicle';
 import { buildTerrain } from './terrain';
 import { slidingDoor } from './doors';
 import { entranceAccess, assignedWorkers } from '../navigation';
@@ -398,6 +399,7 @@ export function buildCity() {
   };
   colliders.push(carCollider);
   group.add(car);
+  let vehicleRig: VehicleRig | undefined;
   new GLTFLoader().load(
     '/models/executive-sedan.glb',
     (gltf) => {
@@ -406,6 +408,7 @@ export function buildCity() {
       model.removeFromParent();
       model.rotation.y = Math.PI;
       car.add(model);
+      vehicleRig = new VehicleRig(model);
       car.userData.ready = true;
       model.traverse((o) => {
         if (o instanceof THREE.Mesh) {
@@ -416,6 +419,9 @@ export function buildCity() {
               mat.transparent = true;
               mat.opacity = 0.38;
               mat.depthWrite = false;
+              // The glazed shell has outward normals; avoid drawing its tinted back faces
+              // over the windshield when the camera is inside the cabin.
+              mat.side = THREE.FrontSide;
             }
           }
         }
@@ -456,6 +462,7 @@ export function buildCity() {
     car,
     carCollider,
     doors,
+    animateCar(dt: number, motion: VehicleMotion, running: boolean) { vehicleRig?.update(dt, motion, running); },
     setCarDoor(amount: number) {
       const hinge = car.getObjectByName('Driver_door_hinge');
       if (hinge) hinge.rotation.y = amount * 1.08;

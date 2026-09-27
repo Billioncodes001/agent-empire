@@ -123,3 +123,32 @@ for (const asset of ['founder.glb', 'chief-of-staff.glb']) test(`${asset}: typin
   assert.ok(finger.z > hand.z, 'fingers extend toward keys');
  }
 });
+
+test('sedan wheels have independent steering and spin pivots attached outside the sprung body',async()=>{
+ const gltf=await geometryAsset('executive-sedan.glb');
+ const body=gltf.scene.getObjectByName('Sprung_body')!;
+ assert.ok(body);assert.ok(body.getObjectByName('Driver_handle'));
+ for(const id of ['FL','FR','RL','RR']){
+  const steer=gltf.scene.getObjectByName(`Wheel_${id}`)!;const spin=steer?.getObjectByName(`Spin_${id}`);
+  assert.ok(steer && spin,id);assert.notEqual(steer.parent,body);
+  const before=bounds(spin).getCenter(new THREE.Vector3());
+  spin.rotation.x=1;const after=bounds(spin).getCenter(new THREE.Vector3());
+  assert.ok(before.distanceTo(after)<.04, `${id}: rolling around the axle, not the body`);
+ }
+});
+for(const asset of ['founder.glb','chief-of-staff.glb']) test(`${asset}: held vehicle transition keeps a stable adult pose`,async()=>{
+ const gltf=await geometryAsset(asset),model=clone(gltf.scene),mixer=prepareHumanModel(model,gltf.animations);
+ const bones=new Map<string,THREE.Bone>();model.traverse(o=>{if(o instanceof THREE.Bone)bones.set(o.name.replace(/[^a-z0-9]/gi,'').toLowerCase(),o);});
+ const human=Object.create(Human.prototype) as Human, root=new THREE.Group();root.add(model);
+ Object.assign(human,{root,model,mixer,bones,actions:new Map(gltf.animations.map(c=>[c.name,mixer.clipAction(c)])),current:mixer.clipAction(gltf.animations.find(c=>c.name==='idle_neutral_01')!),motion:'idle_neutral_01',transition:null,seatedBaseZ:model.position.z,typingBlend:0,gestureTime:0,turnLean:0,reachRemaining:0});
+ for(let i=0;i<90;i++) { human.setTransition('sit_down_chair_01',i/180);human.setVehiclePose({phase:'enter',progress:i/180});human.update(1/60); }
+ human.update(0);const spine=bones.get('bip01spine')!.quaternion.clone(),head=bones.get('bip01head')!.getWorldPosition(new THREE.Vector3());
+ for(let i=0;i<90;i++) human.update(0);
+ assert.ok(spine.angleTo(bones.get('bip01spine')!.quaternion)<.001,'posture must not accumulate');
+ root.updateWorldMatrix(true,true);
+ assert.ok(head.distanceTo(bones.get('bip01head')!.getWorldPosition(new THREE.Vector3()))<.001,'head stays stable');
+ human.setTransition(null);human.setVehiclePose({phase:'drive',progress:1,steering:.2});
+ for(let i=0;i<60;i++)human.update(1/60,false,true,false,true);
+ root.updateWorldMatrix(true,true);
+ for(const side of ['l','r']) {const foot=bones.get(`bip01${side}foot`)!.getWorldPosition(new THREE.Vector3());assert.ok(Math.abs(foot.y-.22)<.06,`foot well ${foot.y}`);assert.ok(Math.abs(foot.z-.62)<.07,`foot well ${foot.z}`);}
+});

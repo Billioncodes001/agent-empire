@@ -1,3 +1,4 @@
+import { Drivetrain, vehicleOverlaps } from './vehicle';
 import { DEFAULT_KEYS, type KeyBindings, type Action } from './controls';
 import { CITY } from '../shared/empire';
 import * as THREE from 'three';
@@ -54,7 +55,7 @@ export class PlayerController {
   enabled = true;
   bindings: KeyBindings = { ...DEFAULT_KEYS };
   driving = false;
-  private vehicleSpeed = 0;
+  readonly vehicle = new Drivetrain();
   private walkVelocity = new THREE.Vector2();
 
   constructor(
@@ -172,7 +173,7 @@ export class PlayerController {
     else this.keys.delete(this.bindings[action]);
   }
 
-  get drivingSpeed() { return this.vehicleSpeed; }
+  get drivingSpeed() { return this.vehicle.speed; }
 
   clearKeys() {
     this.keys.clear();
@@ -207,6 +208,7 @@ export class PlayerController {
 
   update(dt: number) {
     dt = Math.min(dt, 0.05);
+    if (dt <= 0) { this.updateCamera(); return; }
     if (this.scripted) { this.updateCamera(); return; }
     const before = this.pos.clone();
     const k = this.keys;
@@ -221,21 +223,21 @@ export class PlayerController {
     this.moving = ix !== 0 || iz !== 0;
     if (this.view === 'first' && !this.driving) this.facing = Math.atan2(Math.sin(this.camYaw + Math.PI), Math.cos(this.camYaw + Math.PI));
     if (this.driving) {
-      const throttle = this.enabled ? -iz : 0;
-      const targetSpeed = throttle * (k.has(this.bindings.run) ? 15 : 9);
-      this.vehicleSpeed += (targetSpeed - this.vehicleSpeed) * Math.min(1, dt * 2.2);
-      if (Math.abs(this.vehicleSpeed) < .03) this.vehicleSpeed = 0;
-      const turn = -ix * dt * 1.6 * Math.min(1, Math.abs(this.vehicleSpeed)/3) * Math.sign(this.vehicleSpeed);
+      const turn = this.vehicle.update(dt, -iz, ix, k.has(this.bindings.run), this.enabled);
       this.facing += turn;
-      if (this.view === 'first') this.camYaw += turn;
+      const blockedTurn = !!this.blocker(this.pos.x, this.pos.z, this.pos.y);
+      if (blockedTurn) this.facing -= turn;
+      if (this.view === 'first' && !blockedTurn) this.camYaw += turn;
       const oldX=this.pos.x, oldZ=this.pos.z;
-      this.tryMove(oldX + Math.sin(this.facing)*this.vehicleSpeed*dt, oldZ);
-      this.tryMove(this.pos.x, oldZ + Math.cos(this.facing)*this.vehicleSpeed*dt);
-      if (Math.hypot(this.pos.x-oldX,this.pos.z-oldZ)<.001) this.vehicleSpeed=0;
-      this.moving = Math.abs(this.vehicleSpeed)>.1;
+      this.tryMove(oldX + Math.sin(this.facing)*this.vehicle.speed*dt, oldZ);
+      this.tryMove(this.pos.x, oldZ + Math.cos(this.facing)*this.vehicle.speed*dt);
+      const distance = Math.hypot(this.pos.x-oldX,this.pos.z-oldZ);
+      if (distance < .000001) this.vehicle.speed = 0;
+      else this.vehicle.speed = Math.sign(this.vehicle.speed) * Math.min(Math.abs(this.vehicle.speed), distance / Math.max(dt, .001));
+      this.moving = Math.abs(this.vehicle.speed)>.1;
       const desired = this.facing - Math.PI;
       if(this.view==='third')this.camYaw += Math.atan2(Math.sin(desired-this.camYaw),Math.cos(desired-this.camYaw))*Math.min(1,dt*3);
-    } else this.vehicleSpeed = 0;
+    } else this.vehicle.stop();
     if (!this.driving) {
       const input = this.moving;
       const len = Math.hypot(ix, iz) || 1;
@@ -284,7 +286,7 @@ export class PlayerController {
     this.stepOffset *= Math.exp(-dt * 16);
     this.speed = Math.hypot(this.pos.x-before.x,this.pos.z-before.z)/Math.max(dt,.001);
     this.moving = this.speed > .04;
-    const walking = this.moving && this.grounded;
+    const walking = this.moving && this.grounded && !this.driving;
     this.walkPhase += walking ? dt*this.speed*Math.PI*2/(this.speed>2.5?2.9:1.55) : 0;
     const bob = walking ? Math.abs(Math.sin(this.walkPhase)) * 0.035 : 0;
     this.bob += (bob - this.bob) * Math.min(1, dt * 18);
@@ -293,7 +295,7 @@ export class PlayerController {
 
   updateCamera(snap = false) {
     if (this.view === 'first') {
-      const eye=this.driving?new THREE.Vector3(-.43,1.22,.3).applyAxisAngle(new THREE.Vector3(0,1,0),this.facing):new THREE.Vector3(0,EYE_HEIGHT+this.bob+this.stepOffset,0);
+      const eye=this.driving?new THREE.Vector3(-.43,1.24,.05).applyAxisAngle(new THREE.Vector3(0,1,0),this.facing):new THREE.Vector3(0,EYE_HEIGHT+this.bob+this.stepOffset,0);
       this.camera.position.copy(this.pos).add(eye);
       this.camera.rotation.set(this.lookPitch, this.camYaw, 0);
       return;
@@ -345,7 +347,7 @@ export class PlayerController {
     for (const c of this.colliders) {
       // Stood on top of it, or passing beneath it.
       if (y >= c.top - 0.05 || y + HEIGHT <= (c.bottom ?? 0)) continue;
-      if (!touches(c, x, z, this.driving ? 1.7 : RADIUS)) continue;
+      if (!(this.driving ? vehicleOverlaps(x, z, this.facing, c) : touches(c, x, z, RADIUS))) continue;
       if (!hit || c.top > hit.top) hit = c;
     }
     return hit;
@@ -353,8 +355,10 @@ export class PlayerController {
 
   private tryMove(x: number, z: number) {
     const bounds = this.pos.z >= CITY.minZ ? CITY : FLOOR;
-    x = THREE.MathUtils.clamp(x, bounds.minX + RADIUS, bounds.maxX - RADIUS);
-    z = THREE.MathUtils.clamp(z, bounds.minZ + RADIUS, bounds.maxZ - RADIUS);
+    const halfX = this.driving ? Math.abs(Math.cos(this.facing)) * 1.07 + Math.abs(Math.sin(this.facing)) * 2.36 : RADIUS;
+    const halfZ = this.driving ? Math.abs(Math.sin(this.facing)) * 1.07 + Math.abs(Math.cos(this.facing)) * 2.36 : RADIUS;
+    x = THREE.MathUtils.clamp(x, bounds.minX + halfX, bounds.maxX - halfX);
+    z = THREE.MathUtils.clamp(z, bounds.minZ + halfZ, bounds.maxZ - halfZ);
     const hit = this.blocker(x, z, this.pos.y);
     if (!hit) {
       this.pos.x = x;

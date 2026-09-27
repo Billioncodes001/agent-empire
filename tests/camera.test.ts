@@ -88,6 +88,6 @@ test('driver eye turns with the vehicle while retaining the head-look offset', (
   player.setAction('forward', true);
   player.setAction('right', true);
   for (let i = 0; i < 60; i++) player.update(1 / 60);
-  assert.ok(Math.abs(player.facing) > 0.5);
+  assert.ok(Math.abs(player.facing) > 0.2);
   assert.ok(Math.abs(player.camYaw - player.facing - (-Math.PI + 0.4)) < 1e-8);
 });

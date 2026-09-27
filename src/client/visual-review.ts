@@ -1,3 +1,4 @@
+import { OfficeSound } from './sound';
 /** Developer review surface, deliberately excluded from the production build entries. */
 import './style.css';
 import * as THREE from 'three';
@@ -69,7 +70,8 @@ player.view = 'third';
 const person = new Person('Founder', '#75898b', { ...lookFromSeed('founder'), style: 0 });
 person.showLabel(false);
 scene.add(person.root);
-const traversal = new Traversal(player, person, office, city, () => (store.empire.delegated = true));
+const sound = new OfficeSound(); sound.setVolume(.7, false);
+const traversal = new Traversal(player, person, office, city, () => (store.empire.delegated = true), (cue, at) => sound.carCue(cue, at));
 const tower = new Tower({ send: () => {} } as unknown as Net, player, office, () => {});
 const empire = mountEmpire({ send: () => {} } as unknown as Net, player, () => {});
 onModalChange((open) => {
@@ -181,11 +183,28 @@ for (const name of [
   'District',
   'First person',
   'Driver view',
+  'Accelerate', 'Brake', 'Coast', 'Steer left', 'Steer right', 'Straight', 'Car detail', 'Entry pose',
 ]) {
   const button = document.createElement('button');
   button.textContent = name;
   button.onclick = () => {
-    if (name === 'Exit car') {
+    if (name === 'Entry pose') {
+      if (player.scripted) return;
+      setup('Enter car');
+      for (let i=0;i<174;i++) {
+        const dt=1/60; player.update(dt); traversal.update(dt);
+        person.root.position.copy(player.pos); person.root.rotation.y=player.facing;
+        person.update(dt, i*dt, player.moving, false, player.speed);
+      }
+      playback.value='0';
+    } else if (['Accelerate', 'Brake', 'Coast', 'Steer left', 'Steer right', 'Straight'].includes(name)) {
+      if (!player.driving) return;
+      if (['Accelerate', 'Brake', 'Coast'].includes(name)) { player.setAction('forward', name === 'Accelerate'); player.setAction('backward', name === 'Brake'); }
+      else { player.setAction('left', name === 'Steer left'); player.setAction('right', name === 'Steer right'); }
+    } else if (name === 'Car detail') {
+      if (player.driving) { player.camYaw = city.car.rotation.y - Math.PI * .65; player.camDist = 5.3; player.camPitch = .22; player.setView('third'); player.updateCamera(true); }
+      else { setup('Street'); player.pos.set(3.3,0,45.1); player.camYaw=-Math.PI*.6; player.camDist=4.3; player.updateCamera(true); }
+    } else if (name === 'Exit car') {
       if (player.driving) traversal.interactCar();
     } else if (name === 'Driver view') {
       if (player.driving) player.setView('first');
@@ -202,6 +221,7 @@ const resize = () => {
 window.addEventListener('resize', resize);
 resize();
 setup('Street');
+let lastStride = 0;
 let last = 0,
   time = 0;
 renderer.setAnimationLoop((now) => {
@@ -224,6 +244,18 @@ renderer.setAnimationLoop((now) => {
     city.car.rotation.y = player.facing;
   }
   const outside = player.pos.z >= 30;
+  city.animateCar(dt, player.vehicle, player.driving);
+  sound.environment(outside);
+  sound.vehicle(player.vehicle, player.driving, city.car.position, player.view === 'first');
+  const look = camera.getWorldDirection(new THREE.Vector3());
+  sound.update({ x: player.pos.x, y: player.pos.y + 1.66 - (outside ? 0 : office.group.position.y), z: player.pos.z, fx: look.x, fz: look.z });
+  const stride = Math.floor(player.walkPhase / Math.PI);
+  if (stride !== lastStride && player.moving && player.grounded && !player.driving) sound.step('walk', player.speed > 2.5);
+  lastStride = stride;
+  canvas.dataset.audio = sound.recordings;
+  canvas.dataset.foley = JSON.stringify(sound.foleyPlayed);
+  canvas.dataset.speed = player.drivingSpeed.toFixed(2);
+
   office.group.visible = !outside;
   city.group.visible = outside;
   sun.position.set(player.pos.x - 24, player.pos.y + 40, player.pos.z + 24);
@@ -243,5 +275,5 @@ renderer.setAnimationLoop((now) => {
   canvas.dataset.floor = String(office.floor + 1);
   composer.render();
   document.getElementById('telemetry')!.textContent =
-    `${scenario} · ${canvas.dataset.traversal} · Floor ${office.floor + 1}\n${canvas.dataset.position}\n${person.root.children[0]?.userData.motion ?? 'loading'} · ${renderer.info.render.calls} draws`;
+    `${scenario} · ${canvas.dataset.traversal} · Floor ${office.floor + 1}\n${canvas.dataset.position}\n${person.root.children[0]?.userData.motion ?? 'loading'} · ${renderer.info.render.calls} draws\nAudio ${sound.recordings} · ${(Math.abs(player.drivingSpeed)*3.6).toFixed(0)} km/h · ${player.vehicle.rpm.toFixed(0)} rpm`;
 });

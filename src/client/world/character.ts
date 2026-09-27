@@ -1,4 +1,4 @@
-import { Human } from './human';
+import { Human, type VehiclePose } from './human';
 import * as THREE from 'three';
 import { SKIN_TONES, type Look } from '../../shared/avatar';
 import type { WorkerTask } from '../../shared/protocol';
@@ -47,6 +47,7 @@ export class Person {
   showLabel(v:boolean){if(this.label)this.label.visible=v;}
   reach(){this.human.reach();}
   setTransition(name:string|null,progress=0){this.human.setTransition(name,progress);}
+  setVehiclePose(pose:VehiclePose|null){this.human.setVehiclePose(pose);}
   update(dt:number,t:number,moving:boolean,airborne:boolean,speed=1.65){this.human.update(dt,moving&&!airborne?speed:0,this.pose==='sit'||this.pose==='type'||this.pose==='drive',this.pose==='type',this.pose==='drive');}
   dispose(){this.human.dispose();if(this.label)disposeSprite(this.label);}
 }

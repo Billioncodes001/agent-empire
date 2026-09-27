@@ -8,6 +8,7 @@ import { SITES } from '../shared/empire';
 import { store } from './state';
 import { h, modalOpen, toast } from './ui/dom';
 import { keyLabel } from './controls';
+import type { CarCue } from './world-audio';
 
 type Transition = {
   kind: 'exit-office' | 'enter-office' | 'enter-car' | 'exit-car';
@@ -16,6 +17,7 @@ type Transition = {
   view: 'first' | 'third';
   yaw: number;
   switched: boolean;
+  cues: Set<CarCue>;
 };
 export const ease = (t: number) => {
   const p = THREE.MathUtils.clamp(t, 0, 1);
@@ -33,6 +35,7 @@ export class Traversal {
     private office: Office,
     private city: ReturnType<typeof buildCity>,
     private delegate: () => void,
+    private carAudio: (cue: CarCue, position: THREE.Vector3) => void = () => {},
   ) {
     document.getElementById('hud')!.append(this.hint);
     document.body.append(this.fade);
@@ -46,13 +49,14 @@ export class Traversal {
   private begin(kind: Transition['kind']) {
     if (this.current) return;
     const p = this.player;
-    this.current = { kind, time: 0, from: p.pos.clone(), view: p.view, yaw: p.camYaw, switched: false };
+    this.current = { kind, time: 0, from: p.pos.clone(), view: p.view, yaw: p.camYaw, switched: false, cues: new Set() };
     p.clearKeys();
     p.scripted = true;
     p.vy = 0;
     p.stepOffset = 0;
     p.grounded = true;
     if (kind.includes('car')) {
+      if (kind === 'exit-car') this.carAudio('engine-stop', this.city.car.position);
       if (kind === 'exit-car') p.pos.copy(this.carPoint(-0.43, 0.1, 0.05));
       p.driving = false;
       p.setView('third');
@@ -104,17 +108,19 @@ export class Traversal {
     this.office.entranceDoor.collider.top += this.office.group.position.y;
     if (this.current) {
       this.animate(dt);
+      if (p.moving) p.walkPhase += dt * p.speed * Math.PI * 2 / 1.55;
       return;
     }
     this.person.pose = p.driving ? 'drive' : 'stand';
     this.person.setTransition(null);
+    this.person.setVehiclePose(p.driving ? { phase: 'drive', progress: 1, steering: p.vehicle.steering } : null);
     const front = entrance('hq');
     if (!modalOpen() && p.enabled && !p.driving && p.grounded && p.moving && this.cooldown === 0) {
       if (this.office.floor === 0 && p.pos.z < 30 && Math.abs(p.pos.x) < 1.03 && p.pos.z > 12.1 && Math.cos(p.facing) > 0.25) this.begin('exit-office');
       else if (Math.abs(p.pos.x - front.x) < 1.12 && p.pos.z > front.z && p.pos.z < front.z + 1.3 && Math.cos(p.facing) < -0.25)
         this.begin('enter-office');
     }
-    if (p.driving) this.hint.textContent = `${keyLabel(p.bindings.interact)} Exit car · ${keyLabel(p.bindings.camera)} Camera`;
+    if (p.driving) this.hint.textContent = `${Math.round(Math.abs(p.drivingSpeed) * 3.6)} km/h · ${p.vehicle.gear < 0 ? 'R' : `D${p.vehicle.gear}`} · ${keyLabel(p.bindings.backward)} Brake / reverse · ${keyLabel(p.bindings.interact)} Exit · ${keyLabel(p.bindings.camera)} Camera`;
     else if (p.pos.z < 30)
       this.hint.textContent = p.pos.z > 8 && Math.abs(p.pos.x) < 4 ? (this.office.floor === 0 ? 'Walk through the glass doors to the waterfront' : 'Take the elevator to floor 1 for the street exit') : '';
     else if (p.pos.distanceTo(this.city.car.position) < 3.8)
@@ -147,6 +153,7 @@ export class Traversal {
     p.stepOffset = 0;
     p.vy = 0;
     this.person.setTransition(null);
+    this.person.setVehiclePose(p.driving ? { phase: 'drive', progress: 1 } : null);
     this.fade.style.opacity = '0';
     if (t.kind.includes('car')) p.setView(t.view);
     p.updateCamera(true);
@@ -192,6 +199,12 @@ export class Traversal {
       bodyAt = openAt + 0.65,
       closeAt = bodyAt + 2.6,
       end = closeAt + 0.7;
+    const cue = (name: CarCue, at: number) => {
+      if (t.time >= at && !t.cues.has(name)) { t.cues.add(name); this.carAudio(name, this.city.car.position); }
+    };
+    cue('door-open', openAt + .1);
+    cue('door-close', end - .14);
+    if (entering) cue('engine-start', end - .03);
     p.facing = this.city.car.rotation.y;
     if (t.time < approach) {
       const u = ease(t.time / approach);
@@ -205,20 +218,32 @@ export class Traversal {
       p.speed = 0;
       this.person.pose = entering ? 'stand' : 'sit';
       this.city.setCarDoor(ease((t.time - openAt) / 0.65));
-      if (entering && !t.switched) {
-        this.person.reach();
-        t.switched = true;
-      }
+      p.facing += entering ? Math.PI / 2 : 0;
+      const handle = this.city.car.getObjectByName('Driver_handle')?.getWorldPosition(new THREE.Vector3()) ?? this.carPoint(-1, .98, .35);
+      this.person.setVehiclePose({ phase: 'reach', progress: (t.time - openAt) / .65, handle });
     } else if (t.time < closeAt) {
       const u = (t.time - bodyAt) / 2.6;
       this.person.setTransition(entering ? 'sit_down_chair_01' : 'sit_stand_up_chair_01', u);
-      p.pos.lerpVectors(entering ? door : seat, entering ? seat : door, ease(u));
+      const seated = entering ? u : 1 - u;
+      // Lower the pelvis beside the seat before rotating the legs through the aperture.
+      p.pos.lerpVectors(door, seat, ease((seated - .08) / .84));
+      p.facing += Math.PI / 2 * (1 - ease((seated - .3) / .65));
+      const foot = (side: 'l' | 'r') => {
+        const lift = ease((seated - (side === 'r' ? .25 : .60)) / .35);
+        return this.carPoint(side === 'r' ? -1.44 : -1.66, .1, side === 'r' ? .35 : -.02)
+          .lerp(this.carPoint(side === 'r' ? -.56 : -.30, .32, .67), lift)
+          .add(new THREE.Vector3(0, Math.sin(lift * Math.PI) * .23, 0));
+      };
+      this.person.setVehiclePose({ phase: entering ? 'enter' : 'exit', progress: u, feet: { l: foot('l'), r: foot('r') } });
       p.speed = 0;
       p.moving = false;
       this.city.setCarDoor(1);
     } else {
       this.person.setTransition(null);
       this.person.pose = entering ? 'drive' : 'stand';
+      const closeProgress = ease((t.time - closeAt) / .7);
+      const handle = this.city.car.getObjectByName('Driver_handle')?.getWorldPosition(new THREE.Vector3());
+      this.person.setVehiclePose(handle ? { phase: 'reach', progress: 1 - closeProgress, handle } : null);
       p.pos.copy(entering ? seat : door);
       this.city.setCarDoor(1 - ease((t.time - closeAt) / 0.7));
     }

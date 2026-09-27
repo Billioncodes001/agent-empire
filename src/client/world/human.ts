@@ -3,6 +3,7 @@ import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { clone } from 'three/examples/jsm/utils/SkeletonUtils.js';
 
 const assets = new Map<string, Promise<GLTF>>();
+export type VehiclePose = { phase: 'reach' | 'enter' | 'exit' | 'drive'; progress: number; steering?: number; handle?: THREE.Vector3; feet?: { l: THREE.Vector3; r: THREE.Vector3 } };
 function source(url: string) {
   if (!assets.has(url)) assets.set(url, new GLTFLoader().loadAsync(url));
   return assets.get(url)!;
@@ -25,6 +26,8 @@ export class Human {
   private gestureTime = Math.random() * 30;
   private lastYaw?: number;
   private turnLean = 0;
+  private vehiclePose: VehiclePose | null = null;
+  private bonePose?: Map<string, THREE.Quaternion>;
   constructor(variant = 0) {
     this.root.name = 'Realistic human';
     void source(variant % 2 ? '/models/chief-of-staff.glb' : '/models/founder.glb')
@@ -105,6 +108,21 @@ export class Human {
   setTransition(name: string | null, progress = 0) {
     this.transition = name ? { name, progress } : null;
   }
+  setVehiclePose(pose: VehiclePose | null) { this.vehiclePose = pose; }
+  private placeFoot(side: 'l' | 'r', target: THREE.Vector3, weight: number) {
+    const foot = this.bones.get(`bip01${side}foot`);
+    if (!foot) return;
+    this.root.updateWorldMatrix(true, true);
+    target = foot.getWorldPosition(new THREE.Vector3()).lerp(this.root.localToWorld(target), weight);
+    for (let i = 0; i < 8; i++) for (const part of ['calf', 'thigh']) {
+      const bone = this.bones.get(`bip01${side}${part}`);
+      if (!bone?.parent) continue;
+      const origin = bone.getWorldPosition(new THREE.Vector3());
+      const delta = new THREE.Quaternion().setFromUnitVectors(foot.getWorldPosition(new THREE.Vector3()).sub(origin).normalize(), target.clone().sub(origin).normalize());
+      const parent = bone.parent.getWorldQuaternion(new THREE.Quaternion());
+      bone.quaternion.premultiply(parent.clone().invert().multiply(delta).multiply(parent)); bone.updateWorldMatrix(true, true);
+    }
+  }
   update(dt: number, moving: number | boolean = false, seated = false, typing = false, driving = false) {
     if (!this.mixer || !this.model) return;
     const speed = typeof moving === 'number' ? moving : moving ? 1.65 : 0;
@@ -137,10 +155,39 @@ export class Human {
         );
       }
     }
+    // Mixer bindings skip unchanged values on a held frame. Restore the last clean pose so
+    // IK and posture offsets never accumulate, even when a transition is paused for review.
+    this.bonePose?.forEach((q, name) => this.bones.get(name)?.quaternion.copy(q));
     this.mixer.update(dt);
+    this.bonePose ??= new Map();
+    this.bones.forEach((bone, name) => {
+      if (!this.bonePose!.has(name)) this.bonePose!.set(name, new THREE.Quaternion());
+      this.bonePose!.get(name)!.copy(bone.quaternion);
+    });
     if (driving) {
-      this.placeHand('l', .13, .9, .57);
-      this.placeHand('r', -.13, .9, .57);
+      const turn = (this.vehiclePose?.steering ?? 0) * 2.4;
+      for (const [side, sign] of [['l', 1], ['r', -1]] as const) {
+        this.placeHand(side, sign * .145 * Math.cos(turn), .80 + sign * .145 * Math.sin(turn), .57);
+        this.placeFoot(side, new THREE.Vector3(sign * .13, .22, .62), 1);
+      }
+    }
+    const car = this.vehiclePose;
+    if (car && car.phase !== 'drive') {
+      const u = THREE.MathUtils.clamp(car.progress, 0, 1);
+      if (car.phase === 'reach' && car.handle) {
+        const target = this.root.worldToLocal(car.handle.clone());
+        this.placeHand('r', target.x, target.y, target.z, Math.sin(Math.PI * Math.min(1, u) * .85));
+      } else {
+        const seat = car.phase === 'enter' ? u : 1 - u;
+        this.rotate('bip01spine', Math.sin(Math.PI * seat) * .28);
+        this.rotate('bip01head', Math.sin(Math.PI * seat) * .12);
+        // Right leg enters first, then the left clears the sill; reverse order on exit.
+        if (car.feet) for (const side of ['l', 'r'] as const) this.placeFoot(side, this.root.worldToLocal(car.feet[side].clone()), 1);
+        else {
+          this.placeFoot('r', new THREE.Vector3(-.13, .22, .62), THREE.MathUtils.smoothstep(seat, .30, .72));
+          this.placeFoot('l', new THREE.Vector3(.13, .22, .62), THREE.MathUtils.smoothstep(seat, .64, .98));
+        }
+      }
     }
     this.gestureTime += dt;
     this.typingBlend = THREE.MathUtils.damp(this.typingBlend, typing && seated && !driving ? 1 : 0, 5, dt);

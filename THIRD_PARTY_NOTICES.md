@@ -34,3 +34,9 @@ The following files in `src/client/public/textures/` are [CC0](https://polyhaven
 `executive-sedan.glb` was authored for this project with Blender through Higgsfield 3D Jutsu. Its procedural source is `tools/build-sedan.py`; `tools/add-sedan-door.py` adds the independently hinged driver door, footwell, seats and steering wheel. The original low-poly catalog experiment was replaced; the delivered vehicle is authored geometry. The game loads only the `Executive_Sedan` root, excluding the preview studio floor, lights and camera.
 
 [Editable Higgsfield project, revision 3](https://higgsfield.ai/3d-jutsu/e55a92fd-3a5a-4033-a80d-b73cc9d23629).
+
+## Recorded world sounds
+
+Locally shipped CC0 footsteps by Kenney; engine idle by RichieMcMullen; engine start by prometheus888; onboard driving by Joseph SARDIN / BigSoundBank; car doors by looneybits / OpenGameArt. Per-file sources, direct download provenance, edits and licenses are documented in `src/client/public/audio/README.md`. No audio in this set was generated through ElevenLabs.
+
+`tools/refine-sedan.py` is the local Blender refinement pass: real wheel apertures, separate steer/spin pivots, sprung body, cabin fixtures, door-handle marker and brake lamps. It rebuilds the original authored geometry without fetching third-party models.

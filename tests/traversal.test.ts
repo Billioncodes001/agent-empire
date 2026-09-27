@@ -31,6 +31,7 @@ function setup() {
     pose: 'stand',
     root: new THREE.Group(),
     reach() {},
+    setVehiclePose() {},
     setTransition(name: string | null) {
       if (name) phases.push(name);
     },
@@ -43,14 +44,15 @@ function setup() {
     },
   } as unknown as ReturnType<typeof buildCity>;
   let delegated = 0;
-  const traversal = new Traversal(player, person, office, city, () => delegated++);
+  const cues: string[] = [];
+  const traversal = new Traversal(player, person, office, city, () => delegated++, cue => cues.push(cue));
   const tick = (seconds: number) => {
     for (let i = 0; i < Math.ceil(seconds * 60); i++) {
       player.update(1 / 60);
       traversal.update(1 / 60);
     }
   };
-  return { player, traversal, tick, phases, doors, colliders, delegated: () => delegated };
+  return { player, traversal, tick, phases, doors, cues, colliders, delegated: () => delegated };
 }
 test('walking through office door transfers to street once, then allows re-entry', () => {
   const f = setup();
@@ -86,6 +88,11 @@ test('car entry and exit retain camera preference, animate door and restore move
   assert.ok(f.phases.includes('sit_down_chair_01'));
   assert.ok(f.doors.some((v) => v > 0.95));
   assert.equal(f.doors.at(-1), 0);
+  f.player.vehicle.speed = 3;
+  assert.equal(f.traversal.interactCar(), true);
+  assert.equal(f.traversal.state, 'driving');
+  assert.equal(f.player.scripted, false);
+  f.player.vehicle.speed = 0;
   assert.equal(f.traversal.interactCar(), true);
   f.tick(4.5);
   assert.equal(f.player.driving, false);
@@ -94,6 +101,7 @@ test('car entry and exit retain camera preference, animate door and restore move
   assert.equal(f.player.view, 'first');
   assert.ok(f.phases.includes('sit_stand_up_chair_01'));
   assert.equal(f.doors.at(-1), 0);
+  assert.deepEqual(f.cues, ['door-open', 'door-close', 'engine-start', 'engine-stop', 'door-open', 'door-close']);
 });
 test('door transitions cannot be triggered while jumping or standing still', () => {
   const f = setup();
