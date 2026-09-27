@@ -5,7 +5,7 @@ Update on meaningful transitions only. Roadmap: [CITY_EXPANSION_PLAN.md](CITY_EX
 | ID | Slice | Owner | Depends on | State | Acceptance / evidence |
 | --- | --- | --- | --- | --- | --- |
 | CITY-00 | Roadmap recorded before coding | Coordinator | — | Complete | Commit 30061f4 |
-| CITY-01 | One-window coordinator and model-specific planning handoff | Coordinator + specialists | CITY-00 | Ready for bounded validation | Actual delegation/results; compact consolidated contract report; no product edits |
+| CITY-01 | One-window coordinator and model-specific planning handoff | Coordinator + specialists | CITY-00 | Blocked: Backend contract missing | [Report](reports/city-expansion-coordination.md). Interface finished (harness `claude-opus-5.5`, self-reported Opus 4.8, unresolved). Backend (`gpt-5.3-codex`) cancelled with 0 turns, not retried with another model. Review (`grok-4.7`) found it not ready: missing protocol, idempotency and save versioning. No product edits |
 | CITY-02 | Phone, contacts and truthful text chief call | Interface + Backend | CITY-01 | Backlog | Selected worker identity, current reports, unavailable state, accessible controls |
 | CITY-03 | VoiceStudio discovery and first-launch voice setup | Backend + Interface | CITY-01 | Backlog | Installed-model health, microphone permission/test, skip/text fallback, explicit download choice |
 | CITY-04 | Push-to-talk worker and chief conversation | Backend + Interface | CITY-02, CITY-03 | Blocked for real ASR smoke test | No ASR model installed; use fake adapter during development; finalized transcript sent once, response/subtitles/audio/cancel |
