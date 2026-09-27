@@ -1,4 +1,5 @@
 import type { EmpireAction, EmpireState } from './empire.js';
+import type { ContinuityStatus } from './continuity.js';
 // Wire protocol between browser and server. Every WebSocket frame is one JSON object.
 
 import type { Look } from './avatar.js';
@@ -463,6 +464,7 @@ export type ClientMsg =
   | { t: 'ping'; at: number };
 
 export type ServerMsg =
+  | { t: 'continuity.status'; status: ContinuityStatus }
   | { t: 'empire'; state: EmpireState }
   | {
       t: 'welcome';
