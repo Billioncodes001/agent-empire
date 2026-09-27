@@ -14,7 +14,7 @@ The prior manager-retry / old-task requeue finding is closed on this candidate. 
 
 Manager retry no longer mints a new job key while the interrupted task stays independently retryable. If the current task still exists, Management calls `queue.retry` on that id. Sibling attempts in the same `empire-manager-{site}` family block the other control and block seating. A superseded legacy key cannot be requeued or auto-seated. A second completed turn of the same task id does not pay again.
 
-Evidence: [src/server/empire.ts](src/server/empire.ts#L241), [src/server/queue.ts](src/server/queue.ts#L138), [src/server/queue.ts](src/server/queue.ts#L199). Covered by the both-order, legacy-sibling, and once-only reward tests below.
+Evidence: [src/server/empire.ts](../../../src/server/empire.ts#L241), [src/server/queue.ts](../../../src/server/queue.ts#L138), [src/server/queue.ts](../../../src/server/queue.ts#L199). Covered by the both-order, legacy-sibling, and once-only reward tests below.
 
 Unknown or running prior attempts stay blocked. HUD and Management use the supervision projection. Missing, disconnected, and stale evidence, including a reconnect before the new snapshot, do not show a live chief or live workforce counts. Cached worker pills and desk bubbles are labeled last-known or unknown. Typing pose requires a fresh running agent turn. Delegation is labeled as a preference. Turn-ended copy does not say the brief was verified.
 
@@ -24,7 +24,7 @@ Low — the unlabeled headquarters figure still changes post when delegation is 
 
 Trigger: leave headquarters. Traversal sends `delegate` enabled, and the city update moves that figure from `(8, 0, 9)` to `(5, 0, 9)` even if the chief phase is interrupted, offline, or the client evidence is stale.
 
-Source: [src/client/main.ts](src/client/main.ts#L209), [src/client/world/city.ts](src/client/world/city.ts#L380), [src/client/world/city.ts](src/client/world/city.ts#L540).
+Source: [src/client/main.ts](../../../src/client/main.ts#L209), [src/client/world/city.ts](../../../src/client/world/city.ts#L380), [src/client/world/city.ts](../../../src/client/world/city.ts#L540).
 
 Observable impact: the figure’s name is hidden and it does not type. HUD and Management do not follow the move, and it does not launch work or pay a reward. A viewer can still see a person take the other post solely because delegation was requested. Round 1 says an avatar must not infer an active supervisor from that preference. Fix is to stop keying that position on `delegated`.
 
@@ -42,7 +42,7 @@ Did not rerun the full 86-test suite, typecheck, build, browser-smoke, or a live
 
 Inspected only `f6d3b9a` and `8c93105`, now in `60a065ab03d075edfc363877b67be78ab30e0709`. No remaining confirmed finding from those diffs.
 
-`f6d3b9a` closes the low avatar finding. The decorative figure is placed once at `(8, 0, 9)` and `city.update` no longer takes `delegated`. Both callers, [src/client/main.ts](src/client/main.ts#L1131) and [src/client/visual-review.ts](src/client/visual-review.ts#L240), match. Leaving headquarters can no longer move that figure.
+`f6d3b9a` closes the low avatar finding. The decorative figure is placed once at `(8, 0, 9)` and `city.update` no longer takes `delegated`. Both callers, [src/client/main.ts](../../../src/client/main.ts#L1131) and [src/client/visual-review.ts](../../../src/client/visual-review.ts#L240), match. Leaving headquarters can no longer move that figure.
 
 `8c93105` is copy only. Founding and Management now say a queued task earns simulation credits once when an agent turn ends, and still say the output is not verified. No reward logic changed in that commit.
 
