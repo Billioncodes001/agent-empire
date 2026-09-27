@@ -212,10 +212,20 @@ mountStatusStrip($('status-strip'), { openManagement: () => empireUI.openOperati
 const traversal = new Traversal(player,me,office,city,()=>{
   if(!store.empire.delegated)net.send({t:'empire.action',action:{kind:'delegate',enabled:true}});
 }, (cue, at) => sound.carCue(cue, at));
+function paintViewButton() {
+  const next = player.view === 'third' ? 'First person' : 'Third person';
+  const button = $('btn-camera');
+  button.textContent = next;
+  button.setAttribute('aria-label', `Switch to ${next.toLowerCase()}`);
+  button.title = `${next} (${keyLabel(settings.keys.camera)})`;
+}
+paintViewButton();
+$('btn-camera').addEventListener('click', () => { changeView(); canvas.focus(); });
 function changeView() {
   player.setView(player.view==='first'?'third':'first');
   if(player.view==='third'){player.camDist=player.driving?7:4.6;player.camPitch=.16;}
   settings.view=player.view;saveSettings(settings);
+  paintViewButton();
 }
 const hanger = new Hanger(net, camera, canvas, player, office, gallery);
 scene.add(hanger.ghost.group);
@@ -1122,6 +1132,7 @@ $('btn-settings').addEventListener('click', () =>
       saveSettings(settings);
       player.setView(settings.view);
       player.bindings = settings.keys;
+      paintViewButton();
       player.clearKeys();
       hintKey = '';
       sound.setVolume(settings.volume, settings.muted);

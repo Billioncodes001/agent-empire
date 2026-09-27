@@ -18,7 +18,7 @@ function setup(colliders: Collider[] = []) {
     Object.assign(event, { code, metaKey: false, ctrlKey: false, altKey: false });
     win.dispatchEvent(event);
   };
-  return { player, camera, key };
+  return { player, camera, key, canvas, win };
 }
 test('arrow input moves forward; opening a modal can stop held movement', () => {
   const { player, key } = setup();
@@ -90,4 +90,87 @@ test('driver eye turns with the vehicle while retaining the head-look offset', (
   for (let i = 0; i < 60; i++) player.update(1 / 60);
   assert.ok(Math.abs(player.facing) > 0.2);
   assert.ok(Math.abs(player.camYaw - player.facing - (-Math.PI + 0.4)) < 1e-8);
+});
+
+const angleError = (a: number, b: number) => Math.abs(Math.atan2(Math.sin(a-b), Math.cos(a-b)));
+test('third-person follows a held sideways turn without feeding camera yaw back into movement', () => {
+  const { player } = setup();
+  player.setAction('right', true);
+  for (let i = 0; i < 180; i++) player.update(1 / 60);
+  assert.ok(player.pos.x > 4);
+  assert.ok(Math.abs(player.pos.z - 60) < .001, 'held direction must stay straight, not spiral');
+  assert.ok(angleError(player.camYaw, player.facing - Math.PI) < .003);
+  player.setAction('right', false);
+  player.setAction('forward', true);
+  for (let i = 0; i < 60; i++) player.update(1 / 60);
+  assert.ok(player.pos.x > 5.5, 'new forward input follows the recentered view');
+});
+test('manual orbit pauses automatic following, then resumes behind the character', () => {
+  const { player, canvas, win } = setup();
+  const pointer = (target: EventTarget, type: string, x: number) => {
+    const event = new Event(type);
+    Object.assign(event, { clientX: x, clientY: 0, pointerType: 'touch' });
+    target.dispatchEvent(event);
+  };
+  player.setAction('forward', true);
+  player.update(.02);
+  pointer(canvas, 'pointerdown', 0);
+  pointer(win, 'pointermove', 100);
+  const orbit = player.camYaw;
+  for (let i = 0; i < 90; i++) player.update(1 / 60);
+  assert.equal(player.camYaw, orbit, 'drag keeps control even after grace expires');
+  pointer(win, 'pointerup', 100);
+  // Turn sideways from the manually selected direction, then allow follow to settle.
+  player.setAction('forward', false);
+  player.setAction('right', true);
+  for (let i = 0; i < 180; i++) player.update(1 / 60);
+  assert.ok(angleError(player.camYaw, player.facing - Math.PI) < .004);
+});
+test('camera switches never rotate a vehicle or snap the walking body away from its heading', () => {
+  const { player } = setup();
+  for (const driving of [false, true]) {
+    player.driving = driving;
+    player.view = 'third';
+    player.facing = .7;
+    player.camYaw = 2.4;
+    player.setView('first');
+    assert.equal(player.facing, .7);
+    assert.ok(angleError(player.camYaw, .7 - Math.PI) < 1e-10);
+    player.setView('third');
+    assert.equal(player.facing, .7);
+  }
+});
+test('district overview retains its angle and modal blocks mouse orbit', () => {
+  const { player, canvas, win } = setup();
+  player.camDist = 40;
+  player.setAction('right', true);
+  for (let i = 0; i < 60; i++) player.update(1 / 60);
+  assert.equal(player.camYaw, 0);
+  const down = new Event('pointerdown');
+  Object.assign(down, { clientX: 0, clientY: 0 });
+  canvas.dispatchEvent(down);
+  player.enabled = false;
+  player.clearKeys();
+  const move = new Event('pointermove');
+  Object.assign(move, { clientX: 100, clientY: 0 });
+  win.dispatchEvent(move);
+  assert.equal(player.camYaw, 0);
+});
+test('follow camera settles consistently at 30, 60 and 120 frames per second', () => {
+  const samples = [30, 60, 120].map(fps => {
+    const { player, camera } = setup();
+    player.updateCamera(true);
+    player.setAction('right', true);
+    for (let i = 0; i < fps * 2; i++) player.update(1 / fps);
+    return { yaw: player.camYaw, offset: camera.position.clone().sub(player.pos) };
+  });
+  assert.ok(angleError(samples[0].yaw, samples[2].yaw) < .003);
+  assert.ok(samples[0].offset.distanceTo(samples[2].offset) < .06);
+});
+
+test('a following camera retracts in the same frame when a wall obstructs its eased position', () => {
+  const { player, camera } = setup([{ minX: -2, maxX: 2, minZ: 62, maxZ: 65, top: 8 }]);
+  camera.position.set(0, 2, 64);
+  player.updateCamera(false, 1 / 120);
+  assert.ok(camera.position.z < 61.9, 'camera must not ease through a wall');
 });

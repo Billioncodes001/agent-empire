@@ -5,7 +5,7 @@ import { h, openModal } from './dom';
 
 const VIEWS: [ViewMode, string, string][] = [
   ['first', '👀 First person', 'See through your own eyes. Click the office to look around with the mouse and click things to use them. Esc frees the mouse.'],
-  ['third', '🎥 Third person', 'Follow your character from behind. Drag to orbit the camera, scroll to zoom, and click things to use them.'],
+  ['third', '🎥 Third person', 'Follows your character’s turns while you walk. Drag to look around; following resumes after you release. Scroll to zoom. The First person button switches to eye level.'],
 ];
 
 export function openSettings(

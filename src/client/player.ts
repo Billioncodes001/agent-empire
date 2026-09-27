@@ -57,6 +57,11 @@ export class PlayerController {
   driving = false;
   readonly vehicle = new Drivetrain();
   private walkVelocity = new THREE.Vector2();
+  // Hold the input basis through automatic camera recentering. Otherwise a held
+  // sideways arrow continuously steers itself into a circle as the camera turns.
+  private moveYaw = 0;
+  private moveChord = '';
+  private orbitGrace = 0;
 
   constructor(
     private camera: THREE.PerspectiveCamera,
@@ -70,7 +75,7 @@ export class PlayerController {
       if (Object.values(this.bindings).includes(e.code)) e.preventDefault();
     });
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
-    window.addEventListener('blur', () => this.keys.clear());
+    window.addEventListener('blur', () => this.clearKeys());
 
     dom.addEventListener('pointerdown', (e) => {
       if (!this.enabled) return;
@@ -96,6 +101,7 @@ export class PlayerController {
       }
     });
     window.addEventListener('pointermove', (e) => {
+      if (!this.enabled) return;
       if (this.locked) {
         // Some platforms report a bogus huge jump right after locking.
         const clamp = (v: number) => THREE.MathUtils.clamp(v, -250, 250);
@@ -110,7 +116,10 @@ export class PlayerController {
       this.drag.moved += Math.abs(dx) + Math.abs(dy);
       if (this.view === 'first') this.look(dx * DRAG_LOOK_SPEED, dy * DRAG_LOOK_SPEED);
       else {
-        this.camYaw -= dx * 0.006;
+        const turn = -dx * 0.006;
+        this.camYaw += turn;
+        this.moveYaw += turn;
+        this.orbitGrace = 1.2;
         this.camPitch = THREE.MathUtils.clamp(this.camPitch + dy * 0.004, 0.05, 1.3);
       }
     });
@@ -134,7 +143,7 @@ export class PlayerController {
     dom.addEventListener(
       'wheel',
       (e) => {
-        if (this.view === 'third') this.camDist = THREE.MathUtils.clamp(this.camDist + e.deltaY * 0.01, 2.5, 125);
+        if (this.enabled && this.view === 'third') this.camDist = THREE.MathUtils.clamp(this.camDist + e.deltaY * 0.01, 2.5, 125);
         e.preventDefault();
       },
       { passive: false },
@@ -154,13 +163,16 @@ export class PlayerController {
     if (view === this.view) return;
     if (view === 'first') {
       this.lookPitch = -0.02;
-      this.facing = this.camYaw + Math.PI;
+      // Enter eye/cockpit view facing forward; changing view never steers a car.
+      this.camYaw = this.facing - Math.PI;
     } else {
       // Start the orbit camera behind where you were looking.
       this.camYaw = this.facing - Math.PI;
       this.unlock();
     }
     this.view = view;
+    this.moveChord = '';
+    this.orbitGrace = 0;
     this.updateCamera(true);
   }
 
@@ -178,6 +190,8 @@ export class PlayerController {
   clearKeys() {
     this.keys.clear();
     this.walkVelocity.set(0, 0);
+    this.moveChord = '';
+    this.drag = null;
   }
 
   /** Captures the mouse for looking around, as the first click on the scene does. */
@@ -208,8 +222,9 @@ export class PlayerController {
 
   update(dt: number) {
     dt = Math.min(dt, 0.05);
-    if (dt <= 0) { this.updateCamera(); return; }
-    if (this.scripted) { this.updateCamera(); return; }
+    if (dt <= 0) { this.updateCamera(false, 0); return; }
+    this.orbitGrace = Math.max(0, this.orbitGrace - dt);
+    if (this.scripted) { this.updateCamera(false, dt); return; }
     const before = this.pos.clone();
     const k = this.keys;
     let ix = 0;
@@ -236,13 +251,20 @@ export class PlayerController {
       else this.vehicle.speed = Math.sign(this.vehicle.speed) * Math.min(Math.abs(this.vehicle.speed), distance / Math.max(dt, .001));
       this.moving = Math.abs(this.vehicle.speed)>.1;
       const desired = this.facing - Math.PI;
-      if(this.view==='third')this.camYaw += Math.atan2(Math.sin(desired-this.camYaw),Math.cos(desired-this.camYaw))*Math.min(1,dt*3);
+      if(this.view==='third' && !this.drag && this.orbitGrace === 0 && this.camDist < 20) this.followHeading(desired, dt);
     } else this.vehicle.stop();
     if (!this.driving) {
       const input = this.moving;
+      const chord = `${ix},${iz}`;
+      if (!input) this.moveChord = '';
+      else if (chord !== this.moveChord) {
+        this.moveYaw = this.camYaw;
+        this.moveChord = chord;
+      }
       const len = Math.hypot(ix, iz) || 1;
       ix /= len; iz /= len;
-      const sin = Math.sin(this.camYaw), cos = Math.cos(this.camYaw);
+      const yaw = this.view === 'first' ? this.camYaw : this.moveYaw;
+      const sin = Math.sin(yaw), cos = Math.cos(yaw);
       const dx = ix * cos + iz * sin, dz = -ix * sin + iz * cos;
       const speed = k.has(this.bindings.run) ? RUN : WALK;
       // Acceleration, braking and turns preserve stride continuity instead of snapping to full speed.
@@ -256,6 +278,9 @@ export class PlayerController {
         const want = Math.atan2(this.walkVelocity.x, this.walkVelocity.y);
         const diff = Math.atan2(Math.sin(want - this.facing), Math.cos(want - this.facing));
         this.facing += diff * (1 - Math.exp(-dt * 10));
+        if (input && !this.drag && this.orbitGrace === 0 && this.camDist < 20) {
+          this.followHeading(this.facing - Math.PI, dt);
+        }
       }
     }
 
@@ -290,10 +315,15 @@ export class PlayerController {
     this.walkPhase += walking ? dt*this.speed*Math.PI*2/(this.speed>2.5?2.9:1.55) : 0;
     const bob = walking ? Math.abs(Math.sin(this.walkPhase)) * 0.035 : 0;
     this.bob += (bob - this.bob) * Math.min(1, dt * 18);
-    this.updateCamera();
+    this.updateCamera(false, dt);
   }
 
-  updateCamera(snap = false) {
+  private followHeading(yaw: number, dt: number) {
+    const delta = Math.atan2(Math.sin(yaw - this.camYaw), Math.cos(yaw - this.camYaw));
+    this.camYaw += delta * (1 - Math.exp(-dt * 3));
+  }
+
+  updateCamera(snap = false, dt = 1 / 60) {
     if (this.view === 'first') {
       const eye=this.driving?new THREE.Vector3(-.43,1.24,.05).applyAxisAngle(new THREE.Vector3(0,1,0),this.facing):new THREE.Vector3(0,EYE_HEIGHT+this.bob+this.stepOffset,0);
       this.camera.position.copy(this.pos).add(eye);
@@ -316,6 +346,9 @@ export class PlayerController {
     const floorY = groundAt(this.colliders, this.pos.x, this.pos.z, this.pos.y);
     const roof = ceilingAt(this.colliders, cam.x, cam.z, floorY) - 0.3;
     cam.y = THREE.MathUtils.clamp(cam.y, floorY + 0.6, Math.max(floorY + 0.6, Math.min(floorY + (this.pos.z >= CITY.minZ ? 110 : 3.5), roof)));
+    // Ease first, then resolve occlusion on the actual rendered position. Easing
+    // an already-clipped target can otherwise leave the camera behind a wall.
+    if (!snap) cam.lerpVectors(this.camera.position, cam, 1 - Math.exp(-dt * 17.26));
     // Pull the shoulder camera forward before it crosses any solid building/furniture face.
     // An explicit district overview (>20m) is intentionally free of street-level occlusion.
     if (this.camDist < 20) {
@@ -331,8 +364,7 @@ export class PlayerController {
       }
       cam.copy(target).addScaledVector(direction,distance);
     }
-    if (snap) this.camera.position.copy(cam);
-    else this.camera.position.lerp(cam, 0.25);
+    this.camera.position.copy(cam);
     this.camera.lookAt(target);
   }
 
