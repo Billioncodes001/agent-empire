@@ -1,6 +1,6 @@
 # First-time setup and execution choices
 
-Product decision, 2026-09-27: a VPS is optional. Users bring their own supported provider account/API access and choose where jobs execute. Do not purchase infrastructure by default. Vantage is excluded from all Agent Empire hosting. This document defines the next implementation; the current runtime still connects to a single running Agent Empire host.
+Product decision, 2026-09-27: a VPS is optional. Users bring their own supported provider account/API access and choose where jobs execute. Do not purchase infrastructure by default. Vantage is excluded from all Agent Empire hosting. The first adapter and bundled desktop runtime are implemented. The boundaries below distinguish current behavior from the remaining cross-device work.
 
 ## Setup flow
 
@@ -20,7 +20,7 @@ Local execution continues only while the local runner remains active and awake. 
 - Codex product login: official Codex clients support ChatGPT subscription sign-in and API-key authentication for local work; Codex cloud requires ChatGPT sign-in. This does not establish an embeddable third-party OAuth flow for Agent Empire. Do not present one until documented integration support is verified. [Authentication](https://learn.chatgpt.com/docs/auth).
 - GitHub: Copilot cloud agent and Actions-backed agentic workflows are possible task executors, subject to account access, permissions and usage limits. Agentic Workflows is in public preview. [Cloud agent](https://docs.github.com/en/copilot/concepts/agents/cloud-agent/about-cloud-agent), [workflows](https://docs.github.com/en/copilot/concepts/agents/about-github-agentic-workflows).
 
-These are supported product surfaces to evaluate, not completed Agent Empire adapters or a guarantee of access on every user account. Recheck availability and authentication before implementing each adapter. A provider login/API key never means unlimited agents, unlimited tokens or unlimited runtime.
+Only the Anthropic Managed Agents adapter is implemented in Agent Empire. OpenAI and GitHub workflow choices are disabled in setup. These provider surfaces are not a guarantee of access on every user account. Recheck availability and authentication before implementing each adapter. A provider login/API key never means unlimited agents, unlimited tokens or unlimited runtime.
 
 ## Task and synchronization contract
 
@@ -34,8 +34,22 @@ Reuse the existing hash-verified isolated importer where its artifact contract a
 
 ## Offline and credential boundary
 
-Desktop must package the game assets and local simulation/save support. The existing Electron remote-page shell and public-offline PWA do not yet provide that full offline experience. Web/mobile assets may be cached independently, but provider keys, private terminal content and authenticated API responses must not enter public/offline caches.
+Desktop now packages the game assets, server and local simulation/save support. It opens an existing Git root or initializes an empty city folder, binds only to loopback and keeps the same local port for browser profile persistence. Git must be installed. The web PWA still only provides a public offline explanation page; it does not cache the playable world. Web/mobile assets may be cached independently, but provider keys, private terminal content and authenticated API responses must not enter public/offline caches.
 
-Desktop credentials belong in the OS credential store; VPS credentials belong in its protected secret store. Web/mobile need a supported short-lived authorization flow or a managed backend with protected credential storage. Such a backend can be serverless and does not require buying a VPS, but is still infrastructure we must implement. Do not copy raw API keys into browser localStorage, Git, game saves, logs or synchronization artifacts.
+The native launcher encrypts Anthropic and GitHub credentials with Electron safeStorage backed by the OS credential store. It rejects unavailable or plaintext-only storage. Hosted deployments read ANTHROPIC_API_KEY and AGENT_EMPIRE_GITHUB_TOKEN from their protected environment. Never enter credentials in chat. The GitHub token is sent to Anthropic when an explicitly submitted session mounts the selected repository; use repository-scoped permissions. Saving credentials or setup does not dispatch work. Web/mobile need a supported short-lived authorization flow or a managed backend with protected credential storage. Such a backend can be serverless and does not require buying a VPS, but is still infrastructure we must implement. Do not copy raw API keys into browser localStorage, Git, game saves, logs or synchronization artifacts.
 
 Provider-hosted execution should be the initial adapter milestone. Retain the existing single-host/VPS transport as an optional path and local execution for users who prefer it. No new provider session, account connection, infrastructure purchase or credential migration is authorized merely by saving these setup preferences.
+
+## Implemented adapter and limits
+
+In Settings → App & connection, open execution setup. Choose Local, an existing VPS, or Anthropic cloud. Cloud setup requires an existing Claude Platform agent with the managed toolset, a cloud environment, and optional vault ID. Provisioning those resources and GitHub OAuth are not implemented. The connection check reads their metadata and the selected GitHub repository/branch; it does not launch a session or guarantee write access. It expires after five minutes or a configuration/credential change.
+
+Cloud tasks have a separate review-and-submit flow. The server stores dispatch intent and a full budget reservation before POST, pins the source commit and assigns a task branch. A lost creation response remains **dispatch uncertain**, with no blind retry. Known sessions can be polled after restart; unknown/idle/approval-paused jobs retain capacity. Provider idle is not verified completion. Stop explicitly interrupts and archives; if interruption is still settling, refresh and stop again once idle. Without a returned session ID, inspect the provider Console using the task ID before resolving an uncertain dispatch.
+
+Limits are 1–10 concurrent cloud tasks, a per-task allowance and a daily UTC reservation allowance. Full reservations are retained for the day, with unresolved earlier tasks carried forward. Provider budgets are evaluated between requests and may overshoot; these controls are not account-wide billing caps or unlimited usage. No wall-clock cutoff is implemented. Approvals remain in the provider Console.
+
+The bundled desktop starts its local task queue paused at zero concurrency. Completing local setup does not start founding briefs; set queue concurrency explicitly to start them. Local workers stop when the native app exits. Provider-managed sessions already accepted continue independently, subject to provider limits. Switching execution mode cannot migrate jobs, and active or uncertain work prevents conflicting changes.
+
+The adapter stores task status, session ID, source commit, branch, event cursor and observed cost. It does **not** yet verify or import provider outputs/PRs, attach cloud jobs to civic workers, award completion revenue, synchronize city saves across devices, or provide browser-only credential hosting. The existing single-host Git-bundle importer remains separate. Web/mobile can control an authenticated running host; a laptop hosting that connection still has to stay online. Native mobile packaging is not implemented.
+
+Automated adapter tests use an injected fake transport. `npx tsx tools/execution-fixture.ts` starts a disposable UI fixture on port 4617 with password `execution-qa-only`; every provider request is intercepted and real workers are disabled. It is not evidence of a paid provider session succeeding.

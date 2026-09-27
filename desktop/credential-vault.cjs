@@ -1,5 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
+const {randomUUID} = require('node:crypto');
 const FIELDS = ['anthropicKey', 'githubToken'];
 function createVault(file, encryption) {
   const available = () => encryption.isEncryptionAvailable() && (!encryption.getSelectedStorageBackend || encryption.getSelectedStorageBackend() !== 'basic_text');
@@ -22,9 +23,11 @@ function createVault(file, encryption) {
       value[k] = input[k].trim();
     }
     fs.mkdirSync(path.dirname(file), {recursive:true,mode:0o700});
-    const temp = file + '.tmp';
-    fs.writeFileSync(temp, encryption.encryptString(JSON.stringify(value)), {mode:0o600});
-    fs.chmodSync(temp,0o600); fs.renameSync(temp,file);
+    const temp = file + '.' + randomUUID() + '.tmp';
+    try {
+      fs.writeFileSync(temp, encryption.encryptString(JSON.stringify(value)), {mode:0o600,flag:'wx'});
+      fs.renameSync(temp,file);
+    } finally { if (fs.existsSync(temp)) fs.unlinkSync(temp); }
     return status();
   }
   function status() { const v=read();return {available:available(),anthropic:!!v.anthropicKey,github:!!v.githubToken}; }

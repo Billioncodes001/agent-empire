@@ -1,6 +1,6 @@
 # One host, several devices
 
-This describes the implemented single-host mode. The updated [first-time execution setup](EXECUTION_SETUP.md) makes it optional alongside planned provider-hosted cloud tasks and local execution. A dedicated VPS is not a product requirement.
+This describes the implemented single-host mode. The updated [first-time execution setup](EXECUTION_SETUP.md) makes it optional alongside Anthropic provider-hosted cloud tasks and local execution. A dedicated VPS is not a product requirement.
 
 Agent Empire's first hosted architecture has **one owner and one running server per project**. Workers live on that host, not in the browser. Closing desktop, mobile or web clients does not cancel their processes. Turning off or restarting the host still interrupts jobs; recovery retains the process-safety rules in [RECOVERY.md](RECOVERY.md). This is not a distributed runner pool or a promise of exactly-once external side effects.
 
@@ -44,4 +44,8 @@ Connect to the same host as the browser and sign in. **File → Configure laptop
 
 The same responsive client is delivered as an installable PWA. See its Connection settings for installation guidance. Mobile installability varies by browser; test Safari/Android on physical devices before release. Authenticated pages, API responses, city snapshots and terminals must never enter a service-worker cache. Offline navigation displays a public explanatory page, not a stale playable city.
 
-Native iOS/Android store packages, mobile background agent execution, multi-tenant accounts, encrypted managed provider storage, distributed job containers and cross-host failover remain outside this first hosted milestone. Mobile is a controller of the continuously running host.
+Native iOS/Android store packages, mobile background agent execution, multi-tenant accounts, browser-managed provider credentials, distributed job containers and cross-host failover remain outside this first hosted milestone. Mobile is a controller of the continuously running host.
+
+## Bundled local desktop and provider sessions
+
+The desktop now also bundles a loopback server and world assets. This local mode ends when the app quits; it is different from connecting the shell to an independent VPS. The native launcher stores provider credentials using OS-backed encryption and starts local queues paused. Anthropic sessions already accepted continue in provider infrastructure after desktop exit, with a durable local task ledger for later polling. Their output import and city-save synchronization are not yet connected to the host bundle protocol above. See [execution setup](EXECUTION_SETUP.md).
