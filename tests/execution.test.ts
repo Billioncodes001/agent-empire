@@ -209,6 +209,50 @@ test('stop interrupts then archives only confirmed idle; daily full reservations
   } finally { f.close(); }
 });
 
+test('provider observations advance updatedAt without changing submission time; restart skips terminal polling', async () => {
+  const f = fixture();
+  try {
+    const submittedAt = Date.parse('2026-09-27T12:00:00Z');
+    await f.ready();
+    const task = await f.manager.submit(f.input());
+    assert.equal(task.createdAt, submittedAt);
+    assert.equal(task.updatedAt, submittedAt);
+
+    const refreshedAt = submittedAt + 60_000;
+    f.setNow(refreshedAt);
+    const refreshed = await f.manager.refresh(task.id);
+    assert.equal(refreshed.status, 'running');
+    assert.equal(refreshed.createdAt, submittedAt);
+    assert.equal(refreshed.updatedAt, refreshedAt, 'even an unchanged provider status has fresh observation time');
+    assert.equal(refreshed.cost?.observedAt, refreshedAt);
+
+    const stoppedAt = submittedAt + 180_000;
+    f.setNow(stoppedAt);
+    const stopped = await f.manager.stopTask(task.id);
+    assert.equal(stopped.status, 'cancelled');
+    assert.equal(stopped.createdAt, submittedAt);
+    assert.equal(stopped.updatedAt, stoppedAt, 'confirmed stop must not inherit the submission or prior refresh timestamp');
+    const persisted = JSON.parse(readFileSync(path.join(f.dir, 'execution.json'), 'utf8')).records[0].task;
+    assert.equal(persisted.updatedAt, stoppedAt);
+
+    f.manager.stop();
+    f.setNow(submittedAt + 240_000);
+    const reopened = f.reopen();
+    const calls = f.fake.calls.length;
+    reopened.start(); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.fake.calls.length, calls, 'background polling must not refresh already terminal sessions');
+    assert.deepEqual(reopened.tasks()[0], stopped);
+
+    const checkedAt = submittedAt + 300_000;
+    f.setNow(checkedAt);
+    const checked = await reopened.refresh(task.id);
+    assert.equal(checked.status, 'cancelled');
+    assert.equal(checked.createdAt, submittedAt);
+    assert.equal(checked.updatedAt, checkedAt, 'an explicit terminal refresh records when status was checked, not when it stopped');
+    assert.ok(f.fake.calls.slice(calls).every(call => call.init.method === 'GET'));
+  } finally { f.close(); }
+});
+
 test('uncertain stop never releases the slot, archives a running session, or automatically repeats a mutation', async () => {
   const f = fixture();
   try {
