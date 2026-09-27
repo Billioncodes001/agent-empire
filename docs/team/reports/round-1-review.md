@@ -36,4 +36,14 @@ Observable impact: the figure’s name is hidden and it does not type. HUD and M
 
 ## Limitations
 
-Did not rerun the full 86-test suite, typecheck, build, browser-smoke, or a live provider. Did not touch `.agent-office` or port 4610. Coordinator reports those checks passed, plus isolated-fixture checks for phase labels, stale dialogs, focus trap, terminal Tab, settings persistence, waypoint movement, and 390/768 layouts. Those browser results were not repeated here. `8c93105` was not in the tree.
+Did not rerun the full 86-test suite, typecheck, build, browser-smoke, or a live provider. Did not touch `.agent-office` or port 4610. Coordinator reports those checks passed, plus isolated-fixture checks for phase labels, stale dialogs, focus trap, terminal Tab, settings persistence, waypoint movement, and 390/768 layouts. Those browser results were not repeated here.
+
+## Final delta
+
+Inspected only `f6d3b9a` and `8c93105`, now in `60a065ab03d075edfc363877b67be78ab30e0709`. No remaining confirmed finding from those diffs.
+
+`f6d3b9a` closes the low avatar finding. The decorative figure is placed once at `(8, 0, 9)` and `city.update` no longer takes `delegated`. Both callers, [src/client/main.ts](src/client/main.ts#L1131) and [src/client/visual-review.ts](src/client/visual-review.ts#L240), match. Leaving headquarters can no longer move that figure.
+
+`8c93105` is copy only. Founding and Management now say a queued task earns simulation credits once when an agent turn ends, and still say the output is not verified. No reward logic changed in that commit.
+
+Did not rerun tests, typecheck, or build for this delta. Coordinator reports all 86 tests, typecheck, and build passed after these changes.
