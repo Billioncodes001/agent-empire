@@ -4,10 +4,12 @@ import { h, toast } from './dom';
 import { connectionView, continuityView } from './continuity';
 import { installState, onInstallChange, promptInstall } from './pwa';
 import type { StatusView } from './status';
+import { executionApi, openCloudTasks, openExecutionSetup, setupView } from './execution';
+import type { ExecutionSetup } from '../../shared/execution';
 
 const INSTALL_TEXT = {
   installed: 'Installed. Agent Empire opens in its own window from your home screen, dock or app list.',
-  available: 'Install Agent Empire as an app on this device. It still connects to your office host; nothing runs on this device.',
+  available: 'Install Agent Empire as an app on this device. The installed app connects to the same office host as this page.',
   ios: 'On iPhone or iPad: tap Share, then “Add to Home Screen”.',
   insecure: 'Installing needs HTTPS or localhost. Open the office over a secure address to install it.',
   'browser-menu': 'Use your browser’s menu to install this site (for example “Install app” or “Add to Home Screen”), where supported.',
@@ -40,15 +42,27 @@ export function appPanel(net: Net) {
     if (await promptInstall()) toast('Agent Empire installed on this device.', 'info');
   });
 
+  const execution = card('Where agents run');
+  const setExecution = (s: ExecutionSetup | null) => {
+    execution.set(s ? setupView(s) : { tone: 'unknown', label: 'Execution setup unavailable', detail: 'This host did not report its execution setup.' });
+    tasksBtn.hidden = s?.config.mode !== 'anthropic_cloud' || !s.config.completed;
+  };
+  const openTasks = () => openCloudTasks({ openSetup });
+  const openSetup = () => openExecutionSetup({ onChanged: setExecution, openTasks });
+  const setupBtn = h('button.btn', { type: 'button', onclick: openSetup }, 'Execution setup…');
+  const tasksBtn = h('button.btn', { type: 'button', onclick: openTasks }, 'Cloud tasks…');
+  execution.el.append(h('div.sector-actions', {}, setupBtn, tasksBtn));
+  executionApi.setup().then(setExecution, () => setExecution(null));
+
   const el = h(
     'section.app-panel',
     { 'aria-labelledby': 'app-panel-title' },
     h('label', { id: 'app-panel-title', style: 'margin-top:18px' }, 'App & connection'),
-    h('div.status-cards', {}, connection.el, host.el),
+    h('div.status-cards', {}, connection.el, host.el, execution.el),
     h(
       'p.setting-note',
       {},
-      'Agents run on the office host that serves this page. They keep working after you close this browser or app only while that host stays on, awake and running the office server. Nothing runs offline on this device, and a connected page does not mean the host is a cloud server.',
+      'This page is connected to an office host. What keeps working after you close it depends on where agents run: on this host only while it stays on, awake and running the office server; in provider cloud sessions subject to your provider’s limits and approvals. A connected page does not mean the host is a cloud server.',
     ),
     h('div.app-install', {}, installNote, install),
   );
