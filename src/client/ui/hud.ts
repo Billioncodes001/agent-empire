@@ -36,23 +36,51 @@ export function updateSpeaking(voice: Voice) {
 
 export function renderWorkers(onOpen: (id: string) => void) {
   const ul = $('workers');
-  ul.replaceChildren();
+  ul.replaceChildren(...workerRows(onOpen));
+  const workers = store.workers.size;
+  $('worker-count').textContent = workers ? String(workers) : '';
+}
+
+function workerRows(onOpen: (id: string) => void): HTMLElement[] {
   const workers = [...store.workers.values()].sort((a, b) => a.createdAt - b.createdAt);
-  for (const w of workers) {
+  const rows = workers.map((w) => {
     const sub = [w.worktree && `🌿 ${w.worktree.branch}`, w.pr && `🔀 PR #${w.pr.number}`, w.activity || w.title || w.prompt].filter(Boolean).join(' · ');
-    ul.append(
-      h(
-        'li',
-        { onclick: () => onOpen(w.id), title: `Open ${w.name}'s terminal` },
-        h('span.dot', { style: `background:${w.color}` }),
-        h('span.name', {}, w.name, sub ? h('span.sub', {}, sub) : null),
-        w.usage?.calls ? h('span.cost', { title: usageTitle(w.usage) }, fmtCost(w.usage.cost)) : null,
-        h('span.pill', { class: w.status }, STATUS_LABEL[w.status] ?? w.status),
-      ),
+    const status = STATUS_LABEL[w.status] ?? w.status;
+    return h(
+      'li',
+      {
+        onclick: () => onOpen(w.id),
+        onkeydown: ((e: KeyboardEvent) => {
+          if (e.key !== 'Enter' && e.key !== ' ') return;
+          e.preventDefault();
+          onOpen(w.id);
+        }) as EventListener,
+        tabindex: 0,
+        role: 'button',
+        title: `Open ${w.name}'s terminal`,
+        'aria-label': `${w.name}, ${w.kind === 'shell' ? 'shell' : 'agent'}, ${status}. Open terminal.`,
+      },
+      h('span.dot', { style: `background:${w.color}` }),
+      h('span.name', {}, w.name, sub ? h('span.sub', {}, sub) : null),
+      w.usage?.calls ? h('span.cost', { title: usageTitle(w.usage) }, fmtCost(w.usage.cost)) : null,
+      h('span.pill', { class: w.status }, status),
     );
-  }
-  if (!workers.length) ul.append(h('li.empty', {}, 'Walk up to a desk and press E to hire one'));
-  $('worker-count').textContent = workers.length ? String(workers.length) : '';
+  });
+  return rows.length ? rows : [h('li.empty', {}, 'Walk up to a desk and press E to hire one')];
+}
+
+/** The side panel is hidden on small screens; this keeps every worker and its attention state reachable. */
+export function openWorkersDialog(onOpen: (id: string) => void) {
+  const close = h('button.btn.close', { 'aria-label': 'Close workers' }, '✕');
+  const list = h('ul.workers-list');
+  const paint = () => list.replaceChildren(...workerRows((id) => { modal.close(); onOpen(id); }));
+  const off = store.on('workers', paint);
+  const modal = openModal(
+    h('div.modal.workers-modal', { role: 'dialog', 'aria-label': 'Workers' }, h('header', {}, h('h2', {}, 'Workers'), close), h('div.body.workers', {}, list)),
+    { onClose: () => off() },
+  );
+  close.addEventListener('click', () => modal.close());
+  paint();
 }
 
 export function renderChat() {

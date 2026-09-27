@@ -1,13 +1,21 @@
 import { keyLabel, type Action } from '../controls';
 import { FLOOR_RISE } from '../../shared/layout';
-import { SITES, hourlyRates, upgradeCost, type SiteId } from '../../shared/empire';
+import { SITES, type SiteId } from '../../shared/empire';
 import { entranceAccess, entrance, worldPosition, mapPoint, mapWorld } from '../navigation';
 import { store } from '../state';
 import type { Net } from '../net';
 import type { PlayerController } from '../player';
 import { h, openModal, toast } from './dom';
+import { openManagement } from './management';
 
-export function mountEmpire(net: Net, player: PlayerController, research: () => void, onInteract?: () => void, changeView?: () => void) {
+export function mountEmpire(
+  net: Net,
+  player: PlayerController,
+  research: () => void,
+  onInteract?: () => void,
+  changeView?: () => void,
+  openTerminal?: (workerId: string) => void,
+) {
   const map = h('canvas.radar-canvas', { width: 320, height: 320 });
   const place = h('span.radar-place', {}, 'Headquarters');
   const stats = h('span.radar-stats');
@@ -246,264 +254,7 @@ export function mountEmpire(net: Net, player: PlayerController, research: () => 
       };
   } catch {}
   function openOperations(selected?: SiteId) {
-    const body = h('div.body.empire-body');
-    let off = () => {};
-    const close = h('button.btn', { 'aria-label': 'Close operations' }, '✕');
-    const modal = openModal(
-      h(
-        'div.modal.empire-modal',
-        { role: 'dialog', 'aria-label': 'Empire operations' },
-        h('header', {}, h('h2', {}, 'Empire operations'), close),
-        body,
-      ),
-      { onClose: () => off() },
-    );
-    close.onclick = () => modal.close();
-    const render = () => {
-      const state = store.empire;
-      const economy = state.economy;
-      const rate = state.sectors.reduce((sum, sector) => {
-        const r = hourlyRates(sector);
-        return sum + r.revenue - r.wages - r.upkeep;
-      }, 0);
-      const delegate = h(
-        'button.btn.primary',
-        {
-          onclick: () =>
-            net.send({
-              t: 'empire.action',
-              action: { kind: 'delegate', enabled: !state.delegated },
-            }),
-        },
-        state.delegated ? 'Resume CEO oversight' : 'Delegate to chief of staff',
-      );
-      body.replaceChildren(
-        h('p.empire-eyebrow', {}, 'LIVE SERVER STATE · PERSISTENT DISTRICT'),
-        h(
-          'div.empire-metrics',
-          {},
-          metric('City treasury', `${state.funds.toLocaleString()} cr`),
-          metric('Founder wallet', `${economy.ownerBalance.toLocaleString()} cr`),
-          metric('Net / city hour', `${rate >= 0 ? '+' : ''}${rate.toLocaleString()} cr`),
-          metric('Employee earnings', `${economy.wages.toLocaleString()} cr`),
-          metric('AI workers active', String(state.workforce.working)),
-          metric('Need your input', String(state.workforce.attention)),
-          metric('Queued tasks', String(state.workforce.queued)),
-        ),
-        h(
-          'div.empire-brief',
-          {},
-          h('h3', {}, 'Chief of staff · administrative monitoring active'),
-          h(
-            'p',
-            {},
-            'Your chief of staff tracks every sector, payroll and real worker blockers. Managers remain assigned after their startup brief, ready for the next task. City operations settle every city hour (one minute while the server runs).',
-          ),
-          delegate,
-          h(
-            'button.btn',
-            {
-              style: 'margin-left:8px',
-              disabled: economy.ownerBalance <= 0,
-              onclick: () => net.send({ t: 'empire.action', action: { kind: 'reinvest' } }),
-            },
-            'Reinvest founder earnings',
-          ),
-          h(
-            'p.setting-note',
-            {},
-            'You receive 20% of positive operating profit. Every completed AI task earns 500 credits: 50 worker pay, 90 founder dividend and 360 retained by the city.',
-          ),
-        ),
-        h('h3', {}, 'Develop your district'),
-        h(
-          'div.empire-sites',
-          {},
-          ...SITES.filter((site) => !selected || site.id === selected).map((site) => {
-            const sector = state.sectors.find((s) => s.id === site.id)!;
-            const r = hourlyRates(sector),
-              m = sector.manager;
-            const act = (kind: 'build' | 'hire' | 'buy-land' | 'upgrade' | 'retry-manager') =>
-              net.send({
-                t: 'empire.action',
-                action: { kind, site: site.id },
-              });
-            return h(
-              'article.empire-site',
-              {},
-              h('span.empire-eyebrow', {}, site.sector),
-              h('h3', {}, site.name),
-              h(
-                'p',
-                {},
-                sector.built
-                  ? (site.id === 'hq' ? `${state.office.floors} operational floors · ${state.office.workstations} furnished workstations. Use HQ to expand; employ AI workers at their desks.` : `Level ${sector.level} · ${sector.staff}/${site.capacity} service employees · ${sector.service}% coverage`)
-                  : sector.owned
-                    ? `Owned parcel · construction ${site.cost.toLocaleString()} cr`
-                    : `Expansion land · ${site.landCost.toLocaleString()} cr`,
-              ),
-              sector.built
-                ? h('progress', {
-                    max: 100,
-                    value: sector.service,
-                    'aria-label': `${site.name} service coverage`,
-                  })
-                : null,
-              m
-                ? h(
-                    'div.manager-status',
-                    {},
-                    h('strong', {}, m.name),
-                    h('div', {}, `AI assignment: ${m.status === 'ready' ? 'Ready for work · startup completed' : m.status}`),
-                    m.error ? h('small', {}, m.error) : null,
-                    h('button.btn', { onclick: research }, 'View agent queue'),
-                  )
-                : null,
-              sector.built && site.id !== 'home'
-                ? h(
-                    'p.setting-note',
-                    {},
-                    `${r.revenue} revenue − ${r.wages} wages − ${r.upkeep} upkeep / city hour. Lifetime revenue ${sector.revenue.toLocaleString()} cr.`,
-                  )
-                : null,
-              h(
-                'div.sector-actions',
-                {},
-                !sector.owned
-                  ? h(
-                      'button.btn',
-                      {
-                        disabled: state.funds < site.landCost,
-                        onclick: () => act('buy-land'),
-                      },
-                      `Buy land · ${site.landCost.toLocaleString()} cr`,
-                    )
-                  : !sector.built
-                    ? h(
-                        'button.btn',
-                        {
-                          disabled: state.funds < site.cost,
-                          onclick: () => act('build'),
-                        },
-                        `Build · ${site.cost.toLocaleString()} cr`,
-                      )
-                    : null,
-                sector.built && site.id !== 'home' && site.id !== 'hq'
-                  ? h(
-                      'button.btn',
-                      {
-                        disabled: sector.staff >= site.capacity || state.funds < 1200,
-                        onclick: () => act('hire'),
-                      },
-                      'Hire employee · 1,200 cr',
-                    )
-                  : null,
-                sector.built && site.id !== 'home' && site.id !== 'hq' && sector.level < 3
-                  ? h(
-                      'button.btn',
-                      {
-                        disabled: state.funds < upgradeCost(sector),
-                        onclick: () => act('upgrade'),
-                      },
-                      `Upgrade · ${upgradeCost(sector).toLocaleString()} cr`,
-                    )
-                  : null,
-                m && ['offline', 'pending'].includes(m.status)
-                  ? h('button.btn', { onclick: () => act('retry-manager') }, 'Retry manager startup')
-                  : null,
-                sector.built ? h('button.btn', { onclick: () => assignTask(site.id) }, 'Assign real AI task') : null,
-              ),
-            );
-          }),
-        ),
-        selected
-          ? h(
-              'button.btn',
-              {
-                onclick: () => {
-                  selected = undefined;
-                  render();
-                },
-              },
-              'Show all sectors',
-            )
-          : h('span'),
-        h('h3', {}, 'City accounts'),
-        h(
-          'p.setting-note',
-          {},
-          'Gross revenue, wages, upkeep and dividends reconcile to the treasury. Salaries and founder earnings remain simulation credits.',
-        ),
-        h(
-          'div.economy-ledger',
-          {},
-          h(
-            'table',
-            {},
-            h(
-              'thead',
-              {},
-              h(
-                'tr',
-                {},
-                ...['Transaction', 'Revenue', 'Wages', 'Upkeep', 'Founder', 'Investment', 'Treasury'].map((label) => h('th', {}, label)),
-              ),
-            ),
-            h(
-              'tbody',
-              {},
-              ...economy.ledger
-                .slice(0, 10)
-                .map((row) =>
-                  h(
-                    'tr',
-                    {},
-                    ...[row.label, row.revenue, row.wages, row.upkeep, row.dividend, row.capital, row.balance].map((value) =>
-                      h('td', {}, String(value)),
-                    ),
-                  ),
-                ),
-            ),
-          ),
-        ),
-        economy.ledger.length
-          ? h('span')
-          : h('p.setting-note', {}, 'Your first completed task or hourly operating close will appear here.'),
-        h(
-          'details',
-          {},
-          h('summary', {}, `Employee accounts · ${Object.keys(economy.employees).length}`),
-          h(
-            'div.payroll-grid',
-            {},
-            ...Object.values(economy.employees).map((employee) =>
-              h(
-                'article',
-                {},
-                h('span', {}, employee.name),
-                h('small', {}, `${SITES.find((s) => s.id === employee.site)!.name} · ${employee.role}`),
-                h('strong', {}, `${employee.earned.toLocaleString()} cr earned`),
-              ),
-            ),
-          ),
-        ),
-        h('h3', {}, 'Sector briefings'),
-        h(
-          'div.empire-reports',
-          {},
-          ...state.reports
-            .slice(0, 18)
-            .map((r) => h('article', {}, h('small', {}, `${new Date(r.at).toLocaleTimeString()} / ${r.sector}`), h('p', {}, r.text))),
-        ),
-        h(
-          'p.setting-note',
-          {},
-          'Simulation credits are fictional. Actual AI usage costs are shown in the workers panel. Closing the browser keeps work running only while its server remains online.',
-        ),
-      );
-    };
-    off = store.on('empire', render);
-    render();
+    return openManagement(net, { openQueue: research, openTerminal: (id) => openTerminal?.(id), assignTask }, selected);
   }
   function assignTask(id: SiteId) {
     const site = SITES.find((s) => s.id === id)!;
@@ -639,12 +390,9 @@ export function mountEmpire(net: Net, player: PlayerController, research: () => 
         : player.pos.z < 30
           ? `Headquarters · Floor ${Math.floor(player.pos.y / FLOOR_RISE) + 1}`
           : (near?.name ?? 'Waterfront avenue');
-      stats.textContent = `${keyLabel(player.bindings.map)} Map · ${keyLabel(player.bindings.camera)} View${store.empire.delegated ? ' · Chief of staff on duty' : ''}`;
+      stats.textContent = `${keyLabel(player.bindings.map)} Map · ${keyLabel(player.bindings.camera)} View`;
       draw(map, true);
       if (fullMap) draw(fullMap, false);
     },
   };
-}
-function metric(label: string, value: string) {
-  return h('div', {}, h('strong', {}, value), h('span', {}, label));
 }

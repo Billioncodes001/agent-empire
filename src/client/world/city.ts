@@ -5,6 +5,7 @@ import { entranceAccess, assignedWorkers } from '../navigation';
 import { store } from '../state';
 import { FLOOR_RISE } from '../../shared/layout';
 import { managerAvailable } from '../../shared/empire';
+import { managerTyping, typingPose } from '../ui/status';
 import { batchStaticMeshes } from './batching';
 import * as THREE from 'three';
 import { GRAPHICS, type GraphicsQuality } from '../graphics';
@@ -492,6 +493,7 @@ export function buildCity() {
       });
       foliage.update(t);
       const displayedWorkers = new Set<string>();
+      const ev = store.evidence();
       for (const site of SITES) {
         const allowed = entranceAccess(site.id, store.empire, store.workers.values()).allowed;
         const x = site.x + (site.id === 'home' ? 0 : 2.2);
@@ -503,12 +505,13 @@ export function buildCity() {
         const sector = store.empire.sectors.find((s) => s.id === site.id)!;
         const assigned = assignedWorkers(site.id, store.workers.values())
           .filter((w) => w.id !== sector.manager?.workerId)
-          .map((w) => ({ id: w.id, name: w.name, color: w.color }));
+          .map((w) => ({ id: w.id, name: w.name, color: w.color, typing: typingPose(w, ev.fresh) }));
         if (managerAvailable(sector))
           assigned.unshift({
             id: sector.manager!.id,
             name: sector.manager!.name,
             color: '#567b70',
+            typing: managerTyping(sector, store.queue.tasks, store.workers, ev),
           });
         assigned.splice(3);
         for (let i = 0; i < assigned.length; i++) {
@@ -517,10 +520,10 @@ export function buildCity() {
           let person = staffViews.get(worker.id);
           if (!person) {
             person = new Person(worker.name, worker.color, lookFromSeed(worker.id));
-            person.pose = 'type';
             group.add(person.root);
             staffViews.set(worker.id, person);
           }
+          person.pose = worker.typing ? 'type' : 'sit';
           person.root.position.set(site.x + [-2, 3, 6][i], 0, site.z - 1.9);
           person.root.rotation.y = Math.PI;
           person.root.visible = allowed;

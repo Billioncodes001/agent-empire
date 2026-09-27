@@ -43,10 +43,21 @@ export function modalOpen(): boolean {
   return stack.length > 0;
 }
 
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])';
+
+function focusables(root: HTMLElement): HTMLElement[] {
+  return [...root.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => !el.closest('[hidden], .hidden') && el.getClientRects().length > 0);
+}
+
 /** Opens a modal. Esc closes it unless `escCloses` is false (for dialogs you mustn't skip). */
 export function openModal(content: HTMLElement, opts: { escCloses?: boolean; onClose?: () => void; backdropCloses?: boolean } = {}): Modal {
   const backdrop = h('div.backdrop', {}, content);
   const root = document.getElementById('modal-root')!;
+  const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  // Only keyboard focus is handed back; a clicked HUD button would otherwise catch the next Space (jump).
+  const restore = opener && opener.id !== 'scene' && opener !== document.body && opener.matches(':focus-visible') ? opener : null;
+  if (content.getAttribute('role') === 'dialog') content.setAttribute('aria-modal', 'true');
+  if (!content.hasAttribute('tabindex')) content.tabIndex = -1;
   root.append(backdrop);
   let closed = false;
   const onKey = (e: KeyboardEvent) => {
@@ -56,6 +67,27 @@ export function openModal(content: HTMLElement, opts: { escCloses?: boolean; onC
       e.preventDefault();
       e.stopPropagation();
       modal.close();
+      return;
+    }
+    if (e.key !== 'Tab') return;
+    const active = document.activeElement as HTMLElement | null;
+    // xterm uses Tab for shell completion.
+    if (active?.closest('.xterm')) return;
+    const items = focusables(content);
+    if (!items.length) {
+      e.preventDefault();
+      return;
+    }
+    const first = items[0], last = items[items.length - 1];
+    if (!active || !content.contains(active)) {
+      e.preventDefault();
+      (e.shiftKey ? last : first).focus();
+    } else if (e.shiftKey && active === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && active === last) {
+      e.preventDefault();
+      first.focus();
     }
   };
   const modal: Modal = {
@@ -69,6 +101,9 @@ export function openModal(content: HTMLElement, opts: { escCloses?: boolean; onC
       const i = stack.indexOf(modal);
       if (i >= 0) stack.splice(i, 1);
       opts.onClose?.();
+      const below = stack[stack.length - 1];
+      if (restore?.isConnected && (!below || below.el.contains(restore))) restore.focus({ preventScroll: true });
+      else if (below && !below.el.contains(document.activeElement)) focusables(below.el)[0]?.focus({ preventScroll: true });
       listeners.forEach((fn) => fn(stack.length > 0));
     },
   };
@@ -78,6 +113,12 @@ export function openModal(content: HTMLElement, opts: { escCloses?: boolean; onC
   window.addEventListener('keydown', onKey, true);
   stack.push(modal);
   listeners.forEach((fn) => fn(true));
+  // Callers may focus their own field (or xterm, after it mounts); only fill in when nothing inside has focus.
+  requestAnimationFrame(() => {
+    if (closed || stack[stack.length - 1] !== modal || content.contains(document.activeElement) || content.querySelector('.xterm')) return;
+    const preferred = content.querySelector<HTMLElement>('[autofocus], [aria-selected="true"][role="tab"]');
+    (preferred ?? focusables(content)[0] ?? content).focus({ preventScroll: true });
+  });
   return modal;
 }
 

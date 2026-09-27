@@ -36,7 +36,8 @@ import { openTeam, routeTeamMessage } from './ui/team';
 import { mountServicesButton, openServices } from './ui/services';
 import { mountQueueButton, openQueue } from './ui/queue';
 import { openUpgrade, restarting, showRestarting, showUpgraded } from './ui/upgrade';
-import { openHelp, renderChat, renderPeople, renderWorkers, updateSpeaking } from './ui/hud';
+import { openHelp, openWorkersDialog, renderChat, renderPeople, renderWorkers, updateSpeaking } from './ui/hud';
+import { mountStatusStrip } from './ui/status-strip';
 import { openCharacter } from './ui/character';
 import { Tower } from './tower';
 import { applyGraphics } from './graphics';
@@ -201,7 +202,8 @@ player.view = settings.view;
 player.bindings = settings.keys;
 const sound = new OfficeSound();
 sound.setVolume(settings.volume, settings.muted);
-const empireUI = mountEmpire(net,player,()=>showQueue(),()=>{if(!traversal.interactCar()&&!empireUI.interact())use(target,'E');},()=>changeView());
+const empireUI = mountEmpire(net,player,()=>showQueue(),()=>{if(!traversal.interactCar()&&!empireUI.interact())use(target,'E');},()=>changeView(),(id)=>openWorkerTerminal(id));
+mountStatusStrip($('status-strip'), { openManagement: () => empireUI.openOperations(), openWorkers: () => openWorkersDialog(openWorkerTerminal) });
 const traversal = new Traversal(player,me,office,city,()=>{
   if(!store.empire.delegated)net.send({t:'empire.action',action:{kind:'delegate',enabled:true}});
 }, (cue, at) => sound.carCue(cue, at));
@@ -252,7 +254,10 @@ let foundingOpened = false;
 let bootVersion = '';
 let upgradePhase = '';
 
-net.onStatus((up) => $('conn').classList.toggle('hidden', up));
+net.onStatus((up) => {
+  $('conn').classList.toggle('hidden', up);
+  store.setConnected(up);
+});
 net.onMessage((msg) => {
   if (msg.t === 'welcome') voice.reset();
   store.apply(msg);
@@ -1023,13 +1028,17 @@ voice.onChange(() => {
   const vb = $('btn-voice');
   vb.classList.toggle('on', voice.inVoice);
   vb.querySelector('span')!.textContent = voice.inVoice ? 'Leave voice' : 'Join voice';
+  vb.setAttribute('aria-label', voice.inVoice ? 'Leave voice' : 'Join voice');
   const mb = $('btn-mute');
   mb.classList.toggle('hidden', !voice.inVoice);
   mb.textContent = voice.muted ? '🔇' : '🎙️';
+  mb.setAttribute('aria-label', voice.muted ? 'Unmute microphone' : 'Mute microphone');
+  mb.setAttribute('aria-pressed', String(voice.muted));
   mb.classList.toggle('danger', voice.muted);
   const sb = $('btn-share');
   sb.classList.toggle('on', voice.sharing);
   sb.querySelector('span')!.textContent = voice.sharing ? 'Stop sharing' : 'Share screen';
+  sb.setAttribute('aria-label', voice.sharing ? 'Stop sharing screen' : 'Share screen');
   refreshShares();
 });
 
