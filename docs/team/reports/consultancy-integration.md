@@ -2,6 +2,8 @@
 
 Candidate `6517da6` combines native backend `7af1506` with the founder desk, authenticated HTTP routes, Telegram adapter and persistence repairs. The development branch is updated only after independent review.
 
+Final validation: **198/198 tests passed**, client/server typecheck passed, client Vite build and server TypeScript build succeeded in temporary output directories. This includes the real queue storage-failure regression added after candidate6517da6; product code is unchanged.
+
 ## Verified behavior
 
 - Multiple synthetic client jobs retain separate approvals and work items. Approved plans are immutable; stable request and queue identities prevent duplicate dispatch on repeated approval/restart.
