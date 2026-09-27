@@ -60,7 +60,7 @@ public final class MainActivity extends Activity {
         disposeWeb(); origin = address; pageFailed = false;
         LinearLayout root = column();
         LinearLayout bar = new LinearLayout(this);
-        bar.addView(button("Hosts", ignored -> showHosts())); bar.addView(button("Reload", ignored -> { if (web != null) { pageFailed = false; web.loadUrl(origin + "/"); } }));
+        bar.addView(button("Hosts", ignored -> showHosts())); bar.addView(button("Reload", ignored -> { if (web != null) { pageFailed = false; web.setVisibility(View.VISIBLE); web.loadUrl(origin + "/"); } }));
         for (int i = 0; i < bar.getChildCount(); i++) { Button b = (Button)bar.getChildAt(i); b.setTextSize(12); b.setMinimumHeight(0); b.setMinHeight(0); b.setPadding(dp(10), 0, dp(10), 0); b.setLayoutParams(new LinearLayout.LayoutParams(-2, dp(36))); }
         root.addView(bar);
         status = text(address, 12); status.setMaxLines(2); status.setPadding(0, dp(2), 0, dp(2)); root.addView(status);
@@ -91,12 +91,14 @@ public final class MainActivity extends Activity {
                 else if (!pageFailed) status.setText(origin + " · connecting…");
             }
             @Override public void onPageFinished(WebView view, String url) { if (!pageFailed && HostPolicy.allows(origin, url)) status.setText(origin); }
-            @Override public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) { handler.cancel(); pageFailed = true; status.setText("Certificate validation failed. Fix the host certificate; no exception is allowed."); }
+            @Override public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) { handler.cancel(); fail(view, "Certificate validation failed. Fix the host certificate; no exception is allowed."); }
             @Override public void onReceivedHttpAuthRequest(WebView view, HttpAuthHandler handler, String host, String realm) { handler.cancel(); pageFailed = true; status.setText("Use the host's standard sign-in page. HTTP authentication is unsupported."); }
-            @Override public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) { if (request.isForMainFrame()) { pageFailed = true; status.setText("Host unavailable. Keep the host online, then tap Reload."); } }
+            @Override public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) { if (request.isForMainFrame()) fail(view, "Host unavailable. Keep the host online, then tap Reload."); }
         });
         web.loadUrl(origin + "/");
     }
+    /** Our own message only: hide the WebView so its stock error page (often from an earlier attempt) never contradicts it. */
+    private void fail(WebView view, String message) { pageFailed = true; view.stopLoading(); view.setVisibility(View.INVISIBLE); status.setText(message); }
     @Override public void onBackPressed() { if (web != null && web.canGoBack()) web.goBack(); else if (web != null) showHosts(); else super.onBackPressed(); }
     @Override public void onPause() { if (web != null) web.onPause(); CookieManager.getInstance().flush(); super.onPause(); }
     @Override public void onResume() { super.onResume(); if (web != null) web.onResume(); }

@@ -20,6 +20,7 @@ const LIVE = /working|active|on duty|in progress|starting/i;
 test('evidence is unknown when disconnected, missing or stale', () => {
   assert.equal(fresh.fresh, true);
   assert.equal(evidence(supervision('working'), false, 1000, 2000).reason, 'disconnected');
+  assert.equal(evidence(undefined, false, 0, 2000).reason, 'connecting');
   assert.equal(evidence(undefined, true, 1000, 2000).reason, 'missing');
   assert.equal(evidence(supervision('working'), true, 0, 2000).reason, 'missing');
   assert.equal(evidence(supervision('working'), true, 1000, 1000 + STALE_MS + 1).reason, 'stale');

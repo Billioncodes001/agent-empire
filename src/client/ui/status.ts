@@ -9,7 +9,7 @@ export interface StatusView {
 }
 export interface Evidence {
   fresh: boolean;
-  reason?: 'disconnected' | 'missing' | 'stale';
+  reason?: 'connecting' | 'disconnected' | 'missing' | 'stale';
   /** Milliseconds since the last empire message was received, by the client's own clock. */
   age: number;
 }
@@ -18,7 +18,8 @@ export const STALE_MS = 15_000;
 
 export function evidence(supervision: SupervisionState | undefined, connected: boolean, receivedAt: number, now: number): Evidence {
   const age = receivedAt > 0 ? Math.max(0, now - receivedAt) : Infinity;
-  if (!connected) return { fresh: false, reason: 'disconnected', age };
+  // Nothing received yet means we're still joining (e.g. behind the founder picker), not that we lost the server.
+  if (!connected) return { fresh: false, reason: receivedAt > 0 ? 'disconnected' : 'connecting', age };
   if (!supervision || supervision.schemaVersion !== 1 || receivedAt <= 0) return { fresh: false, reason: 'missing', age };
   if (age > STALE_MS) return { fresh: false, reason: 'stale', age };
   return { fresh: true, age };
@@ -34,7 +35,9 @@ export function ageLabel(ms: number): string {
 
 export function unknownView(ev: Evidence): StatusView {
   const detail =
-    ev.reason === 'disconnected'
+    ev.reason === 'connecting'
+      ? 'Connecting to the office server…'
+      : ev.reason === 'disconnected'
       ? 'Disconnected from the office server. Reconnecting…'
       : ev.reason === 'missing'
         ? 'The server has not reported supervision evidence.'
