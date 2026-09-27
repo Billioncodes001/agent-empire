@@ -279,6 +279,7 @@ export function openExecutionSetup(opts: { onChanged?: (s: ExecutionSetup) => vo
   const creds = h('ul.exec-creds');
   const notices = h('ul.exec-notices');
   const cloudOnly = h('div.exec-cloud');
+  const limitsOnly = h('div.exec-cloud');
 
   const readForm = (): ExecutionConfig | null => {
     if (!setup) return null;
@@ -307,6 +308,7 @@ export function openExecutionSetup(opts: { onChanged?: (s: ExecutionSetup) => vo
     checkBtn.title = isDirty ? 'Save your changes before checking.' : setup?.config.mode !== 'anthropic_cloud' ? 'The read-only check applies to provider cloud setup.' : '';
     tasksBtn.hidden = !opts.openTasks || !cloud || isDirty || setup?.config.mode !== 'anthropic_cloud';
     cloudOnly.hidden = !cloud;
+    limitsOnly.hidden = !cloud;
     footerNote.textContent = isDirty ? 'Unsaved changes. Saving and checking never start a task.' : 'Saving and checking never start a task.';
   };
   const paintSetup = () => {
@@ -382,14 +384,8 @@ export function openExecutionSetup(opts: { onChanged?: (s: ExecutionSetup) => vo
   );
   [owner, name, branch, agentId, environmentId, vaultId, concurrent, perTask, daily].forEach((el) => el.addEventListener('input', paintButtons));
 
-  const render = () => {
-    body.replaceChildren(
-      summary.el,
-      h('details.exec-notice-details', {}, h('summary', {}, 'Cloud billing, access and recovery details'), notices),
-      h('h3', { id: 'exec-mode-title' }, 'Where agents run'),
-      modeCards,
-      cloudOnly,
-      h('h3', {}, 'Real-money limits'),
+  limitsOnly.append(
+      h('h3', {}, 'Cloud task spending limits'),
       h(
         'div.exec-grid',
         {},
@@ -402,6 +398,16 @@ export function openExecutionSetup(opts: { onChanged?: (s: ExecutionSetup) => vo
         {},
         'The host enforces these limits before submitting work. Provider billing is separate: a final model call can overrun a cap, so your bill is not guaranteed to match these numbers exactly. Simulation credits never pay for real usage.',
       ),
+  );
+
+  const render = () => {
+    body.replaceChildren(
+      summary.el,
+      h('details.exec-notice-details', {}, h('summary', {}, 'Cloud billing, access and recovery details'), notices),
+      h('h3', { id: 'exec-mode-title' }, 'Where agents run'),
+      modeCards,
+      cloudOnly,
+      limitsOnly,
       errors,
     );
   };
