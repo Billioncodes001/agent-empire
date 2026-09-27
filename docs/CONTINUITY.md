@@ -1,5 +1,7 @@
 # One host, several devices
 
+This describes the implemented single-host mode. The updated [first-time execution setup](EXECUTION_SETUP.md) makes it optional alongside planned provider-hosted cloud tasks and local execution. A dedicated VPS is not a product requirement.
+
 Agent Empire's first hosted architecture has **one owner and one running server per project**. Workers live on that host, not in the browser. Closing desktop, mobile or web clients does not cancel their processes. Turning off or restarting the host still interrupts jobs; recovery retains the process-safety rules in [RECOVERY.md](RECOVERY.md). This is not a distributed runner pool or a promise of exactly-once external side effects.
 
 Use the same HTTPS host address on every device. The server's password authenticates this single-owner workspace and is equivalent to control of its agent terminals. Do not use it as a public, multi-tenant service. GitHub stores project code; it is not the always-on compute service.
