@@ -26,11 +26,11 @@
             <button id="btn-voice" class="btn" title="Join voice (V)" aria-label="Join voice">🎙️ <span>Join voice</span></button>
             <button id="btn-mute" class="btn hidden" title="Mute (M)" aria-label="Mute microphone">🔇</button>
             <button id="btn-share" class="btn" title="Share your screen" aria-label="Share screen">🖥️ <span>Share screen</span></button>
-            <button id="btn-issues" class="btn" title="Issues board" aria-label="Issues">📌 Issues</button>
-            <button id="btn-pulls" class="btn" title="Pull requests board" aria-label="Pull requests">🔀 PRs</button>
-            <button id="btn-services" class="btn" title="Web servers the workers are running">🌐 Services</button>
-            <button id="btn-queue" class="btn" title="Task queue: issues and tasks waiting for a worker">📋 Queue</button>
-            <button id="btn-team" class="btn hidden" title="Invite teammates" aria-label="Invite teammates">👥 Invite</button>
+            <button id="btn-issues" class="btn" title="Issues board" aria-label="Issues">📌 <span>Issues</span></button>
+            <button id="btn-pulls" class="btn" title="Pull requests board" aria-label="Pull requests">🔀 <span>PRs</span></button>
+            <button id="btn-services" class="btn" title="Web servers the workers are running" aria-label="Worker services">🌐 <span>Services</span></button>
+            <button id="btn-queue" class="btn" title="Task queue: issues and tasks waiting for a worker" aria-label="Task queue">📋 <span>Queue</span></button>
+            <button id="btn-team" class="btn hidden" title="Invite teammates" aria-label="Invite teammates">👥 <span>Invite</span></button>
             <button id="btn-upgrade" class="btn hidden" title="Upgrade the office" aria-label="Upgrade the office">⬆️</button>
             <button id="btn-decor" class="btn" title="Hang a picture on a wall (F)" aria-label="Hang a picture">🖼️</button>
             <button id="btn-camera" class="btn" type="button" aria-label="Switch to first person">First person</button>
@@ -55,9 +55,9 @@
         </section>
         <div id="crosshair" class="crosshair hidden"><span class="look-hint">Click to look around</span></div>
         <div id="hint" class="hint hidden"></div>
-        <div id="toasts"></div>
+        <div id="toasts" role="status" aria-live="polite"></div>
         <div id="shares"></div>
-        <div id="conn" class="conn hidden" role="status"><span id="conn-text">Reconnecting to the office host</span><button id="conn-retry" class="btn" type="button">Reconnect now</button></div>
+        <div id="conn" class="conn hidden" role="status" aria-live="polite"><span id="conn-text">Reconnecting to the office host</span><button id="conn-retry" class="btn" type="button">Reconnect now</button></div>
         <div id="upgrade-banner" class="conn upgrading hidden"></div>
       </div>
       <div id="modal-root"></div>

@@ -53,13 +53,13 @@ export class Net {
       if (this.closedByUs) return;
       // Session expired? Go back to the door.
       try {
-        const res = await fetch('/api/whoami', { cache: 'no-store' });
+        const res = await fetch('/api/whoami', { cache: 'no-store', signal: AbortSignal.timeout(4000) });
         if (res.status === 401) {
           location.href = '/login';
           return;
         }
       } catch {
-        // offline; keep retrying
+        // offline or timed out; keep retrying
       }
       const delay = this.restartExpected ? 1000 : Math.min(8000, 500 * 2 ** this.retry++);
       this.retryTimer = setTimeout(() => {

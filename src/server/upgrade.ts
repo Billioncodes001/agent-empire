@@ -162,6 +162,7 @@ export class Upgrader {
   private async build(sha: string) {
     const next = path.join(STAGE, 'next');
     const old = path.join(STAGE, 'old');
+    let oldSha: string | undefined;
     try {
       await rm(STAGE, { recursive: true, force: true });
       await mkdir(next, { recursive: true });
@@ -172,6 +173,7 @@ export class Upgrader {
         if (!existsSync(path.join(next, f))) throw new Error(`the build didn't produce ${f}`);
       }
       // Swap it in. The running process already has everything it needs loaded.
+      oldSha = await run('git', ['rev-parse', 'HEAD']);
       await run('git', ['reset', '--quiet', '--hard', sha]);
       await mkdir(old);
       for (const d of ['dist', 'node_modules']) {
@@ -179,6 +181,15 @@ export class Upgrader {
         await rename(path.join(next, d), path.join(APP_DIR, d));
       }
     } catch (err) {
+      // A swap that got partway must be undone before the stage (which holds the old build) goes.
+      const undo = oldSha ? await rollback(oldSha, old).then(() => undefined, (e: Error) => e.message) : undefined;
+      if (undo) {
+        this.set({
+          phase: 'failed',
+          error: `The upgrade failed partway through swapping in the new version, and putting the old one back failed too. The old build is in ${old}; restore it by hand before restarting.\n\n${(err as Error).message}\n\n${undo}`,
+        });
+        return;
+      }
       await rm(STAGE, { recursive: true, force: true }).catch(() => {});
       this.set({ phase: 'failed', error: `The upgrade failed, so the office stays on ${this.state.current?.sha}.\n\n${(err as Error).message}` });
       return;
@@ -186,5 +197,15 @@ export class Upgrader {
     this.set({ phase: 'restarting' });
     // Give every browser a moment to hear about it, then hand over to the new version.
     setTimeout(this.restart, 1500);
+  }
+}
+
+/** Puts the install back the way it was before a failed swap: the old commit, and old/* back in place. */
+async function rollback(sha: string, old: string) {
+  await run('git', ['reset', '--quiet', '--hard', sha]);
+  for (const d of ['dist', 'node_modules']) {
+    if (!existsSync(path.join(old, d))) continue;
+    await rm(path.join(APP_DIR, d), { recursive: true, force: true });
+    await rename(path.join(old, d), path.join(APP_DIR, d));
   }
 }

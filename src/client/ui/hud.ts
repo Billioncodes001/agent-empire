@@ -5,8 +5,26 @@ import { $, h, openModal, STATUS_LABEL } from './dom';
 import { fmtCost, usageTitle } from './usage';
 import { workerPill } from './status';
 
+/** Makes a list row act like a button for the keyboard too: Tab to it, Enter or Space to press it. */
+function pressable(li: HTMLElement, onPress: () => void) {
+  li.tabIndex = 0;
+  li.setAttribute('role', 'button');
+  li.addEventListener('click', onPress);
+  li.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    e.preventDefault();
+    onPress();
+  });
+}
+
+/** Rows are rebuilt on every update; put keyboard focus back on the row that had it. */
+function refocus(ul: HTMLElement, attr: string, id: string | undefined) {
+  if (id) ul.querySelector<HTMLElement>(`li[${attr}="${CSS.escape(id)}"]`)?.focus();
+}
+
 export function renderPeople(voice: Voice, onEditProfile: () => void) {
   const ul = $('people');
+  const focused = ul.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.peer : undefined;
   ul.replaceChildren();
   const peers = [...store.peers.values()].sort((a, b) => (a.id === store.you ? -1 : b.id === store.you ? 1 : a.name.localeCompare(b.name)));
   for (const p of peers) {
@@ -21,9 +39,10 @@ export function renderPeople(voice: Voice, onEditProfile: () => void) {
       p.sharing ? h('span', { title: 'Sharing screen' }, '🖥️') : null,
       h('span.mic', {}, mic),
     );
-    if (you) li.addEventListener('click', onEditProfile);
+    if (you) pressable(li, onEditProfile);
     ul.append(li);
   }
+  refocus(ul, 'data-peer', focused);
   $('people-count').textContent = String(peers.length);
   void voice;
 }
@@ -98,10 +117,12 @@ export function openWorkersDialog(onOpen: (id: string) => void) {
 
 export function renderChat() {
   const log = $('chat-log');
+  // Follow new messages only when already at the bottom, so scrolling back to read isn't yanked away.
+  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
   log.replaceChildren(
     ...store.chat.slice(-60).map((c) => h('li', {}, h('b', { style: `color:${c.color}` }, c.name), ': ', c.text)),
   );
-  log.scrollTop = log.scrollHeight;
+  if (atBottom) log.scrollTop = log.scrollHeight;
 }
 
 export function openHelp(keys: KeyBindings = DEFAULT_KEYS) {

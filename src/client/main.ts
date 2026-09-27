@@ -41,7 +41,7 @@ import { mountStatusStrip } from './ui/status-strip';
 import { typingPose } from './ui/status';
 import { openCharacter } from './ui/character';
 import { Tower } from './tower';
-import { applyGraphics } from './graphics';
+import { GRAPHICS, applyGraphics } from './graphics';
 import { openSettings } from './ui/settings';
 import { appPanel } from './ui/app-panel';
 import { connectionView } from './ui/continuity';
@@ -419,6 +419,8 @@ function syncPeers() {
   for (const [id, r] of remotes) {
     if (!store.peers.has(id)) {
       scene.remove(r.person.root);
+      if (r.bubble) disposeSprite(r.bubble.sprite);
+      r.person.dispose();
       remotes.delete(id);
     }
   }
@@ -685,18 +687,32 @@ function boardActions() {
   };
 }
 
-function watchShare() {
-  const streams = currentShares();
-  if (!streams.length) {
+/** Full-screen viewer for one share: the one given (a thumbnail), else whatever the TV shows. */
+function watchShare(share?: [string, MediaStream]) {
+  const pick = share ?? tvShare(currentShares());
+  if (!pick) {
     void toggleShare();
     return;
   }
   const video = h('video', { autoplay: true, playsinline: true, muted: true }) as HTMLVideoElement;
-  const [who, stream] = streams[0];
+  const [who, stream] = pick;
   video.srcObject = stream;
   const close = h('button.btn.close', { 'aria-label': 'Close' }, '✕');
   const el = h('div.modal.viewer', { role: 'dialog', 'aria-label': 'Screen share' }, h('header', {}, h('h2', {}, `🖥️ ${who}'s screen`), close), video);
-  const modal = openModal(el, { onClose: () => (video.srcObject = null) });
+  // Close once that share stops: its track ends, or its sharer stops or leaves.
+  const gone = () => {
+    if (!currentShares().some(([, s]) => s === stream)) modal.close();
+  };
+  const tracks = stream.getVideoTracks();
+  tracks.forEach((t) => t.addEventListener('ended', gone));
+  const unsub = store.on('peers', gone);
+  const modal = openModal(el, {
+    onClose: () => {
+      video.srcObject = null;
+      tracks.forEach((t) => t.removeEventListener('ended', gone));
+      unsub();
+    },
+  });
   close.addEventListener('click', () => modal.close());
 }
 
@@ -867,6 +883,10 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     return;
   }
+  // Holding a key must not re-send spawn/resume/PR for every auto-repeat.
+  if (e.repeat) return;
+  // Enter/Space on a focused button or link belongs to that control, not the game.
+  if ((e.code === 'Enter' || e.code === 'Space') && (e.target as HTMLElement).closest?.('button, a, [role=button]')) return;
   switch (officeCode(e.code, settings.keys)) {
     case 'KeyE':
       if (traversal.interactCar() || empireUI.interact()) break;
@@ -1019,7 +1039,7 @@ player.onClick = (ndc) => {
 // Chat
 const chatInput = $('chat-input') as HTMLInputElement;
 chatInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') {
+  if (e.key === 'Enter' && !e.isComposing) {
     const text = chatInput.value.trim();
     if (text) net.send({ t: 'chat', text });
     chatInput.value = '';
@@ -1055,11 +1075,15 @@ function currentShares(): [string, MediaStream][] {
   return out;
 }
 
+/** Remote shares win the TV; your own share is what others see anyway. */
+function tvShare(shares: [string, MediaStream][]): [string, MediaStream] | undefined {
+  return shares.find(([who]) => who !== 'You') ?? shares[0];
+}
+
 let tvStream: MediaStream | null = null;
 function refreshShares() {
   const shares = currentShares();
-  // Remote shares win the TV; your own share is what others see anyway.
-  const pick = shares.find(([who]) => who !== 'You') ?? shares[0];
+  const pick = tvShare(shares);
   const stream = pick?.[1] ?? null;
   if (stream !== tvStream) {
     tvStream = stream;
@@ -1075,7 +1099,7 @@ function refreshShares() {
       .map(([who, s]) => {
         const v = h('video', { autoplay: true, playsinline: true, muted: true }) as HTMLVideoElement;
         v.srcObject = s;
-        return h('div.share-thumb', { onclick: () => watchShare(), title: 'Watch full screen' }, v, h('span.who', {}, `🖥️ ${who}`));
+        return h('div.share-thumb', { onclick: () => watchShare([who, s]), title: 'Watch full screen' }, v, h('span.who', {}, `🖥️ ${who}`));
       }),
   );
   hintKey = '';
@@ -1151,9 +1175,14 @@ function editProfile() {
 }
 
 // ---- Main loop ---------------------------------------------------------------------------------------
+const headPos = new THREE.Vector3();
 function resize() {
   const w = window.innerWidth;
   const hgt = window.innerHeight;
+  // Here rather than once at startup: moving to another monitor or zooming changes the device
+  // ratio. The quality profile still caps it.
+  const ratio = Math.min(window.devicePixelRatio || 1, GRAPHICS[settings.quality].pixelRatio);
+  if (renderer.getPixelRatio() !== ratio) { renderer.setPixelRatio(ratio); composer.setPixelRatio(ratio); }
   renderer.setSize(w, hgt, false);
   composer.setSize(w, hgt);
   camera.aspect = w / hgt;
@@ -1214,7 +1243,7 @@ function frame(ts?: number) {
   me.setVoiceLevel(voice.inVoice ? voice.localLevel : 0);
   const firstPerson = player.view === 'first';
   // In first person you are the camera; in third, hide yourself when it's zoomed in right behind your head.
-  me.root.visible = !firstPerson && camera.position.distanceTo(new THREE.Vector3(player.pos.x, player.pos.y + 1.3, player.pos.z)) > 1.5;
+  me.root.visible = !firstPerson && camera.position.distanceTo(headPos.set(player.pos.x, player.pos.y + 1.3, player.pos.z)) > 1.5;
 
   // Your ears are in your head, facing wherever the camera looks.
   camera.getWorldDirection(lookDir);

@@ -137,6 +137,7 @@ export class Laptop {
   private ctx: CanvasRenderingContext2D;
   private texture: THREE.CanvasTexture;
   get displayTexture() { return this.texture; }
+  private screenMat: THREE.MeshBasicMaterial;
   private lid = new THREE.Group();
   private drawnVersion = -1;
   private paintedAt = 0;
@@ -164,7 +165,8 @@ export class Laptop {
     const lidShell = mesh(roundedBox(0.78, 0.025, 0.5, 0.04), shell, 0, 0.25, 0);
     lidShell.rotation.x = Math.PI / 2;
     this.lid.add(lidShell);
-    const screen = new THREE.Mesh(new THREE.PlaneGeometry(0.72, 0.46), new THREE.MeshBasicMaterial({ map: this.texture, toneMapped: false }));
+    this.screenMat = new THREE.MeshBasicMaterial({ map: this.texture, toneMapped: false });
+    const screen = new THREE.Mesh(new THREE.PlaneGeometry(0.72, 0.46), this.screenMat);
     screen.position.set(0, 0.25, 0.014);
     this.lid.add(screen);
     // Sticker on the back of the lid
@@ -200,7 +202,12 @@ export class Laptop {
     }
   }
 
+  /** Every mesh here builds its own geometry; the toon() materials are shared, the screen isn't. */
   dispose() {
+    this.root.traverse((o) => {
+      if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).geometry.dispose();
+    });
+    this.screenMat.dispose();
     this.texture.dispose();
   }
 }

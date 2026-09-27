@@ -12,7 +12,7 @@ import { DESK_BY_ID, fundedDesk } from '../shared/layout.js';
 import { gh } from './github.js';
 import type { ServiceOwner } from './services.js';
 import { TaskNamer, fallbackTask } from './tasks.js';
-import { addUsage, newTracker, restoreTracker, scanTracker, trackerUsage, zeroUsage, type Ledger, type UsageTracker } from './usage.js';
+import { addUsage, newTracker, restoreTracker, scanTracker, switchTranscript, trackerUsage, zeroUsage, type Ledger, type UsageTracker } from './usage.js';
 import { writeJsonAtomic } from './persistence.js';
 
 type HeadlessTerminal = InstanceType<typeof headless.Terminal>;
@@ -479,7 +479,7 @@ export class WorkerManager {
       this.persist();
     }
     if (typeof payload?.transcript_path === 'string' && payload.transcript_path !== w.tracker.transcript) {
-      w.tracker.transcript = payload.transcript_path;
+      switchTranscript(w.tracker, payload.transcript_path);
       this.persist();
     }
     this.scheduleScan(w);
@@ -721,7 +721,7 @@ export class WorkerManager {
     const before = w.info.usage ?? zeroUsage();
     const after = trackerUsage(w.tracker);
     w.info.usage = after;
-    this.ledger.add(addUsage(after, before, -1));
+    this.ledger.add(addUsage(after, before, -1)); // the ledger books growth only
     this.emitUpdate(w);
     this.persist();
   }
