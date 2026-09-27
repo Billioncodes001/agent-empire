@@ -1,6 +1,6 @@
 # Round 1 integration verification
 
-Verified on 2026-09-27. Runtime candidate: `0d20434de297ab0716411be124b58047e8555309`. Follow-up `8c93105` only clarifies that task rewards are once-per-task in Management and Founding; its production build also passes.
+Verified on 2026-09-27. Runtime candidate: `0d20434de297ab0716411be124b58047e8555309`. Follow-up `8c93105` only clarifies that task rewards are once-per-task in Management and Founding; its production build also passes. `f6d3b9a` removes the final review finding by giving the decorative chief a fixed post independent of delegation; the full 86-test suite, typecheck and production build passed again afterward.
 
 Claude Opus 5.5 implemented the client in VS Code Copilot (`28be374`, `7f45fe6`). Codex implemented server recovery and tests (`5868693`, `7f708b0`, contract `8eed09e`). Grok 4.7 independently reviewed the backend in VS Code Copilot and identified the dual manager-retry / task-requeue bypass. Codex reproduced it with fake workers and fixed both action orders while retaining one logical task/reward identity. See the separate reviewer report for its final candidate assessment.
 
