@@ -22,7 +22,8 @@ async function synchronize(automatic = false) {
       const m = syncEngine.validateManifest(value,list.serverId);
       const bytes = await syncEngine.readBounded(await request(m.bundle.url),syncEngine.MAX_BUNDLE_BYTES);
       const receipt = syncEngine.importArtifact(config.repo,m,bytes,list.serverId);
-      if (!receipt.reused) { imported++; conflicts += receipt.conflicts.length; }
+      if (!receipt.reused) imported++;
+      conflicts += receipt.conflicts.length;
     }
     if (!automatic || imported) await dialog.showMessageBox(win,{type:'info',message:`${imported} new worktree${imported===1?'':'s'} ready for review`,detail:`${conflicts} overlapping local file changes. Your active branch and edits were preserved.\nUse File → Open sync inbox to inspect the work.`});
   } catch (error) {

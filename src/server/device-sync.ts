@@ -74,7 +74,10 @@ export function importArtifact(repo: string, manifest: SyncArtifactManifest, byt
     if (existsSync(receiptFile)) {
       const saved = JSON.parse(readFileSync(receiptFile, 'utf8')) as SyncReceipt;
       if (saved.serverId !== serverId || saved.commit !== m.commit || !existsSync(saved.worktree) || git(saved.worktree, ['rev-parse', 'HEAD']) !== saved.commit) throw new Error('Imported worktree was moved or changed. It was preserved; resolve it manually.');
-      return { ...saved, reused: true };
+      const localHead = git(root, ['rev-parse', 'HEAD']);
+      const changed = new Set([...names(git(root, ['diff', '--name-only', '-z', m.base, 'HEAD'])), ...names(git(root, ['diff', '--name-only', '-z', 'HEAD'])), ...names(git(root, ['ls-files', '--others', '--exclude-standard', '-z']))]);
+      const conflicts = names(git(saved.worktree, ['diff', '--name-only', '-z', m.base, m.commit])).filter(name => [...changed].some(local => name === local || name.startsWith(local + '/') || local.startsWith(name + '/')));
+      return { ...saved, conflicts, localHead, reused: true };
     }
     // Wrong-repository imports fail before creating a checkout. No fetch into the laptop repository.
     try { git(root, ['cat-file', '-e', `${m.base}^{commit}`]); }
@@ -106,7 +109,7 @@ export function importArtifact(repo: string, manifest: SyncArtifactManifest, byt
     const receipt: SyncReceipt = { artifactId: m.artifactId, serverId, commit: m.commit, worktree, importedAt: Date.now(), conflicts, localHead };
     atomic(receiptFile, receipt);
     return { ...receipt, reused: false };
-  } finally { unlinkSync(lock); }
+  } finally { try { unlinkSync(lock); } catch { /* Preserve the original import result/error if cleanup fails. */ } }
 }
 
 export async function readBounded(response: Response, limit: number): Promise<Buffer> {

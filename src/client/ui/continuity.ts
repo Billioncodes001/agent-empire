@@ -21,7 +21,7 @@ export interface ConnectionInput {
 export function connectionView({ online, connected }: ConnectionInput): StatusView {
   if (!online) return { tone: 'attention', label: 'This device is offline', detail: 'Reconnect this device to reach the office host. Nothing is sent or queued from here while offline.' };
   if (!connected) return { tone: 'unknown', label: 'Reconnecting to the office host', detail: 'The host may be restarting, asleep or unreachable. Work continues there only while it stays running.' };
-  return { tone: 'active', label: 'Connected to the office host', detail: 'Live updates are arriving from the host that runs your agents.' };
+  return { tone: 'active', label: 'Connected to the office host', detail: 'This device has an open connection to the office host. Check its latest persistence report below.' };
 }
 
 /** Host persistence as reported by the host itself; receipt age is measured on this device's clock. */

@@ -65,3 +65,12 @@ test('bounded downloads reject oversized and failed responses',async()=>{
  await assert.rejects(readBounded(new Response('too large'),2),/size limit/);
  await assert.rejects(readBounded(new Response('secret',{status:401}),100),/401/);
 });
+
+test('repeat imports recompute overlaps after later laptop edits',()=>{
+ const f=fixture();try{
+  assert.deepEqual(importArtifact(f.local,f.manifest,f.bytes,f.manifest.serverId).conflicts,[]);
+  writeFileSync(path.join(f.local,'work.txt'),'new laptop edit');
+  const again=importArtifact(f.local,f.manifest,f.bytes,f.manifest.serverId);
+  assert.equal(again.reused,true);assert.deepEqual(again.conflicts,['work.txt']);
+ }finally{f.close();}
+});
