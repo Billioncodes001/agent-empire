@@ -13,6 +13,11 @@ const newRequestId = () => typeof crypto.randomUUID === 'function' ? crypto.rand
 let step = 1, requestId = newRequestId();
 const text = (tag: string, value: string, cls?: string) => { const n = document.createElement(tag); n.textContent = value; if (cls) n.className = cls; return n; };
 function error(id: string, message = '') { const e = $(id); e.textContent = message; e.hidden = !message; }
+// Metrics only ever show host-reported values; a changed value gets a brief visual tick, never a count-up through invented numbers.
+function metric(id: string, value: string) {
+  const el = $(id); if (el.textContent === value) return;
+  el.textContent = value; el.classList.remove('tick'); void el.offsetWidth; el.classList.add('tick');
+}
 async function api<T>(path: string, body?: unknown): Promise<T> {
   const response = await fetch(`/api/consultancy/${path}`, { credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(12000), ...(body === undefined ? {} : {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}) });
   const data = await response.json();
@@ -37,7 +42,8 @@ function showJobs() {
 function renderDetail() {
   const focusedAction = detail.contains(document.activeElement) ? document.activeElement?.textContent : undefined;
   const job = jobs.find(j => j.id === selected); if (!job) return;
-  const content = $('detail-content'); content.replaceChildren(text('h2',job.title),text('p',`${job.client} · ${labels[job.status] ?? job.status}`),text('p',job.brief));
+  const title = text('h2', job.title); title.id = 'detail-title';
+  const content = $('detail-content'); content.replaceChildren(title,text('p',`${job.client} · ${labels[job.status] ?? job.status}`),text('p',job.brief));
   if (job.attention) content.append(text('p',job.attention));
   const plan = text('section','','plan'); plan.append(text('h3','Proposed work'));
   // Task prompts remain visible in full before approval, including plans created outside this form.
@@ -79,9 +85,9 @@ async function refreshNow() {
     const changed = JSON.stringify(snapshot.jobs) !== JSON.stringify(jobs);
     const wasFresh = fresh; jobs = snapshot.jobs; fresh = true; error('error');
     $('connection').textContent = `Host connected · ${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`;
-    $('active-count').textContent = String(jobs.filter(j => ['queued','running','needs_attention'].includes(j.status)).length);
-    $('approval-count').textContent = String(jobs.filter(j => j.status === 'awaiting_approval').length);
-    $('workers-count').textContent = String(status.resources.workers); $('desks-count').textContent = String(status.resources.workstations);
+    metric('active-count', String(jobs.filter(j => ['queued','running','needs_attention'].includes(j.status)).length));
+    metric('approval-count', String(jobs.filter(j => j.status === 'awaiting_approval').length));
+    metric('workers-count', String(status.resources.workers)); metric('desks-count', String(status.resources.workstations));
     $('chief-report').textContent = status.resources.blocker || `${status.resources.attention} workers need input. ${status.resources.queued} tasks waiting. Up to ${status.resources.concurrency} workers can run at once within the funded desk limit. Work is scoped to ${status.repository}.`;
     $('telegram-status').textContent = status.telegram.error || (!status.telegram.configured ? 'Not connected yet. Connect your private bot to send briefs, approve plans and receive updates.' : status.telegram.lastPollAt ? 'Connected to your configured private bot.' : 'Configured. Waiting for the first successful connection.');
     showJobs(); if (detail.open && (changed || !wasFresh)) renderDetail();
@@ -132,3 +138,23 @@ window.addEventListener('pageshow', event => {
   startPolling();
   if (event.persisted) void refresh();
 });
+
+// Presentation effects; consultancy-scene-entry.ts exclusively owns the 3D controls.
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+const finePointer = matchMedia('(hover: hover) and (pointer: fine)');
+document.documentElement.dataset.saveData = String(Boolean(saveData));
+// Pointer spotlight on metric cells (fine pointers only; purely cosmetic).
+document.addEventListener('pointermove', e => {
+  if (!finePointer.matches || reducedMotion.matches || saveData) return;
+  const cell = (e.target instanceof Element ? e.target.closest<HTMLElement>('[data-spotlight]') : null); if (!cell) return;
+  const r = cell.getBoundingClientRect();
+  cell.style.setProperty('--mx', `${e.clientX - r.left}px`); cell.style.setProperty('--my', `${e.clientY - r.top}px`);
+}, { passive: true });
+// Scroll reveal for lower panels, only when motion is allowed; content is visible without it.
+if (!reducedMotion.matches && !saveData && 'IntersectionObserver' in window) {
+  const revealer = new IntersectionObserver(entries => {
+    for (const entry of entries) if (entry.isIntersecting) { entry.target.classList.add('is-in'); revealer.unobserve(entry.target); }
+  }, { rootMargin: '0px 0px -6% 0px' });
+  document.documentElement.classList.add('reveal-ready');
+  for (const target of document.querySelectorAll<HTMLElement>('.workspace > *, .site-footer')) { target.classList.add('reveal'); revealer.observe(target); }
+}
