@@ -7,6 +7,17 @@ import type { StatusView } from './status';
 export const currentHostId = () =>
   store.connected && store.continuity && store.continuityReceivedAt >= store.connectedAt ? store.continuity.serverId : undefined;
 
+/** App-owned confirmation works consistently in desktop and embedded browsers. */
+function confirmAction(title: string, message: string, label: string): Promise<boolean> {
+  return new Promise(resolve => {
+    let approved = false;
+    const dialog = openModal(h('div.modal.exec-modal', {role:'dialog','aria-label':title},
+      h('header', {}, h('h2', {}, title)), h('div.body', {}, h('p', {}, message)),
+      h('footer', {}, button('Cancel', () => dialog.close()), button(label, () => {approved = true; dialog.close();}, {class:'primary'}))),
+      {onClose:() => resolve(approved)});
+  });
+}
+
 // ---- Pure presentation and validation ---------------------------------------------------------------
 
 export const MODE_COPY: Record<ExecutionMode, { title: string; summary: string; detail: string }> = {
@@ -91,7 +102,7 @@ export function validateConfig(c: ExecutionConfig): string[] {
 
 export function setupView(s: ExecutionSetup): StatusView {
   if (s.storageError) return { tone: 'attention', label: 'Setup could not be saved', detail: s.storageError };
-  if (!s.config.completed) return { tone: 'unknown', label: 'Not set up', detail: 'No execution choice has been saved yet. Nothing is dispatched until you save and submit work.' };
+  if (!s.config.completed) return { tone: 'unknown', label: 'Not set up', detail: 'No execution choice has been saved yet. Cloud tasks require setup and explicit submission.' };
   const mode = MODE_COPY[s.config.mode].title;
   if (s.config.mode !== 'anthropic_cloud') return { tone: 'idle', label: mode, detail: MODE_COPY[s.config.mode].summary };
   if (s.check.status === 'blocked') return { tone: 'attention', label: `${mode} · check failed`, detail: s.check.message ?? 'The read-only check found a problem.' };
@@ -374,7 +385,7 @@ export function openExecutionSetup(opts: { onChanged?: (s: ExecutionSetup) => vo
   const render = () => {
     body.replaceChildren(
       summary.el,
-      notices,
+      h('details.exec-notice-details', {}, h('summary', {}, 'Cloud billing, access and recovery details'), notices),
       h('h3', { id: 'exec-mode-title' }, 'Where agents run'),
       modeCards,
       cloudOnly,
@@ -524,13 +535,13 @@ export function openCloudTasks(opts: { openSetup?: () => void; hostId?: () => st
     const p = pending;
     pendingBox.replaceChildren(
       h('strong', {}, 'Submission not confirmed'),
-      h('p', {}, `The host did not confirm “${p.prompt.slice(0, 80)}${p.prompt.length > 80 ? '…' : ''}”. It may already be running. Retrying resends exactly this request with the same task ID, so it cannot start a second paid session.`),
+      h('p', {}, `The host did not confirm “${p.prompt.slice(0, 80)}${p.prompt.length > 80 ? '…' : ''}”. It may already be running. Retrying resends this request with the same task ID so the host can reconcile it against its saved ledger.`),
       h(
         'div.sector-actions',
         {},
         button(submitting ? 'Retrying…' : 'Retry same submission', () => void send(p), { disabled: submitting }),
-        button('Forget this submission', () => {
-          if (!confirm('Forget the unconfirmed submission? If the host did accept it, it stays in the task list and may still be billed.')) return;
+        button('Forget this submission', async () => {
+          if (!await confirmAction('Forget this submission?', 'If the host accepted it, it stays in the task list and may still be billed.', 'Forget submission')) return;
           resolve(p);
           paintPending();
           paintSummary();
@@ -595,7 +606,7 @@ export function openCloudTasks(opts: { openSetup?: () => void; hostId?: () => st
   }
   async function act(id: string, kind: 'refresh' | 'stop') {
     if (acting.has(id)) return;
-    if (kind === 'stop' && !confirm('Stop this provider session? A session mid-turn is interrupted first; once it is idle, Stop again to archive it. Usage so far is still billed.')) return;
+    if (kind === 'stop' && !await confirmAction('Stop this provider session?', 'A session mid-turn is interrupted first; if archival is not confirmed, refresh and Stop again once idle. Usage so far is still billed.', 'Confirm stop')) return;
     acting.add(id);
     paintList();
     try {
@@ -611,6 +622,10 @@ export function openCloudTasks(opts: { openSetup?: () => void; hostId?: () => st
   }
   async function send(p: Pending) {
     if (submitting) return;
+    if (!setup || pendingScope((opts.hostId ?? currentHostId)(), setup.config) !== p.scope) {
+      toast('The connected host or repository changed. Return to the original host to reconcile this submission.', 'error');
+      return;
+    }
     submitting = true;
     paintSummary();
     paintPending();
@@ -731,7 +746,7 @@ export async function maybeOfferExecutionSetup(openSetup: () => void) {
       h(
         'div.body.exec-body',
         {},
-        h('p', {}, 'You can keep exploring now and decide later. Until you save a choice, agents run on the office host you are connected to, and pending AI work stays visibly pending.'),
+        h('p', {}, 'You can keep exploring and decide later. A new desktop city keeps local work paused until setup is complete and you enable the queue. Existing hosts retain their local worker controls.'),
         h('ul.exec-offer-list', {}, ...(Object.keys(MODE_COPY) as ExecutionMode[]).map((m) => h('li', {}, h('strong', {}, MODE_COPY[m].title), ` — ${MODE_COPY[m].summary}`))),
         h('p.setting-note', {}, 'Nothing is saved, connected or started from this prompt. You can open execution setup any time from Settings › App & connection.'),
       ),
