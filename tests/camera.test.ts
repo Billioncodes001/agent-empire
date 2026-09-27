@@ -174,3 +174,13 @@ test('a following camera retracts in the same frame when a wall obstructs its ea
   player.updateCamera(false, 1 / 120);
   assert.ok(camera.position.z < 61.9, 'camera must not ease through a wall');
 });
+
+test('camera finishes following a brief arrow turn after movement stops', () => {
+  const { player } = setup();
+  player.setAction('right', true);
+  for (let i = 0; i < 6; i++) player.update(1 / 60);
+  player.setAction('right', false);
+  for (let i = 0; i < 240; i++) player.update(1 / 60);
+  assert.equal(player.moving, false);
+  assert.ok(angleError(player.camYaw, player.facing - Math.PI) < .002);
+});

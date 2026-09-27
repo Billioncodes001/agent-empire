@@ -62,6 +62,7 @@ export class PlayerController {
   private moveYaw = 0;
   private moveChord = '';
   private orbitGrace = 0;
+  private followPending = false;
 
   constructor(
     private camera: THREE.PerspectiveCamera,
@@ -120,6 +121,7 @@ export class PlayerController {
         this.camYaw += turn;
         this.moveYaw += turn;
         this.orbitGrace = 1.2;
+        this.followPending = false;
         this.camPitch = THREE.MathUtils.clamp(this.camPitch + dy * 0.004, 0.05, 1.3);
       }
     });
@@ -191,6 +193,7 @@ export class PlayerController {
     this.keys.clear();
     this.walkVelocity.set(0, 0);
     this.moveChord = '';
+    this.followPending = false;
     this.drag = null;
   }
 
@@ -278,7 +281,10 @@ export class PlayerController {
         const want = Math.atan2(this.walkVelocity.x, this.walkVelocity.y);
         const diff = Math.atan2(Math.sin(want - this.facing), Math.cos(want - this.facing));
         this.facing += diff * (1 - Math.exp(-dt * 10));
-        if (input && !this.drag && this.orbitGrace === 0 && this.camDist < 20) {
+      }
+      if (this.view === 'third') {
+        if (input) this.followPending = true;
+        if (this.followPending && !this.drag && this.orbitGrace === 0 && this.camDist < 20) {
           this.followHeading(this.facing - Math.PI, dt);
         }
       }
@@ -321,6 +327,7 @@ export class PlayerController {
   private followHeading(yaw: number, dt: number) {
     const delta = Math.atan2(Math.sin(yaw - this.camYaw), Math.cos(yaw - this.camYaw));
     this.camYaw += delta * (1 - Math.exp(-dt * 3));
+    this.followPending = Math.abs(delta) > .001;
   }
 
   updateCamera(snap = false, dt = 1 / 60) {
