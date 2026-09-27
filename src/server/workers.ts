@@ -131,6 +131,7 @@ export class WorkerManager {
     private ledger: Ledger,
     private capacity: () => number = () => 16,
     private runtime: WorkerRuntime = defaultRuntime,
+    private executionBlocker: () => string | undefined = () => undefined,
   ) {
     this.trees = new Worktrees(dir);
     this.statePath = path.join(dataDir, 'workers.json');
@@ -187,6 +188,8 @@ export class WorkerManager {
   }
 
   spawn(deskId: string, by: string, prompt?: string, worktree = false, kind: WorkerKind = 'agent', queueOwned = false): WorkerInfo | string {
+    const executionBlocked = this.executionBlocker();
+    if (executionBlocked) return executionBlocked;
     if (!fundedDesk(deskId, this.capacity())) return 'Build and furnish this workstation before employing a worker';
     if (this.storageError) return this.storageError;
     if (this.deskOccupied(deskId)) return 'That desk is taken';
@@ -246,6 +249,8 @@ export class WorkerManager {
     if (w.info.processState !== 'stopped') return this.unknownProcessReason(w);
     if (w.queueOwned) return 'This worker belongs to the task queue. Retry its task from the queue after reviewing the interruption.';
     if (!fundedDesk(w.info.deskId, this.capacity())) return 'Build and furnish this workstation before resuming the worker';
+    const executionBlocked = this.executionBlocker();
+    if (executionBlocked) return executionBlocked;
     if (w.info.kind === 'agent' && this.ledger.hiringPaused) return this.ledger.hiringPaused;
     w.info.status = 'starting';
     w.info.exitCode = undefined;

@@ -1,8 +1,13 @@
-const { app, BrowserWindow, Menu, ipcMain, dialog, shell, session } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, dialog, shell, session, safeStorage } = require('electron');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { readFileSync, writeFileSync, existsSync } = require('node:fs');
 const { createHash } = require('node:crypto');
+const {createVault}=require('./credential-vault.cjs');
+const {startLocalHost}=require('./local-host.cjs');
+process.env.PATH = ['/opt/homebrew/bin','/usr/local/bin',process.env.PATH].filter(Boolean).join(path.delimiter);
+let localHost, vault;
+const stopLocal=()=>{localHost?.shutdown();localHost=undefined;};
 let win, origin, syncEngine, busy = false, syncTimer;
 const launcher = pathToFileURL(path.join(__dirname, 'launch.html')).href;
 const configPath = () => path.join(app.getPath('userData'), 'connection.json');
@@ -41,7 +46,7 @@ async function configureSync() {
       message:'Import published work from this host?',detail:`${origin}\nHost ID: ${list.serverId}\n\nNew work goes into isolated review worktrees. Nothing is merged into your active branch. Reopening the app will check for published work.`,checkboxLabel:'Also check for new published work every minute while this app is open',checkboxChecked:false});
     if (decision.response !== 1) return;
     syncEngine.pinServer(chosen.filePaths[0],origin,list.serverId,list.serverId);
-    saveConfig({origin,repo:chosen.filePaths[0],autoSync:decision.checkboxChecked});
+    saveConfig({...readConfig(),origin,repo:chosen.filePaths[0],autoSync:decision.checkboxChecked});
     startSyncTimer(); await synchronize();
   } catch(error) { await dialog.showMessageBox(win,{type:'error',message:'Could not configure synchronization',detail:error.message}); }
 }
@@ -64,25 +69,30 @@ function menu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     ...(process.platform==='darwin'?[{role:'appMenu'}]:[]),
     {label:'File',submenu:[
-      {label:'Connect to another host…',click:()=>showLauncher()},
+      {label:'Choose city or host…',click:()=>showLauncher()},
+      {label:'Provider credentials…',click:()=>showLauncher()},
       {label:'Configure laptop synchronization…',click:()=>void configureSync()},
       {label:'Synchronize published work',click:()=>void synchronize()},
       {label:'Publish stopped worker work…',click:()=>void publish()},
       {label:'Open sync inbox',click:async()=>{const c=readConfig();if(c.repo) await shell.openPath(syncEngine.syncDirectory(c.repo));}},
       {type:'separator'},{role:'close'}]},
     {role:'editMenu'},{label:'View',submenu:[{role:'reload'},{role:'togglefullscreen'}]},
-    {label:'Help',submenu:[{label:'How continuity works',click:()=>dialog.showMessageBox(win,{message:'The host runs your agents',detail:'Closing this window does not stop a remote host. Turning off the host interrupts its workers. Sync imports explicitly published committed code into separate worktrees. Voice and screen capture are currently available through your browser, not this desktop shell.'})}]}
+    {label:'Help',submenu:[{label:'How continuity works',click:()=>dialog.showMessageBox(win,{message:'The host runs your agents',detail:'The local city and its assets are bundled with this app. Local workers stop when the app quits. Submitted provider-cloud jobs run independently; their status is refreshed when you return. Cloud outputs are not automatically imported yet. Remote host sync imports explicitly published code into review worktrees. Voice and screen capture are available through your browser.'})}]}
   ]));
 }
-async function connect(value) {
+async function connect(value, local = undefined) {
   if (busy) throw new Error('Wait for the current synchronization to finish before changing hosts.');
   const next = syncEngine.validateServerUrl(value);
   const previous = readConfig();
   origin = next;
-  const partition = 'persist:host-' + createHash('sha256').update(origin).digest('hex').slice(0,20);
+  const partition = local ? 'persist:local-' + createHash('sha256').update(local.project).digest('hex').slice(0,20) : 'persist:host-' + createHash('sha256').update(origin).digest('hex').slice(0,20);
   const ses = session.fromPartition(partition);
   ses.setPermissionRequestHandler((_wc,_permission,callback)=>callback(false));
   ses.setPermissionCheckHandler(()=>false);
+  if (local) {
+    const response=await ses.fetch(origin+'/api/login',{method:'POST',headers:{'content-type':'application/json',Origin:origin},body:JSON.stringify({password:local.password}),redirect:'error'});
+    if(!response.ok)throw new Error('The local city could not authenticate.');
+  }
   const old=win;
   win=new BrowserWindow({width:1400,height:900,minWidth:390,minHeight:600,title:'Agent Empire',backgroundColor:'#111a20',webPreferences:{partition,nodeIntegration:false,contextIsolation:true,sandbox:true,webSecurity:true}});
   win.webContents.setWindowOpenHandler(()=>({action:'deny'}));
@@ -92,7 +102,7 @@ async function connect(value) {
   let checked=false;
   win.webContents.on('did-finish-load',()=>{if(!checked&&new URL(win.webContents.getURL()).pathname==='/'){checked=true;void synchronize(true);}});
   win.on('closed',()=>{clearInterval(syncTimer);});
-  saveConfig(previous.origin===origin?previous:{origin});
+  saveConfig(local ? {...previous,localProject:local.project,lastMode:'local'} : {localProject:previous.localProject,...(previous.origin===origin?previous:{origin}),lastMode:'remote'});
   old?.close(); menu();startSyncTimer();
   await win.loadURL(origin);
 }
@@ -100,7 +110,7 @@ function showLauncher() {
   if (busy) return;
   clearInterval(syncTimer);origin=undefined;
   const old=win;
-  win=new BrowserWindow({width:660,height:640,resizable:false,title:'Agent Empire',webPreferences:{preload:path.join(__dirname,'preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true}});
+  win=new BrowserWindow({width:760,height:900,minWidth:580,minHeight:600,resizable:true,title:'Agent Empire',webPreferences:{preload:path.join(__dirname,'preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true}});
   win.webContents.setWindowOpenHandler(()=>({action:'deny'}));
   win.webContents.on('will-navigate',(e,url)=>{if(url!==launcher)e.preventDefault();});
   old?.close();menu();void win.loadURL(launcher);
@@ -108,12 +118,28 @@ function showLauncher() {
 app.setName('Agent Empire');
 app.whenReady().then(async()=>{
   syncEngine=await import('./runtime/device-sync.js');
+  vault=createVault(path.join(app.getPath('userData'),'provider-credentials.enc'),safeStorage);
+  const fromLauncher=event=>{if(event.senderFrame?.url!==launcher)throw new Error('Request denied.');};
+  ipcMain.handle('launcher-state',event=>{fromLauncher(event);const c=readConfig();let credentials;try{credentials=vault.status();}catch(error){credentials={error:error.message};}return {origin:c.origin,project:c.localProject,credentials};});
+  ipcMain.handle('save-credentials',(event,value)=>{fromLauncher(event);try{vault.save(value);return {message:'Credentials saved securely on this computer. No task was started.'};}catch(error){return {error:error.message};}});
+  ipcMain.handle('open-local',async(event,choose)=>{
+    fromLauncher(event);
+    if(busy)return {error:'Wait for synchronization to finish.'};
+    try{
+      let project=readConfig().localProject||path.join(app.getPath('userData'),'city-project');
+      if(choose){const picked=await dialog.showOpenDialog(win,{title:'Choose a Git project or empty folder for your city',properties:['openDirectory','createDirectory']});if(picked.canceled)return {};project=picked.filePaths[0];}
+      if(localHost && localHost.project!==project)return {error:'Quit and reopen the app before switching the active local project.'};
+      if(!localHost)localHost=await startLocalHost({project,runtimeDir:path.join(__dirname,'runtime'),credentials:()=>vault.read()});
+      await connect(localHost.origin,localHost);return {ok:true};
+    }catch(error){return {error:error.message};}
+  });
   ipcMain.handle('connect',async(event,url)=>{
     if(event.senderFrame?.url!==launcher||typeof url!=='string') throw new Error('Connection request denied.');
     try { await connect(url); return {ok:true}; } catch(error) {return {error:error.message};}
   });
-  ipcMain.handle('saved-host',event=>event.senderFrame?.url===launcher?readConfig().origin||'http://localhost:4600':'');
+
   showLauncher();
   app.on('activate',()=>{if(BrowserWindow.getAllWindows().length===0)showLauncher();});
 });
-app.on('window-all-closed',()=>{if(process.platform!=='darwin')app.quit();});
+app.on('before-quit',stopLocal);
+app.on('window-all-closed',()=>{app.quit();});

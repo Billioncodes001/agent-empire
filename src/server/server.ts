@@ -25,6 +25,7 @@ import { lookFromSeed, sanitizeLook } from '../shared/avatar.js';
 import { Continuity } from './continuity.js';
 import { SyncArtifacts } from './sync-artifacts.js';
 import { acquireHostLock } from './host-lock.js';
+import { ExecutionManager, ExecutionError, type ExecutionOptions } from './execution.js';
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -133,6 +134,9 @@ export interface ServerRuntime {
   workers?: WorkerRuntime;
   publicDir?: string;
   backgroundServices?: boolean;
+  execution?: ExecutionOptions;
+  /** Packaged first-run desktops require an explicit execution choice before any local process. */
+  requireExecutionSetup?: boolean;
 }
 export async function startServer(cfg: Config, runtime: ServerRuntime = {}) {
   const releaseHost = acquireHostLock(cfg.dataDir);
@@ -153,6 +157,16 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   const project = projectInfo(cfg);
   const continuity = new Continuity(cfg.dataDir);
   const artifacts = new SyncArtifacts(cfg.dir, cfg.dataDir, continuity.serverId);
+  const execution = new ExecutionManager(cfg.dataDir, runtime.execution);
+  startupCleanup.push(() => execution.stop());
+  let localQueueApproved = !runtime.requireExecutionSetup;
+  const localExecutionBlocker = () => {
+    const setup = execution.setup();
+    if (setup.storageError) return setup.storageError;
+    if (setup.config.mode === 'anthropic_cloud') return 'Provider cloud is selected. Use Cloud tasks in Execution settings; local queue work stays paused.';
+    if (runtime.requireExecutionSetup && !setup.config.completed) return 'Choose where workers run in Execution setup before starting local work.';
+    return undefined;
+  };
 
   const sendTo = (c: Client, msg: ServerMsg) => {
     if (c.ws.readyState === WebSocket.OPEN) c.ws.send(JSON.stringify(msg));
@@ -247,6 +261,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     ledger,
     () => empire.state.office.workstations,
     runtime.workers,
+    localExecutionBlocker,
   );
 
   startupCleanup.push(() => workers.shutdown());
@@ -264,9 +279,10 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     toast: (text, level) => broadcast({ t: 'toast', text, level }),
     claimIssue: (issue) => github.claim(issue),
     refreshGitHub: () => void github.refresh(),
-    hiringPaused: () => ledger.hiringPaused,
+    hiringPaused: () => localExecutionBlocker() || (!localQueueApproved ? 'Choose queue concurrency explicitly to start pending local tasks.' : undefined) || ledger.hiringPaused,
     retryAllowed: task => empire.managerTaskRetryBlocker(task),
   });
+  if (runtime.requireExecutionSetup) queue.setLimit(0);
   // Saved appointment flags are historical until worker/queue evidence has been reconciled.
   startupCleanup.push(() => queue.shutdown());
   empire.tick(workers.list(), queue.state(), 0);
@@ -412,6 +428,31 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
         return;
       }
       if (p === '/api/whoami') return send(res, 200, { ok: true });
+      if (p.startsWith('/api/execution/')) {
+        if (req.method !== 'GET' && !sameOrigin(req, cfg)) return send(res, 403, {error:'A same-origin Origin header is required'});
+        try {
+          const body = async () => { try { return JSON.parse(await readBody(req, 32768)); } catch { throw new ExecutionError(400, 'invalid_json', 'Expected a JSON request.'); } };
+          if (p === '/api/execution/setup' && req.method === 'GET') return send(res, 200, execution.setup());
+          if (p === '/api/execution/setup' && req.method === 'PUT') {
+            const value = await body();
+            if (value?.mode !== execution.setup().config.mode && workers.list().some(w => w.processState === 'running' || w.processState === 'unknown'))
+              return send(res, 409, {error:'Stop or reconcile existing local workers before changing execution mode.'});
+            return send(res, 200, execution.updateSetup(value));
+          }
+          if (p === '/api/execution/check' && req.method === 'POST') return send(res, 200, await execution.check());
+          if (p === '/api/execution/tasks' && req.method === 'GET') return send(res, 200, {tasks:execution.tasks()});
+          if (p === '/api/execution/tasks' && req.method === 'POST') return send(res, 200, await execution.submit(await body()));
+          const stopping = /^\/api\/execution\/tasks\/([a-zA-Z0-9-]{1,80})\/stop$/.exec(p);
+          if (stopping && req.method === 'POST') return send(res, 200, await execution.stopTask(stopping[1]));
+          const refresh = /^\/api\/execution\/tasks\/([a-zA-Z0-9-]{1,80})\/refresh$/.exec(p);
+          if (refresh && req.method === 'POST') return send(res, 200, await execution.refresh(refresh[1]));
+          return send(res, 404, {error:'Unknown execution endpoint.'});
+        } catch (error) {
+          if (error instanceof ExecutionError) return send(res, error.status, {error:error.message,code:error.code});
+          return send(res, 500, {error:'Execution service could not complete this request.'});
+        }
+      }
+
       if (p === '/api/continuity/status' && req.method === 'GET') return send(res, 200, continuity.status(storageError()));
       if (p === '/api/continuity/events' && req.method === 'GET') {
         const params = new URL(req.url ?? '/', 'http://x').searchParams;
@@ -777,6 +818,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
         queue.clear();
         break;
       case 'queue.limit':
+        localQueueApproved = true;
         queue.setLimit(num(msg.maxWorkers));
         break;
       case 'changes.watch':
@@ -897,8 +939,10 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     server.listen(cfg.port, cfg.host, () => resolve());
   });
   if (runtime.backgroundServices !== false) services.start();
+  execution.start();
 
   const shutdown = () => {
+    execution.stop();
     clearInterval(empireTimer);
     empire.flush();
     clearInterval(heartbeat);
@@ -915,5 +959,5 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     hookServer.close();
   };
 
-  return { server, shutdown, workers, publicDir, hookPort };
+  return { server, shutdown, workers, publicDir, hookPort, execution };
 }

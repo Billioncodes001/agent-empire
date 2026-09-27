@@ -22,7 +22,7 @@
     "prepare": "npm run build",
     "test": "tsx --test tests/*.test.ts",
     "test:browser": "node tests/browser-smoke.mjs",
-    "desktop:prepare": "npm run build:server && node tools/prepare-desktop.mjs",
+    "desktop:prepare": "npm run build && node tools/prepare-desktop.mjs",
     "desktop": "npm run desktop:prepare && npm start --prefix desktop",
     "desktop:package": "npm run desktop:prepare && npm run package --prefix desktop"
   },
