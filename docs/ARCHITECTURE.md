@@ -8,7 +8,7 @@
 - `src/client/world/city.ts`: procedural district, colliders, landmarks, vehicle, ambient residents and construction visibility.
 - `src/client/world/human.ts`: cached GLTF assets, independent cloned rigs, evaluated-skeleton normalization, walking/seated/interaction poses.
 - `src/client/world/materials.ts`, `vegetation.ts`, `batching.ts`: photographed PBR surfaces, instanced leaves and material-based static batches.
-- `src/client/player.ts`: eye-height first person, shoulder camera with collider obstruction, walking/driving collision.
+- `src/client/player.ts`: eye-height first person, turn-following shoulder camera with collider obstruction, walking/driving collision. A held arrow chord captures its movement basis so camera recentering cannot steer it into a loop. Manual orbit pauses following; camera easing uses elapsed time and clips the final rendered position against colliders.
 - `src/client/ui/empire.ts`: operations, minimap, home needs, sector task entry and touch movement.
 - `src/client/controls.ts`: arrow defaults, saved mapping validation and canonical office-action routing.
 
