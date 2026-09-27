@@ -182,7 +182,7 @@ Parent verification was source inspection of existing authentication and supervi
     - finalized utterances dispatch at most once across duplicate/retry paths; restart preserves durable task state
     - queue acknowledgement does not award completion credits
     - there is no credential in the renderer
-  - Real ASR smoke testing stays blocked because no model is installed.
+  - Update after the user installed recognition: MLX Whisper large-v3 Turbo is installed and supported. Default recognition routes still select missing models; route selection and a real transcription smoke test remain pending. See the updated roadmap readiness section.
 - **CITY-05/06**
   - Depend on the save schema.
   - Checks:
@@ -205,7 +205,7 @@ Parent verification was source inspection of existing authentication and supervi
 
 ## Next step (not started)
 
-Assign CITY-02 to Interface and Backend in separate, verified worktrees at an exact baseline. Backend owns shared protocol files; Interface builds against that contract. Review the exact candidate commits before integration. CITY-03 can develop readiness and a fake speech adapter without an ASR download. Real recognition testing remains blocked until an ASR model is selected and installed. Vehicle, district and helicopter work remains sequenced backlog, not blocked on a new user approval.
+Assign CITY-02 to Interface and Backend in separate, verified worktrees at an exact baseline. Backend owns shared protocol files; Interface builds against that contract. Review the exact candidate commits before integration. CITY-03 can develop readiness and a fake speech adapter without an ASR download. The user subsequently installed MLX Whisper large-v3 Turbo. Real recognition testing now needs a compatible selected route, since default readiness still targets missing models; no further download is established as necessary. Vehicle, district and helicopter work remains sequenced backlog, not blocked on a new user approval.
 
 ## Parent review and corrections
 
