@@ -147,6 +147,8 @@ export class Changes {
     void this.poll(workerId, true);
   }
 
+  isBusy(workerId: string): boolean { return !!this.watches.get(workerId)?.busy; }
+
   unwatch(workerId: string, clientId: string) {
     const w = this.watches.get(workerId);
     if (!w) return;
