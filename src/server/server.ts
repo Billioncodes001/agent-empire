@@ -281,8 +281,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     refreshGitHub: () => void github.refresh(),
     hiringPaused: () => localExecutionBlocker() || (!localQueueApproved ? 'Choose queue concurrency explicitly to start pending local tasks.' : undefined) || ledger.hiringPaused,
     retryAllowed: task => empire.managerTaskRetryBlocker(task),
-  });
-  if (runtime.requireExecutionSetup) queue.setLimit(0);
+  }, runtime.requireExecutionSetup);
   // Saved appointment flags are historical until worker/queue evidence has been reconciled.
   startupCleanup.push(() => queue.shutdown());
   empire.tick(workers.list(), queue.state(), 0);

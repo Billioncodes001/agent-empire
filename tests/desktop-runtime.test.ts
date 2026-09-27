@@ -1,13 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync,mkdirSync,writeFileSync,rmSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,readFileSync,writeFileSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {WebSocket, type RawData} from 'ws';
 import {loadConfig} from '../src/server/config';
 import {startServer} from '../src/server/server';
+import {TaskQueue} from '../src/server/queue';
 import type {WorkerRuntime} from '../src/server/workers';
-import type {ClientMsg, QueueState, ServerMsg} from '../src/shared/protocol';
+import type {ClientMsg, QueueState, ServerMsg, WorkerInfo} from '../src/shared/protocol';
 
 test('execution routes require session and origin, keep setup secrets out, and gate local workers',async()=>{
  const root=mkdtempSync(path.join(tmpdir(),'empire-setup-http-'));
@@ -39,6 +40,9 @@ test('founding briefs require positive queue approval after execution setup, not
  const root=mkdtempSync(path.join(tmpdir(),'empire-setup-queue-'));
  const pub=path.join(root,'public');mkdirSync(pub);writeFileSync(path.join(pub,'index.html'),'fixture');
  const cfg=loadConfig([root,'--host','127.0.0.1','--password','fixture-only']);cfg.port=0;
+ const queueFile=path.join(cfg.dataDir,'queue.json');
+ writeFileSync(queueFile,JSON.stringify({maxWorkers:2,tasks:[]}));
+ const savedLimit=()=>JSON.parse(readFileSync(queueFile,'utf8')).maxWorkers;
  let launches=0,requests=0;
  const runtime:WorkerRuntime={
   taskNaming:false,resolveCommand:()=>'/fixture/claude',processExists:()=>false,
@@ -71,6 +75,7 @@ test('founding briefs require positive queue approval after execution setup, not
   ws.on('message',raw=>{const msg=JSON.parse(raw.toString()) as ServerMsg;if(msg.t==='welcome')queue=msg.queue;else if(msg.t==='queue')queue=msg.state;});
   await message(msg=>msg.t==='welcome');
   assert.equal(queue.maxWorkers,0);
+  assert.equal(savedLimit(),2,'desktop startup must preserve the saved concurrency preference');
 
   const founded=message(msg=>msg.t==='queue'&&msg.state.tasks.length===2);
   send({t:'empire.action',action:{kind:'found',sites:['cafe']}});
@@ -78,13 +83,13 @@ test('founding briefs require positive queue approval after execution setup, not
   const foundingIds=queue.tasks.map(task=>task.id);
   assert.ok(queue.tasks.every(task=>task.status==='queued'&&task.jobKey?.startsWith('empire-manager-')));
   assert.equal(launches,0);
+  assert.equal(savedLimit(),2,'saving new founding briefs must preserve the paused preference');
 
   const rejected=message(msg=>msg.t==='toast'&&/Choose where workers run/.test(msg.text));
   send({t:'queue.limit',maxWorkers:1});
   await rejected;
   assert.equal(queue.maxWorkers,0,'a rejected positive limit must not become deferred approval');
-  send({t:'queue.limit',maxWorkers:0});
-  await barrier('paused before setup');
+  assert.equal(savedLimit(),2);
   assert.equal(launches,0);
 
   const setup=await (await fetch(base+'/api/execution/setup',{headers})).json();
@@ -94,6 +99,7 @@ test('founding briefs require positive queue approval after execution setup, not
   send({t:'queue.move',taskId:foundingIds[0],delta:1});
   await barrier('setup saved and queue pumped');
   assert.equal(queue.maxWorkers,0);
+  assert.equal(savedLimit(),2,'setup and unrelated task changes must not persist the transient zero');
   assert.equal(launches,0,'saving setup and pumping pending briefs must not start a worker');
   assert.deepEqual(new Set(queue.tasks.map(task=>task.id)),new Set(foundingIds));
   assert.ok(queue.tasks.every(task=>task.status==='queued'&&!task.workerId));
@@ -102,6 +108,7 @@ test('founding briefs require positive queue approval after execution setup, not
   send({t:'queue.limit',maxWorkers:1});
   await started;
   assert.equal(queue.maxWorkers,1);
+  assert.equal(savedLimit(),1,'an explicit concurrency change must be saved');
   assert.equal(launches,1,'only the explicit post-setup queue approval starts a fake worker');
   assert.equal(queue.tasks.filter(task=>task.status==='running').length,1);
   assert.equal(queue.tasks.filter(task=>task.status==='queued').length,1);
@@ -110,5 +117,34 @@ test('founding briefs require positive queue approval after execution setup, not
   ws?.terminate();
   const closed=new Promise<void>(resolve=>app.server.once('close',()=>resolve()));
   app.shutdown();await closed;rmSync(root,{recursive:true,force:true});
+ }
+});
+
+test('explicit queue choices release the transient startup pause, including the saved limit or zero',()=>{
+ for(const selected of [2,0]){
+  const root=mkdtempSync(path.join(tmpdir(),'empire-queue-pause-'));
+  const file=path.join(root,'queue.json');
+  writeFileSync(file,JSON.stringify({maxWorkers:2,tasks:[]}));
+  const workers:WorkerInfo[]=[];
+  const states:QueueState[]=[];
+  const queue=new TaskQueue(root,{
+   list:()=>workers,deskOccupied:desk=>workers.some(worker=>worker.deskId===desk),kill:async()=>({}),
+   spawn:desk=>{const worker={id:String(workers.length+1),deskId:desk,name:'Fixture',kind:'agent',status:'working',processState:'running'} as WorkerInfo;workers.push(worker);return worker;},
+  },false,{update:state=>states.push(state),toast(){},hiringPaused:()=>undefined,claimIssue:async()=>undefined,refreshGitHub(){}},true);
+  try{
+   assert.equal(queue.limit,0);
+   assert.equal(queue.add('First fixture task','Fixture'),undefined);
+   assert.equal(queue.add('Second fixture task','Fixture'),undefined);
+   queue.pump();
+   assert.equal(workers.length,0);
+   assert.equal(queue.state().maxWorkers,0);
+   assert.equal(JSON.parse(readFileSync(file,'utf8')).maxWorkers,2);
+   states.length=0;
+   queue.setLimit(selected);
+   assert.equal(queue.limit,selected);
+   assert.equal(states[0]?.maxWorkers,selected,'the explicit choice must publish its effective state');
+   assert.equal(workers.length,selected);
+   assert.equal(JSON.parse(readFileSync(file,'utf8')).maxWorkers,selected);
+  }finally{queue.shutdown();rmSync(root,{recursive:true,force:true});}
  }
 });

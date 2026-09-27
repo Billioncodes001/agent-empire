@@ -65,6 +65,8 @@ export class TaskQueue {
     /** Seat workers in their own git worktree (only when the project is a git repo). */
     private useWorktree: boolean,
     private events: QueueEvents,
+    /** Startup approval is transient; retain the user's saved concurrency preference. */
+    private pauseOnStart = false,
   ) {
     this.statePath = path.join(dataDir, 'queue.json');
     this.restore();
@@ -73,11 +75,11 @@ export class TaskQueue {
   }
 
   state(): QueueState {
-    return { tasks: this.tasks.map((t) => ({ ...t })), maxWorkers: this.maxWorkers };
+    return { tasks: this.tasks.map((t) => ({ ...t })), maxWorkers: this.limit };
   }
 
   get limit(): number {
-    return this.maxWorkers;
+    return this.pauseOnStart ? 0 : this.maxWorkers;
   }
   get recoveryError() { return this.storageError; }
 
@@ -163,9 +165,12 @@ export class TaskQueue {
   setLimit(n: number) {
     if (this.storageError) return;
     const v = Math.max(0, Math.min(this.capacity(), Math.floor(n)));
-    if (!Number.isFinite(v) || v === this.maxWorkers) return;
-    this.maxWorkers = v;
-    this.changed();
+    if (!Number.isFinite(v) || (v === this.maxWorkers && !this.pauseOnStart)) return;
+    this.pauseOnStart = false;
+    if (v !== this.maxWorkers) {
+      this.maxWorkers = v;
+      if (!this.changed()) return;
+    } else this.events.update(this.state());
     this.pump();
   }
 
@@ -243,7 +248,7 @@ export class TaskQueue {
       do {
         this.again = false;
         this.reconcile();
-        if (!this.storageError) this.seat();
+        if (!this.storageError && !this.pauseOnStart) this.seat();
       } while (this.again);
     } finally {
       this.pumping = false;
