@@ -188,7 +188,7 @@ export function openManagement(net: Net, actions: ManagementActions, selected?: 
         h(
           'p.setting-note',
           {},
-          'You receive 20% of positive operating profit. Every completed AI task earns 500 credits: 50 worker pay, 90 founder dividend and 360 retained by the city. City operations settle every city hour (one minute while the server runs).',
+          'You receive 20% of positive operating profit. Each observed ended agent turn on a queued task is credited 500 simulation credits: 50 worker pay, 90 founder dividend and 360 retained by the city. The turn ending is recorded; its output is not verified. City operations settle every city hour (one minute while the server runs).',
         ),
       ),
       h(

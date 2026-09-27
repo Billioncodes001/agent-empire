@@ -824,6 +824,7 @@ a.when:hover { text-decoration: underline; }
 .workers-list .sub { display: block; font-size: 11px; color: var(--hud-muted); overflow: hidden; text-overflow: ellipsis; }
 .workers-list .pill { color: var(--ink); }
 .workers-list .cost { font-size: 11px; color: var(--hud-muted); }
+.pill.stale { background: transparent; color: var(--tone-unknown); border: 1.5px dashed var(--tone-unknown); font-weight: 600; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }

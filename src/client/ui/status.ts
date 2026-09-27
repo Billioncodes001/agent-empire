@@ -114,6 +114,13 @@ export function managerView(sector: SectorState, tasks: QueueTask[], workers: Ma
   return { tone: 'unknown', label: 'Status unknown', detail: 'Unrecognized manager state.' };
 }
 
+/** Worker list pill: without fresh evidence, the cached status is only a last-known value. */
+export function workerPill(status: string, label: string, fresh: boolean) {
+  return fresh
+    ? { text: label, tone: status, spoken: label }
+    : { text: `last: ${label}`, tone: 'stale', spoken: `status unknown, last known ${label}` };
+}
+
 /** Only a fresh, running agent in an active turn may be drawn typing. */
 export function typingPose(worker: WorkerInfo | undefined, fresh: boolean): boolean {
   return fresh && worker?.kind === 'agent' && worker.status === 'working' && worker.processState === 'running';

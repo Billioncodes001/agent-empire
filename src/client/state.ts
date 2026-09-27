@@ -6,7 +6,7 @@ import type { ScreenState } from './world/laptop';
 import { randomLook, sanitizeLook, type Look } from '../shared/avatar';
 import type { Decoration } from '../shared/decor';
 
-type Topic = 'empire' | 'peers' | 'workers' | 'issues' | 'pulls' | 'chat' | 'project' | 'screens' | 'team' | 'upgrade' | 'services' | 'decor' | 'usage' | 'queue' | 'connection';
+type Topic = 'empire' | 'peers' | 'workers' | 'issues' | 'pulls' | 'chat' | 'project' | 'screens' | 'team' | 'upgrade' | 'services' | 'decor' | 'usage' | 'queue' | 'connection' | 'freshness';
 
 const zeroUsage = (): Usage => ({ input: 0, output: 0, cacheWrite: 0, cacheRead: 0, cost: 0, calls: 0 });
 
@@ -125,10 +125,20 @@ class Store {
     if (this.connected === up) return;
     this.connected = up;
     this.emit('connection');
+    this.checkFreshness();
   }
 
   evidence(now = performance.now()) {
     return evidence(this.empire.supervision, this.connected, this.empireReceivedAt, now);
+  }
+
+  private wasFresh = false;
+  /** Emits 'freshness' when evidence becomes fresh or goes stale; call periodically, since staleness arrives without a message. */
+  checkFreshness() {
+    const fresh = this.evidence().fresh;
+    if (fresh === this.wasFresh) return;
+    this.wasFresh = fresh;
+    this.emit('freshness');
   }
 
   workerAtDesk(deskId: string): WorkerInfo | undefined {
@@ -148,6 +158,7 @@ class Store {
         this.empire = msg.state;
         this.empireReceivedAt = performance.now();
         this.emit('empire');
+        this.checkFreshness();
         break;
       case 'welcome':
         this.you = msg.you;

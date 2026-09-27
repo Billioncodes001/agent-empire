@@ -3,6 +3,7 @@ import { store } from '../state';
 import type { Voice } from '../voice';
 import { $, h, openModal, STATUS_LABEL } from './dom';
 import { fmtCost, usageTitle } from './usage';
+import { workerPill } from './status';
 
 export function renderPeople(voice: Voice, onEditProfile: () => void) {
   const ul = $('people');
@@ -36,16 +37,27 @@ export function updateSpeaking(voice: Voice) {
 
 export function renderWorkers(onOpen: (id: string) => void) {
   const ul = $('workers');
-  ul.replaceChildren(...workerRows(onOpen));
+  replaceKeepingFocus(ul, workerRows(onOpen));
   const workers = store.workers.size;
   $('worker-count').textContent = workers ? String(workers) : '';
 }
 
+/** Rebuilds a worker list without dropping keyboard focus from the row that had it. */
+function replaceKeepingFocus(list: HTMLElement, rows: HTMLElement[]) {
+  const active = document.activeElement as HTMLElement | null;
+  const id = active && list.contains(active) ? active.closest<HTMLElement>('[data-worker]')?.dataset.worker : undefined;
+  list.replaceChildren(...rows);
+  if (!id) return;
+  const again = [...list.querySelectorAll<HTMLElement>('[data-worker]')].find((el) => el.dataset.worker === id);
+  (again ?? list.querySelector<HTMLElement>('[data-worker]') ?? list.closest<HTMLElement>('[tabindex]'))?.focus({ preventScroll: true });
+}
+
 function workerRows(onOpen: (id: string) => void): HTMLElement[] {
+  const fresh = store.evidence().fresh;
   const workers = [...store.workers.values()].sort((a, b) => a.createdAt - b.createdAt);
   const rows = workers.map((w) => {
     const sub = [w.worktree && `🌿 ${w.worktree.branch}`, w.pr && `🔀 PR #${w.pr.number}`, w.activity || w.title || w.prompt].filter(Boolean).join(' · ');
-    const status = STATUS_LABEL[w.status] ?? w.status;
+    const pill = workerPill(w.status, STATUS_LABEL[w.status] ?? w.status, fresh);
     return h(
       'li',
       {
@@ -57,13 +69,14 @@ function workerRows(onOpen: (id: string) => void): HTMLElement[] {
         }) as EventListener,
         tabindex: 0,
         role: 'button',
+        'data-worker': w.id,
         title: `Open ${w.name}'s terminal`,
-        'aria-label': `${w.name}, ${w.kind === 'shell' ? 'shell' : 'agent'}, ${status}. Open terminal.`,
+        'aria-label': `${w.name}, ${w.kind === 'shell' ? 'shell' : 'agent'}, ${pill.spoken}. Open terminal.`,
       },
       h('span.dot', { style: `background:${w.color}` }),
       h('span.name', {}, w.name, sub ? h('span.sub', {}, sub) : null),
       w.usage?.calls ? h('span.cost', { title: usageTitle(w.usage) }, fmtCost(w.usage.cost)) : null,
-      h('span.pill', { class: w.status }, status),
+      h('span.pill', { class: pill.tone, title: fresh ? undefined : 'No fresh update from the server; this is the last reported status.' }, pill.text),
     );
   });
   return rows.length ? rows : [h('li.empty', {}, 'Walk up to a desk and press E to hire one')];
@@ -73,11 +86,11 @@ function workerRows(onOpen: (id: string) => void): HTMLElement[] {
 export function openWorkersDialog(onOpen: (id: string) => void) {
   const close = h('button.btn.close', { 'aria-label': 'Close workers' }, '✕');
   const list = h('ul.workers-list');
-  const paint = () => list.replaceChildren(...workerRows((id) => { modal.close(); onOpen(id); }));
-  const off = store.on('workers', paint);
+  const paint = () => replaceKeepingFocus(list, workerRows((id) => { modal.close(); onOpen(id); }));
+  const offs = (['workers', 'freshness'] as const).map((topic) => store.on(topic, paint));
   const modal = openModal(
     h('div.modal.workers-modal', { role: 'dialog', 'aria-label': 'Workers' }, h('header', {}, h('h2', {}, 'Workers'), close), h('div.body.workers', {}, list)),
-    { onClose: () => off() },
+    { onClose: () => offs.forEach((off) => off()) },
   );
   close.addEventListener('click', () => modal.close());
   paint();

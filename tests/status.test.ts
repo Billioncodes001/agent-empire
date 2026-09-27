@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chiefView, evidence, managerTyping, managerView, monitorView, typingPose, workforceView, STALE_MS } from '../src/client/ui/status';
+import { chiefView, evidence, managerTyping, managerView, monitorView, typingPose, workerPill, workforceView, STALE_MS } from '../src/client/ui/status';
+import { store } from '../src/client/state';
 import { newSector, type SupervisionState, type SectorState } from '../src/shared/empire';
 import type { QueueTask, WorkerInfo } from '../src/shared/protocol';
 
@@ -107,6 +108,26 @@ test('conflicting manager, task and worker links stay unknown and never type', (
 test('a restored interruption outranks the legacy manager flag', () => {
   const tasks = [task({ interruption: { reason: 'server_restart', at: 1 } })];
   assert.equal(managerView(managed('working'), tasks, new Map([['w1', worker({ processState: 'running' })]]), fresh).label, 'Interrupted');
+});
+
+test('worker pills show cached status only as last-known without fresh evidence', () => {
+  assert.deepEqual(workerPill('working', 'working', true), { text: 'working', tone: 'working', spoken: 'working' });
+  const stale = workerPill('working', 'working', false);
+  assert.equal(stale.tone, 'stale');
+  assert.equal(stale.text, 'last: working');
+  assert.match(stale.spoken, /^status unknown/);
+});
+
+test('the store emits freshness only when evidence becomes fresh or stale', () => {
+  const seen: boolean[] = [];
+  const off = store.on('freshness', () => seen.push(store.evidence().fresh));
+  store.setConnected(true);
+  store.apply({ t: 'empire', state: { ...store.empire, supervision: supervision('working') } });
+  store.checkFreshness();
+  store.setConnected(false);
+  store.checkFreshness();
+  off();
+  assert.deepEqual(seen, [true, false]);
 });
 
 test('only fresh running agent turns use the typing pose', () => {
