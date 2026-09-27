@@ -23,3 +23,9 @@ A separate read-only review of the parent integration found Telegram shutdown, b
 ## Remaining product work
 
 This is a deterministic coordination foundation, not an autonomous model-backed chief. One execution host/repository serves all client labels; labels are not tenant isolation. The host must remain running. Packaged desktop quit and laptop shutdown stop local coordination. Existing provider-managed cloud tasks are not yet consultancy jobs. Model planning, independent client repositories, approved resource expansion, founder phone, worker lifestyles and reviewed memory are planned. Platform installers were not rebuilt or device-tested in this slice.
+
+## Final resolution and integration
+
+Grok rechecked exact6517da6 and accepted the three domain repairs and restore validation. It identified one remaining Medium in the capacity report, which could count an undurable queued row. Commit `033e5f8` fixes that: failed queue storage produces `queued: null`, a storage blocker and “queue count unavailable” in chief text. The real queue failure test asserts these API fields. A separate independent reviewer accepted exact033e5f81fb251c930db6cce7f9466c85725e638a and passed4/4 targeted server tests; typecheck also passed. Product code after6517da6 changes only this reviewed reporting repair and the matching client type. Main `codex/empire-world` was fast-forwarded after acceptance. No remaining actionable review findings for this slice. Native review history remains in `consultancy-backend.md`.
+
+The full198-test run preceded the reporting-only repair; the4 affected server tests were rerun after it. A preserved Git stash holds root's intermediate source edits as a recovery copy. It is not pending work to apply over the integrated implementation.
