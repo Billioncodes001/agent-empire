@@ -11,6 +11,7 @@ export class Net {
   private closedByUs = false;
   /** The server is restarting on purpose: retry every second instead of backing off. */
   private restartExpected = false;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
   up = false;
 
   constructor(private profile: () => Profile) {}
@@ -61,8 +62,21 @@ export class Net {
         // offline; keep retrying
       }
       const delay = this.restartExpected ? 1000 : Math.min(8000, 500 * 2 ** this.retry++);
-      setTimeout(() => this.connect(), delay);
+      this.retryTimer = setTimeout(() => {
+        this.retryTimer = null;
+        this.connect();
+      }, delay);
     };
+  }
+
+  /** Skips the backoff wait. Does nothing while connected or while a socket is already opening. */
+  reconnectNow() {
+    if (this.up || this.closedByUs || this.ws?.readyState === WebSocket.CONNECTING) return;
+    if (!this.retryTimer) return;
+    clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+    this.retry = 0;
+    this.connect();
   }
 
   expectRestart() {

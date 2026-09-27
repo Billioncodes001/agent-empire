@@ -826,6 +826,21 @@ a.when:hover { text-decoration: underline; }
 .workers-list .cost { font-size: 11px; color: var(--hud-muted); }
 .pill.stale { background: transparent; color: var(--tone-unknown); border: 1.5px dashed var(--tone-unknown); font-weight: 600; }
 
+/* Connection banner and Settings › App & connection */
+#hud #conn { display: flex; align-items: center; gap: 10px; top: 72px; max-width: calc(100vw - 24px); padding: 7px 8px 7px 14px; background: #3a2a24f2; color: #f6e6dc; border: 1px solid #f2a48866; border-radius: 8px; font-size: 12px; font-weight: 600; z-index: 5; }
+#hud #conn.hidden { display: none; }
+#hud #conn.offline { background: #2c2d33f2; border-color: #c9c2a466; color: #ece8db; }
+#hud #conn .btn { padding: 4px 10px; font-size: 11px; background: #ffffff14; color: inherit; border-color: #ffffff33; box-shadow: none; }
+.app-panel [hidden] { display: none !important; }
+.app-panel .status-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 8px; }
+.app-panel .status-card { background: #19272d; border-color: #425359; color: #d5dfdf; }
+.app-panel .status-card p { color: #a8bec3; }
+.app-panel .status-card .setting-note { margin-top: 8px; color: #8fa6aa; font-size: 11px; }
+.app-panel .empire-eyebrow { color: #8fa39c; font-size: 10px; letter-spacing: .14em; text-transform: uppercase; }
+.app-install { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+.app-install .setting-note { flex: 1; margin: 0; }
+@media (max-width: 600px) { .app-panel .status-cards { grid-template-columns: 1fr; } .app-install { flex-direction: column; align-items: stretch; } #hud #conn { top: auto; bottom: 200px; } }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
   .pill.needs_input, .spinner, .restart-art { animation: none !important; }

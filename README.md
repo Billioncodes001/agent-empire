@@ -34,6 +34,7 @@ Open http://localhost:4610. Choose your character, complete the one-time foundin
 - **Character selection:** two human models and a profile accent. The accent identifies a profile in the UI; clothing and skin textures remain part of each model.
 - **Compact HUD:** a circular minimap with an expanded waypoint map and translucent work controls keep the scene visible; there is no location selector.
 - **Touch movement** for coarse-pointer browsers. Native mobile packaging is not implemented.
+- **Installable web app:** over HTTPS or localhost, browsers that support it can install the office from **Settings › App & connection** (or the browser menu; iPhone/iPad use Share › Add to Home Screen). The installed app is the same web client and still needs a live connection to the office host. Its service worker only shows a public “can’t reach your office host” page when a page load fails; it never stores app pages, API responses, terminal output, snapshots or credentials, so nothing from the office is available offline. Settings also shows device-offline versus host-unreachable state, a **Reconnect now** control and, when the host reports it, host persistence status (single host, saved revision, receipt age on this device).
 
 Simulation service staff and credits are fictional. Actual coding agents and their monetary usage are shown separately. New users share the existing office authentication model; dedicated CEO/manager roles are not implemented yet.
 

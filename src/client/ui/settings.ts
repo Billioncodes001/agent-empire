@@ -8,7 +8,13 @@ const VIEWS: [ViewMode, string, string][] = [
   ['third', '🎥 Third person', 'Follow your character from behind. Drag to orbit the camera, scroll to zoom, and click things to use them.'],
 ];
 
-export function openSettings(settings: Settings, onChange: (s: Settings) => void, onCharacter: () => void, previewSound: () => void) {
+export function openSettings(
+  settings: Settings,
+  onChange: (s: Settings) => void,
+  onCharacter: () => void,
+  previewSound: () => void,
+  section?: { el: HTMLElement; dispose(): void },
+) {
   const seg = h('div.seg', { role: 'radiogroup', 'aria-label': 'Camera view' });
   const note = h('p.setting-note');
   const paint = () => {
@@ -118,9 +124,10 @@ export function openSettings(settings: Settings, onChange: (s: Settings) => void
       h('label', { style: 'margin-top:18px' }, 'Keyboard controls'), keyNote, keyRows, resetKeys,
       h('label', { style: 'margin-top:18px' }, 'Your character'),
       character,
+      section?.el,
     ),
   );
-  const modal = openModal(el);
+  const modal = openModal(el, { onClose: () => section?.dispose() });
   close.addEventListener('click', () => modal.close());
   character.addEventListener('click', () => {
     modal.close();
