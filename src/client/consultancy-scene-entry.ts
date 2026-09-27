@@ -8,12 +8,12 @@ if (host && toggle && status) {
   let cleanup: (() => void) | undefined, loading = false, generation = 0, active = true;
   let observer: IntersectionObserver | undefined;
   const fallback = (message: string) => {
-    status.textContent = message; host.dataset.scene = 'fallback';
-    toggle.textContent = 'Load 3D view'; toggle.disabled = false; toggle.removeAttribute('aria-pressed');
+    status.textContent = message; host.dataset.sceneState = 'fallback';
+    toggle.textContent = 'Load 3D view'; toggle.disabled = false; toggle.removeAttribute('aria-pressed'); toggle.removeAttribute('aria-disabled');
   };
   async function load() {
     if (cleanup || loading || !active) return;
-    loading = true; const token = generation; toggle!.disabled = true;
+    loading = true; host!.dataset.sceneState = 'loading'; const token = generation; toggle!.disabled = true;
     status!.textContent = 'Preparing the architectural view…';
     try {
       const { mountHeadquartersScene } = await import('./consultancy-scene');

@@ -127,16 +127,21 @@ export function mountHeadquartersScene(host: HTMLElement, toggle: HTMLButtonElem
   let alive = true, visible = true, paused = reduce.matches, failed = false;
   let frame = 0, previous = 0, phase = 0, pointerX = 0, pointerY = 0, smoothX = 0, smoothY = 0;
   let view = 0, orbit = 0.68;
+  const pointerSurface = host.parentElement ?? host;
   const buttons = host.parentElement?.querySelectorAll<HTMLButtonElement>('[data-scene-view]') ?? [];
   const angleByView = [0.68, -0.43, 1.7];
   function updateLabel() {
-    toggle.textContent = paused ? 'Enable camera motion' : 'Pause camera motion';
-    toggle.setAttribute('aria-pressed', String(!paused)); toggle.disabled = failed;
+    toggle.textContent = failed ? '3D unavailable' : paused ? 'Enable camera motion' : 'Pause camera motion';
+    toggle.setAttribute('aria-pressed', String(!paused)); toggle.disabled = failed; toggle.removeAttribute('aria-disabled');
+    buttons.forEach(button => { button.disabled = failed; });
     status.textContent = failed ? '3D unavailable · architectural illustration' : paused ? '3D architecture · motion paused' : '3D architecture · move your pointer to look around';
   }
   function draw() {
     const wide = host.clientWidth / Math.max(1, host.clientHeight);
-    camera.aspect = wide; camera.updateProjectionMatrix();
+    camera.aspect = wide;
+    if (wide > 1.65) camera.setViewOffset(host.clientWidth, host.clientHeight, -host.clientWidth * 0.2, 0, host.clientWidth, host.clientHeight);
+    else camera.clearViewOffset();
+    camera.updateProjectionMatrix();
     const radius = wide < 0.9 ? 76 : 64;
     const theta = orbit + smoothX * 0.085 + (paused ? 0 : Math.sin(phase * 0.16) * 0.018);
     camera.position.set(Math.sin(theta) * radius, 30 + smoothY * 2, Math.cos(theta) * radius);
@@ -165,7 +170,7 @@ export function mountHeadquartersScene(host: HTMLElement, toggle: HTMLButtonElem
   function onToggle() { paused = !paused; if (paused) { cancelAnimationFrame(frame); frame = 0; smoothX = smoothY = pointerX = pointerY = 0; } updateLabel(); requestDraw(); }
   function onReduce() { paused = reduce.matches; onLeave(); smoothX = smoothY = 0; updateLabel(); requestDraw(); }
   function onVisibility() { if (document.hidden) { cancelAnimationFrame(frame); frame = 0; } else { previous = 0; requestDraw(); } }
-  function onLoss(e: Event) { e.preventDefault(); failed = true; cancelAnimationFrame(frame); frame = 0; canvas.style.display = 'none'; host.dataset.scene = 'fallback'; updateLabel(); }
+  function onLoss(e: Event) { e.preventDefault(); failed = true; cancelAnimationFrame(frame); frame = 0; canvas.style.display = 'none'; host.dataset.sceneState = 'fallback'; updateLabel(); }
   const viewHandlers: Array<[HTMLButtonElement, () => void]> = [];
   buttons.forEach((button, i) => {
     const handler = () => { view = Math.min(i, 2); if (paused) orbit = angleByView[view]; buttons.forEach(b => b.setAttribute('aria-pressed', String(b === button))); requestDraw(); };
@@ -173,16 +178,16 @@ export function mountHeadquartersScene(host: HTMLElement, toggle: HTMLButtonElem
   });
   const resizeObserver = new ResizeObserver(resize); resizeObserver.observe(host);
   const intersection = new IntersectionObserver(entries => { visible = entries[0]?.isIntersecting ?? false; if (!visible) { cancelAnimationFrame(frame); frame = 0; } else requestDraw(); }); intersection.observe(host);
-  host.addEventListener('pointermove', onPointer); host.addEventListener('pointerleave', onLeave);
+  pointerSurface.addEventListener('pointermove', onPointer); pointerSurface.addEventListener('pointerleave', onLeave);
   toggle.addEventListener('click', onToggle); reduce.addEventListener('change', onReduce);
   document.addEventListener('visibilitychange', onVisibility); canvas.addEventListener('webglcontextlost', onLoss);
-  host.append(canvas); host.dataset.scene = 'ready'; toggle.disabled = false; updateLabel(); resize();
+  host.append(canvas); host.dataset.sceneState = 'ready'; toggle.disabled = false; updateLabel(); resize();
   return () => {
     alive = false; cancelAnimationFrame(frame); resizeObserver.disconnect(); intersection.disconnect();
-    host.removeEventListener('pointermove', onPointer); host.removeEventListener('pointerleave', onLeave);
+    pointerSurface.removeEventListener('pointermove', onPointer); pointerSurface.removeEventListener('pointerleave', onLeave);
     toggle.removeEventListener('click', onToggle); reduce.removeEventListener('change', onReduce);
     document.removeEventListener('visibilitychange', onVisibility); canvas.removeEventListener('webglcontextlost', onLoss);
-    viewHandlers.forEach(([b, handler]) => b.removeEventListener('click', handler));
-    cube.dispose(); foliageGeometry.dispose(); Object.values(materials).forEach(m => m.dispose()); environment.dispose(); renderer.dispose(); canvas.remove(); host.dataset.scene = 'fallback';
+    viewHandlers.forEach(([b, handler]) => { b.removeEventListener('click', handler); b.disabled = true; });
+    cube.dispose(); foliageGeometry.dispose(); Object.values(materials).forEach(m => m.dispose()); environment.dispose(); renderer.dispose(); canvas.remove(); host.dataset.sceneState = 'fallback';
   };
 }

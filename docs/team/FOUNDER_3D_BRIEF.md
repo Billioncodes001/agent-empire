@@ -1,6 +1,6 @@
 # Founder desk: architectural command room
 
-Recorded before implementation, 2026-09-27. Baseline 7a3c1f9. The user rejects the flat web preview and requires a genuine 3D website, deliberate transitions, hover interactions and the standing design standard. Figma connection requested; XD unavailable in app inventory. Do not claim a design-tool artifact without creating one.
+Recorded before implementation, 2026-09-27. Baseline 7a3c1f9. The user rejects the flat web preview and requires a genuine 3D website, deliberate transitions, hover interactions and the standing design standard. Figma connected during this task; XD was not available in the app inventory. Editable design: https://www.figma.com/design/ewvSQ9OFZGye6IhxtVpTvB?node-id=3-137 . Desktop 3:137, mobile 3:339, interaction board 4:20; responsive brief and review overlays have prototype reactions. Three.js parallax is specified in Figma and implemented in code; Figma vectors themselves are not live 3D.
 
 Research: motionsites.ai (architectural Zenith Realty, space/engineering art direction and large editorial hierarchy) and buildinamsterdam.com (confident type and restrained navigation). Adapt principles only; no copied code/assets.
 
