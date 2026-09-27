@@ -565,7 +565,7 @@ export function openCloudTasks(opts: { openSetup?: () => void; hostId?: () => st
               return h(
                 'li.exec-task',
                 { 'data-tone': v.tone },
-                h('div.exec-task-head', {}, h('span.status-dot', { 'aria-hidden': 'true' }), h('strong', {}, v.label), h('small', {}, timeAgo(t.createdAt))),
+                h('div.exec-task-head', {}, h('span.status-dot', { 'aria-hidden': 'true' }), h('strong', {}, v.label), h('small', {}, `Submitted ${timeAgo(t.createdAt)} · status checked ${timeAgo(t.updatedAt)}`)),
                 h('p.exec-task-prompt', {}, t.prompt),
                 h('p', {}, v.detail),
                 h('small', {}, [`${t.repository.owner}/${t.repository.name}`, t.branch && `branch ${t.branch}`, `reserved ${dollars(t.reservedCents)} (${t.budgetDay})`, cost, t.sessionId && `session ${t.sessionId.slice(0, 12)}`].filter(Boolean).join(' · ')),
