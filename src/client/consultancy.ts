@@ -3,7 +3,7 @@ import type { ConsultancyJob } from '../shared/consultancy';
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const labels: Record<string, string> = { awaiting_approval: 'Your approval', queued: 'Queued', running: 'In progress', needs_attention: 'Needs attention', awaiting_review: 'Ready for review', rejected: 'Declined' };
 interface Snapshot { revision: number; jobs: ConsultancyJob[]; storageError?: string }
-interface Status { repository: string; resources: { workstations: number; workers: number; attention: number; concurrency: number; queued: number; blocker?: string; mode: string }; telegram: {configured: boolean; running: boolean; error?: string; lastPollAt?: number} }
+interface Status { repository: string; resources: { workstations: number; workers: number; attention: number; concurrency: number; queued: number | null; blocker?: string; mode: string }; telegram: {configured: boolean; running: boolean; error?: string; lastPollAt?: number} }
 let jobs: ConsultancyJob[] = [], fresh = false, selected: string | undefined, busy = false, refreshing = false;
 let lastRendered = '';
 let refreshFlight: Promise<void> | undefined;

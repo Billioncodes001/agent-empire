@@ -76,6 +76,8 @@ test('real queue journal failure remains visible and cannot start or bind a ghos
   const state=await (await f.request('jobs')).json();
   assert.ok(state.storageError);assert.equal(state.jobs[0].status,'needs_attention');
   assert.equal(state.jobs[0].items[0].queueTaskId,undefined);assert.equal(f.launches,0);
+  const report=await (await f.request('status')).json();
+  assert.equal(report.resources.queued,null);assert.match(report.resources.blocker,/Queue could not be saved/);
   await assert.rejects(f.restart(), /Cannot restore queue/);
   assert.equal(f.launches,0);
 });

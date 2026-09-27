@@ -303,13 +303,13 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     workers: workers.list().filter(w => w.processState === 'running').length,
     attention: workers.list().filter(w => w.status === 'needs_input').length,
     concurrency: queue.limit,
-    queued: queue.state().tasks.filter(t => t.status === 'queued').length,
-    blocker: localExecutionBlocker() || (!localQueueApproved || queue.limit === 0 ? 'The local task queue is paused. Set concurrency in the game’s Queue panel to start approved work.' : undefined) || ledger.hiringPaused,
+    queued: queue.recoveryError ? null : queue.state().tasks.filter(t => t.status === 'queued').length,
+    blocker: storageError() || localExecutionBlocker() || (!localQueueApproved || queue.limit === 0 ? 'The local task queue is paused. Set concurrency in the game’s Queue panel to start approved work.' : undefined) || ledger.hiringPaused,
     mode: execution.setup().config.mode,
   });
   const chief = chiefCommands(office, () => {
     const r = capacityReport();
-    return `${r.workstations} funded workstations · ${r.workers} running workers · concurrency ${r.concurrency} · ${r.queued} tasks queued · ${r.attention} workers need input.${r.blocker ? ` Waiting: ${r.blocker}` : ''} This coordinator requires the execution host to remain running.`;
+    return `${r.workstations} funded workstations · ${r.workers} running workers · concurrency ${r.concurrency} · ${r.queued === null ? 'queue count unavailable' : `${r.queued} tasks queued`} · ${r.attention} workers need input.${r.blocker ? ` Waiting: ${r.blocker}` : ''} This coordinator requires the execution host to remain running.`;
   });
   let telegram: TelegramBridge | undefined;
   let telegramError: string | undefined;
