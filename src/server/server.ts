@@ -1,3 +1,6 @@
+import { Consultancy, ConsultancyError } from './consultancy.js';
+import { TelegramBridge, telegramConfig, type TelegramConfig, type TelegramTransport } from './telegram.js';
+import { chiefCommands } from './chief-commands.js';
 import { Empire } from './empire.js';
 import http from 'node:http';
 import https from 'node:https';
@@ -135,6 +138,8 @@ export interface ServerRuntime {
   publicDir?: string;
   backgroundServices?: boolean;
   execution?: ExecutionOptions;
+  /** Explicit test injection; false prevents use of host Telegram environment. */
+  telegram?: { config: TelegramConfig; transport?: TelegramTransport } | false;
   /** Packaged first-run desktops require an explicit execution choice before any local process. */
   requireExecutionSetup?: boolean;
 }
@@ -183,8 +188,9 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   let workers!: WorkerManager;
   let queue!: TaskQueue;
   let changes!: Changes;
+  let consultancy: Consultancy | undefined;
   let observing = false;
-  const storageError = () => [workers?.recoveryError, queue?.recoveryError].filter(Boolean).join(' ') || undefined;
+  const storageError = () => [workers?.recoveryError, queue?.recoveryError, consultancy?.recoveryError].filter(Boolean).join(' ') || undefined;
   const observeContinuity = () => {
     if (!workers || !queue || observing) return;
     observing = true;
@@ -286,6 +292,33 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   startupCleanup.push(() => queue.shutdown());
   empire.tick(workers.list(), queue.state(), 0);
   if (runtime.backgroundServices !== false) github.start();
+
+  consultancy = new Consultancy(cfg.dataDir, {
+    state: () => ({ ...queue.state(), storageError: queue.recoveryError }),
+    add: (prompt, by, title, issue, jobKey) => queue.add(prompt, by, title, issue, jobKey),
+  });
+  const office = consultancy;
+  const capacityReport = () => ({
+    workstations: empire.state.office.workstations,
+    workers: workers.list().filter(w => w.processState === 'running').length,
+    attention: workers.list().filter(w => w.status === 'needs_input').length,
+    concurrency: queue.limit,
+    queued: queue.state().tasks.filter(t => t.status === 'queued').length,
+    blocker: localExecutionBlocker() || (!localQueueApproved || queue.limit === 0 ? 'The local task queue is paused. Set concurrency in the game’s Queue panel to start approved work.' : undefined) || ledger.hiringPaused,
+    mode: execution.setup().config.mode,
+  });
+  const chief = chiefCommands(office, () => {
+    const r = capacityReport();
+    return `${r.workstations} funded workstations · ${r.workers} running workers · concurrency ${r.concurrency} · ${r.queued} tasks queued · ${r.attention} workers need input.${r.blocker ? ` Waiting: ${r.blocker}` : ''} This coordinator requires the execution host to remain running.`;
+  });
+  let telegram: TelegramBridge | undefined;
+  let telegramError: string | undefined;
+  try {
+    const config = runtime.telegram === false || runtime.backgroundServices === false && !runtime.telegram
+      ? undefined : runtime.telegram?.config ?? telegramConfig(process.env);
+    if (config) telegram = new TelegramBridge(cfg.dataDir, config, chief, runtime.telegram ? runtime.telegram.transport : undefined);
+  } catch (error) { telegramError = (error as Error).message; }
+  startupCleanup.push(() => telegram?.stop());
 
   // What each worker changed, for the Changes window at its desk (see changes.ts).
   changes = new Changes(
@@ -427,6 +460,30 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
         return;
       }
       if (p === '/api/whoami') return send(res, 200, { ok: true });
+      if (p.startsWith('/api/consultancy/')) {
+        if (req.method !== 'GET' && !sameOrigin(req, cfg)) return send(res, 403, { error: 'A same-origin Origin header is required' });
+        try {
+          office.reconcile();
+          if (p === '/api/consultancy/jobs' && req.method === 'GET') return send(res, 200, office.snapshot());
+          if (p === '/api/consultancy/status' && req.method === 'GET') return send(res, 200, {
+            mode: 'rule_based', observedAt: Date.now(), repository: project.name,
+            resources: capacityReport(), telegram: telegram?.status() ?? { configured: false, running: false, error: telegramError },
+            hostRequired: true,
+          });
+          if (p === '/api/consultancy/jobs' && req.method === 'POST') {
+            let value: unknown;
+            try { value = JSON.parse(await readBody(req, 180_000)); }
+            catch { return send(res, 400, { error: 'Expected a JSON client brief.' }); }
+            return send(res, 200, office.create(value, 'CEO'));
+          }
+          const action = /^\/api\/consultancy\/jobs\/([a-zA-Z0-9_-]{1,80})\/(approve|reject)$/.exec(p);
+          if (action && req.method === 'POST') return send(res, 200, action[2] === 'approve' ? office.approve(action[1], 'CEO') : office.reject(action[1], 'CEO'));
+          return send(res, 404, { error: 'Unknown consultancy endpoint.' });
+        } catch (error) {
+          if (error instanceof ConsultancyError) return send(res, error.status, { error: error.message });
+          return send(res, 500, { error: 'Consultancy service could not complete this request.' });
+        }
+      }
       if (p.startsWith('/api/execution/')) {
         if (req.method !== 'GET' && !sameOrigin(req, cfg)) return send(res, 403, {error:'A same-origin Origin header is required'});
         try {
@@ -926,7 +983,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
 
   // Drop dead connections so ghosts don't linger in the office.
   empire.dispatchManagers(queue, 'Chief of staff');
-  const empireTimer = setInterval(() => empire.tick(workers.list(), queue.state()), 5000);
+  const empireTimer = setInterval(() => { empire.tick(workers.list(), queue.state()); try { office.reconcile(); } catch { /* Durable service exposes recovery errors through its snapshot. */ } }, 5000);
   const heartbeat = setInterval(() => {
     for (const c of clients.values()) {
       if ((c.ws as any).isAlive === false) {
@@ -945,8 +1002,11 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   });
   if (runtime.backgroundServices !== false) services.start();
   execution.start();
+  office.reconcile();
+  telegram?.start();
 
   const shutdown = () => {
+    telegram?.stop();
     execution.stop();
     clearInterval(empireTimer);
     empire.flush();
@@ -964,5 +1024,5 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     hookServer.close();
   };
 
-  return { server, shutdown, workers, publicDir, hookPort, execution };
+  return { server, shutdown, workers, publicDir, hookPort, execution, consultancy: office };
 }

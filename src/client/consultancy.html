@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex" /><meta name="description" content="Your Agent Empire consultancy: client briefs, approvals and live work." />
+  <title>Founder desk · Agent Empire</title><link rel="icon" href="/favicon.svg" /><link rel="stylesheet" href="/consultancy.css" />
+</head>
+<body>
+  <a class="skip" href="#main">Skip to client work</a>
+  <div class="shell">
+    <aside class="rail"><a class="brand" href="/">AE<span>AGENT<br />EMPIRE</span></a><div class="rail-label">THE FIRM</div><a class="active" href="/consultancy.html" aria-current="page">01 <span>Founder desk</span></a><a href="/">02 <span>Enter the city ↗</span></a><div class="rail-bottom">Built around<br /><strong>real work.</strong><p>One operation.<br />Every client in view.</p></div></aside>
+    <main id="main">
+      <header class="topbar"><span>OPERATIONS / FOUNDER DESK</span><span id="connection" role="status">Connecting to host…</span></header>
+      <section class="intro"><div><p class="eyebrow">YOUR TECHNOLOGY CONSULTANCY</p><h1>Good work.<br /><em>Well coordinated.</em></h1><p class="lede">Bring the brief. Review the plan.<br />Keep every engagement moving.</p></div><button class="primary" id="new-job">＋ New client job</button></section>
+      <p id="error" role="alert" hidden></p>
+      <section class="metrics" aria-label="Current operation"><div><span>ACTIVE JOBS</span><strong id="active-count">—</strong></div><div><span>YOUR DECISIONS</span><strong id="approval-count">—</strong></div><div><span>RUNNING WORKERS</span><strong id="workers-count">—</strong></div><div><span>FUNDED DESKS</span><strong id="desks-count">—</strong></div></section>
+      <section class="workspace"><div class="engagements"><div class="section-title"><h2>Client engagements</h2><button id="refresh" class="quiet">Refresh ↻</button></div><div id="jobs"><p class="empty">Loading your firm’s work…</p></div></div><aside class="chief"><div class="chief-avatar" aria-hidden="true">A</div><p class="eyebrow">ALEX / CHIEF OF STAFF</p><h2>The current picture.</h2><p id="chief-report">Checking the execution host.</p><span class="tag">RULE-BASED COORDINATION</span><hr /><h3>Reach your firm anywhere</h3><p id="telegram-status">Checking Telegram setup…</p><details><summary>Connect Telegram</summary><p>Create a bot with BotFather. On your execution host, set AGENT_EMPIRE_TELEGRAM_TOKEN and AGENT_EMPIRE_TELEGRAM_OWNER_ID, then restart that host. Keep the token out of chat and source control.</p><p>Only your private chat is accepted. Start with /help. Commands and status updates use the same job records you see here.</p></details><hr /><p class="small">The host must stay running for coordination and Telegram. This view uses this host’s repository; client labels do not create separate repositories.</p></aside></section>
+      <footer>AGENT EMPIRE <span>CLIENT WORK, WITH A CLEAR LINE OF SIGHT.</span></footer>
+    </main>
+  </div>
+  <dialog id="intake"><form id="brief-form"><header><p class="eyebrow" id="step-label">01 / THE BRIEF</p><button type="button" class="close" id="close-intake" aria-label="Close new job">×</button></header><h2 id="form-title">Bring a new opportunity.</h2><div id="brief-fields"><label>Client<input name="client" maxlength="100" required autocomplete="organization" placeholder="e.g. Northstar Studio" /></label><label>Job title<input name="title" maxlength="120" required placeholder="e.g. Customer booking portal" /></label><label>What does success look like?<textarea name="brief" maxlength="8000" required rows="5" placeholder="Describe the outcome, constraints and what the team should deliver."></textarea></label></div><div id="brief-review" hidden></div><p id="form-error" role="alert" hidden></p><footer><button type="button" id="back" class="quiet" hidden>← Edit brief</button><button type="submit" class="primary" id="save-job">Review brief →</button></footer></form></dialog>
+  <dialog id="job-detail"><header><p class="eyebrow">ENGAGEMENT / REVIEW</p><button type="button" class="close" id="close-detail" aria-label="Close job details">×</button></header><div id="detail-content"></div><p id="action-error" role="alert" hidden></p><footer id="detail-actions"></footer></dialog>
+  <script type="module" src="/consultancy.ts"></script>
+</body></html>

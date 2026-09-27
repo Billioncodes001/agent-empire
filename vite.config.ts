@@ -10,6 +10,7 @@ export default defineConfig({
     chunkSizeWarningLimit: 2000,
     rollupOptions: {
       input: {
+        consultancy: resolve(import.meta.dirname, 'src/client/consultancy.html'),
         main: resolve(import.meta.dirname, 'src/client/index.html'),
         login: resolve(import.meta.dirname, 'src/client/login.html'),
         claim: resolve(import.meta.dirname, 'src/client/claim.html'),

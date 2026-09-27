@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { ConsultancyCreateInput, ConsultancyDecision, ConsultancyItem, ConsultancyJob, ConsultancySnapshot, ConsultancyStatus, ConsultancyTaskInput } from '../shared/consultancy.js';
@@ -95,7 +95,7 @@ export class Consultancy {
     this.assertMutable();
     const cleanActor = cleanBounded(actor, 'actor', MAX_ACTOR);
     const clean = validateCreateInput(input);
-    const fingerprint = JSON.stringify(clean);
+    const fingerprint = inputFingerprint(clean);
     const known = this.jobs.find((job) => job.requestId === clean.requestId);
     if (known) {
       if (known.requestFingerprint === fingerprint) return this.projectJob(known, this.readQueue()).job;
@@ -175,7 +175,7 @@ export class Consultancy {
           const key = this.itemKey(job.id, item.id);
           if (item.queueTaskId) {
             const observed = queueState.tasks.find((task) => task.id === item.queueTaskId);
-            if (!observed) {
+            if (!observed || observed.jobKey !== item.jobKey) {
               this.queueIssues.set(key, 'Previously observed queue task is missing; automatic requeue is blocked.');
               continue;
             }
@@ -218,7 +218,7 @@ export class Consultancy {
       if (changed) {
         this.revision += 1;
         this.persist();
-        this.onChange?.();
+        this.notifyChange();
       }
     } catch {
       this.jobs = previousJobs;
@@ -228,7 +228,7 @@ export class Consultancy {
   }
 
   get recoveryError(): string | undefined {
-    return this._recoveryError;
+    return this._recoveryError ?? this.storageError;
   }
 
   private projectJob(job: StoredJob, queue: QueueRead): JobProjection {
@@ -293,12 +293,16 @@ export class Consultancy {
     try {
       this.revision += 1;
       this.persist();
-      this.onChange?.();
+      this.notifyChange();
     } catch (error) {
       this.jobs = previousJobs;
       this.revision = previousRevision;
       throw error;
     }
+  }
+
+  private notifyChange() {
+    try { this.onChange?.(); } catch { /* Observers cannot undo a committed journal. */ }
   }
 
   private persist() {
@@ -370,10 +374,10 @@ function parseStoredJob(value: unknown, index: number): StoredJob {
   if (!Array.isArray(raw.items)) throw new Error(`${label} items must be an array`);
   if (raw.items.length === 0 || raw.items.length > MAX_TASKS) throw new Error(`${label} items must contain 1-${MAX_TASKS} entries`);
   const items = raw.items.map((entry, itemIndex) => parseStoredItem(entry, `${label} item #${itemIndex + 1}`));
-  return {
+  const job: StoredJob = {
     id: cleanBounded(raw.id, `${label} id`, 200),
     requestId: cleanBounded(raw.requestId, `${label} requestId`, MAX_REQUEST_ID),
-    requestFingerprint: cleanBounded(raw.requestFingerprint, `${label} fingerprint`, 20_000),
+    requestFingerprint: cleanBounded(raw.requestFingerprint, `${label} fingerprint`, 500_000),
     client: cleanBounded(raw.client, `${label} client`, MAX_CLIENT),
     title: cleanBounded(raw.title, `${label} title`, MAX_TITLE),
     brief: cleanBounded(raw.brief, `${label} brief`, MAX_BRIEF),
@@ -384,6 +388,23 @@ function parseStoredJob(value: unknown, index: number): StoredJob {
     decidedBy: raw.decidedBy === undefined ? undefined : cleanBounded(raw.decidedBy, `${label} decidedBy`, MAX_ACTOR),
     items,
   };
+  if (!/^consultancy-[a-f0-9]{12}$/.test(job.id) || job.createdAt < 0) throw new Error(`${label} identity is invalid`);
+  const taskIds = new Set<string>();
+  job.items.forEach((item, i) => {
+    if (item.id !== `item-${i + 1}` || item.jobKey !== `consultancy:${job.id}:${item.id}`) throw new Error(`${label} work identity is invalid`);
+    if (item.queueTaskId) {
+      if (job.decision !== 'approved' || taskIds.has(item.queueTaskId)) throw new Error(`${label} queue binding is invalid`);
+      taskIds.add(item.queueTaskId);
+    }
+  });
+  if (job.decision === 'pending_approval' ? job.decidedAt !== undefined || job.decidedBy !== undefined : job.decidedAt === undefined || job.decidedAt < 0 || !job.decidedBy)
+    throw new Error(`${label} decision evidence is invalid`);
+  const canonical = {requestId: job.requestId, client: job.client, title: job.title, brief: job.brief, tasks: job.items.map(item => ({title:item.title,prompt:item.prompt}))};
+  const fingerprint = inputFingerprint(canonical);
+  // Accept the pre-release JSON fingerprint only when it matches the complete saved plan.
+  if (job.requestFingerprint !== fingerprint && job.requestFingerprint !== JSON.stringify(canonical)) throw new Error(`${label} plan fingerprint does not match`);
+  job.requestFingerprint = fingerprint;
+  return job;
 }
 
 function parseStoredItem(value: unknown, label: string): StoredItem {
@@ -423,10 +444,14 @@ function validateCreateInput(input: unknown): Required<ConsultancyCreateInput> {
   return { requestId, client, title, brief, tasks };
 }
 
+function inputFingerprint(input: Required<ConsultancyCreateInput>): string {
+  return createHash('sha256').update(JSON.stringify(input)).digest('hex');
+}
+
 function findTask(tasks: QueueTask[], item: StoredItem): QueueTask | undefined {
   if (item.queueTaskId) {
     const byId = tasks.find((task) => task.id === item.queueTaskId);
-    if (byId) return byId;
+    return byId?.jobKey === item.jobKey ? byId : undefined;
   }
   return tasks.find((task) => task.jobKey === item.jobKey);
 }

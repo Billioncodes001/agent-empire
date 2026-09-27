@@ -58,6 +58,7 @@ export function appPanel(net: Net) {
     'section.app-panel',
     { 'aria-labelledby': 'app-panel-title' },
     h('label', { id: 'app-panel-title', style: 'margin-top:18px' }, 'App & connection'),
+    h('a.btn', { href: '/consultancy.html' }, 'Open founder desk · client jobs & approvals'),
     h('div.status-cards', {}, connection.el, host.el, execution.el),
     h(
       'p.setting-note',
