@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { startServer } from '../src/server/server.js';
@@ -25,7 +25,7 @@ async function fixture(t: any) {
   const connection = () => { const port = (running.server.address() as {port:number}).port; return {origin:`http://127.0.0.1:${port}`,cookie:`ao_session_${port}=${new Auth(cfg.verifier,cfg.salt,cfg.secret).issue()}`}; };
   t.after(async () => { await new Promise<void>(resolve=>{running.server.once('close',resolve);running.shutdown();}); rmSync(dir,{recursive:true,force:true}); });
   return {
-    get launches(){return launches;}, childEnvs, get office(){return running.consultancy;},
+    dir, get launches(){return launches;}, childEnvs, get office(){return running.consultancy;},
     async request(route:string, body?:unknown, headers: Record<string,string>|false = {}) {
       const {origin,cookie}=connection();
       return fetch(`${origin}/api/consultancy/${route}`,{method:body===undefined?'GET':'POST',headers:headers===false?{}:{cookie,origin,'content-type':'application/json',...headers},...(body===undefined?{}:{body:JSON.stringify(body)})});
@@ -67,4 +67,15 @@ test('Telegram host credentials are not inherited by task workers',async t=>{
   await f.request(`jobs/${job.id}/approve`,{});
   assert.equal(f.childEnvs.length,1);
   for(const key of keys)assert.equal(f.childEnvs[0][key],undefined);
+});
+
+test('real queue journal failure remains visible and cannot start or bind a ghost task',async t=>{
+  const f=await fixture(t);const job=await (await f.request('jobs',brief)).json();
+  const queueFile=path.join(f.dir,'queue.json');rmSync(queueFile);mkdirSync(queueFile);
+  const response=await f.request(`jobs/${job.id}/approve`,{});assert.equal(response.status,200);
+  const state=await (await f.request('jobs')).json();
+  assert.ok(state.storageError);assert.equal(state.jobs[0].status,'needs_attention');
+  assert.equal(state.jobs[0].items[0].queueTaskId,undefined);assert.equal(f.launches,0);
+  await assert.rejects(f.restart(), /Cannot restore queue/);
+  assert.equal(f.launches,0);
 });

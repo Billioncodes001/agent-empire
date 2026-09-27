@@ -16,3 +16,13 @@ Update on meaningful transitions only. Roadmap: [CITY_EXPANSION_PLAN.md](CITY_EX
 | CITY-09 | Cross-device voice, continuity and platform acceptance | Backend + Review | Feature slices | Backlog | Provider outputs/save sync tracked separately; macOS/Windows/web/Android/iOS evidence without unsupported offline claims |
 
 Known protected runtime: localhost:4610, Pixel and its save. Development should use isolated fixtures and ports. Proposed traffic/weather/service systems remain a later backlog, not silently added to the first feature slice.
+
+## Consultancy operation
+
+| ID | Slice | State | Evidence / next dependency |
+| --- | --- | --- | --- |
+| CONSULT-01 | Durable client jobs and approved local dispatch | Implemented; final review in progress | Native backend 7af1506; combined candidate 6517da6. Authenticated API, duplicate-safe approval, queue identity, interrupted-work attention, storage failure checks; real server with fake worker runs without a game connection |
+| CONSULT-02 | Owner-only Telegram commands and updates | Implemented; not connected to a real bot | Shared domain records, private owner allowlist, durable cursor, shutdown-generation guards, 12 fake-transport tests; host configuration still required |
+| CONSULT-03 | Founder desk | Initial interface implemented | Brief/review/approval/decline and current capacity; desktop and 375px browser acceptance. Founder phone, resource requests and credential wizard remain pending |
+| CONSULT-04 | Model chief, scaling, dependencies and cloud jobs | Backlog | Current chief is deterministic and uses one host repository; automatic expansion and provider job unification are not implemented |
+| CONSULT-05 | Employee routines and reviewed organizational memory | Backlog | Coffee/breaks/meetings/gym linked to scheduling, persistent roles and scoped lessons remain planned |
