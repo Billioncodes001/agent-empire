@@ -1,7 +1,7 @@
 """Rebuild the authored sedan with wheel arches, articulated running gear and a detailed cabin.
 Run with Blender 4.5: blender -b --python tools/refine-sedan.py
 """
-import bpy, math
+import bpy, math, bmesh
 from pathlib import Path
 from mathutils import Vector
 BASE=Path(__file__).resolve().parent
@@ -40,6 +40,22 @@ def line(name,points,material,radius=.009,parent=root):
     o=bpy.data.objects.new(name,c);bpy.context.collection.objects.link(o);o.data.materials.append(material);parent_keep(o,parent);return o
 handle=empty('Driver_handle',(.95,.35,.96));parent_keep(handle,bpy.data.objects['Driver_door_hinge'])
 body=bpy.data.objects['Sculpted aluminium body'];door=bpy.data.objects['Driver_door_panel']
+# The footwell floor sits below the soles; the original shallow cut left a solid block under the pedals.
+bpy.ops.mesh.primitive_cube_add(size=1,location=(0,.02,.94));tool=bpy.context.object;tool.dimensions=(1.58,2.22,1.42)
+bpy.ops.object.transform_apply(location=False,rotation=False,scale=True)
+for o in [body,door]:
+    bpy.context.view_layer.objects.active=o
+    mod=o.modifiers.new('Deep passenger footwell','BOOLEAN');mod.object=tool;mod.operation='DIFFERENCE';bpy.ops.object.modifier_apply(modifier=mod.name)
+bpy.data.objects.remove(tool,do_unlink=True)
+# Glazing is a surface, not a translucent solid block with a glass floor or tooling end caps.
+for o in [bpy.data.objects['Glazed cabin'],bpy.data.objects['Driver_door_window']]:
+    bm=bmesh.new();bm.from_mesh(o.data)
+    remove=[]
+    for f in bm.faces:
+        points=[o.matrix_world @ v.co for v in f.verts]
+        cap=any(all(abs(p[axis]-value)<.001 for p in points) for axis,value in [(0,.54),(1,-.41),(1,1.11)])
+        if cap or max(p.z for p in points)<1.01:remove.append(f)
+    bmesh.ops.delete(bm,geom=remove,context='FACES');bm.to_mesh(o.data);bm.free()
 for y in [-1.45,1.45]:
     bpy.ops.mesh.primitive_cylinder_add(vertices=64,radius=.418,depth=3,location=(0,y,.37),rotation=(0,math.pi/2,0));tool=bpy.context.object
     for o in [body,door]:
