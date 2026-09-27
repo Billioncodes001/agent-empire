@@ -25,6 +25,8 @@ export interface QueueEvents {
   refreshGitHub(): void;
   /** Why no workers may be hired right now (today's budget is spent), if that's so. */
   hiringPaused(): string | undefined;
+  /** Current manager ownership can reject superseded startup tasks, including legacy keys. */
+  retryAllowed?(task: QueueTask): string | undefined;
 }
 
 export const DEFAULT_MAX_WORKERS = 3;
@@ -136,6 +138,8 @@ export class TaskQueue {
     const t = this.tasks.find((x) => x.id === taskId);
     if (!t) return 'No such task';
     if (t.status !== 'done') return 'That task is still on the queue';
+    const authority = this.events.retryAllowed?.(t) ?? this.managerSiblingBlocker(t.jobKey, t.id);
+    if (authority) return authority;
     const blocked = this.recoveryBlocker(t);
     if (blocked) return blocked;
     if (t.issue !== undefined && this.tasks.some((x) => x !== t && x.issue === t.issue && x.status !== 'done')) return `Issue #${t.issue} is already on the queue`;
@@ -195,7 +199,18 @@ export class TaskQueue {
   managerRetryBlocker(jobKey: string, workerId?: string): string | undefined {
     const task = this.tasks.find(t => t.jobKey === jobKey);
     if (task?.status === 'running' || task?.status === 'queued') return 'Manager startup is already queued or running';
-    return this.recoveryBlocker(task ?? { workerId } as QueueTask);
+    return this.managerSiblingBlocker(jobKey, task?.id) ?? this.recoveryBlocker(task ?? { workerId } as QueueTask);
+  }
+
+  private managerSiblingBlocker(jobKey?: string, taskId?: string): string | undefined {
+    const family = managerFamily(jobKey);
+    if (!family) return;
+    for (const task of this.tasks) {
+      if (task.id === taskId || managerFamily(task.jobKey) !== family) continue;
+      if (task.status !== 'done') return 'Another startup attempt for this manager is queued or running. Review that attempt before recovery.';
+      const blocked = this.recoveryBlocker(task);
+      if (blocked) return blocked;
+    }
   }
 
   /** Fresh pull requests from GitHub: link each task to the PR that closes its issue (or came from its branch). */
@@ -306,6 +321,17 @@ export class TaskQueue {
     for (const t of this.tasks) {
       if (this.storageError) break;
       if (t.status !== 'queued') continue;
+      const authority = this.events.retryAllowed?.(t);
+      if (authority) {
+        t.status = 'done'; t.outcome = 'failed'; t.error = authority; t.finishedAt = Date.now();
+        if (!this.changed()) break;
+        continue;
+      }
+      const sibling = this.managerSiblingBlocker(t.jobKey, t.id);
+      if (sibling) {
+        if (t.error !== sibling) { t.error = sibling; if (!this.changed()) break; }
+        continue;
+      }
       if (this.busy() >= this.maxWorkers) break;
       // A spent budget holds the queue instead of failing every task; the pump seats them once hiring resumes.
       if (this.events.hiringPaused()) break;
@@ -415,4 +441,8 @@ function label(t: QueueTask): string {
 
 function firstLine(s: string): string {
   return s.split('\n')[0].trim();
+}
+
+function managerFamily(jobKey?: string): string | undefined {
+  return jobKey?.match(/^(empire-manager-.+)-\d+$/)?.[1];
 }
