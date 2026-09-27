@@ -71,7 +71,7 @@ No final Backend findings were returned in the first trial. Review and the roadm
   - preserve `SupervisionState` as regenerated runtime evidence; do not restore a previously saved projection as live truth
   - migration tests for vehicles, garage slots, condition, location, phone unread state, consent and plots
 
-The consolidated contract relies on VoiceStudio facts already recorded in the roadmap. Discovery was also attempted by Backend, but it returned no final contract. The streaming WebSocket is untested, and no ASR model is installed.
+The consolidated contract relies on VoiceStudio facts already recorded in the roadmap. Discovery was also attempted by Backend, but it returned no final contract. At that first-trial checkpoint the streaming WebSocket was untested and no ASR model had been verified. Current installation readiness is recorded below and in the roadmap.
 
 ## First trial: review findings (history; Grok, code inspection only, no tests run)
 
@@ -182,7 +182,7 @@ Parent verification was source inspection of existing authentication and supervi
     - finalized utterances dispatch at most once across duplicate/retry paths; restart preserves durable task state
     - queue acknowledgement does not award completion credits
     - there is no credential in the renderer
-  - Update after the user installed recognition: MLX Whisper large-v3 Turbo is installed and supported. Default recognition routes still select missing models; route selection and a real transcription smoke test remain pending. See the updated roadmap readiness section.
+  - Installation update: Turbo, MLX Whisper large-v3 and sherpa Whisper Tiny are installed. The latter two were downloaded on the user's explicit request; both default readiness checks now pass. A real transcription smoke test and game integration remain pending. See the updated roadmap readiness section.
 - **CITY-05/06**
   - Depend on the save schema.
   - Checks:
@@ -205,7 +205,7 @@ Parent verification was source inspection of existing authentication and supervi
 
 ## Next step (not started)
 
-Assign CITY-02 to Interface and Backend in separate, verified worktrees at an exact baseline. Backend owns shared protocol files; Interface builds against that contract. Review the exact candidate commits before integration. CITY-03 can develop readiness and a fake speech adapter without an ASR download. The user subsequently installed MLX Whisper large-v3 Turbo. Real recognition testing now needs a compatible selected route, since default readiness still targets missing models; no further download is established as necessary. Vehicle, district and helicopter work remains sequenced backlog, not blocked on a new user approval.
+Assign CITY-02 to Interface and Backend in separate, verified worktrees at an exact baseline. Backend owns shared protocol files; Interface builds against that contract. Review the exact candidate commits before integration. CITY-03 can develop readiness and a fake speech adapter without an ASR download. Turbo and both requested default recognition models are now installed; transcription and dictation readiness checks pass. Proceed to fixture transcription and game integration testing without another model download. Vehicle, district and helicopter work remains sequenced backlog, not blocked on a new user approval.
 
 ## Parent review and corrections
 
