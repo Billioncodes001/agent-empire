@@ -1,0 +1,10 @@
+.git
+.agent-office
+node_modules
+dist
+artifacts
+release
+desktop
+.env
+.env.*
+**/.DS_Store
