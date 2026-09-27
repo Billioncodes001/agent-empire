@@ -11,6 +11,8 @@ Date: 2026-09-27. Product candidate: `928710b` (subsequent documentation/report 
 - Browser Settings showed matching host identity, checkpoint/revision and connection receipt age. At 390 × 844 the page had no horizontal overflow (390px document; 358px settings dialog).
 - Stopping only the disposable server changed the open connection panel to unknown/reconnecting. Reload showed the public offline page. Restarting the same disposable project and selecting Try again restored the same host identity, a new runtime identity and fresh revision. The original live port-4610 server, worker and save were not restarted or migrated.
 
+- The final Linux amd64 Docker image built successfully (358,791,638 bytes). A disposable non-root container with a new Git volume and `/bin/false` as agent command passed health/login checks, rejected anonymous continuity access, served public manifest/service-worker resources, returned an authenticated empty artifact list, and retained its host identity and session across restart while changing runtime identity (revision 3 → 4). It was stopped after the test. Existing unrelated containers were untouched.
+
 ## Boundaries
 
 This is one owner and one continuously running host per project. Observation checkpoints do not make separate operational files transactional. A stopped host interrupts agents; recovery is explicit and does not promise exactly-once external effects. History retains 128 observations and falls back to a snapshot. Git bundles contain full committed history and are capped at 128 MiB; publication excludes dirty/running workers, shallow repositories, submodules and LFS pointers. Import does not merge; review worktree edits survive repeat sync. Manual diagnosis is required for an interrupted import/startup gate.
