@@ -24,10 +24,16 @@ test('arrow input moves forward; opening a modal can stop held movement', () => 
   const { player, key } = setup();
   key('keydown', 'ArrowUp');
   for (let i = 0; i < 10; i++) player.update(0.02);
-  assert.ok(player.pos.z < 59.75);
+  assert.ok(player.pos.z < 59.85);
+  assert.ok(player.speed > 1 && player.speed < 1.65);
   key('keyup', 'ArrowUp');
-  const stopped = player.pos.clone();
+  const released = player.pos.clone();
+  const speed = player.speed;
   player.update(0.02);
+  assert.ok(player.speed < speed && player.pos.z < released.z);
+  for (let i = 0; i < 40; i++) player.update(.02);
+  const stopped = player.pos.clone();
+  player.update(.02);
   assert.ok(player.pos.equals(stopped));
   key('keydown', 'ArrowUp');
   player.enabled = false;

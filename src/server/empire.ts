@@ -8,6 +8,7 @@ import {
   MANAGER_NAMES,
   hourlyRates,
   upgradeCost,
+  officeFloorCost, workstationCost,
   type EmpireAction,
   type EmpireState,
   type SectorState,
@@ -15,6 +16,7 @@ import {
 } from '../shared/empire.js';
 import type { WorkerInfo, QueueState } from '../shared/protocol.js';
 import type { TaskQueue } from './queue.js';
+import { DESKS_PER_FLOOR, fundedDesk } from '../shared/layout.js';
 
 /** Authoritative district ledger. AI rewards use observed queue outcomes, never invented completions. */
 export class Empire {
@@ -54,6 +56,7 @@ export class Empire {
           ...this.state,
           ...saved,
           version: 2,
+          office: { floors: 1, workstations: 16 },
           delegated: true,
           setup: this.state.setup,
           economy: this.state.economy,
@@ -96,8 +99,18 @@ export class Empire {
         this.state = saved;
       }
     }
+    if (!this.state.office) {
+      // Existing desks and workers survive an upgrade. New cities start with four funded seats.
+      if (!existsSync(this.file + '.v2-office-backup')) writeFileSync(this.file + '.v2-office-backup', readFileSync(this.file), { mode: 0o600 });
+      this.state.office = { floors: 1, workstations: 16 };
+      this.flush();
+    }
+    const office = this.state.office;
+    if (!Number.isSafeInteger(office.floors) || office.floors < 1 || !Number.isSafeInteger(office.workstations) || office.workstations < 1 || office.workstations > office.floors * DESKS_PER_FLOOR)
+      throw new Error('Invalid headquarters capacity in empire save');
     this.reportMinute = Math.floor(this.state.minutes / 30);
   }
+  deskAvailable(id: string) { return fundedDesk(id, this.state.office.workstations); }
   private report(sector: string, text: string) {
     this.state.reports.unshift({ at: Date.now(), sector, text });
     this.state.reports = this.state.reports.slice(0, 80);
@@ -145,6 +158,19 @@ export class Empire {
         'Chief of staff',
         `Founding plan confirmed: ${this.state.sectors.filter((s) => s.built).length} buildings. Managers have been appointed; their real startup work will use the agent queue.`,
       );
+    } else if (action.kind === 'office-floor' || action.kind === 'office-workstation') {
+      if (!this.state.setup.completed) return 'Complete founding setup first';
+      const office = this.state.office;
+      const floor = action.kind === 'office-floor';
+      if (!floor && office.workstations >= office.floors * DESKS_PER_FLOOR) return 'Build another floor before adding workstations';
+      const cost = floor ? officeFloorCost(office) : workstationCost(office);
+      if (!Number.isSafeInteger(cost) || this.state.funds < cost) return 'Insufficient simulation credits';
+      this.state.funds -= cost;
+      if (floor) office.floors++;
+      else office.workstations++;
+      this.report('Headquarters', floor
+        ? `Floor ${office.floors} constructed. Take the elevator upstairs; furnish workstations before hiring.`
+        : `Workstation ${office.workstations} installed with a computer. A new worker can now be employed.`);
     } else if (action.kind === 'delegate') {
       if (typeof action.enabled !== 'boolean') return 'Invalid delegation setting';
       this.state.delegated = action.enabled;
@@ -182,6 +208,7 @@ export class Empire {
         this.manager(sector);
         this.report(site.sector, `${site.name} constructed with a manager assignment and one service employee.`);
       } else if (action.kind === 'hire') {
+        if (sector.id === 'hq') return 'Employ AI workers at a furnished headquarters workstation';
         if (!sector.built) return 'Build this site first';
         if (sector.staff >= site.capacity) return 'Team is at capacity';
         if (this.state.funds < 1200) return 'Hiring requires 1,200 simulation credits';
@@ -192,6 +219,7 @@ export class Empire {
           `${site.name}: ${sector.staff}/${site.capacity} service employees. Each earns 18 credits per operating hour.`,
         );
       } else if (action.kind === 'upgrade') {
+        if (sector.id === 'hq') return 'Expand headquarters through floors and workstations';
         if (!sector.built) return 'Build this site first';
         if (sector.id === 'home' || sector.level >= 3) return 'No further upgrades available';
         const cost = upgradeCost(sector);
@@ -222,6 +250,8 @@ export class Empire {
             hire: 'Recruitment',
             upgrade: 'Building upgrade',
             reinvest: 'Founder reinvestment',
+            'office-floor': 'Headquarters floor construction',
+            'office-workstation': 'Workstation installation',
           } as Record<string, string>
         )[action.kind] ?? action.kind;
       this.ledger(`${label}${site ? ' · ' + site : ''}`, 0, 0, 0, 0, capital);

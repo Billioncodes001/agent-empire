@@ -161,6 +161,7 @@ export interface EmpireState {
   funds: number;
   delegated: boolean;
   setup: { completed: boolean; selected: SiteId[]; completedAt?: number };
+  office: { floors: number; workstations: number };
   sectors: SectorState[];
   reports: EmpireReport[];
   workforce: {
@@ -190,7 +191,8 @@ export type EmpireAction =
       kind: 'build' | 'hire' | 'buy-land' | 'upgrade' | 'retry-manager';
       site: SiteId;
     }
-  | { kind: 'reinvest' };
+  | { kind: 'reinvest' }
+  | { kind: 'office-floor' | 'office-workstation' };
 export function newSector(id: SiteId): SectorState {
   const site = SITES.find((s) => s.id === id)!;
   return {
@@ -213,6 +215,7 @@ export function initialEmpire(now = Date.now()): EmpireState {
     funds: 100000,
     delegated: true,
     setup: { completed: false, selected: [] },
+    office: { floors: 1, workstations: 4 },
     sectors: SITES.map((s) => newSector(s.id)),
     reports: [
       {
@@ -251,3 +254,7 @@ export function hourlyRates(sector: SectorState) {
     upkeep: sector.id === 'hq' ? 10 : 20 * sector.level,
   };
 }
+
+/** Treasury purchases fund physical capacity; provider concurrency remains separately controlled. */
+export const officeFloorCost = (office: EmpireState['office']) => 25000 * office.floors;
+export const workstationCost = (office: EmpireState['office']) => 1500 + 250 * Math.floor(office.workstations / 16);

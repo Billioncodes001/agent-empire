@@ -42,3 +42,11 @@ The accounting identity is `current treasury = opening treasury + gross revenue 
 The recreation centre, studio, manager avatars and upgrade details reuse the district's existing PBR materials, human rigs and architecture. Level two adds roof solar panels; level three adds planted frontage. The map and playable bounds include the new parcels.
 
 Automated tests exercise the founding grant, malformed and duplicate requests, queue-key persistence, worker-gated entry, completion rewards, payroll reconciliation, insolvency, land/build/upgrade rules and version-one migration. Manual checks use an isolated city with the queue paused; they never start paid workers. The development graphics review includes a Recreation view. Actual provider execution still depends on the configured agent CLI and account; it is not exercised by these tests.
+
+## Headquarters capacity
+
+A new city includes one operational floor and four furnished workstations. Saves written before this feature receive sixteen seats to preserve their workers, with a `.v2-office-backup` beside the save (version-1 migration still keeps its own backup). Floor and workstation counts are validated on load.
+
+An additional floor costs **25,000 × current operational floors** credits and provides sixteen empty desk positions. A workstation costs **1,500 + 250 × floor index** credits, where the first floor has index 0. Installations fill floors in order; buying a floor never grants free computers. Construction and furnishing are booked in the capital ledger. A departed worker leaves the workstation available for reuse. Purchases do not change the existing hourly sector rates.
+
+Every direct hire and queue allocation checks purchased capacity on the server. Worker addresses continue as `desk-17`, `desk-33`, etc.; there is no fixed sixteen-agent limit. The queue's “workers at once” setting cannot exceed furnished capacity. This is a capacity ceiling, not a guarantee of unlimited simultaneous compute: provider budgets and the host's resources still apply. The existing queue retains its separate bounded task history/backlog policy.

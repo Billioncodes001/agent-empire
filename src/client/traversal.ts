@@ -99,7 +99,9 @@ export class Traversal {
   update(dt: number) {
     const p = this.player;
     this.cooldown = Math.max(0, this.cooldown - dt);
-    this.office.entranceDoor.update(dt, p.pos.z < 30 && Math.abs(p.pos.x) < 2.5 && p.pos.z > 9.3);
+    this.office.entranceDoor.update(dt, this.office.floor === 0 && p.pos.z < 30 && Math.abs(p.pos.x) < 2.5 && p.pos.z > 9.3);
+    this.office.entranceDoor.collider.bottom = this.office.group.position.y;
+    this.office.entranceDoor.collider.top += this.office.group.position.y;
     if (this.current) {
       this.animate(dt);
       return;
@@ -108,13 +110,13 @@ export class Traversal {
     this.person.setTransition(null);
     const front = entrance('hq');
     if (!modalOpen() && p.enabled && !p.driving && p.grounded && p.moving && this.cooldown === 0) {
-      if (p.pos.z < 30 && Math.abs(p.pos.x) < 1.03 && p.pos.z > 12.1 && Math.cos(p.facing) > 0.25) this.begin('exit-office');
+      if (this.office.floor === 0 && p.pos.z < 30 && Math.abs(p.pos.x) < 1.03 && p.pos.z > 12.1 && Math.cos(p.facing) > 0.25) this.begin('exit-office');
       else if (Math.abs(p.pos.x - front.x) < 1.12 && p.pos.z > front.z && p.pos.z < front.z + 1.3 && Math.cos(p.facing) < -0.25)
         this.begin('enter-office');
     }
     if (p.driving) this.hint.textContent = `${keyLabel(p.bindings.interact)} Exit car · ${keyLabel(p.bindings.camera)} Camera`;
     else if (p.pos.z < 30)
-      this.hint.textContent = p.pos.z > 8 && Math.abs(p.pos.x) < 4 ? 'Walk through the glass doors to the waterfront' : '';
+      this.hint.textContent = p.pos.z > 8 && Math.abs(p.pos.x) < 4 ? (this.office.floor === 0 ? 'Walk through the glass doors to the waterfront' : 'Take the elevator to floor 1 for the street exit') : '';
     else if (p.pos.distanceTo(this.city.car.position) < 3.8)
       this.hint.textContent = `${keyLabel(p.bindings.interact)} Enter vehicle at driver’s door`;
     else {

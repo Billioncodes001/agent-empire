@@ -8,7 +8,7 @@ import serialize from '@xterm/addon-serialize';
 import type { Run, WorkerInfo, WorkerKind, WorkerStatus, WorkerTask } from '../shared/protocol.js';
 import { FLAG_BOLD, FLAG_DIM, FLAG_INVERSE, RGB_FLAG } from '../shared/protocol.js';
 import { Worktrees, describeWork, type WorktreeCleanup, type WorktreeState } from './worktrees.js';
-import { DESK_BY_ID } from '../shared/layout.js';
+import { DESK_BY_ID, fundedDesk } from '../shared/layout.js';
 import { gh } from './github.js';
 import type { ServiceOwner } from './services.js';
 import { TaskNamer, fallbackTask } from './tasks.js';
@@ -106,6 +106,7 @@ export class WorkerManager {
     private hook: HookEnv,
     private events: WorkerEvents,
     private ledger: Ledger,
+    private capacity: () => number = () => 16,
   ) {
     this.trees = new Worktrees(dir);
     this.statePath = path.join(dataDir, 'workers.json');
@@ -154,13 +155,15 @@ export class WorkerManager {
     }));
   }
 
+  workstationCapacity() { return this.capacity(); }
+
   deskOccupied(deskId: string): boolean {
     for (const w of this.workers.values()) if (w.info.deskId === deskId) return true;
     return false;
   }
 
   spawn(deskId: string, by: string, prompt?: string, worktree = false, kind: WorkerKind = 'agent'): WorkerInfo | string {
-    if (!DESK_BY_ID.has(deskId)) return 'Unknown desk';
+    if (!fundedDesk(deskId, this.capacity())) return 'Build and furnish this workstation before employing a worker';
     if (this.deskOccupied(deskId)) return 'That desk is taken';
     if (kind === 'agent') {
       const paused = this.ledger.hiringPaused;
@@ -797,7 +800,7 @@ process.stdin.on('end', () => {
     try {
       const saved = JSON.parse(readFileSync(this.statePath, 'utf8')) as (Partial<WorkerInfo> & { tracker?: unknown })[];
       for (const s of saved) {
-        if (!s.id || !s.deskId || !DESK_BY_ID.has(s.deskId) || this.deskOccupied(s.deskId)) continue;
+        if (!s.id || !s.deskId || !fundedDesk(s.deskId, this.capacity()) || this.deskOccupied(s.deskId)) continue;
         const tracker = restoreTracker(s.tracker);
         const info: WorkerInfo = {
           id: s.id,

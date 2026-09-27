@@ -6,6 +6,8 @@ export const WALL_HEIGHT = 4.2;
 
 export interface DeskDef {
   id: string;
+  floor?: number;
+  y?: number;
   x: number;
   z: number;
   /** Rotation around Y. At 0 the worker sits on the desk's +z side, facing -z. */
@@ -43,7 +45,24 @@ function buildDesks(): DeskDef[] {
 }
 
 export const DESKS: DeskDef[] = buildDesks();
-export const DESK_BY_ID = new Map(DESKS.map((d) => [d.id, d]));
+export const DESKS_PER_FLOOR = DESKS.length;
+export const FLOOR_RISE = 6.4;
+export const LIFT = { x: 7, z: -8.7, doorZ: -7.2 };
+/** Stable desk addresses, generated on demand; no fixed ceiling on the number of floors. */
+export function deskIndex(id: string): number {
+  if (!/^desk-[1-9][0-9]*$/.test(id)) return -1;
+  const n = Number(id.slice(5));
+  return Number.isSafeInteger(n) ? n - 1 : -1;
+}
+export function deskDefinition(id: string): DeskDef | undefined {
+  const index = deskIndex(id);
+  if (index < 0) return;
+  const floor = Math.floor(index / DESKS_PER_FLOOR);
+  return { ...DESKS[index % DESKS_PER_FLOOR], id, floor, y: floor * FLOOR_RISE, label: `Floor ${floor + 1} · Desk ${index % DESKS_PER_FLOOR + 1}` };
+}
+export const DESK_BY_ID = { get: deskDefinition, has: (id: string) => !!deskDefinition(id) };
+export const desksOnFloor = (floor: number) => DESKS.map((_, i) => deskDefinition(`desk-${floor * DESKS_PER_FLOOR + i + 1}`)!);
+export const fundedDesk = (id: string, capacity: number) => deskIndex(id) >= 0 && deskIndex(id) < capacity;
 
 /** Where the worker (and the interacting player) stands relative to the desk. */
 export function deskSeat(desk: DeskDef, offset = 0.85): { x: number; z: number } {

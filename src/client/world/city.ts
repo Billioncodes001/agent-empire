@@ -2,9 +2,11 @@ import { buildTerrain } from './terrain';
 import { slidingDoor } from './doors';
 import { entranceAccess, assignedWorkers } from '../navigation';
 import { store } from '../state';
+import { FLOOR_RISE } from '../../shared/layout';
 import { managerAvailable } from '../../shared/empire';
 import { batchStaticMeshes } from './batching';
 import * as THREE from 'three';
+import { GRAPHICS, type GraphicsQuality } from '../graphics';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { Water } from 'three/examples/jsm/objects/Water.js';
 import { SITES, type EmpireState } from '../../shared/empire';
@@ -422,7 +424,33 @@ export function buildCity() {
     undefined,
     (e) => console.warn('Vehicle model unavailable', e),
   );
+  const tower = new THREE.Group();
+  buildings.get('hq')!.add(tower);
+  let towerFloors = -1;
+  function growTower(floors: number) {
+    if (floors === towerFloors) return;
+    towerFloors = floors;
+    tower.traverse(o => { if (o instanceof THREE.Mesh) o.geometry.dispose(); });
+    tower.clear();
+    const upper = Math.max(8, floors - 2), height = upper * FLOOR_RISE;
+    const shaft = new THREE.Group(); shaft.position.y = 11.6; tower.add(shaft);
+    curtain(shaft, 14, height, 10, upper);
+    for (const side of [-1, 1]) box(shaft, .28, height + 1.8, 10.5, S.stone, side * 7.25, height / 2, 0);
+    box(shaft, 15.2, 1.1, 11, S.frame, 0, height + .8, 0);
+    box(shaft, .15, 6, .15, S.frame, 0, height + 3.6, 0);
+    const occupied = new THREE.MeshStandardMaterial({ color: '#b6c5a5', emissive: '#91ab7d', emissiveIntensity: .4, roughness: .45 });
+    for (let f = 0; f < floors; f++) for (const side of [-1, 1]) box(tower, 12, .18, .04, occupied, 0, f * FLOOR_RISE + 2.6, side * 6.13);
+    batchStaticMeshes(shaft); batchStaticMeshes(tower);
+    const collider = siteColliders.get('hq'); if (collider) collider.top = 12.7 + height;
+  }
+  const reflectOcean = water.onBeforeRender;
+  let crowd = 4;
   return {
+    setQuality(quality: GraphicsQuality) {
+      const profile = GRAPHICS[quality];
+      water.onBeforeRender = profile.reflections ? reflectOcean : () => {};
+      crowd = profile.citizens;
+    },
     group,
     colliders,
     car,
@@ -434,13 +462,14 @@ export function buildCity() {
     },
     chief: chief.root,
     sync(state: EmpireState) {
+      growTower(state.office.floors);
       for (const sector of state.sectors) {
         buildings.get(sector.id)!.visible = sector.built;
         plots.get(sector.id)!.visible = !sector.built;
         upgrades.get(sector.id)?.forEach((g, i) => (g.visible = sector.level >= i + 2));
         for (const item of sectorCollision.get(sector.id) ?? []) item.collider.top = sector.built ? item.top : 0;
         const c = siteColliders.get(sector.id);
-        if (c) c.top = sector.built ? (sector.id === 'hq' ? 11.4 : sector.id === 'hospital' ? 8 : 4) : 0;
+        if (c) c.top = sector.built ? (sector.id === 'hq' ? 12.7 + Math.max(8, state.office.floors - 2) * FLOOR_RISE : sector.id === 'hospital' ? 8 : 4) : 0;
       }
     },
     update(t: number, delegated: boolean, dt = 0.016, playerPosition = new THREE.Vector3(), driving = false) {
@@ -501,6 +530,8 @@ export function buildCity() {
       chief.root.position.set(delegated ? 5 : 8, 0, 9);
       chief.update(dt, t, false, false);
       citizens.forEach((p, i) => {
+        p.root.visible = i < crowd;
+        if (!p.root.visible) return;
         const a = t * 0.022 + (i * Math.PI) / 4,
           side = i % 2 ? 1 : -1;
         const x = side * (9.6 + Math.sin(a) * 0.65),

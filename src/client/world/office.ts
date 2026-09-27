@@ -1,3 +1,6 @@
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { desksOnFloor, deskIndex, FLOOR_RISE } from '../../shared/layout';
+import { buildElevator } from './elevator';
 import { batchStaticMeshes } from './batching';
 import { slidingDoor } from './doors';
 import * as THREE from 'three';
@@ -17,7 +20,7 @@ export interface Collider {
   bottom?: number;
 }
 
-export type InteractKind = 'desk' | 'issues' | 'pulls' | 'services' | 'queue' | 'tv' | 'coffee' | 'decor';
+export type InteractKind = 'desk' | 'issues' | 'pulls' | 'services' | 'queue' | 'tv' | 'coffee' | 'decor' | 'elevator';
 
 /** Something you can use. Its scene object carries it as `userData.interact`, for clicking. */
 export interface Interactable {
@@ -38,6 +41,9 @@ export interface DeskView {
   seatAnchor: THREE.Object3D;
   chair: THREE.Group;
   vacancy: THREE.Group;
+  screens: THREE.Mesh[];
+  setScreen(texture?: THREE.Texture): void;
+  screenTexture?: THREE.Texture;
 }
 
 export interface Office {
@@ -52,6 +58,10 @@ export interface Office {
   setProjectName(name: string): void;
   update(t: number): void;
   entranceDoor: ReturnType<typeof slidingDoor>;
+  elevator: ReturnType<typeof buildElevator>;
+  floor: number;
+  setFloor(floor: number, capacity: number): void;
+  setElevation(y: number): void;
 }
 
 const PALETTE = {
@@ -186,7 +196,16 @@ function buildDesk(def: DeskDef, index: number): DeskView {
   vacancy.position.set(0,height+.075,-.35);
   group.add(vacancy);
 
-  return { def, group, laptopAnchor, seatAnchor, chair: ch, vacancy };
+  const view: DeskView = { def, group, laptopAnchor, seatAnchor, chair: ch, vacancy, screens: [],
+    setScreen(texture?: THREE.Texture) {
+      view.screenTexture = texture;
+      for (const screen of view.screens) {
+        if (screen.material !== screen.userData.standby) (screen.material as THREE.Material).dispose();
+        screen.material = texture ? new THREE.MeshBasicMaterial({ map: texture, toneMapped: false }) : screen.userData.standby;
+      }
+    },
+  };
+  return view;
 }
 
 /** A framed board on a wall; the face gets a canvas texture (cork, chalk or whiteboard). */
@@ -324,6 +343,8 @@ export function buildOffice(): Office {
   boxMesh(group,4,.1,38,SURFACE.wood,-21,-.03,0);
 
   // Desks
+  const deskColliders: Collider[] = [];
+  const deskInteractions: Interactable[] = [];
   const desks = new Map<string, DeskView>();
   DESKS.forEach((def, i) => {
     const view = buildDesk(def, i);
@@ -331,12 +352,33 @@ export function buildOffice(): Office {
     desks.set(def.id, view);
     const hw = DESK_SIZE.width / 2 - 0.05;
     const hd = DESK_SIZE.depth / 2 - 0.02;
-    colliders.push({ minX: def.x - hw, maxX: def.x + hw, minZ: def.z - hd, maxZ: def.z + hd, top: DESK_SIZE.height });
+    const obstacle = { minX: def.x - hw, maxX: def.x + hw, minZ: def.z - hd, maxZ: def.z + hd, top: DESK_SIZE.height };
+    colliders.push(obstacle); deskColliders.push(obstacle);
     const seat = deskSeat(def, 1.25);
     const it: Interactable = { kind: 'desk', deskId: def.id, x: seat.x, z: seat.z, radius: 1.3 };
-    interactables.push(it);
+    interactables.push(it); deskInteractions.push(it);
     view.group.userData.interact = it;
   });
+
+  // Original Blender-authored monitor arms, two displays and a ventilated desktop computer.
+  new GLTFLoader().load('/models/workstation.glb', asset => {
+    for (const desk of views) {
+      const accessories = asset.scene.clone(true);
+      accessories.traverse(o => { if (o instanceof THREE.Mesh) {
+        o.castShadow = true; o.receiveShadow = true;
+        if (o.name.startsWith('MonitorScreen')) { o.userData.standby = o.material; desk.screens.push(o); }
+      } });
+      desk.setScreen(desk.screenTexture);
+      desk.group.add(accessories);
+    }
+  }, undefined, error => console.warn('Workstation accessories unavailable', error));
+  const elevator = buildElevator(); group.add(elevator.group);
+  colliders.push(...elevator.colliders);
+  const elevatorInteraction: Interactable = { kind: 'elevator', x: 7, z: -6.4, radius: 3 };
+  elevator.group.userData.interact = elevatorInteraction;
+  interactables.push(elevatorInteraction);
+  // A support slab is needed above ground level for physics and camera collision.
+  colliders.push({ ...FLOOR, top: 0, bottom: -.2 });
 
   // Cork boards on the walls
   const boardMeshes = {} as Office['boardMeshes'];
@@ -507,7 +549,30 @@ export function buildOffice(): Office {
   const optimize=(node:THREE.Group)=>{for(const child of [...node.children])if(child instanceof THREE.Group)optimize(child);batchStaticMeshes(node);};
   optimize(group);
 
-  return { group, colliders, interactables, desks, boardMeshes, tvScreen, entranceDoor, fixtures: () => (signRect ? [...fixtures, signRect] : fixtures), setProjectName, update };
+  const views = [...desks.values()];
+  const baseColliders = colliders.map(c => ({ c, top: c.top, bottom: c.bottom ?? 0 }));
+  const staticInteractions = interactables.filter(i => i.kind !== 'desk');
+  const office: Office = { floor: 0, elevator,
+    setElevation(y: number) {
+      group.position.y = y;
+      for (const { c, top, bottom } of baseColliders) { c.top = top + y; c.bottom = bottom + y; }
+      // Unfurnished workstations have neither geometry nor invisible collisions.
+      views.forEach((desk, i) => { if (!desk.group.visible) deskColliders[i].top = deskColliders[i].bottom = y; });
+    },
+    setFloor(floor: number, capacity: number) {
+      const changed = office.floor !== floor;
+      office.floor = floor;
+      if (changed) views.forEach(d => { d.vacancy.visible = true; d.setScreen(); });
+      desks.clear(); interactables.splice(0, interactables.length, ...staticInteractions);
+      desksOnFloor(floor).forEach((def, i) => {
+        const desk = views[i]; desk.def = def; desk.group.visible = deskIndex(def.id) < capacity;
+        deskInteractions[i].deskId = def.id;
+        if (desk.group.visible) { desks.set(def.id, desk); interactables.push(deskInteractions[i]); }
+      });
+      office.setElevation(floor * FLOOR_RISE);
+      elevator.setFloor(floor);
+    }, group, colliders, interactables, desks, boardMeshes, tvScreen, entranceDoor, fixtures: () => (signRect ? [...fixtures, signRect] : fixtures), setProjectName, update };
+  return office;
 }
 
 /**

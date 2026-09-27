@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone } from 'three/examples/jsm/utils/SkeletonUtils.js';
-import { prepareHumanModel } from '../src/client/world/human';
+import { Human, prepareHumanModel } from '../src/client/world/human';
 
 // Exercise the actual shipped meshes/rigs on the CPU; texture decode requires a browser.
 async function geometryAsset(name: string) {
@@ -96,4 +96,30 @@ test('sedan driver door pivots separately from the shell', async () => {
   const after = bounds(panel).getCenter(new THREE.Vector3());
   assert.ok(before.distanceTo(after) > 0.35);
   assert.ok(gltf.scene.getObjectByName('Steering_wheel'));
+});
+
+test('Blender workstation has two independent display surfaces and fits a 2.2 m desk', async () => {
+ const gltf = await geometryAsset('workstation.glb');
+ const screens: THREE.Object3D[] = []; gltf.scene.traverse(o => { if (o.name.startsWith('MonitorScreen')) screens.push(o); });
+ assert.equal(screens.length, 2);
+ const size = bounds(gltf.scene).getSize(new THREE.Vector3());
+ assert.ok(size.x < 2.2 && size.y < 1.6 && size.z < 1.1);
+});
+for (const asset of ['founder.glb', 'chief-of-staff.glb']) test(`${asset}: typing wrists reach the keyboard and fingers point along its surface`, async () => {
+ const gltf = await geometryAsset(asset), model = clone(gltf.scene), mixer = prepareHumanModel(model, gltf.animations);
+ const bones = new Map<string, THREE.Bone>();
+ model.traverse(o => { if (o instanceof THREE.Bone) bones.set(o.name.replace(/[^a-z0-9]/gi, '').toLowerCase(), o); });
+ const human = Object.create(Human.prototype) as Human;
+ const root = new THREE.Group(); root.add(model);
+ Object.assign(human, { root, model, mixer, bones, actions: new Map(gltf.animations.map(clip => [clip.name, mixer.clipAction(clip)])), current: mixer.clipAction(gltf.animations.find(c => c.name === 'idle_neutral_01')!), motion: 'idle_neutral_01', transition: null, seatedBaseZ: model.position.z, typingBlend: 0, gestureTime: 0, turnLean: 0, reachRemaining: 0 });
+ for (let i = 0; i < 180; i++) human.update(1/60, false, true, true);
+ root.updateWorldMatrix(true, true);
+ for (const side of ['l', 'r']) {
+  const hand = bones.get(`bip01${side}hand`)!.getWorldPosition(new THREE.Vector3());
+  const finger = bones.get(`bip01${side}finger2`)!.getWorldPosition(new THREE.Vector3());
+  assert.ok(Math.abs(hand.y - .82) < .05, `wrist height ${hand.y}`);
+  assert.ok(Math.abs(hand.z - .53) < .05, `wrist depth ${hand.z}`);
+  assert.ok(Math.abs(finger.y - hand.y) < .02, 'fingers stay parallel to keyboard');
+  assert.ok(finger.z > hand.z, 'fingers extend toward keys');
+ }
 });

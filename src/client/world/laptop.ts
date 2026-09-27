@@ -136,6 +136,7 @@ export class Laptop {
   private canvas = document.createElement('canvas');
   private ctx: CanvasRenderingContext2D;
   private texture: THREE.CanvasTexture;
+  get displayTexture() { return this.texture; }
   private lid = new THREE.Group();
   private drawnVersion = -1;
   private paintedAt = 0;

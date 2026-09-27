@@ -35,7 +35,7 @@ function setup() {
       if (name) phases.push(name);
     },
   } as unknown as Person;
-  const office = { colliders, entranceDoor: { update() {} } } as unknown as Office;
+  const office = { floor: 0, group: new THREE.Group(), colliders, entranceDoor: { collider: {top: 2.8, bottom: 0}, update() { this.collider.top = 2.8; } } } as unknown as Office;
   const city = {
     car,
     setCarDoor(v: number) {

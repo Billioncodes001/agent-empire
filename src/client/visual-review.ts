@@ -10,6 +10,8 @@ import { buildCity } from './world/city';
 import { buildOffice } from './world/office';
 import { Person } from './world/character';
 import { PlayerController } from './player';
+import { Tower } from './tower';
+import { applyGraphics } from './graphics';
 import { Traversal } from './traversal';
 import { store } from './state';
 import { lookFromSeed } from '../shared/avatar';
@@ -25,6 +27,7 @@ document.head.append(css);
 const canvas = document.getElementById('scene') as HTMLCanvasElement;
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.info.autoReset = false;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -56,6 +59,9 @@ scene.add(office.group, city.group);
 office.group.add(city.chief);
 office.colliders.push(...city.colliders);
 store.empire = initialEmpire();
+store.empire.office = { floors: 3, workstations: 36 };
+store.empire.setup.completed = true;
+office.setFloor(0, 36);
 store.empire.sectors.forEach((s) => (s.built = true));
 city.sync(store.empire);
 const player = new PlayerController(camera, canvas, office.colliders);
@@ -64,6 +70,7 @@ const person = new Person('Founder', '#75898b', { ...lookFromSeed('founder'), st
 person.showLabel(false);
 scene.add(person.root);
 const traversal = new Traversal(player, person, office, city, () => (store.empire.delegated = true));
+const tower = new Tower({ send: () => {} } as unknown as Net, player, office, () => {});
 const empire = mountEmpire({ send: () => {} } as unknown as Net, player, () => {});
 onModalChange((open) => {
   player.enabled = !open;
@@ -77,12 +84,16 @@ ao.minDistance = 0.001;
 ao.maxDistance = 0.075;
 composer.addPass(ao);
 composer.addPass(new OutputPass());
+applyGraphics('high', renderer, composer, ao, sun, scene); city.setQuality('high');
 let scenario = 'Street',
   walking = false,
   elapsed = 0;
 const playback = document.getElementById('playback') as HTMLInputElement;
 function setup(name: string) {
   if (player.scripted) return;
+  office.setFloor(0, 36);
+  person.pose = 'stand';
+  store.emit('empire');
   scenario = name;
   walking = false;
   elapsed = 0;
@@ -105,6 +116,13 @@ function setup(name: string) {
     player.setAction('forward', true);
     player.setAction('run', name === 'Run');
     walking = true;
+  }
+  if (name === 'Elevator') {
+    player.pos.set(7, 0, -5.9); player.camYaw = 0; player.facing = Math.PI;
+  }
+  if (name === 'Typing') {
+    player.pos.set(-11.6, 0, -5.5); player.camYaw = Math.PI * .72; player.camDist = 2.9; player.camPitch = .35;
+    person.pose = 'type'; player.facing = 0;
   }
   if (name === 'Office') {
     player.pos.set(0, 0, 8);
@@ -137,7 +155,7 @@ function setup(name: string) {
   if (name === 'District') {
     player.pos.set(2, 0, 77);
     player.camYaw = 0.65;
-    player.camDist = 75;
+    player.camDist = 125;
     player.camPitch = 0.85;
   }
   if (name === 'First person') {
@@ -152,6 +170,8 @@ for (const name of [
   'Walk',
   'Run',
   'Office',
+  'Elevator',
+  'Typing',
   'Walk out',
   'Walk in',
   'Enter car',
@@ -185,6 +205,7 @@ setup('Street');
 let last = 0,
   time = 0;
 renderer.setAnimationLoop((now) => {
+  renderer.info.reset();
   const dt = Math.min((now - last) / 1000, 0.05) * Number(playback.value);
   last = now;
   time += dt;
@@ -194,7 +215,8 @@ renderer.setAnimationLoop((now) => {
     walking = false;
   }
   player.update(dt);
-  traversal.update(dt);
+  if (!tower.active && scenario !== 'Typing') traversal.update(dt);
+  tower.update(dt);
   city.update(time, store.empire.delegated, dt, player.pos, player.driving);
   empire.update(dt);
   if (player.driving) {
@@ -204,8 +226,8 @@ renderer.setAnimationLoop((now) => {
   const outside = player.pos.z >= 30;
   office.group.visible = !outside;
   city.group.visible = outside;
-  sun.position.set(player.pos.x - 24, 40, player.pos.z + 24);
-  sun.target.position.set(player.pos.x, 0, player.pos.z);
+  sun.position.set(player.pos.x - 24, player.pos.y + 40, player.pos.z + 24);
+  sun.target.position.set(player.pos.x, player.pos.y, player.pos.z);
   sun.target.updateMatrixWorld();
   person.root.position.copy(player.pos);
   person.root.rotation.y = player.facing;
@@ -217,8 +239,9 @@ renderer.setAnimationLoop((now) => {
     .toArray()
     .map((v) => v.toFixed(2))
     .join(',');
-  canvas.dataset.traversal = traversal.state;
-  document.getElementById('telemetry')!.textContent =
-    `${scenario} · ${traversal.state}\n${canvas.dataset.position}\n${person.root.children[0]?.userData.motion ?? 'loading'} · ${renderer.info.render.calls} draws`;
+  canvas.dataset.traversal = tower.active ? 'elevator' : traversal.state;
+  canvas.dataset.floor = String(office.floor + 1);
   composer.render();
+  document.getElementById('telemetry')!.textContent =
+    `${scenario} · ${canvas.dataset.traversal} · Floor ${office.floor + 1}\n${canvas.dataset.position}\n${person.root.children[0]?.userData.motion ?? 'loading'} · ${renderer.info.render.calls} draws`;
 });

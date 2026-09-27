@@ -55,6 +55,7 @@ export class PlayerController {
   bindings: KeyBindings = { ...DEFAULT_KEYS };
   driving = false;
   private vehicleSpeed = 0;
+  private walkVelocity = new THREE.Vector2();
 
   constructor(
     private camera: THREE.PerspectiveCamera,
@@ -132,7 +133,7 @@ export class PlayerController {
     dom.addEventListener(
       'wheel',
       (e) => {
-        if (this.view === 'third') this.camDist = THREE.MathUtils.clamp(this.camDist + e.deltaY * 0.01, 2.5, 75);
+        if (this.view === 'third') this.camDist = THREE.MathUtils.clamp(this.camDist + e.deltaY * 0.01, 2.5, 125);
         e.preventDefault();
       },
       { passive: false },
@@ -175,6 +176,7 @@ export class PlayerController {
 
   clearKeys() {
     this.keys.clear();
+    this.walkVelocity.set(0, 0);
   }
 
   /** Captures the mouse for looking around, as the first click on the scene does. */
@@ -234,23 +236,24 @@ export class PlayerController {
       const desired = this.facing - Math.PI;
       if(this.view==='third')this.camYaw += Math.atan2(Math.sin(desired-this.camYaw),Math.cos(desired-this.camYaw))*Math.min(1,dt*3);
     } else this.vehicleSpeed = 0;
-    if (this.moving && !this.driving) {
-      const len = Math.hypot(ix, iz);
-      ix /= len;
-      iz /= len;
-      // Camera-relative: "forward" is where the camera looks.
-      const sin = Math.sin(this.camYaw);
-      const cos = Math.cos(this.camYaw);
-      const dx = ix * cos + iz * sin;
-      const dz = -ix * sin + iz * cos;
-      const speed = this.driving ? (k.has(this.bindings.run) ? 15 : 10) : k.has(this.bindings.run) ? RUN : WALK;
-      this.tryMove(this.pos.x + dx * speed * dt, this.pos.z);
-      this.tryMove(this.pos.x, this.pos.z + dz * speed * dt);
-      if (this.view === 'third') {
-        const want = Math.atan2(dx, dz);
-        let diff = want - this.facing;
-        diff = Math.atan2(Math.sin(diff), Math.cos(diff));
-        this.facing += diff * Math.min(1, dt * 14);
+    if (!this.driving) {
+      const input = this.moving;
+      const len = Math.hypot(ix, iz) || 1;
+      ix /= len; iz /= len;
+      const sin = Math.sin(this.camYaw), cos = Math.cos(this.camYaw);
+      const dx = ix * cos + iz * sin, dz = -ix * sin + iz * cos;
+      const speed = k.has(this.bindings.run) ? RUN : WALK;
+      // Acceleration, braking and turns preserve stride continuity instead of snapping to full speed.
+      const response = input ? 7 : 12;
+      this.walkVelocity.x = THREE.MathUtils.damp(this.walkVelocity.x, dx * speed, response, dt);
+      this.walkVelocity.y = THREE.MathUtils.damp(this.walkVelocity.y, dz * speed, response, dt);
+      if (!this.enabled || this.walkVelocity.lengthSq() < .0004) this.walkVelocity.set(0, 0);
+      this.tryMove(this.pos.x + this.walkVelocity.x * dt, this.pos.z);
+      this.tryMove(this.pos.x, this.pos.z + this.walkVelocity.y * dt);
+      if (this.view === 'third' && this.walkVelocity.lengthSq() > .015) {
+        const want = Math.atan2(this.walkVelocity.x, this.walkVelocity.y);
+        const diff = Math.atan2(Math.sin(want - this.facing), Math.cos(want - this.facing));
+        this.facing += diff * (1 - Math.exp(-dt * 10));
       }
     }
 
@@ -310,7 +313,7 @@ export class PlayerController {
     cam.z = THREE.MathUtils.clamp(cam.z, bounds.minZ + m - (bounds === CITY ? 35 : 0), bounds.maxZ - m + (bounds === CITY ? 35 : 0));
     const floorY = groundAt(this.colliders, this.pos.x, this.pos.z, this.pos.y);
     const roof = ceilingAt(this.colliders, cam.x, cam.z, floorY) - 0.3;
-    cam.y = THREE.MathUtils.clamp(cam.y, floorY + 0.6, Math.max(floorY + 0.6, Math.min(floorY + (this.pos.z >= CITY.minZ ? 65 : 3.5), roof)));
+    cam.y = THREE.MathUtils.clamp(cam.y, floorY + 0.6, Math.max(floorY + 0.6, Math.min(floorY + (this.pos.z >= CITY.minZ ? 110 : 3.5), roof)));
     // Pull the shoulder camera forward before it crosses any solid building/furniture face.
     // An explicit district overview (>20m) is intentionally free of street-level occlusion.
     if (this.camDist < 20) {
@@ -399,5 +402,5 @@ export function isTyping(e?: Event): boolean {
   const el = (e?.target as HTMLElement | null) ?? (document.activeElement as HTMLElement | null);
   if (!el) return false;
   const tag = el.tagName;
-  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable || !!el.closest?.('.xterm');
+  return tag === 'BUTTON' || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable || !!el.closest?.('.xterm');
 }

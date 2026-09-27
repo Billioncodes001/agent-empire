@@ -1,4 +1,5 @@
 import { keyLabel, type Action } from '../controls';
+import { FLOOR_RISE } from '../../shared/layout';
 import { SITES, hourlyRates, upgradeCost, type SiteId } from '../../shared/empire';
 import { entranceAccess, entrance, worldPosition, mapPoint, mapWorld } from '../navigation';
 import { store } from '../state';
@@ -336,7 +337,7 @@ export function mountEmpire(net: Net, player: PlayerController, research: () => 
                 'p',
                 {},
                 sector.built
-                  ? `Level ${sector.level} · ${sector.staff}/${site.capacity} service employees · ${sector.service}% coverage`
+                  ? (site.id === 'hq' ? `${state.office.floors} operational floors · ${state.office.workstations} furnished workstations. Use HQ to expand; employ AI workers at their desks.` : `Level ${sector.level} · ${sector.staff}/${site.capacity} service employees · ${sector.service}% coverage`)
                   : sector.owned
                     ? `Owned parcel · construction ${site.cost.toLocaleString()} cr`
                     : `Expansion land · ${site.landCost.toLocaleString()} cr`,
@@ -387,7 +388,7 @@ export function mountEmpire(net: Net, player: PlayerController, research: () => 
                         `Build · ${site.cost.toLocaleString()} cr`,
                       )
                     : null,
-                sector.built && site.id !== 'home'
+                sector.built && site.id !== 'home' && site.id !== 'hq'
                   ? h(
                       'button.btn',
                       {
@@ -397,7 +398,7 @@ export function mountEmpire(net: Net, player: PlayerController, research: () => 
                       'Hire employee · 1,200 cr',
                     )
                   : null,
-                sector.built && site.id !== 'home' && sector.level < 3
+                sector.built && site.id !== 'home' && site.id !== 'hq' && sector.level < 3
                   ? h(
                       'button.btn',
                       {
@@ -636,7 +637,7 @@ export function mountEmpire(net: Net, player: PlayerController, research: () => 
       place.textContent = waypoint
         ? `${waypoint.name} · ${Math.round(Math.hypot(waypoint.x - pos.x, waypoint.z - pos.z))} m`
         : player.pos.z < 30
-          ? 'Headquarters'
+          ? `Headquarters · Floor ${Math.floor(player.pos.y / FLOOR_RISE) + 1}`
           : (near?.name ?? 'Waterfront avenue');
       stats.textContent = `${keyLabel(player.bindings.map)} Map · ${keyLabel(player.bindings.camera)} View${store.empire.delegated ? ' · Chief of staff on duty' : ''}`;
       draw(map, true);

@@ -7,6 +7,7 @@ import { DESKS, DESK_BY_ID } from '../shared/layout.js';
 /** What the queue needs from the worker manager. Narrow on purpose, so a smoke test can fake it. */
 export interface QueueWorkers {
   list(): WorkerInfo[];
+  workstationCapacity?(): number;
   deskOccupied(deskId: string): boolean;
   spawn(deskId: string, by: string, prompt: string, worktree: boolean): WorkerInfo | string;
   /** Resolves with a line about what became of the worker's worktree. */
@@ -138,7 +139,7 @@ export class TaskQueue {
   }
 
   setLimit(n: number) {
-    const v = Math.max(0, Math.min(DESKS.length, Math.floor(n)));
+    const v = Math.max(0, Math.min(this.capacity(), Math.floor(n)));
     if (!Number.isFinite(v) || v === this.maxWorkers) return;
     this.maxWorkers = v;
     this.changed();
@@ -231,8 +232,10 @@ export class TaskQueue {
     return this.workers.list().filter((w) => w.kind === 'agent' && BUSY.has(w.status)).length;
   }
 
+  private capacity() { return this.workers.workstationCapacity?.() ?? DESKS.length; }
   private freeDesk(): string | undefined {
-    return DESKS.find((d) => !this.workers.deskOccupied(d.id))?.id;
+    for (let i = 1; i <= this.capacity(); i++) if (!this.workers.deskOccupied(`desk-${i}`)) return `desk-${i}`;
+    return undefined;
   }
 
   /**
@@ -311,7 +314,7 @@ export class TaskQueue {
     if (!existsSync(this.statePath)) return;
     try {
       const saved = JSON.parse(readFileSync(this.statePath, 'utf8')) as { maxWorkers?: number; tasks?: Partial<QueueTask>[] };
-      if (typeof saved.maxWorkers === 'number' && Number.isFinite(saved.maxWorkers)) this.maxWorkers = Math.max(0, Math.min(DESKS.length, Math.floor(saved.maxWorkers)));
+      if (typeof saved.maxWorkers === 'number' && Number.isFinite(saved.maxWorkers)) this.maxWorkers = Math.max(0, Math.min(this.capacity(), Math.floor(saved.maxWorkers)));
       for (const s of saved.tasks ?? []) {
         if (typeof s.id !== 'string' || typeof s.prompt !== 'string' || typeof s.title !== 'string') continue;
         const t: QueueTask = {

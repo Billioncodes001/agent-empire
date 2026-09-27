@@ -203,6 +203,7 @@ export async function startServer(cfg: Config) {
       toast: (text, level) => broadcast({ t: 'toast', text, level }),
     },
     ledger,
+    () => empire.state.office.workstations,
   );
 
   const github = new GitHub(

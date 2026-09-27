@@ -11,7 +11,7 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { SSAOPass } from 'three/examples/jsm/postprocessing/SSAOPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { sameLook } from '../shared/avatar';
-import { DESK_BY_ID, DESKS, SPAWN, deskSeat } from '../shared/layout';
+import { DESK_BY_ID, FLOOR_RISE, SPAWN, deskSeat } from '../shared/layout';
 import type { PeerInfo, WorkerInfo } from '../shared/protocol';
 import { Net } from './net';
 import { store, loadProfile, loadSettings, saveSettings, type Profile } from './state';
@@ -38,6 +38,8 @@ import { mountQueueButton, openQueue } from './ui/queue';
 import { openUpgrade, restarting, showRestarting, showUpgraded } from './ui/upgrade';
 import { openHelp, renderChat, renderPeople, renderWorkers, updateSpeaking } from './ui/hud';
 import { openCharacter } from './ui/character';
+import { Tower } from './tower';
+import { applyGraphics } from './graphics';
 import { openSettings } from './ui/settings';
 import { hiringPaused, renderUsage, usageLabel, usageTitle } from './ui/usage';
 
@@ -191,6 +193,8 @@ me.showLabel(false);
 scene.add(me.root);
 noOutline(me.root);
 const settings = loadSettings();
+applyGraphics(settings.quality, renderer, composer, ao, sun, scene);
+city.setQuality(settings.quality);
 const player = new PlayerController(camera, canvas, office.colliders);
 player.pos.set(SPAWN.x, 0, SPAWN.z);
 player.view = settings.view;
@@ -388,6 +392,12 @@ function shouldBounce(w: WorkerInfo) {
 }
 
 function syncWorkers() {
+  for (const [id, view] of workerViews) if (!office.desks.has(view.deskId) || !store.workers.has(id)) {
+    const oldDesk = office.desks.get(view.deskId);
+    if (oldDesk) { oldDesk.setScreen(); oldDesk.vacancy.visible = true; }
+    view.model.root.removeFromParent(); view.laptop.root.removeFromParent();
+    view.model.dispose(); view.laptop.dispose(); sound.removeTypist(id); workerViews.delete(id);
+  }
   for (const w of store.workers.values()) {
     let v = workerViews.get(w.id);
     const desk = office.desks.get(w.deskId);
@@ -404,6 +414,9 @@ function syncWorkers() {
       laptop.root.position.copy(desk.laptopAnchor.position);
       laptop.root.position.z -= 0.08;
       laptop.root.scale.setScalar(1.3);
+      // The terminal texture drives both Blender monitor panels. The keyboard is part of the workstation asset.
+      desk.setScreen(laptop.displayTexture);
+      laptop.root.visible = false;
       desk.group.add(laptop.root);
       noOutline(desk.group);
       desk.vacancy.visible = false;
@@ -446,13 +459,14 @@ function syncWorkers() {
 store.on('workers', syncWorkers);
 store.on('workers', renderUsage);
 store.on('usage', renderUsage);
+const tower = new Tower(net, player, office, () => syncWorkers());
 
 // ---- Actions ------------------------------------------------------------------------------------
 function freeDesk(): string | null {
   // Prefer the empty desk nearest to you.
   let best: string | null = null;
   let bestD = Infinity;
-  for (const d of DESKS) {
+  for (const { def: d } of office.desks.values()) {
     if (store.workerAtDesk(d.id)) continue;
     const dist = Math.hypot(d.x - player.pos.x, d.z - player.pos.z);
     if (dist < bestD) {
@@ -643,6 +657,7 @@ function interact(target: Interactable | null, key: DeskKey) {
   else if (target.kind === 'queue') showQueue();
   else if (target.kind === 'tv') watchShare();
   else if (target.kind === 'decor' && target.decorId) hanger.view(target.decorId);
+  else if (target.kind === 'elevator') tower.open();
   else if (target.kind === 'coffee') {
     toast('☕ Mmm, fresh coffee. +10 focus');
     sound.coffee();
@@ -656,7 +671,7 @@ let hintKey = '';
 function pickTarget(): Interactable | null {
   let best: Interactable | null = null;
   let bestD = Infinity;
-  for (const list of [office.interactables, gallery.interactables]) {
+  for (const list of [office.interactables, ...(office.floor === 0 ? [gallery.interactables] : [])]) {
     for (const it of list) {
       const d = Math.hypot(it.x - player.pos.x, it.z - player.pos.z);
       if (d < it.radius && d < bestD) {
@@ -725,7 +740,8 @@ function renderHint() {
     const any = currentShares().length > 0;
     k += any;
     parts = [h('span.title', {}, 'AGENT EMPIRE'), key('E', any ? 'Watch full screen' : 'Share your screen')];
-  } else if (target.kind === 'coffee') parts = [h('span.title', {}, '☕ Coffee machine'), key('E', 'Grab a cup')];
+  } else if (target.kind === 'elevator') parts = [h('span.title', {}, `Elevator · Floor ${office.floor + 1}`), key('E', 'Floor directory')];
+  else if (target.kind === 'coffee') parts = [h('span.title', {}, '☕ Coffee machine'), key('E', 'Grab a cup')];
   else if (target.kind === 'decor') {
     const id = target.decorId;
     const d = store.decor.find((x) => x.id === id);
@@ -832,6 +848,7 @@ window.addEventListener('keydown', (e) => {
       openHelp(settings.keys);
       break;
     case 'KeyF':
+      if (office.floor > 0) { toast('Wall pictures are managed on the ground floor.'); break; }
       hanger.start();
       break;
     default:
@@ -894,7 +911,7 @@ function backToGame() {
 const raycaster = new THREE.Raycaster();
 const CROSSHAIR = new THREE.Vector2(0, 0);
 /** How close (meters from your eyes) you must be to use each kind of thing. */
-const REACH: Record<InteractKind, number> = { desk: 4.5, coffee: 3, issues: 9, pulls: 9, services: 9, queue: 9, tv: 10, decor: 9 };
+const REACH: Record<InteractKind, number> = { elevator: 4, desk: 4.5, coffee: 3, issues: 9, pulls: 9, services: 9, queue: 9, tv: 10, decor: 9 };
 const eye = new THREE.Vector3();
 
 /** What the ray through `ndc` lands on first, and whether it is within reach (plus `slack` meters). */
@@ -1038,12 +1055,14 @@ mountQueueButton($('btn-queue'), showQueue);
 $('btn-team').addEventListener('click', () => openTeam(net));
 $('btn-upgrade').addEventListener('click', () => openUpgrade(net));
 $('btn-help').addEventListener('click', () => openHelp(settings.keys));
-$('btn-decor').addEventListener('click', () => (hanger.active ? hanger.cancel() : hanger.start()));
+$('btn-decor').addEventListener('click', () => office.floor > 0 ? toast('Wall pictures are managed on the ground floor.') : (hanger.active ? hanger.cancel() : hanger.start()));
 $('btn-settings').addEventListener('click', () =>
   openSettings(
     settings,
     (s) => {
+      const qualityChanged = settings.quality !== s.quality;
       Object.assign(settings, s);
+      if (qualityChanged) { applyGraphics(settings.quality, renderer, composer, ao, sun, scene); city.setQuality(settings.quality); resize(); }
       saveSettings(settings);
       player.setView(settings.view);
       player.bindings = settings.keys;
@@ -1091,12 +1110,14 @@ function frame(ts?: number) {
 
   renderer.info.reset();
   player.update(dt);
-  traversal.update(dt);
+  if (!tower.active) traversal.update(dt);
+  tower.update(dt);
   city.update(t, store.empire.delegated, dt,player.pos,player.driving);
   empireUI.update(dt);
   canvas.dataset.position = `${player.pos.x.toFixed(1)}, ${player.pos.y.toFixed(1)}, ${player.pos.z.toFixed(1)}`;
   canvas.dataset.view = player.view;
-  canvas.dataset.traversal = traversal.state;
+  canvas.dataset.traversal = tower.active ? 'elevator' : traversal.state;
+  canvas.dataset.floor = String(office.floor + 1);
   canvas.dataset.motion = String(me.root.children[0]?.userData.motion??'loading');
   canvas.dataset.assets = me.ready && city.car.userData.ready && scene.environment ? 'ready' : 'loading';
   canvas.dataset.fps = String(Math.round(1 / Math.max(dt,.001)));
@@ -1105,9 +1126,11 @@ function frame(ts?: number) {
   if (player.driving) { city.car.position.copy(player.pos); city.car.rotation.y=player.facing; }
   const outside = player.pos.z >= 30;
   office.group.visible = !outside;
+  city.chief.visible = office.floor === 0;
+  gallery.group.visible = office.floor === 0;
   city.group.visible = outside;
-  sun.position.set(player.pos.x-24, 40, player.pos.z+24);
-  sun.target.position.set(player.pos.x,0,player.pos.z);
+  sun.position.set(player.pos.x-24, player.pos.y+40, player.pos.z+24);
+  sun.target.position.set(player.pos.x,player.pos.y,player.pos.z);
   sun.target.updateMatrixWorld();
 
   me.root.position.copy(player.pos);
@@ -1122,7 +1145,7 @@ function frame(ts?: number) {
 
   // Your ears are in your head, facing wherever the camera looks.
   camera.getWorldDirection(lookDir);
-  sound.update({ x: player.pos.x, y: player.pos.y + EYE_HEIGHT, z: player.pos.z, fx: lookDir.x, fz: lookDir.z });
+  sound.update({ x: player.pos.x, y: player.pos.y + EYE_HEIGHT - (outside ? 0 : office.group.position.y), z: player.pos.z, fx: lookDir.x, fz: lookDir.z });
   const s = Math.floor(player.walkPhase / Math.PI);
   if (s !== stride) {
     stride = s;
@@ -1144,6 +1167,7 @@ function frame(ts?: number) {
   for (const [id, r] of remotes) {
     const p = store.peers.get(id);
     if (!p) continue;
+    r.person.root.visible = (p.z >= 30) === outside && (outside || Math.floor((p.y + .01) / FLOOR_RISE) === office.floor);
     r.target.set(p.x, p.y, p.z);
     const pos = r.person.root.position;
     pos.lerp(r.target, Math.min(1, dt * 12));
@@ -1152,7 +1176,7 @@ function frame(ts?: number) {
     r.person.root.rotation.y += diff * Math.min(1, dt * 12);
     // On their feet if they're standing on something: the floor, a desk, a stair, the loft.
     const airborne = p.y > groundAt(office.colliders, p.x, p.z, p.y) + 0.05;
-    const walking = p.moving && !airborne;
+    const walking = r.person.root.visible && p.moving && !airborne;
     r.person.update(dt, t, walking, airborne && Math.abs(pos.y - r.target.y) > 0.01);
     // Their walk cycle takes a step every π/11 seconds.
     r.stepT = walking ? r.stepT + dt : 0.2;
@@ -1167,7 +1191,7 @@ function frame(ts?: number) {
       r.bubble = undefined;
     }
     const d = Math.hypot(pos.x - player.pos.x, pos.z - player.pos.z);
-    voice.setVolume(id, d < 4 ? 1 : Math.max(0.2, 1 - (d - 4) / 16));
+    voice.setVolume(id, !r.person.root.visible ? 0 : d < 4 ? 1 : Math.max(0.2, 1 - (d - 4) / 16));
   }
 
   const camPos = camera.position;

@@ -1,5 +1,6 @@
 import { DEFAULT_KEYS, ACTION_LABELS, keyLabel, validKey, type Action } from '../controls';
 import type { Settings, ViewMode } from '../state';
+import { GRAPHICS, type GraphicsQuality } from '../graphics';
 import { h, openModal } from './dom';
 
 const VIEWS: [ViewMode, string, string][] = [
@@ -35,7 +36,16 @@ export function openSettings(settings: Settings, onChange: (s: Settings) => void
   };
   paint();
 
-  const volume = h('input', { type: 'range', min: 0, max: 100, step: 1, 'aria-label': 'Office sounds volume' });
+  const quality = h('div.quality-options', { role: 'radiogroup', 'aria-label': 'Graphics quality' });
+  const paintQuality = () => quality.replaceChildren(...(Object.keys(GRAPHICS) as GraphicsQuality[]).map(value => {
+    const profile = GRAPHICS[value];
+    return h('button.quality-option', { type: 'button', role: 'radio', 'aria-checked': String(settings.quality === value), onclick: () => {
+      if (settings.quality === value) return;
+      settings = { ...settings, quality: value }; onChange(settings); paintQuality();
+    } }, h('strong', {}, profile.label), h('span', {}, profile.description));
+  }));
+  paintQuality();
+  const volume = h('input' , { type: 'range', min: 0, max: 100, step: 1, 'aria-label': 'Office sounds volume' });
   const pct = h('span.vol-pct');
   const mute = h('button.btn', { type: 'button' });
   const soundRow = h('div.volume', {}, mute, volume, pct);
@@ -97,6 +107,8 @@ export function openSettings(settings: Settings, onChange: (s: Settings) => void
     h(
       'div.body',
       {},
+      h('label', {}, 'Graphics quality'), quality,
+      h('p.setting-note', {}, 'Changes apply immediately and are saved on this device. Character controls and city progress are unchanged.'),
       h('label', {}, 'Camera view'),
       seg,
       note,

@@ -142,6 +142,8 @@ export function openQueue(net: Net, actions: QueueActions) {
     const q = store.queue;
     limitValue.textContent = q.maxWorkers === 0 ? 'Paused' : String(q.maxWorkers);
     minus.toggleAttribute('disabled', q.maxWorkers <= 0);
+    plus.toggleAttribute('disabled', q.maxWorkers >= store.empire.office.workstations);
+    limit.title = `${store.empire.office.workstations} furnished workstations. Expand headquarters to employ more workers. 0 pauses the queue.`;
     const running = q.tasks.filter((t) => t.status === 'running');
     const queued = q.tasks.filter((t) => t.status === 'queued');
     const done = q.tasks.filter((t) => t.status === 'done').slice().reverse();
@@ -164,7 +166,7 @@ export function openQueue(net: Net, actions: QueueActions) {
     body.replaceChildren(...parts.filter((n): n is HTMLElement => n !== null));
   };
 
-  const unsubs = [store.on('queue', render), store.on('workers', render), store.on('issues', render)];
+  const unsubs = [store.on('empire', render), store.on('queue', render), store.on('workers', render), store.on('issues', render)];
   const tick = setInterval(render, 30_000);
   const modal = openModal(el, {
     onClose: () => {

@@ -39,9 +39,12 @@ export function saveProfile(p: Profile) {
   }
 }
 
+import { sanitizeQuality, type GraphicsQuality } from './graphics';
+
 export type ViewMode = 'first' | 'third';
 
 export interface Settings {
+  quality: GraphicsQuality;
   keys: KeyBindings;
   view: ViewMode;
   /** Office sounds, 0–1. */
@@ -52,10 +55,11 @@ export interface Settings {
 const SETTINGS_KEY = 'agent-office.settings';
 
 export function loadSettings(): Settings {
-  const s: Settings = { view: 'third', volume: 0.7, muted: false, keys: { ...DEFAULT_KEYS } };
+  const s: Settings = { quality: 'medium', view: 'third', volume: 0.7, muted: false, keys: { ...DEFAULT_KEYS } };
   try {
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? 'null');
     s.keys = sanitizeKeys(saved?.keys);
+    s.quality = sanitizeQuality(saved?.quality);
     if (saved?.view === 'first' || saved?.view === 'third') s.view = saved.view;
     if (typeof saved?.volume === 'number' && Number.isFinite(saved.volume)) s.volume = Math.max(0, Math.min(1, saved.volume));
     if (typeof saved?.muted === 'boolean') s.muted = saved.muted;
