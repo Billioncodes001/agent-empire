@@ -48,7 +48,7 @@ export interface ExecutionTask {
   reservedCents: number;
   budgetDay: string;
   cost?: { amountCents: number; currency: 'USD'; observedAt: number };
-  providerStatus?: 'running' | 'idle' | 'terminated' | 'archived';
+  providerStatus?: 'running' | 'rescheduling' | 'idle' | 'terminated' | 'archived';
   stopReason?: 'end_turn' | 'requires_action' | 'budget_reached' | 'error' | 'unknown';
   message: string;
   /** A provider idle/terminated state alone never verifies code, a branch, or a pull request. */
