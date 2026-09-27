@@ -51,7 +51,7 @@ export function syncDirectory(repo: string): string {
 /** This pins only public identity/origin. It never stores a password or token. */
 export function pinServer(repo: string, origin: string, serverId: string, trustServerId?: string): void {
   origin = validateServerUrl(origin);
-  if (!/^[A-Za-z0-9_-]{8,128}$/.test(serverId)) throw new Error('Invalid host identity.');
+  if (typeof serverId !== 'string' || !/^[A-Za-z0-9_-]{8,128}$/.test(serverId)) throw new Error('Invalid host identity.');
   const file = path.join(syncDirectory(repo), 'host.json');
   if (existsSync(file)) {
     const saved = JSON.parse(readFileSync(file, 'utf8'));

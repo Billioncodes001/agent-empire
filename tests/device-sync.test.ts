@@ -38,6 +38,7 @@ test('rejects substituted bytes, host identity and mismatched commit',()=>{
 });
 test('requires explicit host trust and refuses identity or origin changes',()=>{
  const f=fixture();try{
+ assert.throws(()=>pinServer(f.local,'https://empire.example.com',undefined as unknown as string),/Invalid host identity/);
  assert.throws(()=>pinServer(f.local,'https://empire.example.com',f.manifest.serverId),/explicitly trust/);
  pinServer(f.local,'https://empire.example.com',f.manifest.serverId,f.manifest.serverId);
  assert.throws(()=>pinServer(f.local,'https://other.example.com',f.manifest.serverId,f.manifest.serverId),/identity changed/);
