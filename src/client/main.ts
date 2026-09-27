@@ -38,6 +38,7 @@ import { mountQueueButton, openQueue } from './ui/queue';
 import { openUpgrade, restarting, showRestarting, showUpgraded } from './ui/upgrade';
 import { openHelp, openWorkersDialog, renderChat, renderPeople, renderWorkers, updateSpeaking } from './ui/hud';
 import { mountStatusStrip } from './ui/status-strip';
+import { typingPose } from './ui/status';
 import { openCharacter } from './ui/character';
 import { Tower } from './tower';
 import { applyGraphics } from './graphics';
@@ -397,6 +398,7 @@ function shouldBounce(w: WorkerInfo) {
 }
 
 function syncWorkers() {
+  const fresh = store.evidence().fresh;
   for (const [id, view] of workerViews) if (!office.desks.has(view.deskId) || !store.workers.has(id)) {
     const oldDesk = office.desks.get(view.deskId);
     if (oldDesk) { oldDesk.setScreen(); oldDesk.vacancy.visible = true; }
@@ -443,8 +445,10 @@ function syncWorkers() {
       noOutline(v.model.root);
     }
     v.model.setTask(w.task);
+    v.model.setLive(fresh);
+    v.model.typing = typingPose(w, fresh);
     const deskDef = DESK_BY_ID.get(w.deskId);
-    if (deskDef) sound.setTyping(w.id, deskDef.x, deskDef.z, w.status === 'working');
+    if (deskDef) sound.setTyping(w.id, deskDef.x, deskDef.z, v.model.typing);
     const again = w.kind === 'shell' ? 'restart' : 'resume';
     v.laptop.setPlaceholder(w.status === 'offline' ? `💤 ${w.name} is asleep — press R to ${again}` : w.status === 'exited' ? `${w.name} exited` : 'booting…');
   }
@@ -462,6 +466,9 @@ function syncWorkers() {
   renderWorkers((id) => openWorkerTerminal(id));
 }
 store.on('workers', syncWorkers);
+store.on('freshness', syncWorkers);
+// Staleness arrives without a message, so poll for it; the check emits only on a change.
+setInterval(() => store.checkFreshness(), 1000);
 store.on('workers', renderUsage);
 store.on('usage', renderUsage);
 const tower = new Tower(net, player, office, () => syncWorkers());

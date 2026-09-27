@@ -70,6 +70,7 @@ const TASK_CHIP: Record<string, [string, string, string]> = {
   needs_input: ['❗ NEEDS YOU', STATUS_BULB.needs_input, '#ffffff'],
   done: ['✅ DONE', STATUS_BULB.done, '#2b2d42'],
   exited: ['💤 ASLEEP', STATUS_BULB.exited, '#ffffff'],
+  unknown: ['❔ UNKNOWN', '#dee2e6', '#2b2d42'],
   offline: ['💤 ASLEEP', STATUS_BULB.offline, '#ffffff'],
 };
 
@@ -85,6 +86,10 @@ export class Worker {
   private nameTag: THREE.Sprite | null = null;
   status = 'starting';
   bouncing = false;
+  /** Set from typingPose(): only a fresh, running agent turn types. */
+  typing = false;
+  /** False while the server's evidence is stale: the cached status is then only last-known. */
+  private live = true;
   constructor(name: string, color: string) {
     this.human=new Human(name.length);
     this.root.add(this.human.root);
@@ -115,12 +120,19 @@ export class Worker {
     this.drawBubble();
   }
 
+  setLive(live: boolean) {
+    if (this.live === live) return;
+    this.live = live;
+    this.drawBubble();
+  }
+
   private drawBubble() {
-    const { status, bouncing: bounce, task } = this;
+    const { bouncing: bounce, task } = this;
+    const status = this.live ? this.status : 'unknown';
     const hot = status === 'needs_input' || (status === 'done' && bounce);
     const bg = hot ? (status === 'done' ? '#caffbf' : '#ffd6e0') : status === 'working' ? '#ffec99' : '#fffaf3';
     const bubble =
-      status === 'needs_input' ? '❗ needs you' : status === 'done' && bounce ? '✅ done!' : status === 'working' ? '⌨️ working' : status === 'offline' || status === 'exited' ? '💤' : '';
+      status === 'needs_input' ? '❗ needs you' : status === 'done' && bounce ? '✅ done!' : status === 'working' ? '⌨️ working' : status === 'offline' || status === 'exited' ? '💤' : status === 'unknown' ? '❔ status unknown' : '';
     const key = task ? `${status}|${bounce}|${task.name}|${task.summary}` : bubble;
     if (key === this.bubbleKey) return;
     this.bubbleKey = key;
@@ -132,14 +144,14 @@ export class Worker {
     this.bubbleIsCard = !!task;
     if (task) {
       const [text, chipBg, color] = TASK_CHIP[status] ?? TASK_CHIP.idle;
-      const asleep = status === 'offline' || status === 'exited';
+      const asleep = status === 'offline' || status === 'exited' || status === 'unknown';
       this.bubble = cardSprite({ chip: { text, bg: chipBg, color }, title: task.name, body: task.summary, bg: asleep ? '#e9ecef' : bg });
     } else if (bubble) this.bubble = textSprite(bubble, { bg, size: 38 });
     if (this.bubble) this.root.add(this.bubble);
   }
 
   update(dt: number, t: number) {
-    this.human.update(dt,false,true,this.status==='working');
+    this.human.update(dt,false,true,this.typing);
     if (this.bubble) this.bubble.position.y = this.bubbleIsCard ? 1.74 : 1.95;
     if (this.nameTag) this.nameTag.position.y = 1.55;
   }
