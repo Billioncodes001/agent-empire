@@ -36,7 +36,7 @@ Use OAuth/GitHub App installation with least-privilege repository selection. Pro
 
 ### 4. Desktop synchronization
 
-Implemented: a sandboxed Electron shell and CLI importer authenticate to a chosen host, pin its identity, verify bounded Git bundles and import committed work into separate review worktrees. Receipts make repeated imports idempotent, and current overlapping local paths are reported without changing the active branch, index or edits. Desktop can check published work when reopened and periodically while open. Publication requires a clean stopped managed worker; merges remain explicit. Native macOS arm64 packaging has been tested. Distribution signing, notarization, auto-update, Windows/Linux packaging verification and incremental artifacts remain future work.
+Implemented: a sandboxed Electron shell and CLI importer authenticate to a chosen host, pin its identity, verify bounded Git bundles and import committed work into separate review worktrees. Receipts make repeated imports idempotent, and current overlapping local paths are reported without changing the active branch, index or edits. Desktop can check published work when reopened and periodically while open. Publication requires a clean stopped managed worker; merges remain explicit. Native macOS arm64 packaging has been tested. Windows x64 cross-packaging now selects and verifies target native dependencies. Actual Windows runtime/CLI support, Linux packaging verification, distribution signing, notarization, auto-update and incremental artifacts remain future work. See [platform builds](PLATFORMS.md).
 
 ### 5. Web/mobile delivery
 

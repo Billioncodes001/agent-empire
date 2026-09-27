@@ -130,6 +130,13 @@ function setup(name: string) {
     player.pos.set(0, 0, 8);
     player.camYaw = Math.PI;
   }
+  if (name === 'Office eyes' || name === 'Reception' || name === 'Meeting') {
+    player.pos.set(...(name === 'Meeting' ? [10, 0, 8.2] : name === 'Reception' ? [0, 0, 10.2] : [0, 0, 8]) as [number, number, number]);
+    player.facing = name === 'Meeting' ? Math.PI * .35 : name === 'Reception' ? -Math.PI / 2 : Math.PI;
+    player.setView('first');
+    player.camYaw = player.facing - Math.PI;
+    player.lookPitch = -.04;
+  }
   if (name === 'Walk out') {
     player.pos.set(0, 0, 10);
     player.camYaw = Math.PI;
@@ -172,6 +179,7 @@ for (const name of [
   'Walk',
   'Run',
   'Office',
+  'Office eyes', 'Reception', 'Meeting',
   'Elevator',
   'Typing',
   'Walk out',

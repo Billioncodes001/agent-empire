@@ -40,7 +40,7 @@ Simulation service staff and credits are fictional. Actual coding agents and the
 
 ## Desktop and provider execution
 
-`npm ci --prefix desktop` and `npm run desktop:package` build the development desktop app with bundled world assets and a local city runtime. Its launcher offers a local Git project, protected provider credentials, or connection to an existing host. Local setup starts with the work queue paused. Git is required.
+`npm ci --prefix desktop` and `npm run desktop:package` build the development desktop app with bundled world assets and a local city runtime. Its launcher offers a local Git project, protected provider credentials, or connection to an existing host. Local setup starts with the work queue paused. Git is required. Windows ZIP packaging, an Android HTTPS-host companion and the iOS source project are described in [platform builds](docs/PLATFORMS.md); the mobile companions do not yet bundle the offline city.
 
 Settings → App & connection offers execution setup and cloud tasks. The first adapter supports Anthropic Managed Agents with pre-created agent/environment references, repository selection, connection checks, budget reservations and explicit paid submission. Accepted sessions run independently of the closed app. OpenAI and GitHub workflow adapters remain disabled. Provider output import and cross-device city saves are still pending. See [setup and exact limits](docs/EXECUTION_SETUP.md).
 

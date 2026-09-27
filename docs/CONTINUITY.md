@@ -44,7 +44,7 @@ Connect to the same host as the browser and sign in. **File → Configure laptop
 
 The same responsive client is delivered as an installable PWA. See its Connection settings for installation guidance. Mobile installability varies by browser; test Safari/Android on physical devices before release. Authenticated pages, API responses, city snapshots and terminals must never enter a service-worker cache. Offline navigation displays a public explanatory page, not a stale playable city.
 
-Native iOS/Android store packages, mobile background agent execution, multi-tenant accounts, browser-managed provider credentials, distributed job containers and cross-host failover remain outside this first hosted milestone. Mobile is a controller of the continuously running host.
+Native Android and iOS HTTPS-host companion projects are now included; see [platform builds](PLATFORMS.md) for artifact availability and validation limits. Store publication, offline mobile city bundling, mobile background agent execution, multi-tenant accounts, browser-managed provider credentials, distributed job containers and cross-host failover remain outside this first hosted milestone. Mobile is a controller of the running host.
 
 ## Bundled local desktop and provider sessions
 
