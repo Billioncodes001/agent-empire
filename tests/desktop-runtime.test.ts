@@ -23,7 +23,7 @@ test('execution routes require session and origin, keep setup secrets out, and g
   assert.match(String(app.workers.spawn('desk-1','fixture','do nothing')),/Choose where/);
   assert.equal((await fetch(base+'/api/execution/setup',{method:'PUT',headers:{cookie,'content-type':'application/json'},body:JSON.stringify(setup.config)})).status,403);
   assert.equal((await fetch(base+'/api/execution/setup',{method:'PUT',headers,body:JSON.stringify({...setup.config,apiKey:'must-not-save'})})).status,400);
-  const cloud={...setup.config,completed:true,mode:'anthropic_cloud',repository:{owner:'fixture',name:'repo',baseBranch:'main'},anthropic:{agentId:'agent_fixture',environmentId:'env_fixture'}};
+  const cloud={...setup.config,completed:true,mode:'anthropic_cloud',repository:{owner:'fixture',name:'repo',baseBranch:'main'},anthropic:{agentId:'agent_fixture1',environmentId:'env_fixture1'}};
   const saved=await fetch(base+'/api/execution/setup',{method:'PUT',headers,body:JSON.stringify(cloud)});assert.equal(saved.status,200,await saved.clone().text());
   assert.match(String(app.workers.spawn('desk-1','fixture','do nothing')),/Provider cloud/);
   const checked=await fetch(base+'/api/execution/check',{method:'POST',headers});assert.equal(checked.status,200);

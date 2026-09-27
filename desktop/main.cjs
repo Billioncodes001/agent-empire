@@ -84,6 +84,10 @@ async function connect(value, local = undefined) {
   if (busy) throw new Error('Wait for the current synchronization to finish before changing hosts.');
   const next = syncEngine.validateServerUrl(value);
   const previous = readConfig();
+  if(!local && localHost){
+    if(localHost.hasLocalWorkers())throw new Error('Stop or reconcile local workers before connecting to another host.');
+    stopLocal();
+  }
   origin = next;
   const partition = local ? 'persist:local-' + createHash('sha256').update(local.project).digest('hex').slice(0,20) : 'persist:host-' + createHash('sha256').update(origin).digest('hex').slice(0,20);
   const ses = session.fromPartition(partition);
@@ -102,7 +106,7 @@ async function connect(value, local = undefined) {
   let checked=false;
   win.webContents.on('did-finish-load',()=>{if(!checked&&new URL(win.webContents.getURL()).pathname==='/'){checked=true;void synchronize(true);}});
   win.on('closed',()=>{clearInterval(syncTimer);});
-  saveConfig(local ? {...previous,localProject:local.project,lastMode:'local'} : {localProject:previous.localProject,...(previous.origin===origin?previous:{origin}),lastMode:'remote'});
+  saveConfig(local ? {...previous,localProject:local.project,localPort:local.port,lastMode:'local'} : {localProject:previous.localProject,localPort:previous.localPort,...(previous.origin===origin?previous:{origin}),lastMode:'remote'});
   old?.close(); menu();startSyncTimer();
   await win.loadURL(origin);
 }
@@ -129,7 +133,7 @@ app.whenReady().then(async()=>{
       let project=readConfig().localProject||path.join(app.getPath('userData'),'city-project');
       if(choose){const picked=await dialog.showOpenDialog(win,{title:'Choose a Git project or empty folder for your city',properties:['openDirectory','createDirectory']});if(picked.canceled)return {};project=picked.filePaths[0];}
       if(localHost && localHost.project!==project)return {error:'Quit and reopen the app before switching the active local project.'};
-      if(!localHost)localHost=await startLocalHost({project,runtimeDir:path.join(__dirname,'runtime'),credentials:()=>vault.read()});
+      if(!localHost)localHost=await startLocalHost({project,runtimeDir:path.join(__dirname,'runtime'),credentials:()=>vault.read(),port:readConfig().localProject===project?readConfig().localPort:undefined});
       await connect(localHost.origin,localHost);return {ok:true};
     }catch(error){return {error:error.message};}
   });

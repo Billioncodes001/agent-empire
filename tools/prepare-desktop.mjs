@@ -3,6 +3,8 @@ import {execFileSync} from 'node:child_process';
 const root='desktop/runtime';
 mkdirSync(root,{recursive:true});
 copyFileSync('dist/server/server/device-sync.js',`${root}/device-sync.js`);
+copyFileSync('THIRD_PARTY_NOTICES.md',`${root}/THIRD_PARTY_NOTICES.md`);
+copyFileSync('docs/LICENSE-Tidewater.txt',`${root}/LICENSE-Tidewater.txt`);
 for (const [from,to] of [['dist/server',`${root}/server`],['dist/public',`${root}/public`]]) {
   if (!existsSync(from)) throw new Error('Build the complete client and server before packaging desktop.');
   rmSync(to,{recursive:true,force:true});cpSync(from,to,{recursive:true});
