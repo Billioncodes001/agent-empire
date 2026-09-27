@@ -137,9 +137,9 @@ export function mountHeadquartersScene(host: HTMLElement, toggle: HTMLButtonElem
   function draw() {
     const wide = host.clientWidth / Math.max(1, host.clientHeight);
     camera.aspect = wide; camera.updateProjectionMatrix();
-    const radius = wide < 0.9 ? 66 : 51;
+    const radius = wide < 0.9 ? 76 : 64;
     const theta = orbit + smoothX * 0.085 + (paused ? 0 : Math.sin(phase * 0.16) * 0.018);
-    camera.position.set(Math.sin(theta) * radius, 24 + smoothY * 2, Math.cos(theta) * radius);
+    camera.position.set(Math.sin(theta) * radius, 30 + smoothY * 2, Math.cos(theta) * radius);
     camera.lookAt(cameraTarget); renderer.render(scene, camera);
     renderer.shadowMap.autoUpdate = false;
   }
