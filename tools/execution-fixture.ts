@@ -31,9 +31,9 @@ const transport:typeof fetch=async(input,init)=>{
   const match=/^\/v1\/sessions\/(sesn_fixture\d+)(\/events|\/archive)?$/.exec(url.pathname);
   const s=match&&sessions.get(match[1]);
   if(match&&s){
-   if(Date.now()-s.started>3000)s.status='idle';
+   if(!s.archived_at && Date.now()-s.started>3000)s.status='idle';
    if(match[2]==='/events'&&method==='POST'){s.status='idle';return reply({data:[]});}
-   if(match[2]==='/archive'&&method==='POST'){s.archived_at=new Date().toISOString();return reply(s);}
+   if(match[2]==='/archive'&&method==='POST'){s.archived_at=new Date().toISOString();s.status='terminated';return reply(s);}
    if(match[2]==='/events')return reply({data:[{id:'sevt_fixture0001',type:s.status==='idle'?'session.status_idle':'session.status_running',processed_at:new Date().toISOString(),...(s.status==='idle'?{stop_reason:{type:'end_turn'}}:{})}],next_page:null});
    return reply(s);
   }
