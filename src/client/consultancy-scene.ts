@@ -173,6 +173,7 @@ export function mountHeadquartersScene(host: HTMLElement, toggle: HTMLButtonElem
   function onLoss(e: Event) { e.preventDefault(); failed = true; cancelAnimationFrame(frame); frame = 0; canvas.style.display = 'none'; host.dataset.sceneState = 'fallback'; updateLabel(); }
   const viewHandlers: Array<[HTMLButtonElement, () => void]> = [];
   buttons.forEach((button, i) => {
+    button.setAttribute('aria-pressed', String(i === view));
     const handler = () => { view = Math.min(i, 2); if (paused) orbit = angleByView[view]; buttons.forEach(b => b.setAttribute('aria-pressed', String(b === button))); requestDraw(); };
     button.addEventListener('click', handler); viewHandlers.push([button, handler]);
   });
