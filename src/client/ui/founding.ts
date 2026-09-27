@@ -36,7 +36,7 @@ export function openFounding(net: Net) {
       const rate = hourlyRates(s);
       netRate += rate.revenue - rate.wages - rate.upkeep;
     }
-    estimate.textContent = `Projected operating result: ${netRate >= 0 ? '+' : ''}${netRate} cr / city hour, after managers start. Observed ended agent turns earn additional simulation credits; their output is not verified.`;
+    estimate.textContent = `Projected operating result: ${netRate >= 0 ? '+' : ''}${netRate} cr / city hour, after managers start. Queued tasks earn additional simulation credits once when an agent turn ends; their output is not verified.`;
     usage.textContent = `Appointing managers queues ${1 + selected.size} startup briefs. They respect the existing queue’s concurrency and spending limits. Buildings open when their assigned manager starts; paused or disconnected agents remain clearly marked.`;
     submit.disabled = pending || !net.up;
     submit.textContent = pending ? 'Saving your founding plan…' : 'Found my city & appoint managers';
