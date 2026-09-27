@@ -17,12 +17,16 @@ import {
 import type { WorkerInfo, QueueState } from '../shared/protocol.js';
 import type { TaskQueue } from './queue.js';
 import { DESKS_PER_FLOOR, fundedDesk } from '../shared/layout.js';
+import { randomBytes } from 'node:crypto';
+import { chiefLinksConflict, projectSupervision } from './supervision.js';
 
 /** Authoritative district ledger. AI rewards use observed queue outcomes, never invented completions. */
 export class Empire {
   state: EmpireState;
   private file: string;
   private reportMinute = 0;
+  private readonly serverRunId = randomBytes(12).toString('hex');
+  private attentionIds = new Set<string>();
   constructor(
     dataDir: string,
     private changed: (state: EmpireState) => void,
@@ -99,6 +103,7 @@ export class Empire {
         this.state = saved;
       }
     }
+    delete this.state.supervision;
     if (!this.state.office) {
       // Existing desks and workers survive an upgrade. New cities start with four funded seats.
       if (!existsSync(this.file + '.v2-office-backup')) writeFileSync(this.file + '.v2-office-backup', readFileSync(this.file), { mode: 0o600 });
@@ -177,8 +182,8 @@ export class Empire {
       this.report(
         'Executive',
         action.enabled
-          ? 'Chief of staff has delegated oversight. Administrative monitoring remains active across all sectors.'
-          : 'CEO resumed direct oversight. Chief of staff continues administrative monitoring.',
+          ? 'Delegated oversight requested. The server continues rule-based monitoring; this does not start an AI supervisor.'
+          : 'CEO resumed direct oversight. The server continues rule-based monitoring.',
       );
     } else if (action.kind === 'reinvest') {
       if (this.state.economy.ownerBalance <= 0) return 'No founder earnings available';
@@ -234,6 +239,8 @@ export class Empire {
         Object.assign(sector.manager, {
           status: 'pending',
           jobKey: `empire-manager-${site.id}-${sector.manager.attempt}`,
+          taskId: undefined,
+          workerId: undefined,
           error: undefined,
         });
       }
@@ -314,12 +321,15 @@ export class Empire {
   }
   tick(workers: WorkerInfo[], queue: QueueState, seconds = 5) {
     if (!Number.isFinite(seconds)) return;
+    const conflictingChiefLinks = chiefLinksConflict(this.state, queue);
     this.state.minutes += Math.max(0, Math.min(seconds, 60));
-    const previousAttention = this.state.workforce.attention;
+    const attention = workers.filter(w => w.kind === 'agent' && w.status === 'needs_input');
+    const newAttention = attention.some(w => !this.attentionIds.has(w.id));
+    this.attentionIds = new Set(attention.map(w => w.id));
     this.state.workforce = {
-      working: workers.filter((w) => w.status === 'working' || w.status === 'starting').length,
-      attention: workers.filter((w) => w.status === 'needs_input').length,
-      done: workers.filter((w) => w.status === 'done').length,
+      working: workers.filter((w) => w.kind === 'agent' && (w.status === 'working' || w.status === 'starting')).length,
+      attention: workers.filter((w) => w.kind === 'agent' && w.status === 'needs_input').length,
+      done: workers.filter((w) => w.kind === 'agent' && w.status === 'done').length,
       queued: queue.tasks.filter((t) => t.status === 'queued').length,
     };
     for (const sector of this.state.sectors) {
@@ -355,7 +365,7 @@ export class Empire {
       if (old !== m.status && ['ready', 'offline', 'needs_input'].includes(m.status))
         this.report(
           'Chief of staff',
-          `${m.name}: ${m.status === 'ready' ? 'startup brief completed; ready for sector work' : m.status === 'offline' ? 'startup needs attention; retry from Management' : 'needs your input in the worker terminal'}.`,
+          `${m.name}: ${m.status === 'ready' ? 'startup turn ended; brief not yet verified' : m.status === 'offline' ? 'startup needs attention; review the worker before retrying' : 'needs your input in the worker terminal'}.`,
         );
     }
     if (this.state.setup.completed) {
@@ -422,7 +432,7 @@ export class Empire {
         }
       }
     }
-    if (previousAttention !== this.state.workforce.attention && this.state.workforce.attention > 0)
+    if (newAttention)
       this.report(
         'Chief of staff',
         `${this.state.workforce.attention} AI worker(s) need your input. Open their terminals; approval remains with you.`,
@@ -438,12 +448,20 @@ export class Empire {
         );
       }
     }
+    this.state.supervision = projectSupervision(this.state, workers, queue, this.serverRunId, Date.now());
+    // Reconciliation updates legacy appointment links, but must not hide a conflict observed
+    // during this pass. Keep the current joined IDs and expose the uncertainty for this snapshot.
+    if (conflictingChiefLinks) {
+      this.state.supervision.chief.phase = 'unknown';
+      this.state.supervision.chief.reason = 'Chief assignment and queue links conflicted during this monitoring pass.';
+    }
     this.flush();
     this.changed(this.state);
   }
   flush() {
     this.state.updatedAt = Date.now();
-    writeFileSync(this.file + '.tmp', JSON.stringify(this.state, null, 2), {
+    const { supervision: _runtimeEvidence, ...saved } = this.state;
+    writeFileSync(this.file + '.tmp', JSON.stringify(saved, null, 2), {
       mode: 0o600,
     });
     renameSync(this.file + '.tmp', this.file);

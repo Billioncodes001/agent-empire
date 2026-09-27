@@ -68,6 +68,7 @@ export class Upgrader {
   constructor(
     private emit: (state: UpgradeState) => void,
     private restart: () => void,
+    allowBackgroundUpdates = true,
   ) {
     const current = existsSync(path.join(APP_DIR, '.git')) ? parseVersion(gitSync(['log', '-1', VERSION_FORMAT, 'HEAD'])) : undefined;
     let pkg = '0.0.0';
@@ -80,7 +81,7 @@ export class Upgrader {
     const branch = current ? gitSync(['rev-parse', '--abbrev-ref', 'HEAD']) : undefined;
     // Only deploy/aws.sh's systemd unit sets this, and it restarts the office whenever it exits.
     // A checkout on a tag (detached HEAD) has no branch to follow.
-    const enabled = process.env.AGENT_OFFICE_SELF_UPDATE === '1' && !!branch && branch !== 'HEAD';
+    const enabled = allowBackgroundUpdates && process.env.AGENT_OFFICE_SELF_UPDATE === '1' && !!branch && branch !== 'HEAD';
     this.branch = enabled ? branch : undefined;
     this.state = { available: enabled, current, phase: 'idle' };
     if (!enabled) return;

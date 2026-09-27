@@ -13,6 +13,7 @@ import { gh } from './github.js';
 import type { ServiceOwner } from './services.js';
 import { TaskNamer, fallbackTask } from './tasks.js';
 import { addUsage, newTracker, restoreTracker, scanTracker, trackerUsage, zeroUsage, type Ledger, type UsageTracker } from './usage.js';
+import { writeJsonAtomic } from './persistence.js';
 
 type HeadlessTerminal = InstanceType<typeof headless.Terminal>;
 
@@ -76,7 +77,27 @@ interface Worker {
   /** Where the session's tokens and cost are read from (see usage.ts). */
   tracker: UsageTracker;
   scanTimer?: NodeJS.Timeout;
+  bootTimer?: NodeJS.Timeout;
+  processPid?: number;
+  queueOwned?: boolean;
+  stopping?: boolean;
+  exitWaiters: Set<() => void>;
 }
+
+/** Injectable process boundary for deterministic tests; no provider must run in fixtures. */
+export interface WorkerRuntime {
+  spawn: typeof pty.spawn;
+  resolveCommand: (cmd: string) => string | null;
+  processExists: (pid: number) => boolean;
+  taskNaming: boolean;
+}
+const defaultRuntime: WorkerRuntime = {
+  spawn: pty.spawn, resolveCommand, taskNaming: true,
+  processExists(pid) {
+    try { process.kill(pid, 0); return true; }
+    catch (error) { return (error as NodeJS.ErrnoException).code !== 'ESRCH'; }
+  },
+};
 
 export interface WorkerEvents {
   update(info: WorkerInfo): void;
@@ -97,6 +118,7 @@ export class WorkerManager {
   private closing = false;
   private namer: TaskNamer;
   private usageTimer: NodeJS.Timeout;
+  private storageError?: string;
 
   constructor(
     private dir: string,
@@ -107,13 +129,14 @@ export class WorkerManager {
     private events: WorkerEvents,
     private ledger: Ledger,
     private capacity: () => number = () => 16,
+    private runtime: WorkerRuntime = defaultRuntime,
   ) {
     this.trees = new Worktrees(dir);
     this.statePath = path.join(dataDir, 'workers.json');
     this.settingsPath = path.join(dataDir, 'claude-hooks.json');
     this.writeHookSettings();
-    this.agentPath = resolveCommand(agentCmd);
-    const claude = /(^|\/)claude$/.test(agentCmd) ? this.agentPath : resolveCommand('claude');
+    this.agentPath = this.runtime.resolveCommand(agentCmd);
+    const claude = !this.runtime.taskNaming ? null : /(^|\/)claude$/.test(agentCmd) ? this.agentPath : this.runtime.resolveCommand('claude');
     this.namer = new TaskNamer(claude, childEnv(), (id, task, ctx) => {
       const w = this.workers.get(id);
       if (!w || w.taskEpoch !== ctx.epoch) return;
@@ -128,16 +151,16 @@ export class WorkerManager {
     this.usageTimer = setInterval(() => {
       for (const w of this.workers.values()) this.scanUsage(w);
     }, USAGE_SCAN_MS);
-    // Whoever was at a desk when the office stopped (a restart, a crash, a dev-server reload) gets
-    // straight back to work.
-    this.wakeAll();
+    // Restored workers stay stopped/unknown until an explicit, guarded recovery action.
   }
 
   get resolvedAgent(): string | null {
     return this.agentPath;
   }
+  get recoveryError() { return this.storageError; }
 
   list(): WorkerInfo[] {
+    for (const w of this.workers.values()) this.refreshProcessEvidence(w);
     return [...this.workers.values()].map((w) => w.info);
   }
 
@@ -162,8 +185,9 @@ export class WorkerManager {
     return false;
   }
 
-  spawn(deskId: string, by: string, prompt?: string, worktree = false, kind: WorkerKind = 'agent'): WorkerInfo | string {
+  spawn(deskId: string, by: string, prompt?: string, worktree = false, kind: WorkerKind = 'agent', queueOwned = false): WorkerInfo | string {
     if (!fundedDesk(deskId, this.capacity())) return 'Build and furnish this workstation before employing a worker';
+    if (this.storageError) return this.storageError;
     if (this.deskOccupied(deskId)) return 'That desk is taken';
     if (kind === 'agent') {
       const paused = this.ledger.hiringPaused;
@@ -185,6 +209,7 @@ export class WorkerManager {
       name: kind === 'shell' ? `${name} 🐚` : name,
       color: kind === 'shell' ? '#8d99ae' : COLORS[Math.floor(Math.random() * COLORS.length)],
       status: 'starting',
+      processState: 'unknown',
       acked: true,
       createdBy: by,
       createdAt: Date.now(),
@@ -196,7 +221,13 @@ export class WorkerManager {
       activity: prompt ? truncate(prompt, 80) : undefined,
     };
     const w = newWorker(info, newTracker());
+    w.queueOwned = queueOwned;
     this.workers.set(id, w);
+    // Persist an uncertain launch intent first. A crash before the PID save must never imply stopped.
+    if (!this.persist()) {
+      this.workers.delete(id);
+      return this.storageError!;
+    }
     if (info.prompt) this.notePrompt(w, info.prompt);
     this.launch(w, info.prompt, undefined);
     this.persist();
@@ -206,16 +237,26 @@ export class WorkerManager {
   resume(id: string): string | undefined {
     const w = this.workers.get(id);
     if (!w) return 'No such worker';
+    if (this.storageError) return this.storageError;
+    if (this.closing || w.stopping) return 'The worker is stopping; wait for confirmed exit';
     if (w.pty) return 'Worker is already running';
+    this.refreshProcessEvidence(w);
+    if (w.info.processState !== 'stopped') return this.unknownProcessReason(w);
+    if (w.queueOwned) return 'This worker belongs to the task queue. Retry its task from the queue after reviewing the interruption.';
+    if (!fundedDesk(w.info.deskId, this.capacity())) return 'Build and furnish this workstation before resuming the worker';
+    if (w.info.kind === 'agent' && this.ledger.hiringPaused) return this.ledger.hiringPaused;
     w.info.status = 'starting';
     w.info.exitCode = undefined;
+    w.info.processState = 'unknown';
+    if (!this.persist()) { w.info.processState = 'stopped'; w.info.status = 'offline'; return this.storageError; }
     this.launch(w, undefined, w.info.sessionId);
+    this.persist();
     return undefined;
   }
 
-  /** Starts every worker that isn't running: nobody should be found asleep at their desk. */
-  wakeAll() {
-    for (const w of this.workers.values()) if (!w.pty) this.resume(w.info.id);
+  claimQueueWorker(id: string) {
+    const w = this.workers.get(id);
+    if (w && !w.queueOwned) { w.queueOwned = true; this.persist(); }
   }
 
   /**
@@ -226,16 +267,26 @@ export class WorkerManager {
   async kill(id: string, cleanup?: WorktreeCleanup): Promise<{ note?: string; error?: string }> {
     const w = this.workers.get(id);
     if (!w) return {};
+    if (w.stopping) return { error: 'The worker is already stopping; wait for confirmed exit' };
+    this.refreshProcessEvidence(w);
+    if (!w.pty && w.info.processState !== 'stopped') return { error: this.unknownProcessReason(w) };
+    w.stopping = true;
+    if (w.pty) {
+      const proc = w.pty;
+      const stopped = await new Promise<boolean>(resolve => {
+        const finish = () => { clearTimeout(timer); w.exitWaiters.delete(finish); resolve(true); };
+        const timer = setTimeout(() => { w.exitWaiters.delete(finish); resolve(false); }, 5000);
+        w.exitWaiters.add(finish);
+        try { proc.kill(); } catch { clearTimeout(timer); w.exitWaiters.delete(finish); resolve(false); }
+      });
+      if (!stopped) { w.stopping = false; return { error: 'Process exit was not confirmed. Worker and task history were kept; inspect the terminal/process before retrying.' }; }
+    }
+    if (w.info.processState !== 'stopped') { w.stopping = false; return { error: this.unknownProcessReason(w) }; }
     this.workers.delete(id);
+    if (!this.persist()) { this.workers.set(id, w); w.stopping = false; return { error: this.storageError }; }
     this.namer.forget(id);
     clearTimeout(w.scanTimer);
-    const proc = w.pty;
-    w.pty = undefined; // so the exit handler knows this worker is gone and stays quiet
-    try {
-      proc?.kill();
-    } catch {
-      // already gone
-    }
+    clearTimeout(w.bootTimer);
     w.term?.dispose();
     this.events.remove(id);
     this.persist();
@@ -287,7 +338,7 @@ export class WorkerManager {
 
   write(id: string, data: string) {
     const w = this.workers.get(id);
-    if (!w?.pty) return;
+    if (!w?.pty || w.stopping) return;
     w.pty.write(data);
     if (w.info.status === 'needs_input' && w.info.acked === false) {
       w.info.acked = true;
@@ -299,6 +350,7 @@ export class WorkerManager {
   prompt(id: string, text: string): string | undefined {
     const w = this.workers.get(id);
     if (!w) return 'No such worker';
+    if (w.stopping || this.closing) return 'The worker is stopping';
     if (!w.pty) return 'Worker is not running';
     const clean = text.replace(/\r\n?/g, '\n').trim();
     if (!clean) return 'Empty prompt';
@@ -500,6 +552,9 @@ export class WorkerManager {
     clearInterval(this.screenTimer);
     clearInterval(this.usageTimer);
     for (const w of this.workers.values()) {
+      clearTimeout(w.bootTimer);
+      clearTimeout(w.scanTimer);
+      this.namer.forget(w.info.id);
       try {
         w.pty?.kill();
       } catch {
@@ -560,16 +615,17 @@ export class WorkerManager {
     try {
       if (!existsSync(cwd)) throw new Error(`working directory is gone: ${cwd}`);
       if (isShell) {
-        proc = pty.spawn(shell, args, { name: 'xterm-256color', cols: info.cols, rows: info.rows, cwd, env });
+        proc = this.runtime.spawn(shell, args, { name: 'xterm-256color', cols: info.cols, rows: info.rows, cwd, env });
       } else if (this.agentPath) {
-        proc = pty.spawn(this.agentPath, args, { name: 'xterm-256color', cols: info.cols, rows: info.rows, cwd, env });
+        proc = this.runtime.spawn(this.agentPath, args, { name: 'xterm-256color', cols: info.cols, rows: info.rows, cwd, env });
       } else {
         // Not found on PATH: let a login shell find it (nvm, asdf, ~/.local/bin ...).
         const line = ['exec', this.agentCmd, ...args].map((a, i) => (i < 2 ? a : shq(a))).join(' ');
-        proc = pty.spawn(shell, ['-l', '-i', '-c', line], { name: 'xterm-256color', cols: info.cols, rows: info.rows, cwd, env });
+        proc = this.runtime.spawn(shell, ['-l', '-i', '-c', line], { name: 'xterm-256color', cols: info.cols, rows: info.rows, cwd, env });
       }
     } catch (err) {
       info.status = 'exited';
+      info.processState = 'stopped';
       info.exitCode = -1;
       const what = isShell ? shell : this.agentCmd;
       term.write(`\r\n\x1b[31mFailed to start ${what}: ${(err as Error).message}\x1b[0m\r\n`);
@@ -578,6 +634,8 @@ export class WorkerManager {
       return;
     }
     w.pty = proc;
+    w.processPid = proc.pid;
+    info.processState = 'running';
     if (!isClaude) info.status = 'idle';
 
     proc.onData((data) => {
@@ -588,13 +646,11 @@ export class WorkerManager {
     proc.onExit(({ exitCode }) => {
       if (w.pty !== proc || this.workers.get(info.id) !== w) return;
       w.pty = undefined;
-      // Resuming a conversation Claude no longer has ("No conversation found") exits before Claude
-      // ever starts. Start a fresh one rather than leave the worker asleep.
-      if (isClaude && resumeSessionId && info.status === 'starting' && !this.closing) {
-        this.events.toast(`${info.name}'s last conversation couldn't be resumed — starting a fresh one`, 'warn');
-        this.launch(w, undefined, undefined);
-        return;
-      }
+      w.processPid = undefined;
+      info.processState = 'stopped';
+      clearTimeout(w.bootTimer);
+      if (isClaude && resumeSessionId && info.status === 'starting' && !this.closing)
+        this.events.toast(`${info.name}'s conversation could not be resumed. No replacement session was started.`, 'warn');
       info.exitCode = exitCode;
       info.status = 'exited';
       const hint = info.kind === 'shell' ? ' — press R to restart' : info.sessionId ? ' — press R to resume' : '';
@@ -602,12 +658,13 @@ export class WorkerManager {
       term.write(msg);
       if (w.viewers.size) this.events.data(info.id, msg, [...w.viewers.keys()]);
       w.screenDirty = true;
-      this.emitUpdate(w);
       this.persist();
+      for (const done of w.exitWaiters) done();
+      this.emitUpdate(w);
     });
     // SessionStart fires as soon as Claude can take input. Still silent after a while means it is
     // blocked on a human: folder trust dialog, login, first-run onboarding. Flag it so it jumps.
-    setTimeout(() => {
+    w.bootTimer = setTimeout(() => {
       if (info.status !== 'starting' || w.pty !== proc) return;
       if (isClaude) {
         w.bootBlocked = true;
@@ -615,6 +672,7 @@ export class WorkerManager {
         this.setStatus(w, 'needs_input');
       } else this.setStatus(w, 'idle');
     }, 12000);
+    this.persist();
     this.emitUpdate(w);
   }
 
@@ -771,6 +829,7 @@ process.stdin.on('end', () => {
   }
 
   private persist() {
+    if (this.storageError) return false;
     const saved = [...this.workers.values()].map(({ info, tracker }) => ({
       id: info.id,
       kind: info.kind,
@@ -787,20 +846,28 @@ process.stdin.on('end', () => {
       task: info.task,
       pr: info.pr,
       tracker: info.kind === 'agent' ? tracker : undefined,
+      processState: info.processState,
+      processPid: this.workers.get(info.id)?.processPid,
+      queueOwned: this.workers.get(info.id)?.queueOwned,
     }));
     try {
-      writeFileSync(this.statePath, JSON.stringify(saved, null, 2), { mode: 0o600 });
-    } catch {
-      // disk issues shouldn't take the office down
+      writeJsonAtomic(this.statePath, saved);
+      return true;
+    } catch (error) {
+      this.storageError = `Workers could not be saved; new launches and recovery are paused. Preserve workers.json, repair storage and restart. ${(error as Error).message}`;
+      this.events.toast(this.storageError, 'error');
+      return false;
     }
   }
 
   private restore() {
     if (!existsSync(this.statePath)) return;
     try {
-      const saved = JSON.parse(readFileSync(this.statePath, 'utf8')) as (Partial<WorkerInfo> & { tracker?: unknown })[];
+      const saved = JSON.parse(readFileSync(this.statePath, 'utf8')) as (Partial<WorkerInfo> & { tracker?: unknown; processPid?: number; queueOwned?: boolean })[];
+      if (!Array.isArray(saved)) throw new Error('Invalid worker list');
       for (const s of saved) {
-        if (!s.id || !s.deskId || !fundedDesk(s.deskId, this.capacity()) || this.deskOccupied(s.deskId)) continue;
+        if (typeof s.id !== 'string' || typeof s.deskId !== 'string' || !fundedDesk(s.deskId, this.capacity()) || this.deskOccupied(s.deskId) || this.workers.has(s.id))
+          throw new Error('Invalid, duplicate or unfunded saved worker desk; its process evidence was preserved');
         const tracker = restoreTracker(s.tracker);
         const info: WorkerInfo = {
           id: s.id,
@@ -809,6 +876,7 @@ process.stdin.on('end', () => {
           name: s.name ?? 'Worker',
           color: s.color ?? COLORS[0],
           status: 'offline',
+          processState: s.processState === 'stopped' && !s.processPid ? 'stopped' : 'unknown',
           acked: true,
           createdBy: s.createdBy ?? '?',
           createdAt: s.createdAt ?? Date.now(),
@@ -825,12 +893,28 @@ process.stdin.on('end', () => {
           viewers: [],
         };
         const w = newWorker(info, tracker);
+        w.processPid = Number.isSafeInteger(s.processPid) && s.processPid! > 0 ? s.processPid : undefined;
+        w.queueOwned = s.queueOwned === true || s.createdBy?.endsWith(' (queue)');
+        this.refreshProcessEvidence(w);
+        if (info.processState === 'unknown') info.activity = this.unknownProcessReason(w);
         w.screenDirty = false;
         if (info.prompt) w.prompts = [info.prompt.replace(/\s+/g, ' ').trim()];
         this.workers.set(info.id, w);
       }
-    } catch {
-      // corrupt state file: start fresh
+    } catch (error) {
+      throw new Error(`Cannot restore workers.json; preserve the file and restore a valid backup. ${(error as Error).message}`);
+    }
+  }
+
+  private unknownProcessReason(w: Worker) {
+    return `Previous process for ${w.info.name} is unconfirmed${w.processPid ? ` (PID ${w.processPid})` : ' (legacy save has no PID)'}. Inspect and stop the original process before recovery. No replacement was started.`;
+  }
+
+  private refreshProcessEvidence(w: Worker) {
+    if (!w.pty && w.info.processState === 'unknown' && w.processPid && !this.runtime.processExists(w.processPid)) {
+      w.info.processState = 'stopped';
+      w.processPid = undefined;
+      w.info.activity = 'Previous process is no longer present. Explicit recovery is required.';
     }
   }
 }
@@ -852,6 +936,7 @@ function newWorker(info: WorkerInfo, tracker: UsageTracker): Worker {
     namedAt: 0,
     taskEpoch: 0,
     tracker,
+    exitWaiters: new Set(),
   };
 }
 
@@ -969,6 +1054,7 @@ function describeTool(payload: any): string {
 }
 
 function offlineBanner(info: WorkerInfo): string {
+  if (info.processState !== 'stopped') return `\x1b[2m${info.activity ?? `${info.name}'s previous process is unconfirmed. Inspect it before recovery.`}\x1b[0m\r\n`;
   const hint = info.kind === 'shell' ? ' Press R to restart it.' : info.sessionId ? ' Press R to resume the session.' : '';
   return `\x1b[2m${info.name} is not running.${hint}\x1b[0m\r\n`;
 }
