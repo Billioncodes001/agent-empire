@@ -43,6 +43,9 @@ import { openCharacter } from './ui/character';
 import { Tower } from './tower';
 import { applyGraphics } from './graphics';
 import { openSettings } from './ui/settings';
+import { appPanel } from './ui/app-panel';
+import { connectionView } from './ui/continuity';
+import { setupPwa } from './ui/pwa';
 import { hiringPaused, renderUsage, usageLabel, usageTitle } from './ui/usage';
 
 // ---- Renderer & scene ---------------------------------------------------------------------------
@@ -256,9 +259,32 @@ let bootVersion = '';
 let upgradePhase = '';
 
 net.onStatus((up) => {
-  $('conn').classList.toggle('hidden', up);
   store.setConnected(up);
+  renderConnection();
+  // The host may not offer continuity yet; the socket can also push it.
+  if (up)
+    fetch('/api/continuity/status', { cache: 'no-store', credentials: 'same-origin' })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body) => store.setContinuity(body))
+      .catch(() => {});
 });
+function renderConnection() {
+  const view = connectionView({ online: store.online, connected: store.connected });
+  const down = !store.online || !store.connected;
+  $('conn').classList.toggle('hidden', !down);
+  $('conn').classList.toggle('offline', !store.online);
+  $('conn-text').textContent = view.label;
+  $('conn').title = view.detail;
+  $('conn-retry').classList.toggle('hidden', !store.online);
+}
+store.on('connection', renderConnection);
+$('conn-retry').addEventListener('click', () => net.reconnectNow());
+window.addEventListener('online', () => {
+  store.setOnline(true);
+  net.reconnectNow();
+});
+window.addEventListener('offline', () => store.setOnline(false));
+setupPwa();
 net.onMessage((msg) => {
   if (msg.t === 'welcome') voice.reset();
   store.apply(msg);
@@ -1088,6 +1114,7 @@ $('btn-settings').addEventListener('click', () =>
     },
     editProfile,
     () => sound.ding('done'),
+    appPanel(net),
   ),
 );
 

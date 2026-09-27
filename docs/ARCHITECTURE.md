@@ -38,7 +38,7 @@ Package the web client in a desktop shell after defining the transport and trust
 
 ### 5. Web/mobile delivery
 
-The shared web client connects to the cloud backend. Add reconnect/resume tests, adaptive rendering, reduced-motion support, mobile navigation and accessibility. Consider a PWA first, then native mobile packaging if actual device testing supports it. No service worker should cache authenticated API responses or create the impression agents can run offline in a closed browser.
+The shared web client connects to the office host. Implemented: an installable manifest with local icons, a service worker limited to a public offline explanation page for failed page loads (no caching of app HTML, API, terminals, snapshots or credentials), device-offline versus host-unreachable status with an immediate reconnect control, reduced-motion support and keyboard/small-screen access to workforce status. Host continuity status (`continuity.status` / `/api/continuity/status`) is displayed with receipt age measured on the device; a connected socket is never presented as evidence of cloud hosting. Still to do: adaptive rendering, reconnect/resume tests against a real host, and native mobile packaging only if device testing supports it. Agents cannot run offline in a closed browser or on a stopped host.
 
 ## Acceptance criteria for a cloud milestone
 

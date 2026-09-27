@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Agent Empire</title>
     <link rel="icon" href="/favicon.svg" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/assets/pwa/apple-touch-180-v1.png" />
+    <meta name="theme-color" content="#15232a" />
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
@@ -53,7 +56,7 @@
         <div id="hint" class="hint hidden"></div>
         <div id="toasts"></div>
         <div id="shares"></div>
-        <div id="conn" class="conn hidden">Reconnecting…</div>
+        <div id="conn" class="conn hidden" role="status"><span id="conn-text">Reconnecting to the office host</span><button id="conn-retry" class="btn" type="button">Reconnect now</button></div>
         <div id="upgrade-banner" class="conn upgrading hidden"></div>
       </div>
       <div id="modal-root"></div>

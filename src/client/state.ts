@@ -1,12 +1,14 @@
 import { DEFAULT_KEYS, sanitizeKeys, type KeyBindings } from './controls';
 import { initialEmpire } from '../shared/empire';
 import { evidence } from './ui/status';
+import { parseContinuity } from './ui/continuity';
+import type { ContinuityStatus } from '../shared/continuity';
 import type { ChatLine, GhIssue, GhPull, GhState, PeerInfo, ProjectInfo, QueueState, QueueTask, ServerMsg, ServicesState, TeamState, UpgradeState, Usage, UsageState, WorkerInfo } from '../shared/protocol';
 import type { ScreenState } from './world/laptop';
 import { randomLook, sanitizeLook, type Look } from '../shared/avatar';
 import type { Decoration } from '../shared/decor';
 
-type Topic = 'empire' | 'peers' | 'workers' | 'issues' | 'pulls' | 'chat' | 'project' | 'screens' | 'team' | 'upgrade' | 'services' | 'decor' | 'usage' | 'queue' | 'connection' | 'freshness';
+type Topic = 'empire' | 'peers' | 'workers' | 'issues' | 'pulls' | 'chat' | 'project' | 'screens' | 'team' | 'upgrade' | 'services' | 'decor' | 'usage' | 'queue' | 'connection' | 'freshness' | 'continuity';
 
 const zeroUsage = (): Usage => ({ input: 0, output: 0, cacheWrite: 0, cacheRead: 0, cost: 0, calls: 0 });
 
@@ -89,6 +91,13 @@ class Store {
   /** performance.now() when the last empire message arrived; 0 before the first. */
   empireReceivedAt = 0;
   connected = false;
+  /** navigator.onLine: false means this device has no network, not that the host is down. */
+  online = typeof navigator === 'undefined' ? true : navigator.onLine;
+  continuity: ContinuityStatus | null = null;
+  /** performance.now() when the last continuity status arrived; 0 before the first. */
+  continuityReceivedAt = 0;
+  /** performance.now() when the current socket opened; earlier reports belong to a previous connection. */
+  connectedAt = 0;
   you = '';
   profile: Profile = { name: 'Guest', color: AVATAR_COLORS[1], look: randomLook() };
   peers = new Map<string, PeerInfo>();
@@ -124,6 +133,7 @@ class Store {
   setConnected(up: boolean) {
     if (this.connected === up) return;
     this.connected = up;
+    if (up) this.connectedAt = performance.now();
     // A new socket must receive its own snapshot before cached evidence becomes live again.
     if (!up) this.empireReceivedAt = 0;
     this.emit('connection');
@@ -132,6 +142,21 @@ class Store {
 
   evidence(now = performance.now()) {
     return evidence(this.empire.supervision, this.connected, this.empireReceivedAt, now);
+  }
+
+  setOnline(online: boolean) {
+    if (this.online === online) return;
+    this.online = online;
+    this.emit('connection');
+  }
+
+  /** Takes a status from the socket or /api/continuity/status; malformed input is ignored. */
+  setContinuity(value: unknown) {
+    const status = parseContinuity(value);
+    if (!status) return;
+    this.continuity = status;
+    this.continuityReceivedAt = performance.now();
+    this.emit('continuity');
   }
 
   private wasFresh = false;
@@ -156,6 +181,9 @@ class Store {
 
   apply(msg: ServerMsg) {
     switch (msg.t) {
+      case 'continuity.status':
+        this.setContinuity(msg.status);
+        break;
       case 'empire':
         this.empire = msg.state;
         this.empireReceivedAt = performance.now();
