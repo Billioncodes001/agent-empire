@@ -14,7 +14,7 @@ import {
   type SectorState,
   type SiteId,
 } from '../shared/empire.js';
-import type { WorkerInfo, QueueState } from '../shared/protocol.js';
+import type { WorkerInfo, QueueState, QueueTask } from '../shared/protocol.js';
 import type { TaskQueue } from './queue.js';
 import { DESKS_PER_FLOOR, fundedDesk } from '../shared/layout.js';
 import { randomBytes } from 'node:crypto';
@@ -130,7 +130,13 @@ export class Empire {
       jobKey: `empire-manager-${sector.id}-1`,
     };
   }
-  action(action: EmpireAction): string | undefined {
+  /** Only the current appointment may retry a manager task, including legacy job keys. */
+  managerTaskRetryBlocker(task: QueueTask): string | undefined {
+    if (!task.jobKey?.startsWith('empire-manager-')) return;
+    if (!this.state.sectors.some(s => s.manager?.jobKey === task.jobKey))
+      return 'This manager startup has been superseded. Recover the current assignment from Management instead.';
+  }
+  action(action: EmpireAction, queue?: Pick<TaskQueue, 'state' | 'retry' | 'managerRetryBlocker'>): string | undefined {
     const beforeFunds = this.state.funds;
     if (action.kind === 'found') {
       if (this.state.setup.completed) return 'Founding setup is already complete';
@@ -235,14 +241,23 @@ export class Empire {
       } else {
         if (!sector.built || !sector.manager) return 'No manager assignment';
         if (!['offline', 'pending'].includes(sector.manager.status)) return 'Manager already assigned or queued';
-        if (sector.manager.status === 'offline') sector.manager.attempt++;
-        Object.assign(sector.manager, {
-          status: 'pending',
-          jobKey: `empire-manager-${site.id}-${sector.manager.attempt}`,
-          taskId: undefined,
-          workerId: undefined,
-          error: undefined,
-        });
+        if (!queue) return 'Manager recovery requires the task queue';
+        const manager = sector.manager;
+        const blocked = queue.managerRetryBlocker(manager.jobKey, manager.workerId);
+        if (blocked) return blocked;
+        const task = queue.state().tasks.find(t => t.jobKey === manager.jobKey);
+        if (task) {
+          // Both Management and Requeue recover the same logical task/reward identity.
+          // Creating a new job key here leaves the old task independently retryable.
+          const error = queue.retry(task.id);
+          if (error) return error;
+          const retried = queue.state().tasks.find(t => t.id === task.id)!;
+          Object.assign(manager, { status: 'queued', taskId: retried.id, workerId: retried.workerId, attempt: retried.attempt ?? manager.attempt + 1, error: retried.error });
+        } else {
+          // Removed failed history can be dispatched again under the existing appointment key.
+          // Recovery guards above still check its last worker and any older sibling attempts.
+          Object.assign(manager, { status: 'pending', taskId: undefined, workerId: undefined, error: undefined });
+        }
       }
     } else return 'Unknown operation';
     if (this.state.funds !== beforeFunds) {
@@ -349,6 +364,7 @@ export class Empire {
         worker = workers.find((w) => w.id === task.workerId);
       m.taskId = task.id;
       m.workerId = task.workerId;
+      m.attempt = Math.max(m.attempt, task.attempt ?? 1);
       m.error = task.error;
       m.status =
         task.status === 'queued'

@@ -58,9 +58,9 @@ function fixture(saved: Record<string, unknown>[] = [], existingPids: number[] =
   return {
     dir, workers, processes, launches, presentPids, toasts,
     setBudget(value?: string) { budget = value; }, setCapacity(value: number) { capacity = value; },
-    queue(tasks: QueueTask[], maxWorkers = 0) {
+    queue(tasks: QueueTask[], maxWorkers = 0, empire?: Empire) {
       writeFileSync(path.join(dir, 'queue.json'), JSON.stringify({ tasks, maxWorkers }));
-      queue = new TaskQueue(dir, workers, false, { update() {}, toast: text => toasts.push(text), hiringPaused: () => budget, claimIssue: async () => undefined, refreshGitHub() {} });
+      queue = new TaskQueue(dir, workers, false, { update: state => empire?.tick(workers.list(), state, 0), retryAllowed: task => empire?.managerTaskRetryBlocker(task), toast: text => toasts.push(text), hiringPaused: () => budget, claimIssue: async () => undefined, refreshGitHub() {} });
       return queue;
     },
     close() { queue?.shutdown(); workers.shutdown(); rmSync(dir, { recursive: true, force: true }); },
@@ -474,4 +474,90 @@ test('authenticated browser reconnect receives reconciled supervision without la
     if (running) { const closed = new Promise<void>(resolve => running!.server.once('close', () => resolve())); running.shutdown(); await closed; }
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+for (const first of ['manager', 'queue'] as const) for (const maxWorkers of [0, 3])
+test(`${first} recovery first shares the same manager task lineage with concurrency ${maxWorkers}`, () => {
+  const f = fixture([savedWorker({ processState: 'stopped' })]);
+  try {
+    const empire = new Empire(f.dir, () => {});
+    empire.action({ kind: 'found', sites: [] });
+    const manager = empire.state.sectors[0].manager!;
+    const originalKey = manager.jobKey;
+    const q = f.queue([task({ jobKey: originalKey })], maxWorkers, empire);
+    empire.tick(f.workers.list(), q.state(), 0);
+    const managementRetry = () => {
+      const result = empire.action({ kind: 'retry-manager', site: 'hq' }, q);
+      if (!result) empire.dispatchManagers(q, 'Fixture');
+      empire.tick(f.workers.list(), q.state(), 0);
+      return result;
+    };
+    const firstResult = first === 'manager' ? managementRetry() : q.retry('task-1');
+    assert.equal(firstResult, undefined);
+    const secondResult = first === 'manager' ? q.retry('task-1') : managementRetry();
+    assert.ok(secondResult, 'the other recovery control must refuse the existing queued/running attempt');
+    assert.equal(q.state().tasks.length, 1);
+    assert.equal(q.state().tasks[0].id, 'task-1');
+    assert.equal(q.state().tasks[0].jobKey, originalKey);
+    assert.equal(q.state().tasks[0].attempt, 2);
+    assert.equal(manager.jobKey, originalKey);
+    assert.equal(f.processes.length, maxWorkers ? 1 : 0);
+    assert.equal(JSON.parse(readFileSync(path.join(f.dir, 'queue.json'), 'utf8')).tasks[0].id, 'task-1');
+    if (maxWorkers) {
+      // Repeating the startup after a completed turn retains the same reward identity.
+      const id = q.state().tasks[0].workerId!;
+      f.workers.handleHook(id, f.launches[0].token, 'Stop', {});
+      assert.equal(empire.state.economy.revenue, 500);
+      f.processes[0].exit();
+      assert.equal(q.retry('task-1'), undefined);
+      const repeatedId = q.state().tasks[0].workerId!;
+      f.workers.handleHook(repeatedId, f.launches[1].token, 'Stop', {});
+      assert.equal(empire.state.economy.revenue, 500);
+      const restored = new Empire(f.dir, () => {});
+      restored.tick(f.workers.list(), q.state(), 0);
+      assert.equal(restored.state.economy.revenue, 500);
+      assert.deepEqual(restored.state.economy.rewardedTasks, ['task-1']);
+    }
+  } finally { f.close(); }
+});
+
+test('superseded legacy manager task keys cannot be retried or automatically seated', () => {
+  const f = fixture([savedWorker({ processState: 'stopped' })]);
+  try {
+    const empire = new Empire(f.dir, () => {});
+    empire.action({ kind: 'found', sites: [] });
+    const manager = empire.state.sectors[0].manager!;
+    manager.jobKey = 'empire-manager-hq-2'; manager.attempt = 2;
+    const q = f.queue([
+      task({ status: 'done', outcome: 'exited' }),
+      task({ id: 'old-queued', jobKey: 'empire-manager-hq-0', status: 'queued', workerId: undefined }),
+      task({ id: 'current', jobKey: manager.jobKey, status: 'done', outcome: 'exited' }),
+    ], 3, empire);
+    empire.tick(f.workers.list(), q.state(), 0);
+    assert.match(q.retry('task-1')!, /superseded/);
+    q.pump();
+    assert.equal(f.processes.length, 0);
+    assert.equal(q.state().tasks.find(t => t.id === 'old-queued')!.outcome, 'failed');
+    assert.equal(empire.action({ kind: 'retry-manager', site: 'hq' }, q), undefined);
+    empire.dispatchManagers(q, 'Fixture');
+    assert.equal(f.processes.length, 1);
+    assert.equal(q.state().tasks.find(t => t.status === 'running')!.id, 'current');
+    assert.match(q.retry('task-1')!, /superseded/);
+  } finally { f.close(); }
+});
+
+test('a current manager retry cannot overlap an uncertain legacy sibling process', () => {
+  const f = fixture([savedWorker()]);
+  try {
+    const empire = new Empire(f.dir, () => {}); empire.action({ kind: 'found', sites: [] });
+    const manager = empire.state.sectors[0].manager!;
+    manager.jobKey = 'empire-manager-hq-2'; manager.status = 'offline';
+    const q = f.queue([
+      task({ status: 'done', outcome: 'exited' }),
+      task({ id: 'current', jobKey: manager.jobKey, status: 'done', outcome: 'failed', workerId: undefined }),
+    ], 3, empire);
+    assert.match(empire.action({ kind: 'retry-manager', site: 'hq' }, q)!, /unknown/);
+    assert.match(q.retry('current')!, /unknown/);
+    assert.equal(f.processes.length, 0);
+  } finally { f.close(); }
 });

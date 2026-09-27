@@ -230,6 +230,7 @@ export async function startServer(cfg: Config, runtime: ServerRuntime = {}) {
     claimIssue: (issue) => github.claim(issue),
     refreshGitHub: () => void github.refresh(),
     hiringPaused: () => ledger.hiringPaused,
+    retryAllowed: task => empire.managerTaskRetryBlocker(task),
   });
   // Saved appointment flags are historical until worker/queue evidence has been reconciled.
   empire.tick(workers.list(), queue.state(), 0);
@@ -532,13 +533,7 @@ export async function startServer(cfg: Config, runtime: ServerRuntime = {}) {
         if (!msg.action || typeof msg.action !== 'object') break;
         if (Date.now() - c.lastActAt < 250) break;
         c.lastActAt = Date.now();
-        if (msg.action.kind === 'retry-manager') {
-          const site = msg.action.site;
-          const manager = empire.state.sectors.find(s => s.id === site)?.manager;
-          const blocked = manager && queue.managerRetryBlocker(manager.jobKey, manager.workerId);
-          if (blocked) { sendTo(c, { t: 'toast', text: blocked, level: 'warn' }); break; }
-        }
-        const error = empire.action(msg.action);
+        const error = empire.action(msg.action, queue);
         if (error) sendTo(c, { t: 'toast', text: error, level: 'error' });
         else empire.dispatchManagers(queue, who);
         empire.tick(workers.list(), queue.state(), 0);

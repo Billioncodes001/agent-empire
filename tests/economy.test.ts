@@ -266,18 +266,25 @@ test('version one migration preserves the district and saves a backup without re
   }
 });
 
-test('failed manager startup stays locked and retry receives a new appointment job key', () => {
+test('failed manager startup stays locked and recovery preserves its logical queue identity', () => {
   const f=fixture();
+  let q: TaskQueue | undefined;
   try {
     f.empire.action({kind:'found',sites:['cafe']});
     const m=f.empire.state.sectors.find(s=>s.id==='cafe')!.manager!;
     const key=m.jobKey;
-    f.empire.tick([], {tasks:[job({jobKey:key,outcome:'failed',error:'Provider unavailable'})],maxWorkers:1},0);
+    const failed = job({jobKey:key,outcome:'failed',error:'Provider unavailable'});
+    writeFileSync(path.join(f.dir, 'queue.json'), JSON.stringify({maxWorkers:0,tasks:[failed]}));
+    q = new TaskQueue(f.dir, { list: () => [{...worker, processState:'stopped'}], deskOccupied: () => true, spawn: () => { throw Error('Paused queue must not spawn'); }, kill: async () => ({}) }, false,
+      {update() {}, toast() {}, hiringPaused: () => undefined, claimIssue: async () => undefined, refreshGitHub() {}});
+    f.empire.tick([], q.state(),0);
     assert.equal(m.status,'offline');
     assert.equal(entranceAccess('cafe',f.empire.state,[]).allowed,false);
     assert.equal(f.empire.state.economy.revenue,0);
-    assert.equal(f.empire.action({kind:'retry-manager',site:'cafe'}),undefined);
-    assert.equal(m.status,'pending');assert.notEqual(m.jobKey,key);
+    assert.equal(f.empire.action({kind:'retry-manager',site:'cafe'},q),undefined);
+    assert.equal(m.status,'queued');assert.equal(m.jobKey,key);
+    assert.equal(q.state().tasks[0].id, failed.id);
+    assert.equal(q.state().tasks[0].attempt, 2);
     assert.equal(m.error,undefined);
-  } finally {f.close();}
+  } finally {q?.shutdown();f.close();}
 });
