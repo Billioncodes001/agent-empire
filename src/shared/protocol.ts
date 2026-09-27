@@ -29,6 +29,8 @@ export interface WorkerInfo {
   name: string;
   color: string;
   status: WorkerStatus;
+  /** Observed process state; absent legacy values must not be treated as running. */
+  processState?: 'running' | 'stopped' | 'unknown';
   /** True once someone opened the terminal after the last done / needs_input. */
   acked: boolean;
   createdBy: string;
@@ -177,6 +179,9 @@ export interface QueueTask {
   addedBy: string;
   addedAt: number;
   status: TaskStatus;
+  /** Logical task ID stays stable; each explicit retry increments this counter. */
+  attempt?: number;
+  interruption?: { reason: 'server_restart'; at: number };
   /** The worker seated for it (it may have gone home since). */
   workerId?: string;
   workerName?: string;

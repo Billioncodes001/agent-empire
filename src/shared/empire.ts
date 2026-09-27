@@ -154,12 +154,30 @@ export interface LedgerEntry {
   capital: number;
   balance: number;
 }
+/** Runtime observations, rebuilt after restart; never proof of an autonomous supervisor. */
+export interface SupervisionState {
+  schemaVersion: 1;
+  serverRunId: string;
+  observedAt: number;
+  delegationRequested: boolean;
+  monitor: { mode: 'rule_based'; lastCheckAt: number };
+  chief: {
+    phase: 'unassigned' | 'pending' | 'queued' | 'starting' | 'idle' | 'working' | 'needs_input' | 'turn_ended' | 'interrupted' | 'failed' | 'unknown';
+    managerId?: string;
+    taskId?: string;
+    workerId?: string;
+    reason?: string;
+  };
+  workforce: { active: number; attention: number; queued: number };
+}
 export interface EmpireState {
   version: 2;
   updatedAt: number;
   minutes: number;
   funds: number;
   delegated: boolean;
+  /** Ephemeral projection; ignored when restoring a saved city. */
+  supervision?: SupervisionState;
   setup: { completed: boolean; selected: SiteId[]; completedAt?: number };
   office: { floors: number; workstations: number };
   sectors: SectorState[];
