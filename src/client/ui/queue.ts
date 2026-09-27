@@ -10,6 +10,7 @@ export interface QueueActions {
 
 /** The 📋 Queue button in the top bar: shows how many tasks are waiting or running. */
 export function mountQueueButton(btn: HTMLElement, onOpen: () => void) {
+  btn.setAttribute('aria-label', 'Task queue');
   const count = h('span.svc-count');
   btn.replaceChildren('📋 ', h('span', {}, 'Queue'), count);
   const render = () => {

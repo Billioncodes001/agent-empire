@@ -24,6 +24,7 @@ function describe(svc: ServiceInfo): { who: string; color: string; branch?: stri
 
 /** The 🌐 Services button in the top bar: shows how many are running. */
 export function mountServicesButton(btn: HTMLElement) {
+  btn.setAttribute('aria-label', 'Worker services');
   const label = h('span', {}, 'Services');
   const count = h('span.svc-count');
   btn.replaceChildren('🌐 ', label, count);
