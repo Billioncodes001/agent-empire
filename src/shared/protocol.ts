@@ -167,6 +167,8 @@ export type TaskStatus = 'queued' | 'running' | 'done';
 
 /** A task on the 📋 queue whiteboard: a GitHub issue or free text, seated to a worker by itself. */
 export interface QueueTask {
+  /** Stable key for an automatically appointed sector manager's bounded startup task. */
+  jobKey?: string;
   id: string;
   /** The GitHub issue it came from, when it did. */
   issue?: number;

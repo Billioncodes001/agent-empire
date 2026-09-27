@@ -35,7 +35,7 @@ export function buildTerrain(group: THREE.Group, foliage: Vegetation) {
   terrain.receiveShadow = true;
   group.add(terrain);
   // Perimeter roads connect the six blocks and enclose the managed district.
-  for (const z of [25, 124, 146, 208]) {
+  for (const z of [25, 118, 146, 208]) {
     box(group, 106, 0.14, 8, S.road, 0, -0.045, z);
     for (const dz of [-5.3, 5.3]) box(group, 106, 0.16, 2.4, S.concrete, 0, -0.015, z + dz);
     for (let x = -48; x < 49; x += 5) box(group, 2, 0.01, 0.1, solid('#cec8ad'), x, 0.03, z);

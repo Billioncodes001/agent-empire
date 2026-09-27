@@ -1,4 +1,4 @@
-import { SITES, type SiteId, type EmpireState } from '../shared/empire';
+import { SITES, managerAvailable, type SiteId, type EmpireState } from '../shared/empire';
 import type { WorkerInfo } from '../shared/protocol';
 
 export function assignedWorkers(id: SiteId, workers: Iterable<WorkerInfo>): WorkerInfo[] {
@@ -10,9 +10,11 @@ export function entranceAccess(id: SiteId, state: EmpireState, workers: Iterable
   if (!state.sectors.find((s) => s.id === id)?.built) return { allowed: false, reason: 'Construction required' };
   if (id === 'hq' || id === 'home') return { allowed: true, reason: id === 'home' ? 'Private residence' : 'Headquarters' };
   const count = assignedWorkers(id, workers).length;
+  const sector = state.sectors.find(s => s.id === id)!;
+  if (managerAvailable(sector)) return { allowed: true, reason: `${sector.manager!.name} · ${sector.manager!.status === 'ready' ? 'ready' : 'on duty'}` };
   return {
     allowed: count > 0,
-    reason: count ? `${count} assigned AI worker${count === 1 ? '' : 's'}` : 'Assign an AI worker to open this building',
+    reason: count ? `${count} assigned AI worker${count === 1 ? '' : 's'}` : sector.manager ? `Manager ${sector.manager.status} · ${sector.manager.status === 'offline' ? 'retry in Management' : 'awaiting agent startup'}` : 'Assign an AI worker to open this building',
   };
 }
 export const entrance = (id: SiteId) => {
@@ -23,7 +25,7 @@ export const entrance = (id: SiteId) => {
 export function worldPosition(x: number, z: number) {
   return z < 30 ? { x: -24 + x * 0.35, z: 48 + z * 0.35 } : { x, z };
 }
-export const MAP_BOUNDS = { minX: -64, maxX: 66, minZ: 22, maxZ: 135 };
+export const MAP_BOUNDS = { minX: -64, maxX: 66, minZ: 22, maxZ: 153 };
 export function mapPoint(x: number, z: number, width: number, height: number) {
   return {
     x: ((x - MAP_BOUNDS.minX) / (MAP_BOUNDS.maxX - MAP_BOUNDS.minX)) * width,

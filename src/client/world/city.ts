@@ -2,6 +2,7 @@ import { buildTerrain } from './terrain';
 import { slidingDoor } from './doors';
 import { entranceAccess, assignedWorkers } from '../navigation';
 import { store } from '../state';
+import { managerAvailable } from '../../shared/empire';
 import { batchStaticMeshes } from './batching';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
@@ -93,6 +94,7 @@ export function buildCity() {
   const siteColliders = new Map<string, Collider>();
   const sectorCollision = new Map<string, { collider: Collider; top: number }[]>();
   const buildings = new Map<string, THREE.Group>();
+  const upgrades = new Map<string, THREE.Group[]>();
   const plots = new Map<string, THREE.Group>();
   const doors = new Map<string, ReturnType<typeof slidingDoor>>();
   const staffViews = new Map<string, Person>();
@@ -105,15 +107,15 @@ export function buildCity() {
   box(group, 15, 0.13, 112, S.road, 0, -0.03, 77);
   for (const z of [62, 90]) box(group, 107, 0.13, 10, S.road, 0, -0.029, z);
   for (const x of [-9.4, 9.4]) {
-    box(group, 3.7, 0.17, 106, S.concrete, x, -0.01, 77);
-    box(group, 0.17, 0.24, 106, S.stone, x + Math.sign(x) * -1.8, 0.015, 77);
-    for (let z = 26; z < 130; z += 1.5) box(group, 3.6, 0.006, 0.018, solid('#656963'), x, 0.081, z);
+    box(group, 3.7, 0.17, 126, S.concrete, x, -0.01, 87);
+    box(group, 0.17, 0.24, 126, S.stone, x + Math.sign(x) * -1.8, 0.015, 87);
+    for (let z = 26; z < 150; z += 1.5) box(group, 3.6, 0.006, 0.018, solid('#656963'), x, 0.081, z);
   }
   for (const z of [55.7, 68.3, 83.7, 96.3]) box(group, 104, 0.17, 2.3, S.concrete, 0, -0.01, z);
   for (let z = 28; z < 132; z += 4.5)
     if (Math.abs(z - 62) > 6 && Math.abs(z - 90) > 6) box(group, 0.12, 0.009, 2, solid('#d1c8a5'), 0, 0.041, z);
   for (const z of [57, 67, 85, 95]) for (let x = -6; x <= 6; x += 1.8) box(group, 1.1, 0.01, 2, solid('#d5d2bd'), x, 0.043, z);
-  for (let z = 34; z < 127; z += 12)
+  for (let z = 34; z < 151; z += 12)
     for (const x of [-10.4, 10.4]) {
       foliage.palm(x + Math.sign(x) * 1.4, z, 7.5 + (z % 3));
       box(group, 0.12, 5, 0.12, S.frame, x, 2.5, z + 4);
@@ -174,11 +176,36 @@ export function buildCity() {
       door.collider.maxZ += site.z;
       colliders.push(door.collider);
       for (const dx of [-9, 9])
-        colliders.push({ minX: site.x + dx - 0.2, maxX: site.x + dx + 0.2, minZ: site.z - 6, maxZ: site.z + 6, top: 3.6 });
-      colliders.push({ minX: site.x - 9, maxX: site.x + 9, minZ: site.z - 6.2, maxZ: site.z - 5.8, top: 3.6 });
+        colliders.push({
+          minX: site.x + dx - 0.2,
+          maxX: site.x + dx + 0.2,
+          minZ: site.z - 6,
+          maxZ: site.z + 6,
+          top: 3.6,
+        });
+      colliders.push({
+        minX: site.x - 9,
+        maxX: site.x + 9,
+        minZ: site.z - 6.2,
+        maxZ: site.z - 5.8,
+        top: 3.6,
+      });
       for (const dx of [-5.5, 5.5])
-        colliders.push({ minX: site.x + dx - 3.5, maxX: site.x + dx + 3.5, minZ: site.z + 5.9, maxZ: site.z + 6.1, top: 3.6 });
-      colliders.push({ minX: site.x - 9, maxX: site.x + 9, minZ: site.z - 6, maxZ: site.z + 6, bottom: 3.58, top: 3.85 });
+        colliders.push({
+          minX: site.x + dx - 3.5,
+          maxX: site.x + dx + 3.5,
+          minZ: site.z + 5.9,
+          maxZ: site.z + 6.1,
+          top: 3.6,
+        });
+      colliders.push({
+        minX: site.x - 9,
+        maxX: site.x + 9,
+        minZ: site.z - 6,
+        maxZ: site.z + 6,
+        bottom: 3.58,
+        top: 3.85,
+      });
     } else {
       curtain(b, 18, height, 12, hq ? 3 : hospital ? 2 : 1, !hq);
       // Solid vertical service spine and an articulated entrance portico.
@@ -233,22 +260,80 @@ export function buildCity() {
           p.rotation.x = 0.25;
         }
       if (hq) {
-        const c = { minX: site.x - 9.2, maxX: site.x + 9.2, minZ: site.z - 6.3, maxZ: site.z + 6.3, top: height };
+        const c = {
+          minX: site.x - 9.2,
+          maxX: site.x + 9.2,
+          minZ: site.z - 6.3,
+          maxZ: site.z + 6.3,
+          top: height,
+        };
         siteColliders.set(site.id, c);
         colliders.push(c);
       } else {
         for (const dx of [-9, 9])
-          colliders.push({ minX: site.x + dx - 0.15, maxX: site.x + dx + 0.15, minZ: site.z - 6, maxZ: site.z + 6, top: height });
-        colliders.push({ minX: site.x - 9, maxX: site.x + 9, minZ: site.z - 6.2, maxZ: site.z - 5.8, top: height });
+          colliders.push({
+            minX: site.x + dx - 0.15,
+            maxX: site.x + dx + 0.15,
+            minZ: site.z - 6,
+            maxZ: site.z + 6,
+            top: height,
+          });
+        colliders.push({
+          minX: site.x - 9,
+          maxX: site.x + 9,
+          minZ: site.z - 6.2,
+          maxZ: site.z - 5.8,
+          top: height,
+        });
         for (const [a, b] of [
           [-9, 0.6],
           [3.8, 9],
         ])
-          colliders.push({ minX: site.x + a, maxX: site.x + b, minZ: site.z + 5.9, maxZ: site.z + 6.1, top: height });
-        colliders.push({ minX: site.x - 9, maxX: site.x + 9, minZ: site.z - 6, maxZ: site.z + 6, bottom: 3.1, top: height });
+          colliders.push({
+            minX: site.x + a,
+            maxX: site.x + b,
+            minZ: site.z + 5.9,
+            maxZ: site.z + 6.1,
+            top: height,
+          });
+        colliders.push({
+          minX: site.x - 9,
+          maxX: site.x + 9,
+          minZ: site.z - 6,
+          maxZ: site.z + 6,
+          bottom: 3.1,
+          top: height,
+        });
         for (const x of [-2, 3, 6])
-          colliders.push({ minX: site.x + x - 1, maxX: site.x + x + 1, minZ: site.z - 3.3, maxZ: site.z - 2.3, top: 0.82 });
+          colliders.push({
+            minX: site.x + x - 1,
+            maxX: site.x + x + 1,
+            minZ: site.z - 3.3,
+            maxZ: site.z - 2.3,
+            top: 0.82,
+          });
       }
+    }
+    const improvements = [new THREE.Group(), new THREE.Group()];
+    improvements[0].name = 'Level 2 solar upgrade';
+    improvements[1].name = 'Level 3 planted terrace';
+    if (!home) {
+      for (const x of [-2, 2, 6]) {
+        const panel = box(improvements[0], 2.4, 0.1, 2.8, solid('#193447', 0.25, 0.45), x, height + 0.7, -3.5);
+        panel.rotation.x = 0.2;
+        box(improvements[1], 2.1, 0.5, 1.2, S.stone, x, 0.25, 8);
+        box(improvements[1], 1.9, 0.7, 1, solid('#425b43'), x, 0.8, 8);
+      }
+    }
+    improvements.forEach((g) => b.add(g));
+    upgrades.set(site.id, improvements);
+    if (site.id === 'recreation') {
+      for (const x of [1, 5]) {
+        box(b, 1.2, 0.025, 2, solid('#607b72'), x, 0.1, 1);
+        for (const dx of [-0.6, 0.6]) box(b, 0.06, 1.5, 0.06, S.frame, x + dx, 0.75, -0.3);
+        box(b, 1.4, 0.06, 0.06, S.frame, x, 1.5, -0.3);
+      }
+      sign(b, 'WELLNESS / COMMUNITY', 2, 2.4, -5.6, 5);
     }
     box(b, 22, 0.1, 3, S.concrete, 0, 0.015, 8.2);
     for (const dx of [-10, 10]) {
@@ -291,7 +376,10 @@ export function buildCity() {
   const chief = new Person('Chief of staff', '#345f65', lookFromSeed('empire-chief'));
   chief.showLabel(false);
   const citizens = Array.from({ length: 8 }, (_, i) => {
-    const p = new Person('Resident', '#8c9a9e', { ...lookFromSeed(`citizen-${i}`), style: i % 2 });
+    const p = new Person('Resident', '#8c9a9e', {
+      ...lookFromSeed(`citizen-${i}`),
+      style: i % 2,
+    });
     p.showLabel(false);
     group.add(p.root);
     return p;
@@ -299,7 +387,13 @@ export function buildCity() {
   const car = new THREE.Group();
   car.name = 'Executive sedan';
   car.position.set(5, 0, 45);
-  const carCollider: Collider = { minX: 4, maxX: 6, minZ: 42.6, maxZ: 47.4, top: 1.55 };
+  const carCollider: Collider = {
+    minX: 4,
+    maxX: 6,
+    minZ: 42.6,
+    maxZ: 47.4,
+    top: 1.55,
+  };
   colliders.push(carCollider);
   group.add(car);
   new GLTFLoader().load(
@@ -343,6 +437,7 @@ export function buildCity() {
       for (const sector of state.sectors) {
         buildings.get(sector.id)!.visible = sector.built;
         plots.get(sector.id)!.visible = !sector.built;
+        upgrades.get(sector.id)?.forEach((g, i) => (g.visible = sector.level >= i + 2));
         for (const item of sectorCollision.get(sector.id) ?? []) item.collider.top = sector.built ? item.top : 0;
         const c = siteColliders.get(sector.id);
         if (c) c.top = sector.built ? (sector.id === 'hq' ? 11.4 : sector.id === 'hospital' ? 8 : 4) : 0;
@@ -369,7 +464,17 @@ export function buildCity() {
         doors.get(site.id)?.update(dt, (allowed || inside) && near);
         if (!store.empire.sectors.find((s) => s.id === site.id)?.built) doors.get(site.id)!.collider.top = 0;
         if (site.id === 'hq' || site.id === 'home') continue;
-        const assigned = assignedWorkers(site.id, store.workers.values()).slice(0, 3);
+        const sector = store.empire.sectors.find((s) => s.id === site.id)!;
+        const assigned = assignedWorkers(site.id, store.workers.values())
+          .filter((w) => w.id !== sector.manager?.workerId)
+          .map((w) => ({ id: w.id, name: w.name, color: w.color }));
+        if (managerAvailable(sector))
+          assigned.unshift({
+            id: sector.manager!.id,
+            name: sector.manager!.name,
+            color: '#567b70',
+          });
+        assigned.splice(3);
         for (let i = 0; i < assigned.length; i++) {
           const worker = assigned[i];
           displayedWorkers.add(worker.id);

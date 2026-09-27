@@ -71,13 +71,15 @@ export class TaskQueue {
     return this.maxWorkers;
   }
 
-  add(prompt: string, by: string, title?: string, issue?: number): string | undefined {
+  add(prompt: string, by: string, title?: string, issue?: number, jobKey?: string): string | undefined {
+    if (jobKey && this.tasks.some(t => t.jobKey === jobKey)) return;
     const clean = prompt.replace(/\r\n?/g, '\n').trim();
     if (!clean) return 'Empty task';
     if (issue !== undefined && this.tasks.some((t) => t.issue === issue && t.status !== 'done')) return `Issue #${issue} is already on the queue`;
     if (this.tasks.filter((t) => t.status !== 'done').length >= MAX_TASKS) return `The queue is full (${MAX_TASKS} tasks)`;
     const task: QueueTask = {
       id: randomBytes(6).toString('hex'),
+      jobKey,
       issue,
       title: (title?.trim() || firstLine(clean)).slice(0, 120),
       prompt: clean,
@@ -121,7 +123,7 @@ export class TaskQueue {
     if (t.status !== 'done') return 'That task is still on the queue';
     if (t.issue !== undefined && this.tasks.some((x) => x !== t && x.issue === t.issue && x.status !== 'done')) return `Issue #${t.issue} is already on the queue`;
     this.tasks.splice(this.tasks.indexOf(t), 1);
-    const fresh: QueueTask = { id: t.id, issue: t.issue, title: t.title, prompt: t.prompt, addedBy: t.addedBy, addedAt: Date.now(), status: 'queued' };
+    const fresh: QueueTask = { id: t.id, jobKey: t.jobKey, issue: t.issue, title: t.title, prompt: t.prompt, addedBy: t.addedBy, addedAt: Date.now(), status: 'queued' };
     this.tasks.push(fresh);
     this.changed();
     this.pump();
@@ -314,6 +316,7 @@ export class TaskQueue {
         if (typeof s.id !== 'string' || typeof s.prompt !== 'string' || typeof s.title !== 'string') continue;
         const t: QueueTask = {
           id: s.id,
+          jobKey: typeof s.jobKey === 'string' ? s.jobKey : undefined,
           issue: typeof s.issue === 'number' ? s.issue : undefined,
           title: s.title,
           prompt: s.prompt,

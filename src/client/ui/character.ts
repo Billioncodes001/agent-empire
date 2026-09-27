@@ -164,7 +164,7 @@ export function openCharacter(first: boolean, onSave: (p: Profile) => void) {
 
   const surprise = h('button.btn', { type: 'button', title: 'Random look' }, 'Random profile');
   surprise.addEventListener('click', () => change(randomLook(), AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)]));
-  const save = h('button.btn.primary', { type: 'submit' }, first ? 'Enter the office' : 'Save');
+  const save = h('button.btn.primary', { type: 'submit' }, first ? 'Continue to my city' : 'Save');
   const close = first ? null : h('button.btn.close', { type: 'button', 'aria-label': 'Close' }, '✕');
 
   const form = h(

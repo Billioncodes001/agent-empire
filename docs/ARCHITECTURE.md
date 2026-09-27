@@ -12,19 +12,19 @@
 - `src/client/ui/empire.ts`: operations, minimap, home needs, sector task entry and touch movement.
 - `src/client/controls.ts`: arrow defaults, saved mapping validation and canonical office-action routing.
 
-The office continues running real PTY processes. Agent completion is derived from existing hooks, not simulated timers. Sector tasks feed the existing queue. Simulated civic staffing currently affects coverage only; wages and revenue are not implemented.
+The office continues running real PTY processes. Agent completion is derived from existing hooks, not simulated timers. Sector tasks feed the existing queue. Civic staff earn simulated wages and produce service revenue after a manager starts. Successful real queued tasks earn a separate, once-only completion reward. Founder dividends, capital spending and reinvestment reconcile in the city ledger.
 
 ## Next milestones
 
 ### 1. Deeper world simulation
 
-Introduce a database-backed fixed-tick engine with event history and migrations. Add construction duration, wages, income, utility dependencies and service demand. Give workers persistent identities, roles, shifts, paths, needs and building assignments. Replace ambient loops with navigation and schedules. Define explicit formulas and balance tests for health, education and happiness.
+Introduce a database-backed fixed-tick engine with event history and migrations. Wages, income, founding grants and upgrades are implemented with fixed rates. Next add construction duration, utility dependencies and service demand. Managers and employee earnings have persistent identities; next add shifts, paths, needs and richer roles. Replace ambient loops with navigation and schedules. Define explicit formulas and balance tests for health, education and happiness.
 
 Doorway traversal, business ground floors, a waypoint minimap, and retargeted walk/run/seated clips are implemented. Next add more parcels, car parking and road routing, vehicle synchronization, hand/foot contact IK, expanded appearance options, and specialized furnishing assets. HDR lighting, texture detail, human rigs and camera obstruction are implemented; next add audio zones, weather and adjustable quality/LOD budgets.
 
 ### 2. Chief of staff and reporting
 
-Create a distinct supervisor task with a scoped brief, policy and audit log. It may dispatch approved backlog tasks, collect artifacts, summarize sector reports, and request decisions. It must preserve agent permission gates and spending limits. Add CEO ownership and delegated manager roles, including multiplayer permissions. Provide a daily briefing linked to actual commits, PRs, failures, usage and service events.
+The chief now has a scoped startup task and ongoing administrative reports. Next add an active supervisor policy and audit log. It may dispatch approved backlog tasks, collect artifacts, summarize sector reports, and request decisions. It must preserve agent permission gates and spending limits. Add CEO ownership and delegated manager roles, including multiplayer permissions. Provide a daily briefing linked to actual commits, PRs, failures, usage and service events.
 
 ### 3. Durable cloud execution
 
@@ -51,10 +51,17 @@ The shared web client connects to the cloud backend. Add reconnect/resume tests,
 
 ## Traversal and animation
 
-`src/client/navigation.ts` defines shared entry eligibility and map projection. A business must be built and have a live `agent` worker whose sector assignment prefix matches; service staff, shells, offline agents and queued-but-not-started tasks cannot open an entrance. Home and headquarters are bootstrap exceptions.
+`src/client/navigation.ts` defines shared entry eligibility and map projection. A business must be built and have a live `agent` worker whose sector assignment prefix matches, or a manager appointment with completed real startup work; service staff, shells, offline agents and queued-but-not-started tasks cannot open an entrance. Home and headquarters are bootstrap exceptions.
 
 `src/client/traversal.ts` owns timed headquarters doorway and vehicle entry/exit sequences. Scripted movement suspends controller input, preserves the selected view, clears held keys, and resumes collision-based movement afterward. The office interior uses a doorway fade because its floor plan is larger than its street shell. Home and business doors slide in place with corresponding collision changes. Exit remains possible if a worker disconnects while the player is inside.
 
 `Human` crossfades independent `AnimationAction` instances. Locomotion time scales with actual controller displacement, so blocked movement returns to idle. Animation retargeting uses world-space bone orientation and vertical pelvis location; the controller supplies horizontal displacement. `tools/retarget-motion.py` records the Blender conversion process.
 
 The minimap and full map only set a waypoint. They never change player position. New map/camera shortcuts migrate older complete key maps without discarding saved remaps. `visual-review.html` is a development-only scenario viewer and is excluded from production Vite entries; it uses the same scene, controller and traversal modules and never starts real workers.
+
+
+## Founding and economy implementation
+
+Version-two empire state stores the one-time founding plan, parcel ownership, building levels, durable manager appointments, cumulative accounts, reward identities and ledger. The server migrates version-one state with a backup. `TaskQueue.jobKey` makes manager startup dispatch idempotent across restarts; failed startup remains visible and retryable. Queue updates drive completion rewards immediately, and the existing simulation timer settles operating hours. Both use server state and atomic empire persistence. See [ECONOMY.md](ECONOMY.md) for formulas, cash reconciliation and limits.
+
+The client opens founding setup after character creation once the authoritative server state arrives. It closes only when the server confirms completion, and a simultaneous founder completion updates every connected client. The main Management view provides assignment status, projected operating rates, individual earnings, capital purchases, upgrades and reinvestment. Arbitrary parcel placement, continuously reasoning executives, provider provisioning and a market economy remain future work.

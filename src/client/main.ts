@@ -1,4 +1,5 @@
 import { Traversal } from './traversal';
+import { openFounding } from './ui/founding';
 import { buildCity } from './world/city';
 import { mountEmpire } from './ui/empire';
 import { officeCode, DEFAULT_KEYS, keyLabel, type Action } from './controls';
@@ -242,6 +243,7 @@ interface WorkerView {
 }
 const workerViews = new Map<string, WorkerView>();
 let firstWelcome = true;
+let foundingOpened = false;
 /** The server version this page was loaded with. */
 let bootVersion = '';
 let upgradePhase = '';
@@ -255,6 +257,9 @@ net.onMessage((msg) => {
   routeTeamMessage(msg);
   routePullMessage(msg);
   switch (msg.t) {
+    case 'empire':
+      if (!msg.state.setup.completed && !foundingOpened) { foundingOpened = true; openFounding(net); }
+      break;
     case 'welcome': {
       const mine = store.peers.get(store.you);
       if (firstWelcome && mine) {

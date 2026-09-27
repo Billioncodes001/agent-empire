@@ -14,7 +14,7 @@ test('construction charges once, staffing has capacity, and state survives a res
   assert.equal(f.empire.state.funds,76000);
   assert.equal(f.empire.action({kind:'build',site:'hospital'}),'Already built');
   assert.equal(f.empire.state.funds,76000);
-  for(let i=0;i<12;i++) assert.equal(f.empire.action({kind:'hire',site:'hospital'}),undefined);
+  for(let i=1;i<12;i++) assert.equal(f.empire.action({kind:'hire',site:'hospital'}),undefined);
   assert.equal(f.empire.action({kind:'hire',site:'hospital'}),'Team is at capacity');
   const restarted=new Empire(f.dir,()=>{});
   assert.deepEqual(restarted.state,f.empire.state);
@@ -32,6 +32,7 @@ test('invalid actions and unaffordable construction cannot spend credits',()=>{
 });
 test('chief reports actual worker exceptions and bounded sector history',()=>{
  const f=fixture();try {
+  f.empire.action({kind:'found',sites:[]});
   f.empire.action({kind:'delegate',enabled:true});
   const workers=[{status:'needs_input'},{status:'working'},{status:'done'}] as WorkerInfo[];
   f.empire.tick(workers,{tasks:[],maxWorkers:3});

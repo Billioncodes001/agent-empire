@@ -215,7 +215,7 @@ export async function startServer(cfg: Config) {
   );
   // The 📋 task queue seats workers by itself: it watches the workers and links PRs from GitHub.
   queue = new TaskQueue(cfg.dataDir, workers, !!project.branch, {
-    update: (state) => broadcast({ t: 'queue', state }),
+    update: (state) => { broadcast({ t: 'queue', state }); empire.tick(workers.list(), state, 0); },
     toast: (text, level) => broadcast({ t: 'toast', text, level }),
     claimIssue: (issue) => github.claim(issue),
     refreshGitHub: () => void github.refresh(),
@@ -521,6 +521,7 @@ export async function startServer(cfg: Config) {
         c.lastActAt = Date.now();
         const error = empire.action(msg.action);
         if (error) sendTo(c, { t: 'toast', text: error, level: 'error' });
+        else empire.dispatchManagers(queue, who);
         break;
       }
       case 'move': {
@@ -778,6 +779,7 @@ export async function startServer(cfg: Config) {
   }, 1000);
 
   // Drop dead connections so ghosts don't linger in the office.
+  empire.dispatchManagers(queue, 'Chief of staff');
   const empireTimer = setInterval(() => empire.tick(workers.list(), queue.state()), 5000);
   const heartbeat = setInterval(() => {
     for (const c of clients.values()) {

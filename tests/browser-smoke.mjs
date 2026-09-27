@@ -18,6 +18,7 @@ try {
   );
   await page.reload();
   await page.waitForFunction(() => document.querySelector('#scene')?.dataset.assets === 'ready');
+  if (await page.getByRole('dialog', { name: 'Found your city' }).count()) throw new Error('Complete founding setup before running traversal smoke checks. This script does not appoint paid AI workers.');
   assert.equal(await page.getByRole('button', { name: 'Office ↔ City' }).count(), 0);
   assert.equal(await page.getByRole('button', { name: 'Go home', exact: true }).count(), 0);
   const position = () => page.locator('#scene').getAttribute('data-position');

@@ -131,6 +131,9 @@ function setup(name: string) {
     player.pos.set(24, 0, 50);
     player.camYaw = 0;
   }
+  if (name === 'Recreation') {
+    player.pos.set(-22,0,144); player.camYaw=0; player.facing=Math.PI;
+  }
   if (name === 'District') {
     player.pos.set(2, 0, 77);
     player.camYaw = 0.65;
@@ -154,6 +157,7 @@ for (const name of [
   'Enter car',
   'Exit car',
   'Residence',
+  'Recreation',
   'District',
   'First person',
   'Driver view',
