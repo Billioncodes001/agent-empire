@@ -46,6 +46,7 @@ import { openSettings } from './ui/settings';
 import { appPanel } from './ui/app-panel';
 import { connectionView } from './ui/continuity';
 import { setupPwa } from './ui/pwa';
+import { maybeOfferExecutionSetup, openCloudTasks, openExecutionSetup } from './ui/execution';
 import { hiringPaused, renderUsage, usageLabel, usageTitle } from './ui/usage';
 
 // ---- Renderer & scene ---------------------------------------------------------------------------
@@ -285,6 +286,18 @@ window.addEventListener('online', () => {
 });
 window.addEventListener('offline', () => store.setOnline(false));
 setupPwa();
+
+let executionOfferChecked = false;
+function offerExecutionWhenFree() {
+  // Waits for character and founding to finish; retried whenever the last dialog closes.
+  if (executionOfferChecked || !store.empire.setup.completed || modalOpen()) return;
+  executionOfferChecked = true;
+  const openSetup = (): void => void openExecutionSetup({ openTasks: () => openCloudTasks({ openSetup }) });
+  void maybeOfferExecutionSetup(openSetup);
+}
+onModalChange((open) => {
+  if (!open) setTimeout(offerExecutionWhenFree, 0);
+});
 net.onMessage((msg) => {
   if (msg.t === 'welcome') voice.reset();
   store.apply(msg);
@@ -295,6 +308,7 @@ net.onMessage((msg) => {
   switch (msg.t) {
     case 'empire':
       if (!msg.state.setup.completed && !foundingOpened) { foundingOpened = true; openFounding(net); }
+      offerExecutionWhenFree();
       break;
     case 'welcome': {
       const mine = store.peers.get(store.you);
