@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { Config } from './config.js';
 import { Auth } from './auth.js';
-import { WorkerManager } from './workers.js';
+import { WorkerManager, type WorkerRuntime } from './workers.js';
 import { GitHub } from './github.js';
 import { Team } from './team.js';
 import { Upgrader } from './upgrade.js';
@@ -117,8 +117,14 @@ const str = (v: unknown, max: number) => (typeof v === 'string' ? v.slice(0, max
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
 const COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 
-export async function startServer(cfg: Config) {
-  const publicDir = findPublicDir();
+/** Internal injection points let integration tests use fake processes and no external polling. */
+export interface ServerRuntime {
+  workers?: WorkerRuntime;
+  publicDir?: string;
+  backgroundServices?: boolean;
+}
+export async function startServer(cfg: Config, runtime: ServerRuntime = {}) {
+  const publicDir = runtime.publicDir ?? findPublicDir();
   const auth = new Auth(cfg.verifier, cfg.salt, cfg.secret);
   const clients = new Map<string, Client>();
   const chat: ChatLine[] = [];
@@ -182,11 +188,13 @@ export async function startServer(cfg: Config) {
       update: (worker) => {
         broadcast({ t: 'worker.update', worker });
         queue?.onWorker(worker);
+        if (queue) empire.tick(workers.list(), queue.state(), 0);
       },
       remove: (workerId) => {
-        changes.forget(workerId);
+        changes?.forget(workerId);
         broadcast({ t: 'worker.remove', workerId });
         queue?.onWorkerGone(workerId);
+        if (queue) empire.tick(workers.list(), queue.state(), 0);
       },
       data: (workerId, data, viewers) => {
         const json = JSON.stringify({ t: 'term.data', workerId, data } satisfies ServerMsg);
@@ -204,6 +212,7 @@ export async function startServer(cfg: Config) {
     },
     ledger,
     () => empire.state.office.workstations,
+    runtime.workers,
   );
 
   const github = new GitHub(
@@ -222,7 +231,9 @@ export async function startServer(cfg: Config) {
     refreshGitHub: () => void github.refresh(),
     hiringPaused: () => ledger.hiringPaused,
   });
-  github.start();
+  // Saved appointment flags are historical until worker/queue evidence has been reconciled.
+  empire.tick(workers.list(), queue.state(), 0);
+  if (runtime.backgroundServices !== false) github.start();
 
   // What each worker changed, for the Changes window at its desk (see changes.ts).
   changes = new Changes(
@@ -265,10 +276,10 @@ export async function startServer(cfg: Config) {
   const upgrader = new Upgrader(
     (state) => broadcast({ t: 'upgrade', state }),
     () => {
-      // cli.ts shuts down gracefully; systemd (Restart=always) then starts the new version, which
-      // wakes every worker.
+      // cli.ts shuts down gracefully; recovered tasks remain interrupted after restart.
       process.kill(process.pid, 'SIGTERM');
     },
+    runtime.backgroundServices !== false,
   );
 
   // --- HTTP ------------------------------------------------------------------------------------
@@ -466,6 +477,7 @@ export async function startServer(cfg: Config) {
         sharing: false,
       },
     };
+    empire.tick(workers.list(), queue.state(), 0);
     clients.set(id, client);
     (ws as any).isAlive = true;
     ws.on('pong', () => ((ws as any).isAlive = true));
@@ -491,8 +503,8 @@ export async function startServer(cfg: Config) {
     sendTo(client, { t: 'empire', state: empire.state });
     for (const { workerId, frame } of workers.fullScreens()) sendTo(client, { t: 'screen', workerId, ...frame, full: true });
     broadcast({ t: 'peer.join', peer: client.peer }, id);
-    // Anyone whose process ended since (exited, or failed to resume) gets up as you walk in.
-    workers.wakeAll();
+    for (const error of [workers.recoveryError, queue.recoveryError])
+      if (error) sendTo(client, { t: 'toast', text: error, level: 'error' });
 
     ws.on('message', (raw) => {
       let msg: ClientMsg;
@@ -520,9 +532,16 @@ export async function startServer(cfg: Config) {
         if (!msg.action || typeof msg.action !== 'object') break;
         if (Date.now() - c.lastActAt < 250) break;
         c.lastActAt = Date.now();
+        if (msg.action.kind === 'retry-manager') {
+          const site = msg.action.site;
+          const manager = empire.state.sectors.find(s => s.id === site)?.manager;
+          const blocked = manager && queue.managerRetryBlocker(manager.jobKey, manager.workerId);
+          if (blocked) { sendTo(c, { t: 'toast', text: blocked, level: 'warn' }); break; }
+        }
         const error = empire.action(msg.action);
         if (error) sendTo(c, { t: 'toast', text: error, level: 'error' });
         else empire.dispatchManagers(queue, who);
+        empire.tick(workers.list(), queue.state(), 0);
         break;
       }
       case 'move': {
@@ -585,10 +604,10 @@ export async function startServer(cfg: Config) {
       case 'worker.kill': {
         const w = workers.get(str(msg.workerId, 32));
         if (!w) break;
-        // The worker leaves right away; its worktree is dealt with after that, and the outcome follows.
+        // Removal is announced only after the process has actually stopped.
         const done = workers.kill(w.id, CLEANUPS.has(String(msg.cleanup)) ? msg.cleanup : undefined);
-        broadcast({ t: 'toast', text: `${who} sent ${w.name} home`, level: 'info' });
         void done.then(({ note, error }) => {
+          if (!error) broadcast({ t: 'toast', text: `${who} sent ${w.name} home`, level: 'info' });
           if (note) broadcast({ t: 'toast', text: note, level: 'info' });
           if (error) broadcast({ t: 'toast', text: error, level: 'warn' });
         });
@@ -797,7 +816,7 @@ export async function startServer(cfg: Config) {
     server.once('error', reject);
     server.listen(cfg.port, cfg.host, () => resolve());
   });
-  services.start();
+  if (runtime.backgroundServices !== false) services.start();
 
   const shutdown = () => {
     clearInterval(empireTimer);

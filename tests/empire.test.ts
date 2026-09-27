@@ -34,7 +34,7 @@ test('chief reports actual worker exceptions and bounded sector history',()=>{
  const f=fixture();try {
   f.empire.action({kind:'found',sites:[]});
   f.empire.action({kind:'delegate',enabled:true});
-  const workers=[{status:'needs_input'},{status:'working'},{status:'done'}] as WorkerInfo[];
+ const workers=[{kind:'agent',status:'needs_input'},{kind:'agent',status:'working'},{kind:'agent',status:'done'}] as WorkerInfo[];
   f.empire.tick(workers,{tasks:[],maxWorkers:3});
   assert.deepEqual(f.empire.state.workforce,{attention:1,working:1,done:1,queued:0});
   assert.ok(f.empire.state.reports.some(r=>r.sector==='Chief of staff'&&r.text.includes('need your input')));
