@@ -25,8 +25,8 @@ export type KeyBindings = Record<Action, string>;
 export const ACTION_LABELS: Record<Action, string> = {
   forward: 'Move forward',
   backward: 'Move backward',
-  left: 'Move left',
-  right: 'Move right',
+  left: 'Turn and move left',
+  right: 'Turn and move right',
   run: 'Run / accelerate',
   jump: 'Jump',
   interact: 'Interact',

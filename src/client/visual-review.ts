@@ -119,6 +119,13 @@ function setup(name: string) {
     player.setAction('run', name === 'Run');
     walking = true;
   }
+  if (['Left tap', 'Right tap', 'First left', 'First right'].includes(name)) {
+    player.pos.set(0, 0, 72);
+    player.facing = Math.PI;
+    player.camYaw = 0;
+    if (name.startsWith('First')) player.setView('first');
+    player.setAction(name.toLowerCase().includes('left') ? 'left' : 'right', true);
+  }
   if (name === 'Elevator') {
     player.pos.set(7, 0, -5.9); player.camYaw = 0; player.facing = Math.PI;
   }
@@ -178,6 +185,7 @@ for (const name of [
   'Street',
   'Walk',
   'Run',
+  'Left tap', 'Right tap', 'First left', 'First right',
   'Office',
   'Office eyes', 'Reception', 'Meeting',
   'Elevator',
@@ -238,6 +246,10 @@ renderer.setAnimationLoop((now) => {
   last = now;
   time += dt;
   elapsed += dt;
+  if (['Left tap', 'Right tap', 'First left', 'First right'].includes(scenario) && elapsed > .1) {
+    player.setAction('left', false);
+    player.setAction('right', false);
+  }
   if (walking && (elapsed > 7 || (scenario === 'Walk out' && player.pos.z >= 30) || (scenario === 'Walk in' && player.pos.z < 30))) {
     player.clearKeys();
     walking = false;
@@ -283,5 +295,5 @@ renderer.setAnimationLoop((now) => {
   canvas.dataset.floor = String(office.floor + 1);
   composer.render();
   document.getElementById('telemetry')!.textContent =
-    `${scenario} · ${canvas.dataset.traversal} · Floor ${office.floor + 1}\n${canvas.dataset.position}\n${person.root.children[0]?.userData.motion ?? 'loading'} · ${renderer.info.render.calls} draws\nAudio ${sound.recordings} · ${(Math.abs(player.drivingSpeed)*3.6).toFixed(0)} km/h · ${player.vehicle.rpm.toFixed(0)} rpm`;
+    `${scenario} · ${canvas.dataset.traversal} · Floor ${office.floor + 1}\n${canvas.dataset.position}\nBody ${THREE.MathUtils.radToDeg(Math.atan2(Math.sin(player.facing), Math.cos(player.facing))).toFixed(0)}° · View ${THREE.MathUtils.radToDeg(Math.atan2(Math.sin(player.camYaw + Math.PI), Math.cos(player.camYaw + Math.PI))).toFixed(0)}°\n${person.root.children[0]?.userData.motion ?? 'loading'} · ${renderer.info.render.calls} draws\nAudio ${sound.recordings} · ${(Math.abs(player.drivingSpeed)*3.6).toFixed(0)} km/h · ${player.vehicle.rpm.toFixed(0)} rpm`;
 });

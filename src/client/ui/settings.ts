@@ -4,7 +4,7 @@ import { GRAPHICS, type GraphicsQuality } from '../graphics';
 import { h, openModal } from './dom';
 
 const VIEWS: [ViewMode, string, string][] = [
-  ['first', '👀 First person', 'See through your own eyes. Click the office to look around with the mouse and click things to use them. Esc frees the mouse.'],
+  ['first', '👀 First person', 'See through your own eyes. Direction keys turn your body and view toward your movement. Click the scene for mouse look and interactions. Esc frees the mouse.'],
   ['third', '🎥 Third person', 'Follows your character’s turns while you walk. Drag to look around; following resumes after you release. Scroll to zoom. The First person button switches to eye level.'],
 ];
 

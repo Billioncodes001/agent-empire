@@ -61,6 +61,8 @@ export class PlayerController {
   // sideways arrow continuously steers itself into a circle as the camera turns.
   private moveYaw = 0;
   private moveChord = '';
+  /** Keep finishing a deliberate turn even when a brief key press has ended. */
+  private turnTarget: number | null = null;
   private orbitGrace = 0;
   private followPending = false;
 
@@ -173,7 +175,6 @@ export class PlayerController {
       this.unlock();
     }
     this.view = view;
-    this.moveChord = '';
     this.orbitGrace = 0;
     this.updateCamera(true);
   }
@@ -193,6 +194,7 @@ export class PlayerController {
     this.keys.clear();
     this.walkVelocity.set(0, 0);
     this.moveChord = '';
+    this.turnTarget = null;
     this.followPending = false;
     this.drag = null;
   }
@@ -220,6 +222,18 @@ export class PlayerController {
 
   private look(dx: number, dy: number) {
     this.camYaw -= dx;
+    // Only deliberate mouse input changes the held movement basis. Automatic
+    // following must not turn a held left/right key into an endless circle.
+    this.moveYaw -= dx;
+    if (!this.driving) {
+      if (this.moveChord && this.turnTarget !== null) {
+        this.turnTarget -= dx;
+        this.facing -= dx;
+      } else {
+        this.turnTarget = null;
+        this.facing = this.camYaw + Math.PI;
+      }
+    }
     this.lookPitch = THREE.MathUtils.clamp(this.lookPitch - dy, -1.45, 1.45);
   }
 
@@ -239,7 +253,6 @@ export class PlayerController {
       if (k.has(this.bindings.right)) ix += 1;
     }
     this.moving = ix !== 0 || iz !== 0;
-    if (this.view === 'first' && !this.driving) this.facing = Math.atan2(Math.sin(this.camYaw + Math.PI), Math.cos(this.camYaw + Math.PI));
     if (this.driving) {
       const turn = this.vehicle.update(dt, -iz, ix, k.has(this.bindings.run), this.enabled);
       this.facing += turn;
@@ -266,24 +279,35 @@ export class PlayerController {
       }
       const len = Math.hypot(ix, iz) || 1;
       ix /= len; iz /= len;
-      const yaw = this.view === 'first' ? this.camYaw : this.moveYaw;
+      const yaw = this.moveYaw;
       const sin = Math.sin(yaw), cos = Math.cos(yaw);
       const dx = ix * cos + iz * sin, dz = -ix * sin + iz * cos;
+      if (input) this.turnTarget = Math.atan2(dx, dz);
+      let alignment = 1;
+      if (this.turnTarget !== null && this.enabled) {
+        const diff = Math.atan2(Math.sin(this.turnTarget - this.facing), Math.cos(this.turnTarget - this.facing));
+        this.facing += diff * (1 - Math.exp(-dt * 14));
+        // Lead the step with the body turn instead of sliding sideways while
+        // the model still faces forward. This also softens a running reversal.
+        alignment = Math.max(0, Math.cos(this.turnTarget - this.facing));
+        this.followPending = true;
+        if (!input && Math.abs(diff) < .001) {
+          this.facing = this.turnTarget;
+          this.turnTarget = null;
+        }
+      }
       const speed = k.has(this.bindings.run) ? RUN : WALK;
       // Acceleration, braking and turns preserve stride continuity instead of snapping to full speed.
       const response = input ? 7 : 12;
-      this.walkVelocity.x = THREE.MathUtils.damp(this.walkVelocity.x, dx * speed, response, dt);
-      this.walkVelocity.y = THREE.MathUtils.damp(this.walkVelocity.y, dz * speed, response, dt);
+      this.walkVelocity.x = THREE.MathUtils.damp(this.walkVelocity.x, dx * speed * alignment, response, dt);
+      this.walkVelocity.y = THREE.MathUtils.damp(this.walkVelocity.y, dz * speed * alignment, response, dt);
       if (!this.enabled || this.walkVelocity.lengthSq() < .0004) this.walkVelocity.set(0, 0);
       this.tryMove(this.pos.x + this.walkVelocity.x * dt, this.pos.z);
       this.tryMove(this.pos.x, this.pos.z + this.walkVelocity.y * dt);
-      if (this.view === 'third' && this.walkVelocity.lengthSq() > .015) {
-        const want = Math.atan2(this.walkVelocity.x, this.walkVelocity.y);
-        const diff = Math.atan2(Math.sin(want - this.facing), Math.cos(want - this.facing));
-        this.facing += diff * (1 - Math.exp(-dt * 10));
-      }
-      if (this.view === 'third') {
-        if (input) this.followPending = true;
+      if (this.view === 'first' && this.followPending) {
+        this.camYaw = this.facing - Math.PI;
+        this.followPending = false;
+      } else if (this.view === 'third') {
         if (this.followPending && !this.drag && this.orbitGrace === 0 && this.camDist < 20) {
           this.followHeading(this.facing - Math.PI, dt);
         }

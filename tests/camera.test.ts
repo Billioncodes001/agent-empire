@@ -183,4 +183,69 @@ test('camera finishes following a brief arrow turn after movement stops', () => 
   for (let i = 0; i < 240; i++) player.update(1 / 60);
   assert.equal(player.moving, false);
   assert.ok(angleError(player.camYaw, player.facing - Math.PI) < .002);
+  assert.ok(angleError(player.facing, Math.PI / 2) < .001, 'body finishes the entire right turn');
+});
+
+for (const view of ['first', 'third'] as const) {
+  for (const action of ['left', 'right'] as const) {
+    for (const running of [false, true]) {
+      test(`${view} ${running ? 'running' : 'walking'} ${action} turns body and view without mouse input`, () => {
+        const { player, key } = setup();
+        player.setView(view);
+        key('keydown', running ? 'ShiftLeft' : 'Unbound');
+        key('keydown', action === 'left' ? 'ArrowLeft' : 'ArrowRight');
+        const target = action === 'left' ? -Math.PI / 2 : Math.PI / 2;
+        player.update(1 / 60);
+        assert.ok(angleError(player.facing, target) < Math.PI / 2, 'turn starts on the first frame');
+        assert.ok(Math.abs(player.pos.x) < .004, 'turn leads the step instead of a full sideways stride');
+        for (let i = 1; i < 180; i++) player.update(1 / 60);
+        assert.ok(angleError(player.facing, target) < .001);
+        assert.ok(angleError(player.camYaw, target - Math.PI) < .003);
+        assert.ok((action === 'left' ? -1 : 1) * player.pos.x > (running ? 10 : 4));
+        assert.ok(Math.abs(player.pos.z - 60) < .001, 'automatic camera turn never bends the held path');
+      });
+    }
+  }
+  test(`${view} one-frame tap completes its turn, even against a wall`, () => {
+    const { player } = setup([{ minX: .32, maxX: 2, minZ: 55, maxZ: 65, top: 8 }]);
+    player.setView(view);
+    player.setAction('right', true);
+    player.update(1 / 120);
+    player.setAction('right', false);
+    for (let i = 0; i < 480; i++) player.update(1 / 120);
+    assert.equal(player.pos.x, 0);
+    assert.ok(angleError(player.facing, Math.PI / 2) < .001);
+    assert.ok(angleError(player.camYaw, -Math.PI / 2) < .002);
+  });
+}
+
+test('first-person mouse look can steer held movement after a keyboard turn', () => {
+  const { player, canvas, win } = setup();
+  player.setView('first');
+  player.setAction('right', true);
+  for (let i = 0; i < 60; i++) player.update(1 / 60);
+  const before = player.pos.clone();
+  const down = new Event('pointerdown');
+  Object.assign(down, { clientX: 0, clientY: 0, pointerType: 'touch' });
+  canvas.dispatchEvent(down);
+  const move = new Event('pointermove');
+  Object.assign(move, { clientX: 100, clientY: 0 });
+  win.dispatchEvent(move);
+  for (let i = 0; i < 60; i++) player.update(1 / 60);
+  assert.ok(angleError(player.facing, Math.PI / 2 - .5) < .001);
+  assert.ok(angleError(player.camYaw, player.facing - Math.PI) < .001);
+  assert.ok(player.pos.x > before.x + 1 && player.pos.z > before.z + .5);
+});
+
+test('changing view during a held turn preserves the direction of travel', () => {
+  const { player } = setup();
+  player.setAction('right', true);
+  for (let i = 0; i < 30; i++) player.update(1 / 60);
+  player.setView('first');
+  for (let i = 0; i < 60; i++) player.update(1 / 60);
+  player.setView('third');
+  for (let i = 0; i < 60; i++) player.update(1 / 60);
+  assert.ok(player.pos.x > 3);
+  assert.ok(Math.abs(player.pos.z - 60) < .001);
+  assert.ok(angleError(player.facing, Math.PI / 2) < .001);
 });
