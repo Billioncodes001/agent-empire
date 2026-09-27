@@ -124,6 +124,8 @@ class Store {
   setConnected(up: boolean) {
     if (this.connected === up) return;
     this.connected = up;
+    // A new socket must receive its own snapshot before cached evidence becomes live again.
+    if (!up) this.empireReceivedAt = 0;
     this.emit('connection');
     this.checkFreshness();
   }

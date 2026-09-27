@@ -138,3 +138,16 @@ test('only fresh running agent turns use the typing pose', () => {
   assert.equal(typingPose(worker({}), true), false);
   assert.equal(typingPose(undefined, true), false);
 });
+
+test('reconnecting transport cannot revive evidence from the previous connection', () => {
+  store.setConnected(true);
+  store.apply({ t: 'empire', state: { ...store.empire, supervision: supervision('working') } });
+  assert.equal(store.evidence().fresh, true);
+  store.setConnected(false);
+  store.setConnected(true);
+  assert.equal(store.evidence().fresh, false);
+  assert.equal(store.evidence().reason, 'missing');
+  store.apply({ t: 'empire', state: { ...store.empire, supervision: supervision('idle') } });
+  assert.equal(store.evidence().fresh, true);
+  store.setConnected(false);
+});
