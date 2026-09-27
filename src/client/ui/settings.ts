@@ -45,7 +45,7 @@ export function openSettings(settings: Settings, onChange: (s: Settings) => void
     } }, h('strong', {}, profile.label), h('span', {}, profile.description));
   }));
   paintQuality();
-  const volume = h('input' , { type: 'range', min: 0, max: 100, step: 1, 'aria-label': 'Office sounds volume' });
+  const volume = h('input' , { type: 'range', min: 0, max: 100, step: 1, 'aria-label': 'World sounds volume' });
   const pct = h('span.vol-pct');
   const mute = h('button.btn', { type: 'button' });
   const soundRow = h('div.volume', {}, mute, volume, pct);
@@ -112,9 +112,9 @@ export function openSettings(settings: Settings, onChange: (s: Settings) => void
       h('label', {}, 'Camera view'),
       seg,
       note,
-      h('label', { style: 'margin-top:18px' }, 'Office sounds'),
+      h('label', { style: 'margin-top:18px' }, 'World sounds'),
       soundRow,
-      h('p.setting-note', {}, 'Workers typing, footsteps, the coffee machine, birds outside, and the ding when a worker is done. Voice chat isn’t affected.'),
+      h('p.setting-note', {}, 'Footsteps, car engine and road noise, doors, office ambience, and worker alerts. Vehicle sound changes with speed and camera view. Voice chat isn’t affected.'),
       h('label', { style: 'margin-top:18px' }, 'Keyboard controls'), keyNote, keyRows, resetKeys,
       h('label', { style: 'margin-top:18px' }, 'Your character'),
       character,
