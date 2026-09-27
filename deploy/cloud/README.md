@@ -1,6 +1,12 @@
-# Existing VPS deployment
+# Dedicated VPS deployment
 
-This recipe prepares one private, single-owner Agent Empire host. It does not purchase a machine, configure DNS, transfer your current laptop save or start provider jobs automatically. Use a dedicated service account/project because coding agents execute commands on this host. Never mount the Docker socket or unrelated home directories.
+This recipe prepares one private, single-owner Agent Empire host. The user has selected a new, separate VPS for this project. Do not deploy on Vantage, reuse its VM, or change its DNS, HTTPS routing, service accounts or credentials. It does not purchase a machine, configure DNS, transfer your current laptop save or start provider jobs automatically. Use a dedicated service account/project because coding agents execute commands on this host. Never mount the Docker socket or unrelated home directories.
+
+## Initial server sizing
+
+Proposed pilot: x86-64 Linux, 4 vCPUs, 8 GiB RAM and at least 80 GiB SSD, with one or two concurrent coding jobs initially. This is a starting estimate, not a measured concurrency guarantee; agent builds and tests determine capacity. Graphics render on the client, so the host does not require a graphics GPU for the current application. Increase resources or split runners after measuring job memory and CPU. AI provider usage, backups, taxes and any domain charges are separate from the VPS base price.
+
+Provider, region, final configuration and recurring budget must be settled before purchase. No server has been ordered.
 
 ## Prepare
 
