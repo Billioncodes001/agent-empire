@@ -817,10 +817,16 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
       case 'queue.clear':
         queue.clear();
         break;
-      case 'queue.limit':
-        localQueueApproved = true;
+      case 'queue.limit': {
+        const blocker = localExecutionBlocker();
+        if (num(msg.maxWorkers) > 0 && blocker) {
+          sendTo(c, { t: 'toast', text: blocker, level: 'warn' });
+          break;
+        }
+        localQueueApproved = num(msg.maxWorkers) > 0;
         queue.setLimit(num(msg.maxWorkers));
         break;
+      }
       case 'changes.watch':
         if (workers.get(str(msg.workerId, 32))) changes.watch(str(msg.workerId, 32), c.id);
         break;

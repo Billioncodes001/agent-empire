@@ -120,7 +120,9 @@ function showLauncher() {
   old?.close();menu();void win.loadURL(launcher);
 }
 app.setName('Agent Empire');
-app.whenReady().then(async()=>{
+const ownsInstance = app.requestSingleInstanceLock();
+if (!ownsInstance) app.quit();
+else app.whenReady().then(async()=>{
   syncEngine=await import('./runtime/device-sync.js');
   vault=createVault(path.join(app.getPath('userData'),'provider-credentials.enc'),safeStorage);
   const fromLauncher=event=>{if(event.senderFrame?.url!==launcher)throw new Error('Request denied.');};
@@ -145,5 +147,6 @@ app.whenReady().then(async()=>{
   showLauncher();
   app.on('activate',()=>{if(BrowserWindow.getAllWindows().length===0)showLauncher();});
 });
+app.on('second-instance',()=>{if(win){if(win.isMinimized())win.restore();win.focus();}});
 app.on('before-quit',stopLocal);
 app.on('window-all-closed',()=>{app.quit();});

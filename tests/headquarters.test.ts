@@ -58,7 +58,7 @@ test('desk addresses continue across floors without accepting malformed or unfun
  for (const id of ['desk-0', 'desk-01', 'desk--1', 'desk-1.1', 'desk-Infinity', 'desk-9007199254740992']) assert.equal(deskDefinition(id), undefined);
  assert.equal(fundedDesk('desk-17', 16), false);
  // Exercise the actual spawn boundary without creating a process or worktree.
- assert.match(WorkerManager.prototype.spawn.call({ capacity: () => 4 } as any, 'desk-5', 'QA') as string, /workstation/);
+ assert.match(WorkerManager.prototype.spawn.call({ capacity: () => 4, executionBlocker: () => undefined } as any, 'desk-5', 'QA') as string, /workstation/);
 });
 test('queue concurrency and allocation grow beyond the old sixteen-desk limit', () => {
  const f = fixture(); let queue: TaskQueue | undefined; try {
