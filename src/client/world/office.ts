@@ -9,6 +9,8 @@ import { Vegetation } from './vegetation';
 import { BOARDS, DESKS, DESK_SIZE, FLOOR, LOFT, STAIRS, TV, WALL_HEIGHT, deskSeat, type DeskDef } from '../../shared/layout';
 import { wallFacing, type WallId, type WallRect } from '../../shared/decor';
 import { mesh, roundedBox, textPlane, toon } from './toon';
+import { deskAccessories, furnishOffice } from './furnishing';
+import { FURNISHING_FIXTURES } from './furnishing-layout';
 
 export interface Collider {
   minX: number;
@@ -174,6 +176,7 @@ function buildDesk(def: DeskDef, index: number): DeskView {
     books.position.set(width / 2 - 0.35, height, -0.3);
     group.add(books);
   }
+  deskAccessories(group, index, height);
 
   const laptopAnchor = new THREE.Object3D();
   laptopAnchor.position.set(0, height, 0.02);
@@ -507,6 +510,10 @@ export function buildOffice(): Office {
     lamp.position.set(x, WALL_HEIGHT - 0.15, z);
     group.add(lamp);
   }
+
+  // Meeting area, reception, kitchen details, storage and print corner; pushed before elevation offsets are captured.
+  colliders.push(...furnishOffice(group));
+  for (const f of FURNISHING_FIXTURES) fixture(...f);
 
   buildLoft(group, colliders);
   // Pictures stay clear of the stairs (step by step, so they can hang above them) and of what's on
