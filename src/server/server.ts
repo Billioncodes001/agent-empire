@@ -22,6 +22,9 @@ import { RELAY_LOGIN, relayRequest, relayUpgrade, signInPage, stoppedPage, tunne
 import type { ChatLine, ClientMsg, PeerInfo, ProjectInfo, ServerMsg, ServicesState } from '../shared/protocol.js';
 import { SPAWN } from '../shared/layout.js';
 import { lookFromSeed, sanitizeLook } from '../shared/avatar.js';
+import { Continuity } from './continuity.js';
+import { SyncArtifacts } from './sync-artifacts.js';
+import { acquireHostLock } from './host-lock.js';
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -32,6 +35,7 @@ const MIME: Record<string, string> = {
   '.jpg': 'image/jpeg',
   '.ico': 'image/x-icon',
   '.json': 'application/json',
+  '.webmanifest': 'application/manifest+json',
   '.woff2': 'font/woff2',
   '.wasm': 'application/wasm',
   '.mp3': 'audio/mpeg',
@@ -107,6 +111,13 @@ function readBody(req: http.IncomingMessage, limit = 1024 * 1024): Promise<strin
   });
 }
 
+function sameOrigin(req: http.IncomingMessage, cfg: Config): boolean {
+  const host = (cfg.trustProxy && req.headers['x-forwarded-host']) || req.headers.host;
+  try {
+    return !!req.headers.origin && new URL(req.headers.origin).origin === `${isSecure(req, cfg) ? 'https' : 'http'}://${host}`;
+  } catch { return false; }
+}
+
 function send(res: http.ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}) {
   const json = JSON.stringify(body);
   res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', ...headers });
@@ -124,11 +135,24 @@ export interface ServerRuntime {
   backgroundServices?: boolean;
 }
 export async function startServer(cfg: Config, runtime: ServerRuntime = {}) {
+  const releaseHost = acquireHostLock(cfg.dataDir);
+  const startupCleanup: (() => void)[] = [releaseHost];
+  try {
+    return await startOwnedServer(cfg, runtime, releaseHost, startupCleanup);
+  } catch (error) {
+    for (const cleanup of startupCleanup.reverse()) { try { cleanup(); } catch { /* preserve the original startup error */ } }
+    throw error;
+  }
+}
+
+async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost: () => void, startupCleanup: (() => void)[]) {
   const publicDir = runtime.publicDir ?? findPublicDir();
   const auth = new Auth(cfg.verifier, cfg.salt, cfg.secret);
   const clients = new Map<string, Client>();
   const chat: ChatLine[] = [];
   const project = projectInfo(cfg);
+  const continuity = new Continuity(cfg.dataDir);
+  const artifacts = new SyncArtifacts(cfg.dir, cfg.dataDir, continuity.serverId);
 
   const sendTo = (c: Client, msg: ServerMsg) => {
     if (c.ws.readyState === WebSocket.OPEN) c.ws.send(JSON.stringify(msg));
@@ -142,12 +166,21 @@ export async function startServer(cfg: Config, runtime: ServerRuntime = {}) {
     }
   };
 
-  const empire = new Empire(cfg.dataDir, state => broadcast({ t: 'empire', state }));
-
-  // --- Loopback-only endpoint that Claude Code hooks POST to --------------------------------
   let workers!: WorkerManager;
   let queue!: TaskQueue;
   let changes!: Changes;
+  let observing = false;
+  const storageError = () => [workers?.recoveryError, queue?.recoveryError].filter(Boolean).join(' ') || undefined;
+  const observeContinuity = () => {
+    if (!workers || !queue || observing) return;
+    observing = true;
+    try { continuity.observe({ empire: empire.state, queue: queue.state(), workers: workers.list() }); }
+    finally { observing = false; }
+    broadcast({ t: 'continuity.status', status: continuity.status(storageError()) });
+  };
+  const empire = new Empire(cfg.dataDir, state => { broadcast({ t: 'empire', state }); observeContinuity(); });
+
+  // --- Loopback-only endpoint that Claude Code hooks POST to --------------------------------
   const hookServer = http.createServer(async (req, res) => {
     let url: URL;
     try {
@@ -168,6 +201,7 @@ export async function startServer(cfg: Config, runtime: ServerRuntime = {}) {
     send(res, ok ? 200 : 401, {});
   });
   await new Promise<void>((resolve) => hookServer.listen(0, '127.0.0.1', resolve));
+  startupCleanup.push(() => hookServer.close());
   const hookPort = (hookServer.address() as { port: number }).port;
 
   // What the workers spend, all time and today, with the optional daily budget.
@@ -215,6 +249,7 @@ export async function startServer(cfg: Config, runtime: ServerRuntime = {}) {
     runtime.workers,
   );
 
+  startupCleanup.push(() => workers.shutdown());
   const github = new GitHub(
     cfg.dir,
     (state) => broadcast({ t: 'gh.issues', state }),
@@ -233,6 +268,7 @@ export async function startServer(cfg: Config, runtime: ServerRuntime = {}) {
     retryAllowed: task => empire.managerTaskRetryBlocker(task),
   });
   // Saved appointment flags are historical until worker/queue evidence has been reconciled.
+  startupCleanup.push(() => queue.shutdown());
   empire.tick(workers.list(), queue.state(), 0);
   if (runtime.backgroundServices !== false) github.start();
 
@@ -354,6 +390,12 @@ export async function startServer(cfg: Config, runtime: ServerRuntime = {}) {
       }
       if (p === '/api/health') return send(res, 200, { ok: true });
 
+      if (req.method === 'GET' && (p === '/sw.js' || p === '/manifest.webmanifest')) {
+        const file = path.join(publicDir, p.slice(1));
+        if (!existsSync(file)) return send(res, 404, { error: 'Not found' });
+        return serveFile(res, file, false);
+      }
+
       if (p.startsWith('/assets/')) {
         const file = path.join(publicDir, path.normalize(p).replace(/^(\.\.[/\\])+/, ''));
         if (file.startsWith(publicDir) && existsSync(file) && statSync(file).isFile()) return serveFile(res, file, true);
@@ -370,6 +412,41 @@ export async function startServer(cfg: Config, runtime: ServerRuntime = {}) {
         return;
       }
       if (p === '/api/whoami') return send(res, 200, { ok: true });
+      if (p === '/api/continuity/status' && req.method === 'GET') return send(res, 200, continuity.status(storageError()));
+      if (p === '/api/continuity/events' && req.method === 'GET') {
+        const params = new URL(req.url ?? '/', 'http://x').searchParams;
+        const after = params.has('after') && /^\d+$/.test(params.get('after')!) ? Number(params.get('after')) : undefined;
+        return send(res, 200, continuity.feed(params.get('serverId') ?? undefined, after, storageError()));
+      }
+      if (p === '/api/sync/artifacts' && req.method === 'GET') return send(res, 200, { serverId: continuity.serverId, artifacts: await artifacts.list() });
+      if (p === '/api/sync/artifacts' && req.method === 'POST') {
+        if (!sameOrigin(req, cfg)) return send(res, 403, { error: 'A same-origin Origin header is required' });
+        let body: unknown;
+        try { body = JSON.parse(await readBody(req, 4096)); }
+        catch { return send(res, 400, { error: 'Expected JSON with workerId' }); }
+        const workerId = body && typeof body === 'object' && 'workerId' in body ? body.workerId : undefined;
+        if (typeof workerId !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(workerId)) return send(res, 400, { error: 'Invalid workerId' });
+        if (changes.isBusy(workerId)) return send(res, 409, { error: 'Worker has a Git operation in progress' });
+        try {
+          const manifest = await artifacts.publish(workerId, publish => workers.publishArtifact(workerId, publish));
+          return send(res, 200, manifest);
+        } catch (error) { return send(res, 409, { error: (error as Error).message }); }
+      }
+      const artifactRoute = /^\/api\/sync\/artifacts\/([a-f0-9]{64})\/(manifest|bundle)$/.exec(p);
+      if (artifactRoute && req.method === 'GET') {
+        try {
+          if (artifactRoute[2] === 'manifest') return send(res, 200, artifacts.manifest(artifactRoute[1]));
+          const { file, manifest } = await artifacts.bundle(artifactRoute[1]);
+          res.writeHead(200, {
+            'content-type': 'application/octet-stream', 'content-length': String(manifest.bundle.bytes),
+            'content-disposition': `attachment; filename="${manifest.artifactId}.bundle"`,
+            'cache-control': 'private, no-store', 'x-content-type-options': 'nosniff',
+          });
+          createReadStream(file).on('error', () => res.destroy()).pipe(res);
+          return;
+        } catch (error) { return send(res, 404, { error: (error as Error).message }); }
+      }
+      if (p.startsWith('/api/continuity/') || p.startsWith('/api/sync/')) return send(res, 404, { error: 'Not found' });
       if (p === '/api/image' && req.method === 'GET') {
         // A picture on the wall, fetched by the office so the 3D view can draw it (see decor.ts).
         const r = await images.get(new URL(req.url ?? '/', 'http://x').searchParams.get('url') ?? '');
@@ -415,6 +492,8 @@ export async function startServer(cfg: Config, runtime: ServerRuntime = {}) {
   };
 
   const server = cfg.tls ? https.createServer({ cert: cfg.tls.cert, key: cfg.tls.key }, handler) : http.createServer(handler);
+  server.once('close', releaseHost);
+  startupCleanup.push(() => server.close());
 
   // --- WebSocket -------------------------------------------------------------------------------
   const wss = new WebSocketServer({ noServer: true, maxPayload: 2 * 1024 * 1024 });
@@ -502,6 +581,7 @@ export async function startServer(cfg: Config, runtime: ServerRuntime = {}) {
       queue: queue.state(),
     });
     sendTo(client, { t: 'empire', state: empire.state });
+    sendTo(client, { t: 'continuity.status', status: continuity.status(storageError()) });
     for (const { workerId, frame } of workers.fullScreens()) sendTo(client, { t: 'screen', workerId, ...frame, full: true });
     broadcast({ t: 'peer.join', peer: client.peer }, id);
     for (const error of [workers.recoveryError, queue.recoveryError])
@@ -528,6 +608,10 @@ export async function startServer(cfg: Config, runtime: ServerRuntime = {}) {
 
   const handleMessage = (c: Client, msg: ClientMsg) => {
     const who = c.peer.name;
+    if ((msg.t === 'changes.commit' || msg.t === 'changes.discard' || msg.t === 'changes.pr') && workers.artifactPublishing(msg.workerId)) {
+      sendTo(c, { t: 'toast', text: 'This worker is publishing a sync artifact; wait for it to finish', level: 'warn' });
+      return;
+    }
     switch (msg.t) {
       case 'empire.action': {
         if (!msg.action || typeof msg.action !== 'object') break;
@@ -806,6 +890,7 @@ export async function startServer(cfg: Config, runtime: ServerRuntime = {}) {
       c.ws.ping();
     }
   }, 20_000);
+  startupCleanup.push(() => { clearInterval(empireTimer); clearInterval(heartbeat); clearInterval(resync); github.stop(); upgrader.stop(); services.stop(); changes.stop(); });
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);

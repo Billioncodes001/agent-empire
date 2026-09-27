@@ -81,6 +81,7 @@ interface Worker {
   processPid?: number;
   queueOwned?: boolean;
   stopping?: boolean;
+  publishing?: boolean;
   exitWaiters: Set<() => void>;
 }
 
@@ -237,6 +238,7 @@ export class WorkerManager {
   resume(id: string): string | undefined {
     const w = this.workers.get(id);
     if (!w) return 'No such worker';
+    if (w.publishing) return 'This worker is publishing a sync artifact; wait for it to finish';
     if (this.storageError) return this.storageError;
     if (this.closing || w.stopping) return 'The worker is stopping; wait for confirmed exit';
     if (w.pty) return 'Worker is already running';
@@ -267,6 +269,7 @@ export class WorkerManager {
   async kill(id: string, cleanup?: WorktreeCleanup): Promise<{ note?: string; error?: string }> {
     const w = this.workers.get(id);
     if (!w) return {};
+    if (w.publishing) return { error: 'This worker is publishing a sync artifact; wait for it to finish' };
     if (w.stopping) return { error: 'The worker is already stopping; wait for confirmed exit' };
     this.refreshProcessEvidence(w);
     if (!w.pty && w.info.processState !== 'stopped') return { error: this.unknownProcessReason(w) };
@@ -308,6 +311,22 @@ export class WorkerManager {
   inspectWorktree(id: string): Promise<WorktreeState | undefined> {
     const wt = this.workers.get(id)?.info.worktree;
     return wt ? this.trees.inspect(wt) : Promise.resolve(undefined);
+  }
+
+  artifactPublishing(id: string): boolean { return !!this.workers.get(id)?.publishing; }
+
+  /** Reserve a confirmed stopped worker until its immutable bundle has been verified. */
+  async publishArtifact<T>(id: string, publish: (worker: WorkerInfo) => Promise<T>): Promise<T> {
+    const worker = this.workers.get(id);
+    if (!worker) throw new Error('No such worker');
+    if (this.storageError) throw new Error(this.storageError);
+    this.refreshProcessEvidence(worker);
+    if (this.closing || worker.stopping || worker.publishing || worker.info.prOpening) throw new Error('Worker is busy; wait for its current operation to finish');
+    if (worker.pty || worker.info.processState !== 'stopped') throw new Error('Publishing requires a confirmed stopped process. A finished turn is not a stopped process.');
+    if (!worker.info.worktree) throw new Error('Publishing requires this worker’s own Git worktree');
+    worker.publishing = true;
+    try { return await publish(JSON.parse(JSON.stringify(worker.info))); }
+    finally { worker.publishing = false; }
   }
 
   attach(id: string, clientId: string, name: string): { data: string; cols: number; rows: number } | undefined {
@@ -371,6 +390,7 @@ export class WorkerManager {
   async openPr(id: string, by: string): Promise<{ number: number; url: string; existed: boolean; dirty: boolean } | string> {
     const w = this.workers.get(id);
     if (!w) return 'No such worker';
+    if (w.publishing) return 'This worker is publishing a sync artifact; wait for it to finish';
     const { info } = w;
     const wt = info.worktree;
     if (!wt) return `${info.name} works in the main checkout — only workers with their own worktree can open a PR`;

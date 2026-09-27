@@ -67,6 +67,25 @@ function fixture(saved: Record<string, unknown>[] = [], existingPids: number[] =
   };
 }
 
+test('publishing a stopped worker reserves it against resume, removal and duplicate publication', async () => {
+  const f = fixture([savedWorker({ processState: 'stopped', worktree: { path: '.agent-office/worktrees/fixture', branch: 'office/fixture', base: 'fixture' } })]);
+  try {
+    mkdirSync(path.join(f.dir, '.agent-office/worktrees/fixture'), { recursive: true });
+    let finish!: () => void;
+    const publishing = f.workers.publishArtifact('old-worker', () => new Promise<void>(resolve => { finish = resolve; }));
+    assert.equal(f.workers.artifactPublishing('old-worker'), true);
+    assert.match(f.workers.resume('old-worker')!, /publishing/);
+    assert.match((await f.workers.kill('old-worker')).error!, /publishing/);
+    await assert.rejects(f.workers.publishArtifact('old-worker', async () => {}), /busy/);
+    assert.equal(f.processes.length, 0);
+    finish(); await publishing;
+    assert.equal(f.workers.artifactPublishing('old-worker'), false);
+    assert.equal(f.workers.resume('old-worker'), undefined);
+    assert.equal(f.processes.length, 1);
+    await assert.rejects(f.workers.publishArtifact('old-worker', async () => {}), /stopped process/);
+  } finally { f.close(); }
+});
+
 test('restoring or inspecting legacy workers never launches a process or guesses stopped', async () => {
   const f = fixture([savedWorker()]);
   try {
