@@ -31,6 +31,7 @@ export const FURNISHING_COLLIDERS: readonly Footprint[] = [
   rect('meeting table', MEETING.x, MEETING.z, MEETING.length, MEETING.width, 0.76),
   rect('meeting credenza', 17.7, MEETING.z, 0.5, 2, 0.7),
   rect('reception counter', RECEPTION.x, RECEPTION.z, RECEPTION.depth, RECEPTION.length, 1.12),
+  rect('reception work surface', RECEPTION.x - RECEPTION.depth / 2 - 0.2, RECEPTION.z, 0.5, RECEPTION.length - 0.2, 0.76),
   rect('reception storage', -5.15, 12.72, 2.5, 0.45, 0.74),
   rect('waiting chair', -7.9, 9.85, 0.8, 0.8, 0.45),
   rect('waiting chair', -7.9, 11.35, 0.8, 0.8, 0.45),
