@@ -237,7 +237,7 @@ renderer.setAnimationLoop((now) => {
   player.update(dt);
   if (!tower.active && scenario !== 'Typing') traversal.update(dt);
   tower.update(dt);
-  city.update(time, store.empire.delegated, dt, player.pos, player.driving);
+  city.update(time, dt, player.pos, player.driving);
   empire.update(dt);
   if (player.driving) {
     city.car.position.copy(player.pos);
