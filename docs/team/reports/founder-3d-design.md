@@ -25,3 +25,7 @@ Lazy renderer loaded after first paint and visibility; 30 fps, capped DPR, insta
 - Figma desktop, phone, interaction board and overlays visually inspected. Native Claude Opus 5.5 authored the interface through the existing VS Code coordinator; Codex authored the Three.js scene and integration.
 
 These checks concern the founder desk only. They do not establish cloud deployment, mobile/desktop package execution, autonomous chief staffing, or completion of the broader city roadmap.
+
+## Final integration
+
+Exact combined implementation 9bfc37b independently accepted without material findings; typecheck and production Vite build passed. Final browser build has one live canvas, no errors, and 375px scroll width. Integrated and pushed to codex/empire-world. Native author source was copied without changing its isolated worktree and attributed in the integration commit. The VS Code coordinator could not cancel its child during an optional preview step; a stop message is queued and an original patch backup is preserved. The child has no ownership of the integrated branch. Do not reuse its interface worktree until its run has ended; reconcile any later changes before reuse.
