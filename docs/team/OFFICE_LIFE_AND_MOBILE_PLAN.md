@@ -57,6 +57,30 @@ User direction recorded before implementation, 2026-09-28. Baseline: `af0ce3c`. 
 | ORG-05 | Research and capability growth | ORG-01 | A research executive investigates unfamiliar jobs (docs, GitHub, forums, model hubs), records findings with sources, proposes tools for approval, and reports feasibility honestly. It is bounded by budget |
 | ORG-06 | Onboarding and voice | CITY-03/04 | First-run setup collects the company profile, provider accounts, budgets, notification channels and approval rules. Voice uses the VoiceStudio adapter already planned |
 
+## Decision: bundled game apps (2026-09-28)
+
+The user rejected the host-picker WebView companion: "it has to be a proper iOS gaming app", and the same for macOS and Windows. Of the options offered (bundled game app; rebuild in Godot; rebuild in Unity; separate native apps per platform), the user chose **bundled game app**:
+
+- **One game codebase.** The same three.js game client ships inside every app, and the web build stays available.
+- **Mobile apps.** The iOS and Android apps load the game from their own bundle, not from a server page. They run full-screen in landscape, with no browser chrome, status bar or address UI.
+- **Native screens.** Launch, "connect to your Empire" and sign-in are native screens. Game settings and menus are in-game.
+- **Live connection.** The app keeps a real-time connection to the user's Empire server.
+- **Desktop.** macOS and Windows use the same bundled client. Remote-host mode no longer loads a remote web page.
+
+Contract to agree before implementation (backend and interface), with one owner:
+
+| Piece | Design |
+| --- | --- |
+| Device sign-in | `POST /api/device/login {password, deviceName}` returns a long-lived, revocable device token (stored hashed server-side). It is listed and revocable in Settings, rate-limited like password login, and tied to the office secret. Cookie login stays for browsers |
+| Token use | API: `Authorization: Bearer <token>`. WebSocket: the token goes in `Sec-WebSocket-Protocol`, never in the URL, so it can't appear in logs. Bearer requests skip the same-origin check (there is no ambient credential, so no CSRF). Cookie requests keep the check unchanged |
+| App origins | The server allows CORS only for the app origins (`empire-app://game` on iOS, `https://appassets.androidplatform.net` on Android) and only with a bearer token. Everything else is unchanged |
+| Client config | One `serverBase()` / `api()` helper and a WebSocket URL builder in `net.ts`. All `fetch('/…')` sites use it. The native shell passes `{server, token}` before the client starts (injected config, never query strings) |
+| iOS shell | SwiftUI app. Launch screen, native connect and sign-in, and the token kept in the Keychain. WKWebView loads the bundled `dist/public` through a `WKURLSchemeHandler`. Landscape only in-game, status bar and home indicator hidden, no white flash, TLS left to Apple's default validation |
+| Android shell | The same, with the bundled assets served on `appassets.androidplatform.net` from `shouldInterceptRequest` (no new library). The token is encrypted with an Android Keystore key. Immersive full-screen landscape |
+| Desktop | Electron loads the bundled client for both local and remote hosts, using the same device token. Full-screen or windowed game window, with the in-game splash and menu |
+
+Slices: **APP-01** server device tokens and CORS for app origins (with tests); **APP-02** client `net` base URL and token (web behaviour unchanged); **APP-03** iOS bundled shell; **APP-04** Android bundled shell; **APP-05** desktop bundled remote mode. These replace the native part of MOBILE-04.
+
 ## Order
 
 MOBILE-01 → MOBILE-02 → LIFE-01 → LIFE-02 → LIFE-03 (using existing idle/done/needs_input states first) → MOBILE-03/04 → LIFE-04 → ORG slices in the CONSULT-04 sequence. The ORG slices are server and runtime work owned by the backend lane. The mobile and life slices are interface and world work.
