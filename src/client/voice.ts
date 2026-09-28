@@ -130,23 +130,20 @@ export class Voice {
     const track = this.screen.getVideoTracks()[0];
     track.contentHint = 'detail';
     track.addEventListener('ended', () => this.stopShare());
-    for (const c of this.conns.values()) c.screenSender = c.pc.addTrack(track, this.screen);
+    // Like the mic: reuse last share's sender, so each share doesn't pile up another transceiver.
+    // Viewers pick the new frames up on the same remote track (it unmutes); no renegotiation needed.
+    for (const c of this.conns.values()) {
+      if (c.screenSender) void c.screenSender.replaceTrack(track).catch(() => {});
+      else c.screenSender = c.pc.addTrack(track, this.screen);
+    }
     this.changed();
     return null;
   }
 
   stopShare() {
     if (!this.screen) return;
-    for (const c of this.conns.values()) {
-      if (c.screenSender) {
-        try {
-          c.pc.removeTrack(c.screenSender);
-        } catch {
-          // closed
-        }
-        c.screenSender = undefined;
-      }
-    }
+    // Keep the sender (just send nothing). Viewers stop showing it because our `sharing` flag goes off.
+    for (const c of this.conns.values()) void c.screenSender?.replaceTrack(null).catch(() => {});
     this.screen.getTracks().forEach((t) => t.stop());
     this.screen = null;
     this.changed();
@@ -256,6 +253,7 @@ export class Voice {
       } else {
         c.screen = stream;
         track.addEventListener('unmute', () => this.listeners.forEach((fn) => fn()));
+        track.addEventListener('mute', () => this.listeners.forEach((fn) => fn()));
         track.addEventListener('ended', () => this.listeners.forEach((fn) => fn()));
       }
       this.listeners.forEach((fn) => fn());
