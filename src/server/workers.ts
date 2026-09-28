@@ -12,7 +12,7 @@ import { DESK_BY_ID, fundedDesk } from '../shared/layout.js';
 import { gh } from './github.js';
 import type { ServiceOwner } from './services.js';
 import { TaskNamer, fallbackTask } from './tasks.js';
-import { addUsage, newTracker, restoreTracker, scanTracker, trackerUsage, zeroUsage, type Ledger, type UsageTracker } from './usage.js';
+import { bookGrowth, newTracker, restoreTracker, scanTracker, switchTranscript, trackerUsage, type Ledger, type UsageTracker } from './usage.js';
 import { writeJsonAtomic } from './persistence.js';
 
 type HeadlessTerminal = InstanceType<typeof headless.Terminal>;
@@ -479,7 +479,18 @@ export class WorkerManager {
       this.persist();
     }
     if (typeof payload?.transcript_path === 'string' && payload.transcript_path !== w.tracker.transcript) {
-      w.tracker.transcript = payload.transcript_path;
+      // Read the rest of the old transcript first, so its last messages go into `prior` too.
+      if (w.tracker.transcript) {
+        try {
+          scanTracker(w.tracker);
+        } catch {
+          // unreadable: what was already read still counts
+        }
+      }
+      switchTranscript(w.tracker, payload.transcript_path);
+      // Book the old transcript's tail now: the new one may log nothing before the worker is sent home.
+      w.info.usage = trackerUsage(w.tracker);
+      this.ledger.add(bookGrowth(w.tracker, w.info.usage));
       this.persist();
     }
     this.scheduleScan(w);
@@ -718,10 +729,9 @@ export class WorkerManager {
     } catch {
       return; // an unreadable transcript is retried on the next scan
     }
-    const before = w.info.usage ?? zeroUsage();
     const after = trackerUsage(w.tracker);
     w.info.usage = after;
-    this.ledger.add(addUsage(after, before, -1));
+    this.ledger.add(bookGrowth(w.tracker, after));
     this.emitUpdate(w);
     this.persist();
   }

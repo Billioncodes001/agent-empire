@@ -2,6 +2,7 @@ import { randomBytes, scryptSync } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { writeJsonAtomic } from './persistence.js';
 
 export interface Config {
   dir: string;
@@ -220,12 +221,21 @@ export function loadConfig(argv: string[]): Config {
 
   const cfgPath = path.join(dataDir, 'config.json');
   let stored: { password?: string; verifier?: string; salt?: string; secret?: string; claimedAt?: number } = {};
-  try {
-    stored = JSON.parse(readFileSync(cfgPath, 'utf8'));
-  } catch {
-    // first run
+  if (existsSync(cfgPath)) {
+    // A broken config must not look like a first run: that would silently mint a new secret and
+    // password, logging everyone out and locking the owner out.
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(cfgPath, 'utf8'));
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not a JSON object');
+      stored = parsed as typeof stored;
+    } catch (err) {
+      throw new Error(
+        `agent-office: ${cfgPath} is unreadable or not valid JSON (${(err as Error).message}). ` +
+          'Fix or delete it (deleting resets the password and signs everyone out).',
+      );
+    }
   }
-  const save = () => writeFileSync(cfgPath, JSON.stringify(stored, null, 2), { mode: 0o600 });
+  const save = () => writeJsonAtomic(cfgPath, stored);
   if (!stored.secret) stored.secret = randomBytes(32).toString('hex');
   if (!stored.salt) stored.salt = randomBytes(16).toString('hex');
   const salt = Buffer.from(stored.salt, 'hex');

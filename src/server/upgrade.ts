@@ -1,6 +1,6 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdir, rename, rm } from 'node:fs/promises';
+import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { UpgradeState, VersionInfo } from '../shared/protocol.js';
@@ -21,6 +21,8 @@ function findAppDir(): string | undefined {
 const APP_DIR = findAppDir() ?? process.cwd();
 // The new version is built here, next to the install, so swapping it in is a few renames.
 const STAGE = path.join(APP_DIR, '.upgrade');
+/** Written when putting the old build back failed; its text is the error. Survives restarts. */
+const RESTORE_MARKER = path.join(STAGE, 'NEEDS_RESTORE');
 const CHECK_EVERY_MS = 15 * 60_000;
 const SHOW_CHANGES = 15;
 
@@ -85,7 +87,18 @@ export class Upgrader {
     this.branch = enabled ? branch : undefined;
     this.state = { available: enabled, current, phase: 'idle' };
     if (!enabled) return;
-    void rm(STAGE, { recursive: true, force: true }); // what's left of the previous version
+    if (existsSync(RESTORE_MARKER)) {
+      // A failed rollback left the only copy of the old build in the stage: keep it, and keep saying so.
+      this.manualRestore = true;
+      let error = '';
+      try {
+        error = readFileSync(RESTORE_MARKER, 'utf8');
+      } catch {
+        // the marker itself is what matters
+      }
+      this.state = { ...this.state, phase: 'failed', error: error || `Restore the previous build from ${path.join(STAGE, 'old')} by hand, then delete ${RESTORE_MARKER}.` };
+      console.warn(`[upgrade] ${RESTORE_MARKER} is present; not upgrading until the old build is restored by hand.`);
+    } else void rm(STAGE, { recursive: true, force: true }); // what's left of the previous version
     this.timer = setInterval(() => void this.check(), CHECK_EVERY_MS);
     setTimeout(() => void this.check(), 10_000);
   }
@@ -98,6 +111,9 @@ export class Upgrader {
     return this.state.phase === 'building' || this.state.phase === 'restarting';
   }
 
+  /** Set when putting the old build back failed: nothing may clear that message or touch the stage. */
+  private manualRestore = false;
+
   private set(patch: Partial<UpgradeState>) {
     Object.assign(this.state, patch);
     this.emit(this.state);
@@ -105,7 +121,7 @@ export class Upgrader {
 
   /** Looks upstream for new commits on the installed branch. */
   check(): Promise<void> {
-    if (!this.branch || this.busy) return Promise.resolve();
+    if (!this.branch || this.busy || this.manualRestore) return Promise.resolve();
     this.checking ??= this.fetchLatest(this.branch).finally(() => (this.checking = undefined));
     return this.checking;
   }
@@ -150,6 +166,7 @@ export class Upgrader {
   async start(by: string): Promise<string | undefined> {
     if (!this.branch) return "This office can't upgrade itself (it wasn't installed by deploy/aws.sh)";
     if (this.busy) return 'An upgrade is already running';
+    if (this.manualRestore) return this.state.error ?? 'Restore the previous build by hand first';
     await this.check();
     if (this.busy) return 'An upgrade is already running';
     const sha = this.latestSha;
@@ -162,6 +179,7 @@ export class Upgrader {
   private async build(sha: string) {
     const next = path.join(STAGE, 'next');
     const old = path.join(STAGE, 'old');
+    let oldSha: string | undefined;
     try {
       await rm(STAGE, { recursive: true, force: true });
       await mkdir(next, { recursive: true });
@@ -172,6 +190,7 @@ export class Upgrader {
         if (!existsSync(path.join(next, f))) throw new Error(`the build didn't produce ${f}`);
       }
       // Swap it in. The running process already has everything it needs loaded.
+      oldSha = await run('git', ['rev-parse', 'HEAD']);
       await run('git', ['reset', '--quiet', '--hard', sha]);
       await mkdir(old);
       for (const d of ['dist', 'node_modules']) {
@@ -179,6 +198,15 @@ export class Upgrader {
         await rename(path.join(next, d), path.join(APP_DIR, d));
       }
     } catch (err) {
+      // A swap that got partway must be undone before the stage (which holds the old build) goes.
+      const undo = oldSha ? await rollback(oldSha, old).then(() => undefined, (e: Error) => e.message) : undefined;
+      if (undo) {
+        this.manualRestore = true;
+        const error = `The upgrade failed partway through swapping in the new version, and putting the old one back failed too. The old build is in ${old}; restore it by hand.\n\n${(err as Error).message}\n\n${undo}\n\nThen delete ${RESTORE_MARKER}.`;
+        await writeFile(RESTORE_MARKER, error).catch(() => {});
+        this.set({ phase: 'failed', error });
+        return;
+      }
       await rm(STAGE, { recursive: true, force: true }).catch(() => {});
       this.set({ phase: 'failed', error: `The upgrade failed, so the office stays on ${this.state.current?.sha}.\n\n${(err as Error).message}` });
       return;
@@ -186,5 +214,15 @@ export class Upgrader {
     this.set({ phase: 'restarting' });
     // Give every browser a moment to hear about it, then hand over to the new version.
     setTimeout(this.restart, 1500);
+  }
+}
+
+/** Puts the install back the way it was before a failed swap: the old commit, and old/* back in place. */
+async function rollback(sha: string, old: string) {
+  await run('git', ['reset', '--quiet', '--hard', sha]);
+  for (const d of ['dist', 'node_modules']) {
+    if (!existsSync(path.join(old, d))) continue;
+    await rm(path.join(APP_DIR, d), { recursive: true, force: true });
+    await rename(path.join(old, d), path.join(APP_DIR, d));
   }
 }

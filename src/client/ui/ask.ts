@@ -74,7 +74,7 @@ export function openAsk(opts: AskOptions) {
   ) as HTMLFormElement;
   pick(to);
 
-  const modal = openModal(form);
+  const modal = openModal(form, { dirty: () => ta.value.trim() !== (opts.initial ?? '').trim() });
   cancel.addEventListener('click', () => modal.close());
   const send = () => {
     const text = ta.value.trim();

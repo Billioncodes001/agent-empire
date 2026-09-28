@@ -9,6 +9,8 @@ import type { ChangedFile, ChangeStatus, ChangesState } from '../shared/protocol
 // the file list whenever it changes. Diffs of single files are fetched on demand.
 
 const POLL_MS = 2000;
+/** How long a PR opened from the office is shown before the PR board has to confirm it. */
+const OPENED_TTL_MS = 5 * 60_000;
 const MAX_FILES = 400;
 const MAX_DIFF = 200_000;
 /** Untracked files bigger than this aren't read to count their lines. */
@@ -119,8 +121,8 @@ async function signature(file: string): Promise<string> {
 
 export class Changes {
   private watches = new Map<string, Watch>();
-  /** PRs opened from the office, until the GitHub boards catch up. */
-  private opened = new Map<string, { number: number; url: string }>();
+  /** PRs opened from the office, until the GitHub boards catch up (see OPENED_TTL_MS). */
+  private opened = new Map<string, { number: number; url: string; at: number }>();
 
   constructor(
     private dir: string,
@@ -247,7 +249,7 @@ export class Changes {
       const url = r.out.trim().split('\n').pop() ?? '';
       if (r.code !== 0 || !/^https?:\/\//.test(url)) throw new GitError(reason(r, url || 'gh pr create failed'));
       const number = Number(/\/(\d+)$/.exec(url)?.[1] ?? 0);
-      this.opened.set(s.branch, { number, url });
+      this.opened.set(s.branch, { number, url, at: Date.now() });
       this.events.toast(`${who} opened a pull request for ${t.name}: ${url}`, 'info');
       this.events.refreshGitHub();
       return undefined;
@@ -255,6 +257,18 @@ export class Changes {
   }
 
   // ---------------------------------------------------------------------------
+
+  /**
+   * The PR board is the truth (a PR can be merged or closed later); a PR just opened from here only
+   * stands in for it until the board has caught up.
+   */
+  private pullFor(branch: string): { number: number; url: string } | undefined {
+    const live = this.openPull(branch);
+    const mine = this.opened.get(branch);
+    if (live || (mine && Date.now() - mine.at > OPENED_TTL_MS)) this.opened.delete(branch);
+    if (live) return live;
+    return mine && this.opened.has(branch) ? { number: mine.number, url: mine.url } : undefined;
+  }
 
   private drop(workerId: string) {
     const w = this.watches.get(workerId);
@@ -408,7 +422,7 @@ export class Changes {
       );
       const ahead = Number(await gitMaybe(['rev-list', '--count', `${base.commit}..HEAD`], t.cwd)) || 0;
       const subject = ahead ? await gitMaybe(['log', '-1', '--format=%s'], t.cwd) : undefined;
-      const pr = base.branch ? this.opened.get(base.branch) ?? this.openPull(base.branch) : undefined;
+      const pr = base.branch ? this.pullFor(base.branch) : undefined;
       return { workerId, dir: t.rel, branch: base.branch ?? 'HEAD', base: base.label, ahead, subject, files: list, more: all.length - list.length, prBase: base.prBase, pr, at: Date.now() };
     } catch (err) {
       return errorState(workerId, t.rel, err instanceof GitError ? err.message : String((err as Error).message ?? err));

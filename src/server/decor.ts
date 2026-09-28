@@ -1,7 +1,8 @@
 import { randomBytes } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { MAX_DECOR, checkImageUrl, sanitizePlacement, type Decoration } from '../shared/decor.js';
+import { writeJsonAtomic } from './persistence.js';
 
 /** The pictures on the office walls, saved in .agent-office/decor.json. */
 export class Decor {
@@ -63,7 +64,7 @@ export class Decor {
 
   private save() {
     try {
-      writeFileSync(this.file, JSON.stringify(this.items, null, 2), { mode: 0o600 });
+      writeJsonAtomic(this.file, this.items);
     } catch {
       // disk issues shouldn't take the office down
     }

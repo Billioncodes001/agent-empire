@@ -13,6 +13,7 @@ interface Conn {
   screenSender?: RTCRtpSender;
   level: number;
   analyser?: AnalyserNode;
+  analyserSrc?: MediaStreamAudioSourceNode;
 }
 
 type Signal = { description?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit | null };
@@ -27,6 +28,7 @@ export class Voice {
   private screen: MediaStream | null = null;
   private audioCtx: AudioContext | null = null;
   private localAnalyser: AnalyserNode | null = null;
+  private localSrc: MediaStreamAudioSourceNode | null = null;
   private listeners = new Set<() => void>();
   muted = false;
   localLevel = 0;
@@ -82,31 +84,29 @@ export class Voice {
     this.muted = false;
     this.ensureAudioCtx();
     if (this.audioCtx) {
-      const src = this.audioCtx.createMediaStreamSource(this.mic);
+      this.localSrc = this.audioCtx.createMediaStreamSource(this.mic);
       this.localAnalyser = this.audioCtx.createAnalyser();
       this.localAnalyser.fftSize = 1024;
-      src.connect(this.localAnalyser);
+      this.localSrc.connect(this.localAnalyser);
     }
     const track = this.mic.getAudioTracks()[0];
-    for (const c of this.conns.values()) c.micSender = c.pc.addTrack(track, this.mic);
+    // Rejoining reuses the sender from last time, so each round trip doesn't pile up another transceiver.
+    for (const c of this.conns.values()) {
+      if (c.micSender) void c.micSender.replaceTrack(track).catch(() => {});
+      else c.micSender = c.pc.addTrack(track, this.mic);
+    }
     this.changed();
     return null;
   }
 
   leaveVoice() {
     if (!this.mic) return;
-    for (const c of this.conns.values()) {
-      if (c.micSender) {
-        try {
-          c.pc.removeTrack(c.micSender);
-        } catch {
-          // connection closed
-        }
-        c.micSender = undefined;
-      }
-    }
+    // Keep the sender (just silence it) so rejoining can replaceTrack instead of adding a new one.
+    for (const c of this.conns.values()) void c.micSender?.replaceTrack(null).catch(() => {});
     this.mic.getTracks().forEach((t) => t.stop());
     this.mic = null;
+    this.localSrc?.disconnect();
+    this.localSrc = null;
     this.localAnalyser = null;
     this.localLevel = 0;
     this.changed();
@@ -130,23 +130,20 @@ export class Voice {
     const track = this.screen.getVideoTracks()[0];
     track.contentHint = 'detail';
     track.addEventListener('ended', () => this.stopShare());
-    for (const c of this.conns.values()) c.screenSender = c.pc.addTrack(track, this.screen);
+    // Like the mic: reuse last share's sender, so each share doesn't pile up another transceiver.
+    // Viewers pick the new frames up on the same remote track (it unmutes); no renegotiation needed.
+    for (const c of this.conns.values()) {
+      if (c.screenSender) void c.screenSender.replaceTrack(track).catch(() => {});
+      else c.screenSender = c.pc.addTrack(track, this.screen);
+    }
     this.changed();
     return null;
   }
 
   stopShare() {
     if (!this.screen) return;
-    for (const c of this.conns.values()) {
-      if (c.screenSender) {
-        try {
-          c.pc.removeTrack(c.screenSender);
-        } catch {
-          // closed
-        }
-        c.screenSender = undefined;
-      }
-    }
+    // Keep the sender (just send nothing). Viewers stop showing it because our `sharing` flag goes off.
+    for (const c of this.conns.values()) void c.screenSender?.replaceTrack(null).catch(() => {});
     this.screen.getTracks().forEach((t) => t.stop());
     this.screen = null;
     this.changed();
@@ -169,6 +166,8 @@ export class Voice {
   }
 
   async handleSignal(from: string, data: Signal) {
+    // A late signal from someone who already left would open a connection nothing ever closes.
+    if (!this.conns.has(from) && !store.peers.has(from)) return;
     const c = this.conns.get(from) ?? this.connect(from);
     const { pc } = c;
     try {
@@ -242,10 +241,11 @@ export class Voice {
         this.ensureAudioCtx();
         if (this.audioCtx) {
           try {
-            const src = this.audioCtx.createMediaStreamSource(stream);
+            c.analyserSrc?.disconnect();
+            c.analyserSrc = this.audioCtx.createMediaStreamSource(stream);
             c.analyser = this.audioCtx.createAnalyser();
             c.analyser.fftSize = 1024;
-            src.connect(c.analyser);
+            c.analyserSrc.connect(c.analyser);
           } catch {
             // analyser is optional
           }
@@ -253,6 +253,7 @@ export class Voice {
       } else {
         c.screen = stream;
         track.addEventListener('unmute', () => this.listeners.forEach((fn) => fn()));
+        track.addEventListener('mute', () => this.listeners.forEach((fn) => fn()));
         track.addEventListener('ended', () => this.listeners.forEach((fn) => fn()));
       }
       this.listeners.forEach((fn) => fn());
@@ -269,6 +270,8 @@ export class Voice {
     if (!c) return;
     c.pc.close();
     c.audio.srcObject = null;
+    c.analyserSrc?.disconnect();
+    c.analyser?.disconnect();
     this.conns.delete(id);
     this.listeners.forEach((fn) => fn());
   }

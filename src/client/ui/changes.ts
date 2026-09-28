@@ -257,7 +257,8 @@ export function openChanges(net: Net, workerId: string, onTerminal?: () => void)
     }
     renderList();
     renderDiffHead();
-    if (shownSig !== null && shownSig !== f.sig && !loading) requestDiff();
+    // A request lost to a reconnect leaves `loading` stuck, so a newer sig always asks again.
+    if (shownSig !== null && shownSig !== f.sig && (!loading || f.sig !== requestedSig)) requestDiff();
   };
 
   const onMsg = (msg: ServerMsg) => {

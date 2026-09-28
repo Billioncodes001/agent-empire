@@ -44,7 +44,7 @@ export function openPrompt(opts: PromptOptions) {
     h('footer', {}, h('span.grow', {}, 'Enter to send · Shift+Enter for a new line'), cancel, submit),
   ) as HTMLFormElement;
 
-  const modal = openModal(form);
+  const modal = openModal(form, { dirty: () => ta.value.trim() !== (opts.initial ?? '').trim() });
   cancel.addEventListener('click', () => modal.close());
   const send = () => {
     const text = ta.value.trim();

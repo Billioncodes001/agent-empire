@@ -684,7 +684,8 @@ function buildLoft(group: THREE.Group, colliders: Collider[]) {
   const stairs = mesh(new THREE.ExtrudeGeometry(profile, { depth: sw, bevelEnabled: false }), wallMat, fromX, 0, STAIRS.minZ);
   group.add(stairs);
   for (let i = 1; i <= steps; i++) {
-    group.add(mesh(box(run + 0.04, 0.06, sw), woodMat, fromX + (i - 0.5) * run - 0.02, i * rise - 0.03, STAIRS.minZ + sw / 2, false));
+    // A 2 cm lip over the open side, so the tread's face isn't coplanar with the stair body (z-fighting).
+    group.add(mesh(box(run + 0.04, 0.06, sw + 0.02), woodMat, fromX + (i - 0.5) * run - 0.02, i * rise - 0.03, STAIRS.minZ + sw / 2 - 0.01, false));
     colliders.push({ minX: fromX + (i - 1) * run, maxX: fromX + i * run, minZ: STAIRS.minZ, maxZ: STAIRS.maxZ, top: i * rise });
   }
   const railZ = STAIRS.minZ + 0.06;
@@ -780,7 +781,7 @@ function buildLoft(group: THREE.Group, colliders: Collider[]) {
   group.add(inside);
   const outside = textPlane('EXECUTIVE OFFICE', { bg: '#2b2d42', color: '#fffaf3', size: 64, border: '#fffaf3' });
   outside.scale.multiplyScalar(1.4);
-  outside.position.set(cx, roofY + 0.2, minZ - 0.02);
+  outside.position.set(cx, roofY + 0.2, minZ - 0.06); // in front of the fascia and the glass rail
   outside.rotation.y = Math.PI;
   group.add(outside);
 }

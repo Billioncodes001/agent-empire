@@ -22,5 +22,6 @@ button:disabled { opacity: .6; cursor: default; }
 .secret code { font: 800 26px ui-monospace, Menlo, Consolas, monospace; letter-spacing: .04em; word-break: break-all; }
 button.mini { width: auto; margin: 0; padding: 6px 10px; font-size: 13px; box-shadow: 0 2px 0 var(--border); }
 .check { display: flex; gap: 8px; align-items: center; justify-content: center; margin-top: 14px; font-weight: 800; }
-.check input { width: auto; margin: 0; }
+.check input { width: auto; margin: 0; accent-color: var(--accent, #f28c5b); }
+.check input:focus-visible { outline: 3px solid var(--accent, #f28c5b); outline-offset: 2px; }
 a { color: var(--ink); font-weight: 800; }

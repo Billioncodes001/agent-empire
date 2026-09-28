@@ -692,7 +692,12 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
         return;
       }
       if (!msg || typeof msg !== 'object') return;
-      handleMessage(client, msg);
+      // One malformed message must never take the office (and every worker's PTY) down with it.
+      try {
+        handleMessage(client, msg);
+      } catch (err) {
+        console.error(`[ws] bad ${String((msg as { t?: unknown }).t)} message from ${client.peer.name}:`, err);
+      }
     });
     ws.on('close', () => {
       clients.delete(id);
@@ -740,7 +745,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
       case 'profile': {
         const name = str(msg.name, 24).trim();
         if (name) c.peer.name = name;
-        if (COLOR_RE.test(msg.color)) c.peer.color = msg.color;
+        if (typeof msg.color === 'string' && COLOR_RE.test(msg.color)) c.peer.color = msg.color;
         c.peer.look = sanitizeLook(msg.look, c.peer.look);
         broadcast({ t: 'peer.update', peer: c.peer });
         break;
@@ -781,7 +786,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
         const w = workers.get(str(msg.workerId, 32));
         if (!w) break;
         // Removal is announced only after the process has actually stopped.
-        const done = workers.kill(w.id, CLEANUPS.has(String(msg.cleanup)) ? msg.cleanup : undefined);
+        const done = workers.kill(w.id, typeof msg.cleanup === 'string' && CLEANUPS.has(msg.cleanup) ? msg.cleanup : undefined);
         void done.then(({ note, error }) => {
           if (!error) broadcast({ t: 'toast', text: `${who} sent ${w.name} home`, level: 'info' });
           if (note) broadcast({ t: 'toast', text: note, level: 'info' });
