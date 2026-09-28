@@ -1,6 +1,6 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdir, rename, rm } from 'node:fs/promises';
+import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { UpgradeState, VersionInfo } from '../shared/protocol.js';
@@ -21,6 +21,8 @@ function findAppDir(): string | undefined {
 const APP_DIR = findAppDir() ?? process.cwd();
 // The new version is built here, next to the install, so swapping it in is a few renames.
 const STAGE = path.join(APP_DIR, '.upgrade');
+/** Written when putting the old build back failed; its text is the error. Survives restarts. */
+const RESTORE_MARKER = path.join(STAGE, 'NEEDS_RESTORE');
 const CHECK_EVERY_MS = 15 * 60_000;
 const SHOW_CHANGES = 15;
 
@@ -85,9 +87,18 @@ export class Upgrader {
     this.branch = enabled ? branch : undefined;
     this.state = { available: enabled, current, phase: 'idle' };
     if (!enabled) return;
-    // What's left of the previous version, unless a failed rollback left the only copy of the old build there.
-    if (existsSync(path.join(STAGE, 'old'))) console.warn(`[upgrade] ${path.join(STAGE, 'old')} holds a build that was never restored; not removing it.`);
-    else void rm(STAGE, { recursive: true, force: true });
+    if (existsSync(RESTORE_MARKER)) {
+      // A failed rollback left the only copy of the old build in the stage: keep it, and keep saying so.
+      this.manualRestore = true;
+      let error = '';
+      try {
+        error = readFileSync(RESTORE_MARKER, 'utf8');
+      } catch {
+        // the marker itself is what matters
+      }
+      this.state = { ...this.state, phase: 'failed', error: error || `Restore the previous build from ${path.join(STAGE, 'old')} by hand, then delete ${RESTORE_MARKER}.` };
+      console.warn(`[upgrade] ${RESTORE_MARKER} is present; not upgrading until the old build is restored by hand.`);
+    } else void rm(STAGE, { recursive: true, force: true }); // what's left of the previous version
     this.timer = setInterval(() => void this.check(), CHECK_EVERY_MS);
     setTimeout(() => void this.check(), 10_000);
   }
@@ -191,10 +202,9 @@ export class Upgrader {
       const undo = oldSha ? await rollback(oldSha, old).then(() => undefined, (e: Error) => e.message) : undefined;
       if (undo) {
         this.manualRestore = true;
-        this.set({
-          phase: 'failed',
-          error: `The upgrade failed partway through swapping in the new version, and putting the old one back failed too. The old build is in ${old}; restore it by hand before restarting.\n\n${(err as Error).message}\n\n${undo}`,
-        });
+        const error = `The upgrade failed partway through swapping in the new version, and putting the old one back failed too. The old build is in ${old}; restore it by hand.\n\n${(err as Error).message}\n\n${undo}\n\nThen delete ${RESTORE_MARKER}.`;
+        await writeFile(RESTORE_MARKER, error).catch(() => {});
+        this.set({ phase: 'failed', error });
         return;
       }
       await rm(STAGE, { recursive: true, force: true }).catch(() => {});

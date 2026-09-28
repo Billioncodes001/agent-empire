@@ -488,6 +488,9 @@ export class WorkerManager {
         }
       }
       switchTranscript(w.tracker, payload.transcript_path);
+      // Book the old transcript's tail now: the new one may log nothing before the worker is sent home.
+      w.info.usage = trackerUsage(w.tracker);
+      this.ledger.add(bookGrowth(w.tracker, w.info.usage));
       this.persist();
     }
     this.scheduleScan(w);
