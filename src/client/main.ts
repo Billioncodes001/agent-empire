@@ -1,3 +1,5 @@
+// First, so the splash counts every file the scene requests.
+import './ui/loading';
 import { Traversal } from './traversal';
 import { openFounding } from './ui/founding';
 import { buildCity } from './world/city';

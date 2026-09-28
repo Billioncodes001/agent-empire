@@ -146,6 +146,7 @@ export function openHelp(keys: KeyBindings = DEFAULT_KEYS) {
     [keyLabel(keys.chat), 'Chat'],
     [`${keyLabel(keys.voice)} / ${keyLabel(keys.mute)}`, 'Join voice / mute'],
     ['Esc', 'Close any window and get back to looking around'],
+    ['`', 'Game menu: resume, map, management, settings, controls, sign out'],
     ['Ctrl + [', 'Send Esc to a terminal (e.g. to interrupt Claude)'],
     ['⚙️', 'Settings: remap controls, change camera and volume'],
   ];

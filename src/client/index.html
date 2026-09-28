@@ -2,22 +2,72 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Agent Empire</title>
     <link rel="icon" href="/favicon.svg" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="apple-touch-icon" href="/assets/pwa/apple-touch-180-v1.png" />
     <meta name="theme-color" content="#15232a" />
     <link rel="stylesheet" href="./style.css" />
+    <!-- Critical splash styles: painted before the game bundle downloads. -->
+    <style>
+      html, body { background: #0f1b21; }
+      #splash { position: fixed; inset: 0; z-index: 2000; display: grid; place-items: center; overflow: hidden;
+        padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+        background: radial-gradient(120% 90% at 50% 110%, #1d3a44 0, #15232a 45%, #0c161b 100%); color: #e4e8e7;
+        font-family: Inter, 'SF Pro Display', system-ui, sans-serif; transition: opacity .5s ease, visibility .5s; }
+      #splash.done { opacity: 0; visibility: hidden; pointer-events: none; }
+      #splash::before { content: ''; position: absolute; left: 0; right: 0; bottom: 20%; height: 1px; background: linear-gradient(90deg, transparent, #9bd1ba66, transparent); }
+      .splash-inner { position: relative; width: min(420px, 100%); display: flex; flex-direction: column; align-items: center; text-align: center; }
+      .splash-mark { width: clamp(56px, 15vmin, 108px); height: auto; filter: drop-shadow(0 12px 30px #0008); }
+      .splash-mark .lit { animation: splash-lit 2.4s ease-in-out infinite; }
+      .splash-mark .lit:nth-child(2) { animation-delay: .6s } .splash-mark .lit:nth-child(3) { animation-delay: 1.2s } .splash-mark .lit:nth-child(4) { animation-delay: 1.8s }
+      @keyframes splash-lit { 50% { opacity: .3; } }
+      .splash-word { margin: 14px 0 0; font-size: clamp(20px, 4.4vmin, 30px); font-weight: 600; letter-spacing: .32em; text-indent: .32em; }
+      .splash-tag { margin: 6px 0 0; font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: #9fb4b1; }
+      .splash-meter { width: min(320px, 80vw); margin-top: clamp(14px, 5vmin, 30px); }
+      .splash-bar { height: 3px; border-radius: 3px; background: #ffffff18; overflow: hidden; }
+      .splash-bar i { display: block; height: 100%; background: linear-gradient(90deg, #7fbfa5, #c7e8d8); transform: scaleX(.02); transform-origin: left; transition: transform .35s ease; }
+      .splash-stage { margin: 12px 0 0; min-height: 1.4em; font-size: 13px; color: #d5dfdc; }
+      .splash-detail { margin: 2px 0 0; min-height: 1.3em; font-size: 11px; color: #8fa6a2; font-variant-numeric: tabular-nums; }
+      .splash-actions:empty { display: none; }
+      .splash-warn { margin: 10px 0; font-size: 12px; color: #f2c4ad; }
+      .splash-enter { font: inherit; font-size: 13px; padding: 10px 18px; min-height: 44px; border-radius: 6px; border: 1px solid #c7d9bd; background: #c7d9bd; color: #1c3025; cursor: pointer; }
+      .splash-enter:focus-visible { outline: 2px solid #c3e7d7; outline-offset: 3px; }
+      .splash-rotate { display: none; margin: 14px 0 0; font-size: 12px; color: #9fb4b1; }
+      @media (pointer: coarse) and (orientation: portrait) and (max-width: 560px) { .splash-rotate { display: block; } }
+      @media (prefers-reduced-motion: reduce) { #splash, .splash-bar i { transition: none; } .splash-mark .lit { animation: none; } }
+    </style>
   </head>
   <body>
+    <div id="splash" aria-busy="true">
+      <div class="splash-inner">
+        <svg class="splash-mark" viewBox="120 70 272 300" aria-hidden="true">
+          <rect x="250" y="78" width="12" height="40" rx="3" fill="#c7d6db"/>
+          <rect x="140" y="226" width="62" height="142" rx="5" fill="#7f999e"/>
+          <rect x="310" y="258" width="62" height="110" rx="5" fill="#7f999e"/>
+          <rect x="194" y="112" width="124" height="256" rx="7" fill="#c7d6db"/>
+          <g fill="#15232a"><rect x="212" y="136" width="24" height="16" rx="2"/><rect x="244" y="136" width="24" height="16" rx="2"/><rect x="276" y="136" width="24" height="16" rx="2"/><rect x="212" y="168" width="24" height="16" rx="2"/><rect x="276" y="168" width="24" height="16" rx="2"/><rect x="212" y="200" width="24" height="16" rx="2"/><rect x="244" y="200" width="24" height="16" rx="2"/><rect x="244" y="232" width="24" height="16" rx="2"/><rect x="276" y="232" width="24" height="16" rx="2"/><rect x="212" y="264" width="24" height="16" rx="2"/><rect x="276" y="264" width="24" height="16" rx="2"/><rect x="238" y="316" width="36" height="52" rx="3"/></g>
+          <g fill="#9bd1ba"><rect class="lit" x="244" y="168" width="24" height="16" rx="2"/><rect class="lit" x="276" y="200" width="24" height="16" rx="2"/><rect class="lit" x="212" y="232" width="24" height="16" rx="2"/><rect class="lit" x="244" y="264" width="24" height="16" rx="2"/></g>
+        </svg>
+        <h1 class="splash-word">AGENT EMPIRE</h1>
+        <p class="splash-tag">Your AI company in a living city</p>
+        <div class="splash-meter" role="progressbar" aria-label="Loading Agent Empire" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div class="splash-bar"><i></i></div>
+        </div>
+        <p class="splash-stage" aria-live="polite">Loading the game engine</p>
+        <p class="splash-detail"></p>
+        <div class="splash-actions"></div>
+        <p class="splash-rotate">Rotate your phone to landscape to play.</p>
+      </div>
+    </div>
     <div id="app">
       <canvas id="scene" tabindex="-1"></canvas>
       <div id="hud">
         <header class="topbar">
           <div class="topbar-left">
             <div class="project panel">
-              <div class="project-name" id="project-name">Agent Office</div>
+              <div class="project-name" id="project-name">Agent Empire</div>
               <div class="project-meta" id="project-meta"></div>
             </div>
             <section id="status-strip" class="status-strip panel" aria-label="Operations status"></section>
