@@ -16,10 +16,11 @@ export interface Evidence {
 
 export const STALE_MS = 15_000;
 
-export function evidence(supervision: SupervisionState | undefined, connected: boolean, receivedAt: number, now: number): Evidence {
+/** `everConnected`: whether this client has had a socket up yet; before that it is still joining. */
+export function evidence(supervision: SupervisionState | undefined, connected: boolean, receivedAt: number, now: number, everConnected = true): Evidence {
   const age = receivedAt > 0 ? Math.max(0, now - receivedAt) : Infinity;
-  // Nothing received yet means we're still joining (e.g. behind the founder picker), not that we lost the server.
-  if (!connected) return { fresh: false, reason: receivedAt > 0 ? 'disconnected' : 'connecting', age };
+  // Never connected means we're still joining (e.g. behind the founder picker), not that we lost the server.
+  if (!connected) return { fresh: false, reason: everConnected ? 'disconnected' : 'connecting', age };
   if (!supervision || supervision.schemaVersion !== 1 || receivedAt <= 0) return { fresh: false, reason: 'missing', age };
   if (age > STALE_MS) return { fresh: false, reason: 'stale', age };
   return { fresh: true, age };

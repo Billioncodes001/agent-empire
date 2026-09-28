@@ -106,6 +106,12 @@ export interface UsageTracker {
   at?: number;
   /** Everything earlier sessions of this worker (before a /clear or a fresh start) added up to. */
   prior?: Usage;
+  /**
+   * The most this worker has already been booked to the ledger, per component. Claude Code's own
+   * tally can come in under our running estimate; measuring growth from this high-water mark (not
+   * from the last, possibly lower, figure) means that dip is neither handed back nor booked twice.
+   */
+  booked?: Usage;
 }
 
 export const newTracker = (): UsageTracker => ({ files: {}, since: zeroUsage() });
@@ -137,6 +143,21 @@ export function switchTranscript(t: UsageTracker, transcript: string) {
   t.at = undefined;
 }
 
+/** What to add to the ledger for this worker now, moving its high-water mark up to `now`. */
+export function bookGrowth(t: UsageTracker, now: Usage): Usage {
+  const booked = t.booked ?? zeroUsage();
+  const grow = clampUsage(addUsage(now, booked, -1));
+  t.booked = {
+    input: Math.max(booked.input, now.input),
+    output: Math.max(booked.output, now.output),
+    cacheWrite: Math.max(booked.cacheWrite, now.cacheWrite),
+    cacheRead: Math.max(booked.cacheRead, now.cacheRead),
+    cost: Math.max(booked.cost, now.cost),
+    calls: Math.max(booked.calls, now.calls),
+  };
+  return grow;
+}
+
 const asUsage = (v: any): Usage | undefined =>
   v && typeof v === 'object' ? { input: num(v.input), output: num(v.output), cacheWrite: num(v.cacheWrite), cacheRead: num(v.cacheRead), cost: num(v.cost), calls: num(v.calls) } : undefined;
 
@@ -156,6 +177,8 @@ export function restoreTracker(saved: any): UsageTracker {
   t.since = asUsage(saved.since) ?? zeroUsage();
   if (num(saved.at)) t.at = saved.at;
   t.prior = asUsage(saved.prior);
+  // Saves from before `booked` existed: whatever the tracker adds up to was already booked then.
+  t.booked = asUsage(saved.booked) ?? (t.transcript ? trackerUsage(t) : undefined);
   return t;
 }
 

@@ -88,7 +88,8 @@ public final class MainActivity extends Activity {
             }
             @Override public void onPageStarted(WebView view, String url, android.graphics.Bitmap icon) {
                 if (!HostPolicy.allows(origin, url)) { pageFailed = true; view.stopLoading(); status.setText("Navigation outside your selected host was blocked."); }
-                else if (!pageFailed) status.setText(origin + " · connecting…");
+                // A new load on the host (Back, a link, Reload) starts clean; a failure hides the view again.
+                else { pageFailed = false; view.setVisibility(View.VISIBLE); status.setText(origin + " · connecting…"); }
             }
             @Override public void onPageFinished(WebView view, String url) { if (!pageFailed && HostPolicy.allows(origin, url)) status.setText(origin); }
             @Override public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) { handler.cancel(); fail(view, "Certificate validation failed. Fix the host certificate; no exception is allowed."); }

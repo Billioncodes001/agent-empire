@@ -141,7 +141,7 @@ class Store {
   }
 
   evidence(now = performance.now()) {
-    return evidence(this.empire.supervision, this.connected, this.empireReceivedAt, now);
+    return evidence(this.empire.supervision, this.connected, this.empireReceivedAt, now, this.connectedAt > 0);
   }
 
   setOnline(online: boolean) {

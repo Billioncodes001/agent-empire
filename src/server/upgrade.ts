@@ -85,7 +85,9 @@ export class Upgrader {
     this.branch = enabled ? branch : undefined;
     this.state = { available: enabled, current, phase: 'idle' };
     if (!enabled) return;
-    void rm(STAGE, { recursive: true, force: true }); // what's left of the previous version
+    // What's left of the previous version, unless a failed rollback left the only copy of the old build there.
+    if (existsSync(path.join(STAGE, 'old'))) console.warn(`[upgrade] ${path.join(STAGE, 'old')} holds a build that was never restored; not removing it.`);
+    else void rm(STAGE, { recursive: true, force: true });
     this.timer = setInterval(() => void this.check(), CHECK_EVERY_MS);
     setTimeout(() => void this.check(), 10_000);
   }
@@ -98,6 +100,9 @@ export class Upgrader {
     return this.state.phase === 'building' || this.state.phase === 'restarting';
   }
 
+  /** Set when putting the old build back failed: nothing may clear that message or touch the stage. */
+  private manualRestore = false;
+
   private set(patch: Partial<UpgradeState>) {
     Object.assign(this.state, patch);
     this.emit(this.state);
@@ -105,7 +110,7 @@ export class Upgrader {
 
   /** Looks upstream for new commits on the installed branch. */
   check(): Promise<void> {
-    if (!this.branch || this.busy) return Promise.resolve();
+    if (!this.branch || this.busy || this.manualRestore) return Promise.resolve();
     this.checking ??= this.fetchLatest(this.branch).finally(() => (this.checking = undefined));
     return this.checking;
   }
@@ -150,6 +155,7 @@ export class Upgrader {
   async start(by: string): Promise<string | undefined> {
     if (!this.branch) return "This office can't upgrade itself (it wasn't installed by deploy/aws.sh)";
     if (this.busy) return 'An upgrade is already running';
+    if (this.manualRestore) return this.state.error ?? 'Restore the previous build by hand first';
     await this.check();
     if (this.busy) return 'An upgrade is already running';
     const sha = this.latestSha;
@@ -184,6 +190,7 @@ export class Upgrader {
       // A swap that got partway must be undone before the stage (which holds the old build) goes.
       const undo = oldSha ? await rollback(oldSha, old).then(() => undefined, (e: Error) => e.message) : undefined;
       if (undo) {
+        this.manualRestore = true;
         this.set({
           phase: 'failed',
           error: `The upgrade failed partway through swapping in the new version, and putting the old one back failed too. The old build is in ${old}; restore it by hand before restarting.\n\n${(err as Error).message}\n\n${undo}`,
