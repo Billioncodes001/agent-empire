@@ -644,9 +644,6 @@ a.when:hover { text-decoration: underline; }
 .key-row .btn {min-width:70px;justify-content:center;font-size:12px}
 @media(max-width:900px) {.empire-sites{grid-template-columns:1fr 1fr}.chat{display:none}.empire-metrics{grid-template-columns:1fr 1fr}.topbar .controls{max-width:70vw}}
 @media(max-width:600px) {.empire-sites{grid-template-columns:1fr}.key-bindings{grid-template-columns:1fr}.side{display:none}}
-.empire-touch {display:none;position:absolute;right:15px;bottom:20px;gap:7px;touch-action:none}
-.empire-touch .btn {width:40px;height:44px;justify-content:center;font-size:17px;user-select:none}
-@media(pointer:coarse) {.empire-touch {display:flex}}
 
 /* Cinematic district HUD: keep the city in view, put depth behind legible controls. */
 #hud .topbar {top:18px;left:20px;right:20px;gap:16px}
@@ -917,3 +914,100 @@ a.when:hover { text-decoration: underline; }
   .exec-modal footer .btn { flex: 1 1 auto; justify-content: center; }
   .exec-review { grid-template-columns: 1fr; }
 }
+
+/* ---------- Game shell: menu, touch controls and the phone HUD (MOBILE-01..03) ---------- */
+#scene { touch-action: none; }
+/* The browser's tap highlight is painted above everything (even an open modal) at the tapped control's
+   position, e.g. over the menu's close button after tapping Menu. Controls give their own :active feedback. */
+html { -webkit-tap-highlight-color: transparent; }
+/* Full-screen landscape: keep every window clear of a notch / Dynamic Island on either side. */
+.backdrop { padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); }
+.backdrop > .modal { max-height: calc(var(--vh) - max(16px, env(safe-area-inset-top)) - max(16px, env(safe-area-inset-bottom))); }
+.menu-glyph { position: relative; display: inline-block; width: 14px; height: 10px; border-top: 2px solid currentColor; border-bottom: 2px solid currentColor; }
+.controls #btn-menu span { display: inline-block; }
+.menu-glyph::after { content: ''; position: absolute; left: 0; right: 0; top: 2px; border-top: 2px solid currentColor; }
+
+.modal.game-menu, .modal.game-help { width: min(640px, 96vw); background: #15232a; color: var(--hud-text); border: 1px solid #ffffff26; border-radius: 14px; }
+.game-menu header, .game-help header, .game-help footer { background: transparent; color: inherit; border-color: var(--hud-line); }
+.game-menu header { padding: 12px 18px; }
+.menu-title { flex: 1; min-width: 0; }
+.menu-title small { font-size: 10px; letter-spacing: .2em; color: #8fa39c; }
+.game-menu header h2, .game-help header h2 { font-size: 20px; font-weight: 500; margin-top: 2px; }
+.game-menu .btn, .game-help .btn { background: #ffffff0d; color: #dce6df; border: 1px solid #ffffff26; box-shadow: none; border-radius: 6px; }
+.game-help .key { background: #ffffff14; color: var(--hud-text); box-shadow: none; white-space: nowrap; }
+.game-help .help-grid { font-weight: 500; font-size: 13px; }
+.menu-body { padding: 14px 18px 18px; }
+.menu-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 8px; }
+.menu-item { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 2px; min-height: 52px; padding: 9px 14px; text-align: left; font: inherit; color: var(--hud-text); background: #ffffff08; border: 1px solid var(--hud-line); border-radius: 8px; cursor: pointer; min-width: 0; }
+.menu-item strong { font-size: 14px; font-weight: 600; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.menu-item small { font-size: 11px; color: var(--hud-muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.menu-item small:empty { display: none; }
+.menu-item:hover { background: #ffffff14; }
+.menu-item:focus-visible { outline: 2px solid #c3e7d7; outline-offset: 2px; }
+.menu-item.primary { background: #c7d9bd; color: #1c3025; border-color: #c7d9bd; }
+.menu-item.primary small { color: #3d5a47; }
+.menu-item.danger { border-color: #f2a48866; color: #f6d3c3; }
+.menu-tools h3 { margin: 16px 0 8px; font-size: 11px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: #a9b8b6; }
+.menu-tool-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; }
+.menu-item.tool { min-height: 44px; }
+.menu-foot { display: flex; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--hud-line); }
+
+/* Touch controls exist only in touch mode (html.ae-touch) and step aside for windows and typing. */
+.touch-ui, .rotate-hint { display: none; }
+#hud > .touch-ui { position: absolute; inset: 0; pointer-events: none; z-index: 3; }
+html.ae-touch #hud > .touch-ui { display: block; }
+html.ae-touch.ae-modal #hud > .touch-ui, html.ae-touch.ae-typing #hud > .touch-ui { display: none; }
+.touch-stick-zone { position: absolute; left: 0; bottom: 0; width: 42%; top: calc(60px + env(safe-area-inset-top)); pointer-events: auto; touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.touch-stick-base { position: absolute; left: calc(22px + env(safe-area-inset-left)); bottom: calc(18px + env(safe-area-inset-bottom)); width: 116px; height: 116px; border-radius: 50%; border: 1.5px solid #e4e8e75c; background: radial-gradient(circle, #0d181d55 0 58%, #ffffff0c 59%); box-shadow: 0 6px 24px #0005; opacity: .72; transition: opacity .15s, border-color .15s, box-shadow .15s; }
+.touch-stick-base.active { opacity: 1; }
+.touch-stick-base.run { border-color: #9bd1ba; box-shadow: 0 0 0 4px #9bd1ba33, 0 6px 24px #0005; }
+.touch-stick-knob { position: absolute; left: 50%; top: 50%; width: 50px; height: 50px; margin: -25px 0 0 -25px; border-radius: 50%; background: radial-gradient(circle at 40% 35%, #f4f7f4, #aebdbb); box-shadow: 0 4px 12px #0008; }
+.touch-actions { position: absolute; right: calc(16px + env(safe-area-inset-right)); bottom: calc(14px + env(safe-area-inset-bottom)); width: 148px; height: 132px; pointer-events: none; }
+.touch-btn { position: absolute; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0; border-radius: 50%; border: 1.5px solid #ffffff3a; background: rgba(19, 29, 34, .72); color: #eef3f1; font: inherit; box-shadow: 0 6px 20px #0006; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); pointer-events: auto; touch-action: none; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; cursor: pointer; transition: transform .08s, background .08s; }
+.touch-icon { font-size: 20px; line-height: 1; }
+.touch-label { margin-top: 3px; font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: #bccac7; }
+.touch-jump { right: 0; bottom: 0; width: 74px; height: 74px; background: rgba(26, 58, 52, .8); border-color: #9bd1bab0; }
+.touch-jump .touch-icon { font-size: 26px; }
+.touch-use { right: 88px; bottom: 6px; width: 58px; height: 58px; }
+.touch-use .touch-icon { font-size: 18px; font-weight: 700; }
+.touch-view { right: 14px; bottom: 86px; width: 46px; height: 46px; }
+.touch-view .touch-label { display: none; }
+.touch-btn:active, .touch-btn.down { transform: scale(.93); background: rgba(155, 209, 186, .38); }
+.touch-btn:focus-visible { outline: 2px solid #c3e7d7; outline-offset: 3px; }
+
+.rotate-hint { position: fixed; inset: 0; z-index: 1500; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 24px; text-align: center; background: #0f1b21; color: #e4e8e7; font-size: 14px; }
+.rotate-hint strong { font-size: 18px; font-weight: 600; }
+.rotate-hint span { color: #a9b8b6; }
+.rotate-icon { width: 44px; height: 72px; margin-bottom: 14px; border: 3px solid #c7d6db; border-radius: 9px; animation: rotate-phone 2.6s ease-in-out infinite; }
+@keyframes rotate-phone { 0%, 25% { transform: rotate(0); } 55%, 100% { transform: rotate(-90deg); } }
+@media (orientation: portrait) and (max-width: 560px) { html.ae-touch .rotate-hint { display: flex; } }
+
+/* Phone/tablet HUD: one-row top bar, small minimap top right, controls in the bottom corners. */
+html.ae-touch #hud .topbar { top: calc(8px + env(safe-area-inset-top)); left: calc(10px + env(safe-area-inset-left)); right: calc(10px + env(safe-area-inset-right)); gap: 8px; align-items: center; }
+html.ae-touch .topbar-left { flex: 1 1 auto; flex-direction: row; align-items: center; gap: 8px; min-width: 0; max-width: none; }
+html.ae-touch #hud .project { flex: 0 1 auto; display: flex; flex-direction: column; justify-content: center; height: 42px; min-width: 64px; max-width: 190px; padding: 0 12px; }
+html.ae-touch #hud .project-name { font-size: 13px; }
+html.ae-touch #hud .project-meta, html.ae-touch .status-monitor, html.ae-touch .status-strip .status-key { display: none; }
+html.ae-touch #hud .status-strip { flex: 0 1 auto; flex-direction: row; align-items: center; gap: 2px; height: 42px; min-width: 0; max-width: 400px; padding: 0 3px; }
+html.ae-touch .status-row { align-items: center; width: auto; min-width: 0; height: 36px; padding: 0 8px; }
+html.ae-touch .status-chief { flex: 0 1 auto; max-width: 160px; }
+html.ae-touch .status-workforce { flex: 0 1 auto; }
+html.ae-touch #hud .topbar .controls { flex: none; flex-wrap: nowrap; max-width: none; gap: 4px; padding: 3px; }
+html.ae-touch #hud .topbar .controls > .btn { display: none; }
+html.ae-touch #hud .topbar .controls > #btn-management, html.ae-touch #hud .topbar .controls > #btn-menu { display: inline-flex; flex-shrink: 0; min-height: 36px; padding: 0 12px; font-size: 12px; }
+html.ae-touch #hud .side, html.ae-touch #hud .chat { display: none; }
+html.ae-touch.ae-chat-open #hud .chat { display: flex; left: calc(10px + env(safe-area-inset-left)); right: auto; top: calc(58px + env(safe-area-inset-top)); bottom: auto; width: min(360px, 48vw); opacity: 1; z-index: 6; }
+html.ae-touch.ae-chat-open #chat-log { max-height: 28vh; }
+html.ae-touch .radar { left: auto; right: calc(12px + env(safe-area-inset-right)); top: calc(58px + env(safe-area-inset-top)); bottom: auto; width: 110px; text-align: center; z-index: 4; }
+html.ae-touch .radar-open { width: 96px; height: 96px; margin: 0 auto; border-width: 2px; box-shadow: 0 0 0 3px #111b2299; }
+html.ae-touch .radar-place { margin-top: 5px; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 1px 3px #000; }
+html.ae-touch .radar-stats, html.ae-touch .crosshair .look-hint { display: none !important; }
+html.ae-touch .hint { bottom: calc(14px + env(safe-area-inset-bottom)); max-width: calc(100vw - 370px - env(safe-area-inset-left) - env(safe-area-inset-right)); gap: 6px 10px; padding: 7px 12px; font-size: 12px; }
+html.ae-touch .traversal-hint { top: calc(58px + env(safe-area-inset-top)); bottom: auto; left: 50%; right: auto; transform: translateX(-50%); max-width: calc(100vw - 300px); font-size: 11px; }
+html.ae-touch #toasts { top: calc(58px + env(safe-area-inset-top)); }
+html.ae-touch #hud #conn { top: calc(58px + env(safe-area-inset-top)); bottom: auto; }
+html.ae-touch #hud #shares { top: calc(58px + env(safe-area-inset-top)); bottom: auto; left: calc(12px + env(safe-area-inset-left)); }
+html.ae-touch .share-thumb { width: 150px; }
+html.ae-touch .lift-status { top: calc(96px + env(safe-area-inset-top)); }
+@media (max-width: 700px) { html.ae-touch #hud .project { max-width: 150px; } html.ae-touch .status-chief { max-width: 120px; } }
+@media (prefers-reduced-motion: reduce) { .rotate-icon { animation: none; transform: rotate(-90deg); } .touch-btn, .touch-stick-base { transition: none; } }

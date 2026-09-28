@@ -47,7 +47,7 @@ export class PlayerController {
    */
   onClick: ((ndc: THREE.Vector2) => void) | null = null;
   private keys = new Set<string>();
-  private drag: { x: number; y: number; moved: number } | null = null;
+  private drag: { x: number; y: number; moved: number; id?: number } | null = null;
   /** Set when this browser won't lock the pointer; first person falls back to drag-to-look. */
   private lockFailed = false;
   private lockPending = false;
@@ -90,10 +90,12 @@ export class PlayerController {
         this.lock();
       }
       // Drag to orbit (third person) or to look around (first person without pointer lock).
-      this.drag = { x: e.clientX, y: e.clientY, moved: 0 };
+      // Track one pointer: a second finger (e.g. on the touch joystick) must not steer the camera.
+      this.drag = { x: e.clientX, y: e.clientY, moved: 0, id: e.pointerId };
     });
     window.addEventListener('pointerup', (e) => {
       const d = this.drag;
+      if (d && d.id !== e.pointerId) return;
       this.drag = null;
       // A click that captured the mouse is not also a click on the world.
       if (!d || d.moved > 5 || !this.enabled || this.locked || this.lockPending || e.target !== dom) return;
@@ -111,7 +113,7 @@ export class PlayerController {
         this.look(clamp(e.movementX) * LOOK_SPEED, clamp(e.movementY) * LOOK_SPEED);
         return;
       }
-      if (!this.drag) return;
+      if (!this.drag || this.drag.id !== e.pointerId) return;
       const dx = e.clientX - this.drag.x;
       const dy = e.clientY - this.drag.y;
       this.drag.x = e.clientX;
