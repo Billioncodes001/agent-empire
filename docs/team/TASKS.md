@@ -26,3 +26,9 @@ Known protected runtime: localhost:4610, Pixel and its save. Development should 
 | CONSULT-03 | Founder desk | 3D redesign implemented and reviewed | Architectural Three.js hero, Figma desktop/mobile and interaction prototype, responsive brief/review/approval flows. [Design acceptance](reports/founder-3d-design.md). Founder phone, resource requests and credential wizard remain pending |
 | CONSULT-04 | Model chief, scaling, dependencies and cloud jobs | Backlog | Current chief is deterministic and uses one host repository; automatic expansion and provider job unification are not implemented |
 | CONSULT-05 | Employee routines and reviewed organizational memory | Backlog | Coffee/breaks/meetings/gym linked to scheduling, persistent roles and scoped lessons remain planned |
+
+## Maintenance
+
+| ID | Slice | State | Evidence / next dependency |
+| --- | --- | --- | --- |
+| MAINT-01 | Codebase audit fixes (server crash guard, safe saves, ledger, client leaks/a11y, share/voice, Android error page) | Reviewed and accepted; merged by PR #2 | [Report](reports/audit-fixes.md). Candidate 547e42c accepted with fixes; fixes 464e8d4 and 030e5c7 accepted. 201/201 tests, desktop + 375px browser check, macOS/Windows/Android packaging evidence. Windows runtime, Android authenticated login and iOS build remain unverified |
