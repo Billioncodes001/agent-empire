@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { Config } from './config.js';
 import { Auth } from './auth.js';
+import { DeviceStore, type DeviceInfo } from './devices.js';
 import { WorkerManager, type WorkerRuntime } from './workers.js';
 import { GitHub } from './github.js';
 import { Team } from './team.js';
@@ -51,6 +52,8 @@ const CLEANUPS = new Set(['keep', 'worktree', 'all']);
 interface Client {
   id: string;
   ws: WebSocket;
+  /** Set when the connection signed in with a device token, so revoking the device closes it. */
+  deviceId?: string;
   peer: PeerInfo;
   attached: Set<string>;
   /** Terminals whose output was skipped because this client fell behind; re-snapshotted later. */
@@ -128,6 +131,29 @@ function send(res: http.ServerResponse, status: number, body: unknown, headers: 
   res.end(json);
 }
 
+/** The bundled game apps' page origins (iOS WKURLSchemeHandler, Android WebViewAssetLoader). They get CORS, never cookies. */
+export const APP_ORIGINS: ReadonlySet<string> = new Set(['empire-app://game', 'https://appassets.androidplatform.net']);
+/** The one WebSocket subprotocol the server speaks; the bearer token rides alongside as `bearer.<token>`. */
+export const WS_PROTOCOL = 'empire.v1';
+const WS_BEARER_PREFIX = 'bearer.';
+
+const hasBearer = (req: http.IncomingMessage) => /^Bearer(\s|$)/i.test(req.headers.authorization ?? '');
+
+/** A device token from `Authorization: Bearer …` (never from the query string or a cookie). */
+function bearerFrom(req: http.IncomingMessage): string | undefined {
+  const m = /^Bearer\s+(\S+)\s*$/i.exec(req.headers.authorization ?? '');
+  return m?.[1];
+}
+
+/** Offered WebSocket subprotocols; the bearer token (if any) is taken from a `bearer.<token>` entry. */
+function wsProtocols(req: http.IncomingMessage): { offered: string[]; token?: string } {
+  const header = req.headers['sec-websocket-protocol'];
+  const offered = (Array.isArray(header) ? header.join(',') : header ?? '').split(',').map((v) => v.trim()).filter(Boolean);
+  const bearer = offered.filter((v) => v.startsWith(WS_BEARER_PREFIX));
+  // Exactly one token, or none; several is ambiguous and refused by the caller.
+  return { offered, token: bearer.length === 1 ? bearer[0].slice(WS_BEARER_PREFIX.length) : bearer.length ? '' : undefined };
+}
+
 const str = (v: unknown, max: number) => (typeof v === 'string' ? v.slice(0, max) : '');
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
 const COLOR_RE = /^#[0-9a-fA-F]{6}$/;
@@ -157,6 +183,8 @@ export async function startServer(cfg: Config, runtime: ServerRuntime = {}) {
 async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost: () => void, startupCleanup: (() => void)[]) {
   const publicDir = runtime.publicDir ?? findPublicDir();
   const auth = new Auth(cfg.verifier, cfg.salt, cfg.secret);
+  const devices = new DeviceStore(cfg.dataDir, cfg.secret, cfg.verifier);
+  startupCleanup.push(() => devices.flush());
   const clients = new Map<string, Client>();
   const chat: ChatLine[] = [];
   const project = projectInfo(cfg);
@@ -395,6 +423,38 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     return send(res, 200, { ok: true }, { 'set-cookie': auth.cookie(req, auth.issue(), isSecure(req, cfg)) });
   };
 
+  /** Same password check and the same per-client attempt budget as the cookie login. */
+  const deviceLogin = async (req: http.IncomingMessage, res: http.ServerResponse) => {
+    const ip = clientIp(req, cfg.trustProxy);
+    if (!auth.allowAttempt(ip)) return send(res, 429, { error: 'Too many attempts. Try again in a few minutes.' });
+    let pw = '';
+    let deviceName: unknown;
+    try {
+      const body = JSON.parse(await readBody(req, 4096));
+      pw = str(body?.password, 512);
+      deviceName = body?.deviceName;
+    } catch {
+      return send(res, 400, { error: 'Bad request' });
+    }
+    if (!(await auth.checkPassword(pw))) return send(res, 401, { error: 'Wrong password' });
+    auth.recordSuccess(ip);
+    const issued = devices.issue(deviceName);
+    if (!issued) return send(res, 409, { error: 'Too many signed-in devices. Remove one in Settings first.' });
+    return send(res, 200, issued);
+  };
+
+  /**
+   * How a request is signed in: a device token (when a Bearer Authorization header is sent, only that
+   * counts) or the session cookie. Other schemes (a proxy's Basic auth, say) leave cookie auth as it was.
+   */
+  const authenticate = (req: http.IncomingMessage): { via: 'bearer'; device: DeviceInfo } | { via: 'cookie' } | undefined => {
+    if (hasBearer(req)) {
+      const device = devices.verify(bearerFrom(req));
+      return device ? { via: 'bearer', device } : undefined;
+    }
+    return auth.fromRequest(req) ? { via: 'cookie' } : undefined;
+  };
+
   const handler = async (req: http.IncomingMessage, res: http.ServerResponse) => {
     try {
       // A service tunnel (localhost:5173 -> the office): relay to that worker's server.
@@ -412,7 +472,29 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
       } catch {
         return send(res, 400, { error: 'Bad request' });
       }
+      // CORS, only for the bundled apps' own origins and never with credentials (no cookies cross-origin).
+      // Preflights, sign-in and health are answered for them; anything else only when a bearer token is sent.
+      const appOrigin = typeof req.headers.origin === 'string' && APP_ORIGINS.has(req.headers.origin) ? req.headers.origin : undefined;
+      if (appOrigin) {
+        if (req.method === 'OPTIONS') {
+          res.writeHead(204, {
+            'access-control-allow-origin': appOrigin,
+            'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS',
+            'access-control-allow-headers': 'Authorization, Content-Type',
+            'access-control-max-age': '600',
+            vary: 'Origin',
+            'cache-control': 'no-store',
+          });
+          res.end();
+          return;
+        }
+        if (hasBearer(req) || p === '/api/device/login' || p === '/api/health') {
+          res.setHeader('access-control-allow-origin', appOrigin);
+          res.setHeader('vary', 'Origin');
+        }
+      }
       if (p === '/api/login' && req.method === 'POST') return await login(req, res);
+      if (p === '/api/device/login' && req.method === 'POST') return await deviceLogin(req, res);
       // One-time reveal of the generated password. After this the plaintext is gone for good.
       const claimable = !!cfg.claimToken && !cfg.claimed && !!cfg.password;
       if (p === '/api/claim' && req.method === 'GET') return send(res, 200, { claimable });
@@ -454,14 +536,29 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
       if (p === '/claim' || p === '/claim.html') return serveFile(res, path.join(publicDir, 'claim.html'), false);
       if (p === '/favicon.svg') return serveFile(res, path.join(publicDir, 'favicon.svg'), false);
 
-      if (!auth.fromRequest(req)) {
-        if (p.startsWith('/api/')) return send(res, 401, { error: 'Not logged in' });
+      const signedIn = authenticate(req);
+      if (!signedIn) {
+        if (p.startsWith('/api/') || hasBearer(req)) return send(res, 401, { error: 'Not logged in' });
         res.writeHead(302, { location: '/login' }).end();
         return;
       }
-      if (p === '/api/whoami') return send(res, 200, { ok: true });
+      // A bearer token is never sent by a browser on its own, so a bearer request can't be a forgery;
+      // cookie requests keep the same-origin Origin check exactly as before.
+      const trusted = () => signedIn.via === 'bearer' || sameOrigin(req, cfg);
+      if (p === '/api/whoami') return send(res, 200, signedIn.via === 'bearer' ? { ok: true, deviceId: signedIn.device.id } : { ok: true });
+      if (p === '/api/devices' && req.method === 'GET') {
+        const current = signedIn.via === 'bearer' ? signedIn.device.id : undefined;
+        return send(res, 200, { devices: devices.list().map((d) => ({ ...d, current: d.id === current })) });
+      }
+      const deviceRoute = /^\/api\/devices\/([A-Za-z0-9_-]{1,32})$/.exec(p);
+      if (deviceRoute && req.method === 'DELETE') {
+        if (!trusted()) return send(res, 403, { error: 'A same-origin Origin header is required' });
+        if (!devices.revoke(deviceRoute[1])) return send(res, 404, { error: 'No such device' });
+        for (const c of clients.values()) if (c.deviceId === deviceRoute[1]) c.ws.close(4401, 'Device signed out');
+        return send(res, 200, { ok: true });
+      }
       if (p.startsWith('/api/consultancy/')) {
-        if (req.method !== 'GET' && !sameOrigin(req, cfg)) return send(res, 403, { error: 'A same-origin Origin header is required' });
+        if (req.method !== 'GET' && !trusted()) return send(res, 403, { error: 'A same-origin Origin header is required' });
         try {
           office.reconcile();
           if (p === '/api/consultancy/jobs' && req.method === 'GET') return send(res, 200, office.snapshot());
@@ -485,7 +582,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
         }
       }
       if (p.startsWith('/api/execution/')) {
-        if (req.method !== 'GET' && !sameOrigin(req, cfg)) return send(res, 403, {error:'A same-origin Origin header is required'});
+        if (req.method !== 'GET' && !trusted()) return send(res, 403, {error:'A same-origin Origin header is required'});
         try {
           const body = async () => { try { return JSON.parse(await readBody(req, 32768)); } catch { throw new ExecutionError(400, 'invalid_json', 'Expected a JSON request.'); } };
           if (p === '/api/execution/setup' && req.method === 'GET') return send(res, 200, execution.setup());
@@ -517,7 +614,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
       }
       if (p === '/api/sync/artifacts' && req.method === 'GET') return send(res, 200, { serverId: continuity.serverId, artifacts: await artifacts.list() });
       if (p === '/api/sync/artifacts' && req.method === 'POST') {
-        if (!sameOrigin(req, cfg)) return send(res, 403, { error: 'A same-origin Origin header is required' });
+        if (!trusted()) return send(res, 403, { error: 'A same-origin Origin header is required' });
         let body: unknown;
         try { body = JSON.parse(await readBody(req, 4096)); }
         catch { return send(res, 400, { error: 'Expected JSON with workerId' }); }
@@ -593,7 +690,8 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   startupCleanup.push(() => server.close());
 
   // --- WebSocket -------------------------------------------------------------------------------
-  const wss = new WebSocketServer({ noServer: true, maxPayload: 2 * 1024 * 1024 });
+  // Only ever agree to empire.v1: the bearer.<token> entry must never be echoed back in the handshake.
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 2 * 1024 * 1024, handleProtocols: (offered) => (offered.has(WS_PROTOCOL) ? WS_PROTOCOL : false) });
   server.on('upgrade', (req, socket, head) => {
     socket.on('error', () => socket.destroy());
     const tunneled = tunneledPort(req, cfg.port);
@@ -619,15 +717,24 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     } catch {
       sameOrigin = false;
     }
-    if (url.pathname !== '/ws' || !auth.fromRequest(req) || !sameOrigin) {
+    const reject = () => {
       socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
       socket.destroy();
+    };
+    const protocols = wsProtocols(req);
+    if (protocols.token !== undefined) {
+      // Device token: it has to come with empire.v1, from no browser origin, this origin or a bundled app.
+      const allowedOrigin = !origin || sameOrigin || APP_ORIGINS.has(origin);
+      const device = allowedOrigin && protocols.offered.includes(WS_PROTOCOL) ? devices.verify(protocols.token) : undefined;
+      if (url.pathname !== '/ws' || !device) return reject();
+      wss.handleUpgrade(req, socket, head, (ws) => onConnection(ws, url, device.id));
       return;
     }
+    if (url.pathname !== '/ws' || !auth.fromRequest(req) || !sameOrigin) return reject();
     wss.handleUpgrade(req, socket, head, (ws) => onConnection(ws, url));
   });
 
-  const onConnection = (ws: WebSocket, url: URL) => {
+  const onConnection = (ws: WebSocket, url: URL, deviceId?: string) => {
     const id = randomBytes(5).toString('hex');
     const name = str(url.searchParams.get('name'), 24).trim() || `Guest ${id.slice(0, 3)}`;
     const colorParam = url.searchParams.get('color') ?? '';
@@ -635,6 +742,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     const client: Client = {
       id,
       ws,
+      deviceId,
       attached: new Set(),
       stale: new Set(),
       lastMoveAt: 0,
@@ -1024,6 +1132,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     changes.stop();
     workers.shutdown();
     ledger.flush();
+    devices.flush();
     for (const c of clients.values()) c.ws.close();
     server.close();
     hookServer.close();
