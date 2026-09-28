@@ -917,6 +917,9 @@ a.when:hover { text-decoration: underline; }
 
 /* ---------- Game shell: menu, touch controls and the phone HUD (MOBILE-01..03) ---------- */
 #scene { touch-action: none; }
+/* The browser's tap highlight is painted above everything (even an open modal) at the tapped control's
+   position, e.g. over the menu's close button after tapping Menu. Controls give their own :active feedback. */
+html { -webkit-tap-highlight-color: transparent; }
 /* Full-screen landscape: keep every window clear of a notch / Dynamic Island on either side. */
 .backdrop { padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); }
 .backdrop > .modal { max-height: calc(var(--vh) - max(16px, env(safe-area-inset-top)) - max(16px, env(safe-area-inset-bottom))); }

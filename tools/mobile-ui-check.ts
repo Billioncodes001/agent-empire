@@ -28,6 +28,8 @@ async function open(browser: Browser, opts: { width: number; height: number; tou
     hasTouch: opts.touch,
     reducedMotion: opts.reduced ? 'reduce' : 'no-preference',
   });
+  // tsx/esbuild wraps named functions in __name(); page.evaluate bodies need it defined in the page.
+  await context.addInitScript({ content: 'window.__name = (f) => f;' });
   await context.addInitScript(() => {
     localStorage.setItem('agent-office.profile', JSON.stringify({ name: 'Fixture CEO', color: '#32685c', look: { skin: 4, hair: 0, style: 0 } }));
     localStorage.setItem('agent-empire.execution.offered', '1');
@@ -101,6 +103,51 @@ const player = (page: Page) =>
     const p = (window as any).__office.player;
     return { x: p.pos.x, y: p.pos.y, z: p.pos.z, grounded: p.grounded, yaw: p.camYaw, speed: p.speed, view: p.view };
   });
+
+/**
+ * With the menu open, nothing may be drawn over it: the backdrop must be the top element over every HUD
+ * control, the close button must be hit-testable, and no bright overlay (e.g. a browser tap highlight,
+ * which is not a DOM element) may be painted around the close button. The last check reads real pixels.
+ */
+async function menuCoverage(page: Page, label: string) {
+  const hits = await page.evaluate(() => {
+    const backdrop = document.querySelector('.backdrop');
+    const close = document.querySelector<HTMLElement>('.game-menu header .close');
+    const at = (el: Element | null) => {
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    };
+    const hud = ['#btn-menu', '#btn-management', '#hud .project', '#status-strip', '.radar-open'].map((s) => {
+      const top = at(document.querySelector(s));
+      return { s, covered: !!top && !!backdrop?.contains(top) };
+    });
+    const topAtClose = at(close);
+    return { hud, closeOk: !!close && !!topAtClose && close.contains(topAtClose) };
+  });
+  check(`${label} backdrop covers the HUD under the menu`, hits.hud.every((h) => h.covered), hits.hud.filter((h) => !h.covered).map((h) => h.s).join(', '));
+  check(`${label} menu close button is the top element at its position`, hits.closeOk);
+  const box = await page.locator('.game-menu header .close').boundingBox();
+  if (!box) return check(`${label} no overlay painted near the close button`, false, 'close button missing');
+  const clip = { x: Math.max(0, box.x - 40), y: Math.max(0, box.y - 30), width: box.width + 80, height: box.height + 50 };
+  const png = (await page.screenshot({ clip, animations: 'disabled' })).toString('base64');
+  const bright = await page.evaluate(async (data) => {
+    const img = new Image();
+    img.src = `data:image/png;base64,${data}`;
+    await img.decode();
+    const c = document.createElement('canvas');
+    c.width = img.width;
+    c.height = img.height;
+    const g = c.getContext('2d')!;
+    g.drawImage(img, 0, 0);
+    const px = g.getImageData(0, 0, c.width, c.height).data;
+    let n = 0;
+    // The menu surface is dark (#15232a); a saturated teal/blue patch here is paint that does not belong to it.
+    for (let i = 0; i < px.length; i += 4) if (px[i + 2] > 110 && px[i + 1] > 90 && px[i + 2] - px[i] > 50) n++;
+    return n / (px.length / 4);
+  }, png);
+  check(`${label} no overlay painted near the close button`, bright < 0.02, `${(bright * 100).toFixed(1)}% teal pixels`);
+}
 
 async function landscape(browser: Browser, width: number, height: number, full: boolean) {
   const label = `${width}x${height}`;
@@ -176,6 +223,7 @@ async function landscape(browser: Browser, width: number, height: number, full: 
       const menuOpen = await page.getByRole('dialog', { name: 'Game menu' }).isVisible().catch(() => false);
       check(`${label} menu opens from Menu button`, menuOpen);
       check(`${label} touch controls hidden while menu open`, !(await rect(page, '.touch-jump')));
+      await menuCoverage(page, label);
       const labels = await page.locator('.game-menu .menu-item strong').allTextContents();
       check(`${label} menu entries`, ['Resume', 'Map', 'Settings', 'Controls', 'Sign out'].every((l) => labels.includes(l)), labels.join(', '));
       const tools = await page.locator('.menu-tools .menu-item').count();
@@ -233,6 +281,7 @@ try {
     await page.locator('#scene').focus();
     await page.keyboard.press('Backquote');
     check('1440x900 Backquote opens menu', await page.getByRole('dialog', { name: 'Game menu' }).isVisible().catch(() => false));
+    await menuCoverage(page, '1440x900');
     const tools = await page.locator('.menu-tools').count();
     check('1440x900 menu lists no duplicate tools on desktop', tools === 0);
     await page.screenshot({ animations: 'disabled', path: resolve(out,'desktop-menu-1440x900.png') });

@@ -56,7 +56,12 @@ Evidence comes from the isolated fixture only (`FIXTURE_PORT=4701 npx tsx tools/
 - `npm run typecheck`: pass.
 - `npm test`: 207/207 pass. The baseline was 201; 6 new tests are in `tests/touch-input.test.ts`, including one that drives a real `PlayerController` through walk, run and release. The existing `camera.test.ts` still passes after the pointer-id change.
 - `npm run build` (client and server): pass.
-- `FIXTURE_URL=http://localhost:4701/ npx tsx tools/mobile-ui-check.ts`: **101/101 checks pass**. It uses Chrome through playwright-core with `isMobile` and `hasTouch`, and real CDP touch events.
+- `FIXTURE_URL=http://localhost:4701/ npx tsx tools/mobile-ui-check.ts`: **113/113 checks pass**.
+  - Menu coverage (added after review) at 667×375, 874×402, 1024×768 and 1440×900:
+    - The backdrop is the top element over the Menu, Management, project, status and minimap controls.
+    - The close button is hit-testable.
+    - A pixel check around the close button finds no painted overlay.
+  - That pixel check caught a real bug in an earlier `menu-667x375.png`: a teal rectangle over the ✕. It was Chrome's `-webkit-tap-highlight-color`, which is not a DOM element. It was painted above the open modal at the tapped Menu button's position. The fix is `html { -webkit-tap-highlight-color: transparent; }`; buttons keep their own `:active` feedback. It uses Chrome through playwright-core with `isMobile` and `hasTouch`, and real CDP touch events.
   - Landscape sizes tested: 667×375, 812×375, 874×402, 932×430 and 1024×768.
   - At every landscape size:
     - The splash is present before assets load.
