@@ -438,7 +438,12 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     }
     if (!(await auth.checkPassword(pw))) return send(res, 401, { error: 'Wrong password' });
     auth.recordSuccess(ip);
-    const issued = devices.issue(deviceName);
+    let issued: ReturnType<DeviceStore['issue']>;
+    try { issued = devices.issue(deviceName); }
+    catch (err) {
+      console.error('[devices] could not save a new device sign-in:', (err as Error).message);
+      return send(res, 500, { error: 'Could not save the device sign-in. Try again.' });
+    }
     if (!issued) return send(res, 409, { error: 'Too many signed-in devices. Remove one in Settings first.' });
     return send(res, 200, issued);
   };
@@ -453,6 +458,19 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
       return device ? { via: 'bearer', device } : undefined;
     }
     return auth.fromRequest(req) ? { via: 'cookie' } : undefined;
+  };
+
+  /**
+   * Closes a device's WebSockets. close() only starts the closing handshake, and a peer that ignores
+   * it could hold the socket open; messages are already dropped once it is CLOSING (see onConnection),
+   * and the socket is cut off outright shortly after.
+   */
+  const disconnectDevice = (deviceId: string) => {
+    for (const c of clients.values()) {
+      if (c.deviceId !== deviceId) continue;
+      c.ws.close(4401, 'Device signed out');
+      setTimeout(() => { if (c.ws.readyState !== WebSocket.CLOSED) c.ws.terminate(); }, 1000).unref();
+    }
   };
 
   const handler = async (req: http.IncomingMessage, res: http.ServerResponse) => {
@@ -553,8 +571,17 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
       const deviceRoute = /^\/api\/devices\/([A-Za-z0-9_-]{1,32})$/.exec(p);
       if (deviceRoute && req.method === 'DELETE') {
         if (!trusted()) return send(res, 403, { error: 'A same-origin Origin header is required' });
-        if (!devices.revoke(deviceRoute[1])) return send(res, 404, { error: 'No such device' });
-        for (const c of clients.values()) if (c.deviceId === deviceRoute[1]) c.ws.close(4401, 'Device signed out');
+        let revoked: boolean;
+        try {
+          revoked = devices.revoke(deviceRoute[1]);
+        } catch (err) {
+          console.error('[devices] could not save a device revocation:', (err as Error).message);
+          return send(res, 500, { error: 'Could not save the revocation, so the device is still signed in. Its connections were closed; try again.' });
+        } finally {
+          // Whatever happened on disk, the device's live connections go now.
+          disconnectDevice(deviceRoute[1]);
+        }
+        if (!revoked) return send(res, 404, { error: 'No such device' });
         return send(res, 200, { ok: true });
       }
       if (p.startsWith('/api/consultancy/')) {
@@ -793,6 +820,8 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
       if (error) sendTo(client, { t: 'toast', text: error, level: 'error' });
 
     ws.on('message', (raw) => {
+      // A socket being closed (a revoked device, say) gets no further say, even if its peer keeps talking.
+      if (ws.readyState !== WebSocket.OPEN) return;
       let msg: ClientMsg;
       try {
         msg = JSON.parse(raw.toString());

@@ -54,7 +54,8 @@ export class DeviceStore {
   private byHash = new Map<string, StoredDevice>();
   private writtenUse = new Map<string, number>();
 
-  constructor(dataDir: string, secret: string, verifier: Buffer) {
+  /** `write` is injectable so tests can make persistence fail; it defaults to the atomic 0600 writer. */
+  constructor(dataDir: string, secret: string, verifier: Buffer, private readonly write: (file: string, value: unknown) => void = writeJsonAtomic) {
     this.file = path.join(dataDir, 'devices.json');
     this.key = createHmac('sha256', secret).update('device-token:').update(verifier).digest();
     this.keyId = createHmac('sha256', this.key).update('key-id').digest('hex').slice(0, 16);
@@ -96,25 +97,29 @@ export class DeviceStore {
     try { this.save(); } catch (err) { console.warn(`agent-office: could not reset ${this.file}: ${(err as Error).message}`); }
   }
 
-  private save() {
-    const data: StoreFile = { version: 1, keyId: this.keyId, devices: this.devices };
-    writeJsonAtomic(this.file, data);
-    for (const d of this.devices) this.writtenUse.set(d.id, d.lastUsedAt);
+  /** Writes `devices` (the current list unless given). Throws if the write fails; memory is the caller's to keep in step. */
+  private save(devices: StoredDevice[] = this.devices) {
+    const data: StoreFile = { version: 1, keyId: this.keyId, devices };
+    this.write(this.file, data);
+    for (const d of devices) this.writtenUse.set(d.id, d.lastUsedAt);
   }
 
   private hash(token: string): string {
     return createHmac('sha256', this.key).update(token).digest('hex');
   }
 
-  /** Mints a device token. Returns undefined once the device limit is reached. */
+  /**
+   * Mints a device token. Returns undefined once the device limit is reached. Throws if it can't be
+   * saved, and then the token was never valid: memory only changes after the write succeeds.
+   */
   issue(name: unknown): { token: string; deviceId: string } | undefined {
     if (this.devices.length >= MAX_DEVICES) return undefined;
     const token = randomBytes(32).toString('base64url');
     const now = Date.now();
     const device: StoredDevice = { id: randomBytes(9).toString('base64url'), name: sanitizeDeviceName(name), hash: this.hash(token), createdAt: now, lastUsedAt: now };
+    this.save([...this.devices, device]);
     this.devices.push(device);
     this.byHash.set(device.hash, device);
-    this.save();
     return { token, deviceId: device.id };
   }
 
@@ -136,13 +141,18 @@ export class DeviceStore {
     return this.devices.map((d) => this.info(d));
   }
 
+  /**
+   * Removes a device. The shortened list is written first; if that throws, nothing changes in memory
+   * either, so a device the caller was told is still signed in can't come back after a restart.
+   */
   revoke(id: string): boolean {
-    const i = this.devices.findIndex((d) => d.id === id);
-    if (i < 0) return false;
-    const [gone] = this.devices.splice(i, 1);
+    const gone = this.devices.find((d) => d.id === id);
+    if (!gone) return false;
+    const kept = this.devices.filter((d) => d !== gone);
+    this.save(kept);
+    this.devices = kept;
     this.byHash.delete(gone.hash);
     this.writtenUse.delete(gone.id);
-    this.save();
     return true;
   }
 

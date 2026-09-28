@@ -1,13 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync, readFileSync, statSync } from 'node:fs';
-import { scryptSync } from 'node:crypto';
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, statSync, chmodSync } from 'node:fs';
+import { scryptSync, randomBytes } from 'node:crypto';
+import net from 'node:net';
+import type http from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { WebSocket } from 'ws';
 import { startServer, APP_ORIGINS } from '../src/server/server.js';
 import { Auth } from '../src/server/auth.js';
-import { sanitizeDeviceName } from '../src/server/devices.js';
+import { sanitizeDeviceName, DeviceStore } from '../src/server/devices.js';
+import { upstreamHeaders } from '../src/server/relay.js';
+import { writeJsonAtomic } from '../src/server/persistence.js';
 import type { Config } from '../src/server/config.js';
 import type { WorkerRuntime } from '../src/server/workers.js';
 
@@ -258,4 +262,117 @@ test('device names are sanitized and bounded', () => {
   assert.equal(sanitizeDeviceName('  \n\t '), 'Device');
   assert.equal(sanitizeDeviceName('a\u0000b‮c'), 'a b c');
   assert.equal([...sanitizeDeviceName('x'.repeat(500))].length, 64);
+});
+
+/** A bare-bones WebSocket client that never answers the server's close frame, like a hostile peer. */
+async function rawBearerSocket(port: number, token: string) {
+  const socket = net.connect(port, '127.0.0.1');
+  await new Promise<void>((resolve, reject) => { socket.once('connect', resolve); socket.once('error', reject); });
+  socket.on('error', () => {});
+  socket.write([
+    'GET /ws HTTP/1.1', `Host: 127.0.0.1:${port}`, 'Upgrade: websocket', 'Connection: Upgrade',
+    `Sec-WebSocket-Key: ${randomBytes(16).toString('base64')}`, 'Sec-WebSocket-Version: 13',
+    `Sec-WebSocket-Protocol: empire.v1, bearer.${token}`, `Origin: ${IOS}`, '', '',
+  ].join('\r\n'));
+  let received = Buffer.alloc(0);
+  socket.on('data', (d) => { received = Buffer.concat([received, d]); });
+  await new Promise<void>((resolve) => { const check = () => (received.includes('\r\n\r\n') ? resolve() : setTimeout(check, 10)); check(); });
+  assert.match(received.toString('latin1'), /^HTTP\/1\.1 101/);
+  const closed = new Promise<void>((resolve) => socket.once('close', () => resolve()));
+  return {
+    send(msg: unknown) {
+      const payload = Buffer.from(JSON.stringify(msg));
+      assert.ok(payload.length < 126);
+      const mask = randomBytes(4);
+      const masked = Buffer.from(payload.map((b, i) => b ^ mask[i % 4]));
+      socket.write(Buffer.concat([Buffer.from([0x81, 0x80 | payload.length]), mask, masked]));
+    },
+    closed,
+    destroy: () => socket.destroy(),
+  };
+}
+
+test('a revoked device that ignores the close frame gets no further messages through and is cut off', async (t) => {
+  const f = await fixture(t);
+  const { token, deviceId } = await f.token();
+  const observer = await openWs(`ws://127.0.0.1:${f.port()}/ws`, undefined, { cookie: f.cookie() }, f.base());
+  assert.ok(observer.ok);
+  const chats: string[] = [];
+  observer.ws.on('message', (m) => { const msg = JSON.parse(m.toString()); if (msg.t === 'chat') chats.push(msg.text); });
+  const raw = await rawBearerSocket(f.port(), token);
+  t.after(() => { raw.destroy(); observer.ws.close(); });
+  raw.send({ t: 'chat', text: 'before' });
+  const deadline = Date.now() + 3000;
+  while (!chats.includes('before') && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(chats, ['before'], 'the raw client works while signed in');
+
+  const cookie = f.cookie();
+  assert.equal((await f.fetch(`/api/devices/${deviceId}`, { method: 'DELETE', headers: { cookie, origin: f.base() } })).status, 200);
+  raw.send({ t: 'chat', text: 'after' });
+  const cut = await Promise.race([raw.closed.then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), 3000))]);
+  assert.equal(cut, true, 'the server terminates a socket that ignores the close handshake');
+  await new Promise((r) => setTimeout(r, 100));
+  assert.deepEqual(chats, ['before']);
+});
+
+test('device store: a failed write changes nothing, so revocations cannot be undone by a restart', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'empire-device-store-'));
+  try {
+    let failing = false;
+    const writer = (file: string, value: unknown) => { if (failing) throw new Error('disk full (fixture)'); writeJsonAtomic(file, value); };
+    const verifier = Buffer.alloc(32, 7);
+    const store = new DeviceStore(dir, 'secret', verifier, writer);
+    const a = store.issue('A')!;
+
+    failing = true;
+    assert.throws(() => store.issue('B'), /disk full/);
+    assert.equal(store.list().length, 1, 'no dead entry is left behind by a failed issue');
+    assert.throws(() => store.revoke(a.deviceId), /disk full/);
+    assert.ok(store.verify(a.token), 'memory still matches disk after a failed revoke');
+    assert.equal(new DeviceStore(dir, 'secret', verifier).list().length, 1);
+
+    failing = false;
+    assert.equal(store.revoke(a.deviceId), true);
+    assert.equal(store.verify(a.token), undefined);
+    assert.equal(new DeviceStore(dir, 'secret', verifier).list().length, 0, 'the revocation survives a restart');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a revocation that cannot be saved still disconnects the device and reports an error', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async (t) => {
+  const f = await fixture(t);
+  const { token, deviceId } = await f.token();
+  const live = await openWs(`ws://127.0.0.1:${f.port()}/ws`, ['empire.v1', `bearer.${token}`], {}, IOS);
+  assert.ok(live.ok);
+  const closed = new Promise<number>((resolve) => live.ws.once('close', (code) => resolve(code)));
+  chmodSync(f.dir, 0o500);
+  let status: number;
+  let body: any;
+  try {
+    const res = await f.fetch(`/api/devices/${deviceId}`, { method: 'DELETE', headers: { authorization: `Bearer ${token}` } });
+    status = res.status;
+    body = await res.json();
+  } finally {
+    chmodSync(f.dir, 0o700);
+  }
+  assert.equal(status, 500);
+  assert.match(body.error, /still signed in/);
+  assert.equal(await closed, 4401);
+  // Memory and disk agree: the device is still listed, and revoking again (now writable) works.
+  assert.equal((await f.fetch(`/api/devices/${deviceId}`, { method: 'DELETE', headers: { authorization: `Bearer ${token}` } })).status, 200);
+  assert.equal((await f.fetch('/api/whoami', { headers: { authorization: `Bearer ${token}` } })).status, 401);
+});
+
+test('service tunnels never forward device tokens to a worker server', () => {
+  const req = (headers: http.IncomingHttpHeaders) => ({ headers }) as http.IncomingMessage;
+  const token = 'A'.repeat(43);
+  const out = upstreamHeaders(req({ host: 'localhost:5173', authorization: `Bearer ${token}`, 'sec-websocket-protocol': `vite-hmr, bearer.${token}, empire.v1`, cookie: 'ao_session_4600=x; theme=dark' }));
+  assert.equal(out.authorization, undefined);
+  assert.equal(out['sec-websocket-protocol'], 'vite-hmr, empire.v1');
+  assert.equal(out.cookie, 'theme=dark');
+  assert.ok(!JSON.stringify(out).includes(token));
+  assert.equal(upstreamHeaders(req({ 'sec-websocket-protocol': `bearer.${token}` }))['sec-websocket-protocol'], undefined);
+  // A service's own non-Bearer auth still passes through.
+  assert.equal(upstreamHeaders(req({ authorization: 'Basic dXNlcjpwdw==' })).authorization, 'Basic dXNlcjpwdw==');
 });
