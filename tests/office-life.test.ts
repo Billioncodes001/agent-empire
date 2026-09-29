@@ -222,3 +222,49 @@ test('reduced motion places workers without a walking animation', () => {
   assert.ok(!phases.has('walk'), 'no walking');
   assert.equal(life.snapshot()[0].phase, 'using');
 });
+
+test('going stale on the way back to the desk stops the walk at once', () => {
+  const { office, desk, worker } = stubWorld();
+  const life = new OfficeLife(office, { reducedMotion: () => false, detail: () => true, onTyping: () => {} });
+  const clock = { now: 100_000 };
+  life.sync('w-1', worker, desk, { status: 'working', fresh: true, typing: true }, clock.now);
+  life.sync('w-1', worker, desk, { status: 'idle', fresh: true, typing: false }, clock.now);
+  run(life, 40, clock);
+  assert.equal(life.snapshot()[0].phase, 'using', 'on a break first');
+  life.sync('w-1', worker, desk, { status: 'working', fresh: true, typing: true }, clock.now);
+  run(life, 3, clock);
+  assert.notEqual(life.snapshot()[0].phase, 'seated', 'walking back');
+  life.sync('w-1', worker, desk, { status: 'working', fresh: false, typing: false }, clock.now);
+  assert.equal(life.snapshot()[0].phase, 'seated', 'placed, not walked');
+  assert.equal(worker.root.parent, desk.group);
+});
+
+test('when every spot of an amenity is taken, the card says so instead of claiming a break', () => {
+  const office = { group: new THREE.Group(), colliders: [] } as unknown as Office;
+  const life = new OfficeLife(office, { reducedMotion: () => true, detail: () => true, onTyping: () => {} });
+  const clock = { now: 100_000 };
+  const later = clock.now + BREAK_AFTER_MS + 1000;
+  const coffeeSpots = AMENITY_SPOTS.filter((s) => s.kind === 'coffee').length;
+  const ids: string[] = [];
+  for (let k = 0; ids.length < coffeeSpots + 2; k++) if (amenityFor(`w-${k}`, clock.now, later) === 'coffee') ids.push(`w-${k}`);
+  const cards = new Map<string, string>();
+  const bodies = ids.map((id, i) => {
+    const def = deskDefinition(DESKS[i].id)!;
+    const group = new THREE.Group();
+    office.group.add(group);
+    const desk = { def, group, chair: new THREE.Group() } as unknown as DeskView;
+    const root = new THREE.Group();
+    group.add(root);
+    const worker = { root, typing: false, motion: { speed: 0, seated: true, activity: 'none', detail: true, transition: null, progress: 0 }, setReason: (t: string) => cards.set(id, t) } as unknown as Worker;
+    life.sync(id, worker, desk, { status: 'working', fresh: true, typing: true }, clock.now);
+    life.sync(id, worker, desk, { status: 'idle', fresh: true, typing: false }, clock.now);
+    return { id, desk, worker };
+  });
+  run(life, 10, clock);
+  const atDesk = bodies.filter((b) => b.worker.root.parent === b.desk.group);
+  assert.ok(atDesk.length >= 2, 'the overflow stays at its desk');
+  for (const b of atDesk) {
+    assert.doesNotMatch(cards.get(b.id) ?? '', /coffee break/, `${b.id} does not claim a break it isn't on`);
+    assert.match(cards.get(b.id) ?? '', /coffee bar is full/);
+  }
+});

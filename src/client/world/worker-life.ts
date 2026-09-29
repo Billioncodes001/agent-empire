@@ -34,6 +34,7 @@ const SPOT_TIME = 0.6;
 const PLAN_EVERY = 0.25;
 const CHAIR_HOME = { z: 0.9, rot: 0 };
 const CHAIR_OUT = { z: 1.12, rot: 0.45 };
+const AMENITY_NAME: Record<AmenitySpot['kind'], string> = { coffee: 'coffee bar', cafeteria: 'cafeteria', gym: 'gym' };
 const ACTIVITY: Record<AmenitySpot['pose'], HumanActivity> = { stand: 'coffee', sit: 'eat', treadmill: 'none', bike: 'bike', weights: 'weights', stretch: 'stretch' };
 
 interface Life {
@@ -140,18 +141,23 @@ export class OfficeLife {
       const kept = life.goal.kind === 'spot' && life.goal.spot.kind === kind ? life.goal.spot : life.spot?.kind === kind ? life.spot : undefined;
       const spot = kept ?? pickSpot(AMENITY_SPOTS, kind, stableHash(life.id), this.taken(life));
       if (spot) goal = { kind: 'spot', spot };
+      // Every spot taken: the worker stays at the desk, and the card has to say so rather than
+      // claim a break it isn't on.
+      else life.plan = { place: 'desk', activity: 'seated', reason: `${plan.reason.split(' — ')[0]} — the ${AMENITY_NAME[kind]} is full` };
     }
     const changed = goal.kind !== life.goal.kind || (goal.kind === 'spot' && life.goal.kind === 'spot' && goal.spot !== life.goal.spot);
     life.goal = goal;
-    // Unknown, asleep, or reduced motion: no walking. Put the body where the state says, now.
-    if (changed && (staysPut(plan) || this.opts.reducedMotion())) this.teleport(life);
+    // Unknown, asleep, or reduced motion: no walking. Put the body where the state says, now. That
+    // includes a worker already on its way back to the desk when its evidence goes stale.
+    if ((changed || (staysPut(plan) && life.phase !== 'seated')) && (staysPut(plan) || this.opts.reducedMotion())) this.teleport(life);
     else if (changed && life.phase === 'walk') this.route(life);
     this.label(life);
   }
 
   private label(life: Life) {
     const { plan, phase, goal } = life;
-    const text = plan.place !== 'desk' ? plan.reason : phase !== 'seated' && goal.kind === 'desk' ? `Back to the desk${plan.reason ? ` — ${plan.reason.toLowerCase()}` : ''}` : '';
+    const full = plan.place === 'desk' && plan.activity === 'seated' && plan.reason.endsWith(' is full');
+    const text = plan.place !== 'desk' || full ? plan.reason : phase !== 'seated' && goal.kind === 'desk' ? `Back to the desk${plan.reason ? ` — ${plan.reason.toLowerCase()}` : ''}` : '';
     life.worker.setReason(text);
   }
 
