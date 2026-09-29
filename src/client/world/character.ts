@@ -1,4 +1,4 @@
-import { Human, type VehiclePose } from './human';
+import { Human, type HumanActivity, type VehiclePose } from './human';
 import * as THREE from 'three';
 import { SKIN_TONES, type Look } from '../../shared/avatar';
 import type { WorkerTask } from '../../shared/protocol';
@@ -32,6 +32,8 @@ export class Person {
     this.look={...look};this.human=new Human(look.style);this.root.add(this.human.root);this.setLabel(name,false);
   }
   get ready(){return this.human.ready;}
+  /** The clip or procedural state the body is showing (airborne, landing, walk_neutral…), for headless checks. */
+  get motion(){return this.human.root.userData.motion as string|undefined;}
   setColor(color:string) { this.root.userData.accent=color; }
   get skinColor(){return SKIN_TONES[this.look.skin];}
   setLook(look:Look){
@@ -48,7 +50,14 @@ export class Person {
   reach(){this.human.reach();}
   setTransition(name:string|null,progress=0){this.human.setTransition(name,progress);}
   setVehiclePose(pose:VehiclePose|null){this.human.setVehiclePose(pose);}
-  update(dt:number,t:number,moving:boolean,airborne:boolean,speed=1.65){this.human.update(dt,moving&&!airborne?speed:0,this.pose==='sit'||this.pose==='type'||this.pose==='drive',this.pose==='type',this.pose==='drive');}
+  /**
+   * `airborne` selects the held flight pose (never the idle clip) and, on touchdown, a landing dip.
+   * `landingGrace` (s) keeps an interpolated peer airborne through brief false "grounded" frames at the apex.
+   */
+  update(dt:number,t:number,moving:boolean,airborne:boolean,speed=1.65,landingGrace=0){
+    this.human.setAirborne(airborne,landingGrace);
+    this.human.update(dt,moving&&!airborne?speed:0,this.pose==='sit'||this.pose==='type'||this.pose==='drive',this.pose==='type',this.pose==='drive');
+  }
   dispose(){this.human.dispose();if(this.label)disposeSprite(this.label);}
 }
 
@@ -90,6 +99,11 @@ export class Worker {
   typing = false;
   /** False while the server's evidence is stale: the cached status is then only last-known. */
   private live = true;
+  private reasonTag: THREE.Sprite | null = null;
+  private reasonKey = '';
+  /** Body state, set by the routine controller (worker-life.ts) from the worker's real server state. */
+  readonly motion: { speed: number; seated: boolean; activity: HumanActivity; detail: boolean; transition: string | null; progress: number } =
+    { speed: 0, seated: true, activity: 'none', detail: true, transition: null, progress: 0 };
   constructor(name: string, color: string) {
     this.human=new Human(name.length);
     this.root.add(this.human.root);
@@ -150,15 +164,40 @@ export class Worker {
     if (this.bubble) this.root.add(this.bubble);
   }
 
+  /** Why the worker is where it is (e.g. "Turn finished — on a coffee break"); '' hides it. */
+  setReason(text: string) {
+    if (text === this.reasonKey) return;
+    this.reasonKey = text;
+    if (this.reasonTag) {
+      this.root.remove(this.reasonTag);
+      disposeSprite(this.reasonTag);
+      this.reasonTag = null;
+    }
+    if (!text) return;
+    this.reasonTag = textSprite(text, { bg: '#fffaf3', color: '#2b2d42', size: 26 });
+    this.reasonTag.scale.multiplyScalar(0.8);
+    this.root.add(this.reasonTag);
+  }
+
   update(dt: number, t: number) {
-    this.human.update(dt,false,true,this.typing);
-    if (this.bubble) this.bubble.position.y = this.bubbleIsCard ? 1.74 : 1.95;
-    if (this.nameTag) this.nameTag.position.y = 1.55;
+    const m = this.motion;
+    this.human.setTransition(m.transition, m.progress);
+    this.human.setActivity(m.activity, m.detail);
+    // Typing only ever happens seated at the desk; the routine controller clears `seated` everywhere else it matters.
+    this.human.update(dt, m.speed, m.seated, this.typing && m.seated);
+    // Labels ride higher over a standing body than a seated one.
+    const lift = m.seated && !m.transition ? 0 : 0.42;
+    // The reason line sits just above the name; the bubble or task card moves up to make room.
+    const reason = this.reasonTag ? 0.27 : 0;
+    if (this.bubble) this.bubble.position.y = (this.bubbleIsCard ? 1.74 : 1.95) + lift + reason;
+    if (this.nameTag) this.nameTag.position.y = 1.55 + lift;
+    if (this.reasonTag) this.reasonTag.position.y = 1.55 + lift + reason;
   }
 
   dispose() {
     this.human.dispose();
     if (this.bubble) disposeSprite(this.bubble);
     if (this.nameTag) disposeSprite(this.nameTag);
+    if (this.reasonTag) disposeSprite(this.reasonTag);
   }
 }

@@ -18,6 +18,8 @@ import { store, loadProfile, loadSettings, saveSettings, type Profile } from './
 import { EYE_HEIGHT, PlayerController, groundAt, isTyping } from './player';
 import { buildOffice, type InteractKind, type Interactable } from './world/office';
 import { Person, Worker } from './world/character';
+import { OfficeLife } from './world/worker-life';
+import type { WaitingOn } from './world/routines';
 import { Laptop } from './world/laptop';
 import { BoardTexture, QueueBoardTexture, ServicesBoardTexture } from './world/boards';
 import { Gallery } from './world/gallery';
@@ -263,6 +265,13 @@ interface WorkerView {
   acked: boolean;
 }
 const workerViews = new Map<string, WorkerView>();
+// Worker routines (LIFE-03): desk ↔ amenities from real server state only. Reduced motion places bodies without walking.
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+const life = new OfficeLife(office, {
+  reducedMotion: () => reducedMotion.matches,
+  detail: () => settings.quality !== 'low',
+  onTyping: (id, typing) => { const w = store.workers.get(id), d = w && DESK_BY_ID.get(w.deskId); if (d) sound.setTyping(id, d.x, d.z, typing); },
+});
 let firstWelcome = true;
 let foundingOpened = false;
 /** The server version this page was loaded with. */
@@ -455,7 +464,7 @@ function syncWorkers() {
     const oldDesk = office.desks.get(view.deskId);
     if (oldDesk) { oldDesk.setScreen(); oldDesk.vacancy.visible = true; }
     view.model.root.removeFromParent(); view.laptop.root.removeFromParent();
-    view.model.dispose(); view.laptop.dispose(); sound.removeTypist(id); workerViews.delete(id);
+    life.remove(id); view.model.dispose(); view.laptop.dispose(); sound.removeTypist(id); workerViews.delete(id);
   }
   for (const w of store.workers.values()) {
     let v = workerViews.get(w.id);
@@ -498,16 +507,16 @@ function syncWorkers() {
     }
     v.model.setTask(w.task);
     v.model.setLive(fresh);
-    v.model.typing = typingPose(w, fresh);
-    const deskDef = DESK_BY_ID.get(w.deskId);
-    if (deskDef) sound.setTyping(w.id, deskDef.x, deskDef.z, v.model.typing);
+    // Typing (and its sound) only once the body is seated at the desk; see world/worker-life.ts.
+    life.sync(w.id, v.model, desk, { status: w.status, processState: w.processState, fresh, typing: typingPose(w, fresh), waitingOn: (w as WorkerInfo & { waitingOn?: WaitingOn }).waitingOn });
     const again = w.kind === 'shell' ? 'restart' : 'resume';
     v.laptop.setPlaceholder(w.status === 'offline' ? `💤 ${w.name} is asleep — press R to ${again}` : w.status === 'exited' ? `${w.name} exited` : 'booting…');
   }
   for (const [id, v] of workerViews) {
     if (store.workers.has(id)) continue;
     const desk = office.desks.get(v.deskId);
-    desk?.group.remove(v.model.root);
+    life.remove(id);
+    v.model.root.removeFromParent();
     desk?.group.remove(v.laptop.root);
     v.model.dispose();
     v.laptop.dispose();
@@ -740,6 +749,8 @@ function interact(target: Interactable | null, key: DeskKey) {
     toast('☕ Mmm, fresh coffee. +10 focus');
     sound.coffee();
   }
+  else if (target.kind === 'gym') toast('🏋️ A quick set in the gym corner.');
+  else if (target.kind === 'cafeteria') toast('🥐 Breakfast from the cafeteria counter.');
 }
 
 // ---- Interaction targeting & hint -----------------------------------------------------------------
@@ -820,6 +831,8 @@ function renderHint() {
     parts = [h('span.title', {}, 'AGENT EMPIRE'), key('E', any ? 'Watch full screen' : 'Share your screen')];
   } else if (target.kind === 'elevator') parts = [h('span.title', {}, `Elevator · Floor ${office.floor + 1}`), key('E', 'Floor directory')];
   else if (target.kind === 'coffee') parts = [h('span.title', {}, '☕ Coffee machine'), key('E', 'Grab a cup')];
+  else if (target.kind === 'gym') parts = [h('span.title', {}, '🏋️ Gym'), key('E', 'Work out')];
+  else if (target.kind === 'cafeteria') parts = [h('span.title', {}, '🥐 Cafeteria'), key('E', 'Grab breakfast')];
   else if (target.kind === 'decor') {
     const id = target.decorId;
     const d = store.decor.find((x) => x.id === id);
@@ -993,7 +1006,7 @@ function backToGame() {
 const raycaster = new THREE.Raycaster();
 const CROSSHAIR = new THREE.Vector2(0, 0);
 /** How close (meters from your eyes) you must be to use each kind of thing. */
-const REACH: Record<InteractKind, number> = { elevator: 4, desk: 4.5, coffee: 3, issues: 9, pulls: 9, services: 9, queue: 9, tv: 10, decor: 9 };
+const REACH: Record<InteractKind, number> = { elevator: 4, desk: 4.5, coffee: 3, gym: 5, cafeteria: 4, issues: 9, pulls: 9, services: 9, queue: 9, tv: 10, decor: 9 };
 const eye = new THREE.Vector3();
 
 /** What the ray through `ndc` lands on first, and whether it is within reach (plus `slack` meters). */
@@ -1215,7 +1228,7 @@ function frame(ts?: number) {
   canvas.dataset.view = player.view;
   canvas.dataset.traversal = tower.active ? 'elevator' : traversal.state;
   canvas.dataset.floor = String(office.floor + 1);
-  canvas.dataset.motion = String(me.root.children[0]?.userData.motion??'loading');
+  canvas.dataset.motion = me.motion ?? 'loading';
   canvas.dataset.assets = me.ready && city.car.userData.ready && scene.environment ? 'ready' : 'loading';
   canvas.dataset.fps = String(Math.round(1 / Math.max(dt,.001)));
 
@@ -1279,7 +1292,7 @@ function frame(ts?: number) {
     // On their feet if they're standing on something: the floor, a desk, a stair, the loft.
     const airborne = p.y > groundAt(office.colliders, p.x, p.z, p.y) + 0.05;
     const walking = r.person.root.visible && p.moving && !airborne;
-    r.person.update(dt, t, walking, airborne && Math.abs(pos.y - r.target.y) > 0.01);
+    r.person.update(dt, t, walking, airborne && Math.abs(pos.y - r.target.y) > 0.01, 1.65, 0.15);
     // Their walk cycle takes a step every π/11 seconds.
     r.stepT = walking ? r.stepT + dt : 0.2;
     if (r.stepT >= Math.PI / 11) {
@@ -1297,6 +1310,7 @@ function frame(ts?: number) {
   }
 
   const camPos = camera.position;
+  life.update(dt);
   for (const [id, v] of workerViews) {
     v.model.update(dt, t);
     const desk = DESK_BY_ID.get(v.deskId)!;
@@ -1349,6 +1363,6 @@ if (saved?.look) {
 }
 
 // Debug handle for quick checks from the console / headless screenshots.
-(window as any).__office = { store, player, camera, workerViews, scene, net, renderer, me, remotes, settings, gallery, hanger, city, empireUI };
+(window as any).__office = { store, player, camera, workerViews, scene, net, renderer, me, remotes, settings, gallery, hanger, city, empireUI, life };
 (window as any).__voice = voice;
 (window as any).__sound = sound;
