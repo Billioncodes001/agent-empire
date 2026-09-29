@@ -108,7 +108,8 @@ final class GameViewController: UIViewController, WKNavigationDelegate, WKUIDele
         webView.backgroundColor = Self.brand
         webView.underPageBackgroundColor = Self.brand
         webView.scrollView.backgroundColor = Self.brand
-        webView.scrollView.contentInsetAdjustmentBehavior = .never // content is edge to edge; the page uses env(safe-area-inset-*)
+        // Keep the default inset adjustment: with viewport-fit=cover (index.html) the page stays edge to edge and WebKit
+        // reports the Dynamic Island / home indicator clearance through env(safe-area-inset-*). `.never` zeroes them.
         webView.scrollView.isScrollEnabled = false
         webView.scrollView.bounces = false
         webView.scrollView.pinchGestureRecognizer?.isEnabled = false
@@ -221,6 +222,20 @@ final class GameViewController: UIViewController, WKNavigationDelegate, WKUIDele
         alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler(true) })
         if presentedViewController == nil { present(alert, animated: true) } else { completionHandler(false) }
     }
+
+    #if DEBUG
+    /// Debug builds log the insets the page sees, to check Dynamic Island and home indicator clearance.
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        let probe = "(()=>{const d=document.createElement('div');d.style.cssText='position:fixed;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)';document.body.append(d);const c=getComputedStyle(d);const r=[c.paddingTop,c.paddingRight,c.paddingBottom,c.paddingLeft,innerWidth+'x'+innerHeight,isSecureContext].join(' ');d.remove();return r})()"
+        for delay in [0.0, 4.0] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                webView.evaluateJavaScript(probe) { value, _ in
+                    NSLog("AEInsets +%.0fs native=%@ page=%@", delay, NSCoder.string(for: webView.safeAreaInsets), String(describing: value ?? "nil"))
+                }
+            }
+        }
+    }
+    #endif
 
     /// If the web content process dies (memory pressure), bring the game back rather than leave a blank screen.
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {

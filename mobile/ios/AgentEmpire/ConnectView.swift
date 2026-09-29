@@ -96,7 +96,16 @@ struct ConnectView: View {
                 .focused($focused)
                 .onSubmit(connect)
                 .padding(12)
+                .padding(.trailing, address.isEmpty ? 0 : 28)
                 .background(RoundedRectangle(cornerRadius: 10).fill(Color.black.opacity(0.35)))
+                .overlay(alignment: .trailing) {
+                    if !address.isEmpty {
+                        Button { address = ""; error = nil } label: {
+                            Image(systemName: "xmark.circle.fill").foregroundStyle(Color.brandMuted).padding(10)
+                        }
+                        .accessibilityLabel("Clear address")
+                    }
+                }
                 .accessibilityIdentifier("connect.address")
             if let error {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
@@ -152,7 +161,7 @@ struct SignInView: View {
         BrandedForm(subtitle: "Sign in to your city") {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Server").font(.caption).foregroundStyle(Color.brandMuted)
-                Text(host.host ?? HostPolicy.originString(host))
+                Text(HostPolicy.originString(host))
                     .font(.callout.monospaced())
                     .foregroundStyle(Color.brandInk)
                     .lineLimit(1)
