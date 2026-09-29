@@ -74,6 +74,7 @@ export function appConfig(): AppConfig | null {
 export function resetEndpointForTests(config?: AppConfig | null) {
   cached = config;
   signedOutSent = false;
+  userSigningOut = false;
 }
 
 export const isAppMode = () => appConfig() !== null;
@@ -141,6 +142,8 @@ export function wsProtocols(): string[] | undefined {
 
 type NativeBridge = { postMessage(msg: unknown): void };
 let signedOutSent = false;
+/** Set when the player chose Sign out: revoking the device closes our own socket (4401), which is not a surprise. */
+let userSigningOut = false;
 
 /** Finds the one native message channel, if this page runs inside an app shell. */
 function nativeBridge(): NativeBridge | undefined {
@@ -159,11 +162,16 @@ export function notifySignedOut(reason: SignedOutReason): boolean {
   signedOutSent = true;
   const bridge = nativeBridge();
   try {
-    bridge?.postMessage({ type: 'signedOut', reason });
+    bridge?.postMessage({ type: 'signedOut', reason: userSigningOut ? 'user' : reason });
   } catch {
     // Nothing more to do: the token is already unusable or being discarded.
   }
   return true;
+}
+
+/** The player chose Sign out: whatever ends the session next (the revoke's own 4401 or 401) is reported as 'user'. */
+export function beginUserSignOut() {
+  userSigningOut = true;
 }
 
 /** Tests only. */

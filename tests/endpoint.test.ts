@@ -1,7 +1,7 @@
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  apiFetch, apiInit, apiUrl, appConfig, normaliseHost, notifySignedOut, parseAppConfig, resetEndpointForTests, signedOutNotified,
+  beginUserSignOut, apiFetch, apiInit, apiUrl, appConfig, normaliseHost, notifySignedOut, parseAppConfig, resetEndpointForTests, signedOutNotified,
   wsProtocols, wsUrl, WS_PROTOCOL, WS_REVOKED, type AppConfig,
 } from '../src/client/endpoint';
 import { Net } from '../src/client/net';
@@ -151,4 +151,16 @@ test('Net (web): no subprotocols; a closed socket probes whoami relatively and n
   assert.deepEqual(urls, ['/api/whoami']);
   net['closedByUs'] = true; // stop the pending retry timer from reconnecting after the test
   clearTimeout(net['retryTimer'] as ReturnType<typeof setTimeout>);
+});
+
+test('app: after the player chooses Sign out, the revoke that closes our own socket is reported as the user\'s sign-out', async () => {
+  const posted = fakeWindow({ host: 'https://city.example.com', token: TOKEN, platform: 'ios' });
+  g.WebSocket = FakeSocket;
+  globalThis.fetch = (async () => new Response('{}')) as typeof fetch;
+  const net = new Net(profile);
+  net.connect();
+  beginUserSignOut();
+  await FakeSocket.last!.onclose!({ code: WS_REVOKED });
+  notifySignedOut('user');
+  assert.deepEqual(posted, [{ type: 'signedOut', reason: 'user' }]);
 });

@@ -1,4 +1,4 @@
-import { apiFetch, appConfig, hostUrl, notifySignedOut } from '../endpoint';
+import { apiFetch, appConfig, beginUserSignOut, hostUrl, notifySignedOut } from '../endpoint';
 import type { PlayerController } from '../player';
 import { h, modalOpen, openModal, toast, type Modal } from './dom';
 import { openHelp } from './hud';
@@ -59,6 +59,7 @@ export function openTouchHelp(onKeyboard: () => void) {
 /** App sign-out: revoke this device's token on the host when reachable, then hand back to the native sign-in. */
 async function appSignOut() {
   const app = appConfig()!;
+  beginUserSignOut();
   try {
     let id = app.deviceId;
     if (!id) {
