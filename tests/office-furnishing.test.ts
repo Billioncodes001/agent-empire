@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BAR_STOOLS, FURNISHING_COLLIDERS, FURNISHING_FIXTURES, MEETING_CHAIRS, RECEPTION_CHAIR, type Footprint } from '../src/client/world/furnishing-layout';
+import {
+  AMENITY_COLLIDERS, AMENITY_SPOTS, BAR_STOOLS, BREAKFAST, CAFE_CHAIRS, CAFE_TABLES, CAFETERIA, FURNISHING_COLLIDERS, FURNISHING_FIXTURES, GYM, MEETING_CHAIRS, RECEPTION_CHAIR, TREADMILLS, type Footprint,
+} from '../src/client/world/furnishing-layout';
 import { BOARDS, DESKS, DESK_SIZE, FLOOR, LIFT, LOFT, SPAWN, STAIRS, TV, deskSeat } from '../src/shared/layout';
 
 type Box = { minX: number; maxX: number; minZ: number; maxZ: number };
@@ -72,6 +74,46 @@ test('furniture fits the room, avoids existing fixtures and leaves real aisles',
   const table = named('meeting table')[0];
   assert.ok(Math.min(...named('meeting chair').map((c) => c.minZ)) - LOFT.minZ >= 1, 'the meeting chairs leave the walkway under the loft edge');
   assert.ok(named('meeting chair').every((c) => overlaps(c, { ...table, minX: table.minX - 0.8, maxX: table.maxX + 0.1, minZ: table.minZ - 0.8, maxZ: table.maxZ + 0.8 })), 'meeting chairs sit at the table');
+});
+
+test('gym, cafeteria and coffee amenities fit their zones without overlapping other furniture', () => {
+  const others = FURNISHING_COLLIDERS.filter((f) => !AMENITY_COLLIDERS.includes(f));
+  for (const a of AMENITY_COLLIDERS) {
+    for (const f of others) assert.ok(!overlaps(a, f), `${a.name} overlaps the ${f.name}`);
+    for (const b of AMENITY_COLLIDERS) if (a !== b) assert.ok(!overlaps(a, b), `${a.name} overlaps a ${b.name}`);
+  }
+  const gym = AMENITY_COLLIDERS.filter((f) => ['treadmill', 'exercise bike', 'dumbbell rack'].includes(f.name));
+  assert.equal(gym.length, TREADMILLS.length + 2);
+  for (const f of gym) assert.ok(f.minX >= GYM.minX && f.maxX <= GYM.maxX && f.minZ >= GYM.minZ && f.maxZ <= GYM.maxZ, `${f.name} is in the gym corner`);
+  const cafe = AMENITY_COLLIDERS.filter((f) => f.name.startsWith('cafeteria') || f.name === 'breakfast counter');
+  assert.equal(cafe.filter((f) => f.name === 'cafeteria table').length, CAFE_TABLES.length);
+  assert.equal(cafe.filter((f) => f.name === 'cafeteria chair').length, CAFE_CHAIRS.length);
+  for (const f of cafe) assert.ok(f.minX >= CAFETERIA.minX && f.maxX <= CAFETERIA.maxX && f.minZ >= CAFETERIA.minZ && f.maxZ <= CAFETERIA.maxZ, `${f.name} is in the cafeteria`);
+  // A real aisle stays open between the cafeteria and the nearest desks.
+  const westDesk = Math.min(...DESKS.map((d) => d.x - DESK_SIZE.width / 2));
+  assert.ok(westDesk - Math.max(...cafe.map((f) => f.maxX)) >= 1.2, 'aisle between the cafeteria and the desks');
+  assert.ok(BREAKFAST.x - BREAKFAST.depth / 2 >= FLOOR.minX, 'the breakfast counter stands inside the west wall');
+});
+
+test('every amenity use spot is reachable and clear, and seats sit in their own equipment', () => {
+  assert.deepEqual(new Set(AMENITY_SPOTS.map((s) => s.kind)), new Set(['coffee', 'cafeteria', 'gym']));
+  assert.equal(new Set(AMENITY_SPOTS.map((s) => s.id)).size, AMENITY_SPOTS.length, 'unique spot ids');
+  for (const s of AMENITY_SPOTS) {
+    assert.ok(s.x > FLOOR.minX + 0.3 && s.x < FLOOR.maxX - 0.3 && s.z > FLOOR.minZ + 0.3 && s.z < FLOOR.maxZ - 0.3, `${s.id} is in the room`);
+    clearOf(around(s.approach.x, s.approach.z, 0.22), `the ${s.id} approach`);
+    const containing = FURNISHING_COLLIDERS.filter((f) => overlaps(f, around(s.x, s.z, 0.01)));
+    if (s.pose === 'sit' || s.pose === 'treadmill' || s.pose === 'bike') assert.equal(containing.length, 1, `${s.id} sits in exactly its own equipment`);
+    else clearOf(around(s.x, s.z, 0.28), `the ${s.id} standing spot`);
+  }
+  // Coffee spots stay clear of the coffee machine's own approach and in the kitchen aisle.
+  for (const s of AMENITY_SPOTS.filter((x) => x.kind === 'coffee')) assert.ok(s.z > 9.15 && s.z < 11.7, `${s.id} is in the kitchen aisle`);
+  // Seats: a chair is registered at each cafeteria spot, facing its table.
+  for (const s of AMENITY_SPOTS.filter((x) => x.pose === 'sit')) {
+    const table = CAFE_TABLES.find(([x, z]) => Math.hypot(x - s.x, z - s.z) < 0.8)!;
+    assert.ok(table, `${s.id} is at a table`);
+    const fx = -Math.sin(s.rotY), fz = -Math.cos(s.rotY);
+    assert.ok((table[0] - s.x) * fx + (table[1] - s.z) * fz > 0.6, `${s.id} faces the table`);
+  }
 });
 
 test('chairs and stools block their seat and backrest, and wall fixtures are registered', () => {
