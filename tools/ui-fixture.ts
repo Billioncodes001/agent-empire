@@ -95,6 +95,7 @@ const server = createServer(async (req, res) => {
     if (typeof body.password !== 'string' || !body.password) return json(res, 401, { error: 'Wrong password' });
     const token = randomBytes(32).toString('base64url'), id = randomBytes(6).toString('base64url');
     devices.set(token, { id, name: typeof body.deviceName === 'string' ? body.deviceName.slice(0, 64) : 'Device', createdAt: Date.now() });
+    console.log(`fixture device signed in: ${id}`);
     return json(res, 200, { token, deviceId: id });
   }
   const auth = bearer(req);
@@ -108,6 +109,7 @@ const server = createServer(async (req, res) => {
     const entry = [...devices].find(([, d]) => d.id === id);
     if (!entry) return json(res, 404, { error: 'Not found' });
     devices.delete(entry[0]);
+    console.log(`fixture device revoked by DELETE: ${id}`);
     for (const [ws, token] of socketToken) if (token === entry[0]) ws.close(4401, 'Device signed out');
     return json(res, 200, { ok: true });
   }
