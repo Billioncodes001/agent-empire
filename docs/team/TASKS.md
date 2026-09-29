@@ -39,18 +39,18 @@ Plan: [OFFICE_LIFE_AND_MOBILE_PLAN.md](OFFICE_LIFE_AND_MOBILE_PLAN.md).
 
 | ID | Slice | State | Evidence / next dependency |
 | --- | --- | --- | --- |
-| MOBILE-01 | Splash, loading progress, game menu, Empire sign-in | In progress | — |
-| MOBILE-02 | Landscape touch controls (joystick, jump, run, camera) | In progress | — |
-| MOBILE-03 | Phone HUD and camera framing | In progress | — |
+| MOBILE-01 | Splash, loading progress, game menu, Empire sign-in | Reviewed and accepted | [Report](reports/mobile-game.md). The loading bar is driven by real file counts. Menu on touch and the backtick key. Empire sign-in |
+| MOBILE-02 | Landscape touch controls (joystick, jump, run, camera) | Reviewed and accepted | tools/mobile-ui-check.ts 113/113 at 667×375–1024×768 landscape, 375×812 portrait and desktop. Chrome device emulation only; no iOS WebKit landscape or physical-device run yet |
+| MOBILE-03 | Phone HUD and camera framing | Reviewed and accepted | One-row top bar, compact minimap, safe-area insets |
 | MOBILE-04 | Native launch screens (superseded by APP-03/04) | Superseded | iOS simulator build of the old companion succeeded on Xcode 27 / iOS 27. The user chose bundled game apps |
-| APP-01 | Server device tokens, bearer auth, CORS for app origins | Planned | Contract in plan |
+| APP-01 | Server device tokens, bearer auth, CORS for app origins | Reviewed and accepted | [Report](reports/app-device-auth.md). Security review accepted after fixes c791b97 |
 | APP-02 | Client configurable server base and token | Planned | APP-01 |
 | APP-03 | iOS bundled game app (native launch/connect, Keychain, scheme handler, landscape full-screen) | Planned | APP-01/02, MOBILE-01/02 |
 | APP-04 | Android bundled game app | Planned | APP-01/02, MOBILE-01/02 |
 | APP-05 | Desktop bundled remote mode | Planned | APP-01/02 |
-| LIFE-01 | Jump and landing animation, locomotion polish | In progress | — |
-| LIFE-02 | Gym, cafeteria/breakfast, coffee amenities | In progress | — |
-| LIFE-03 | Worker routines driven by real states | In progress | — |
+| LIFE-01 | Jump and landing animation, locomotion polish | Reviewed and accepted | [Report](reports/office-life.md). No idle clip in mid-air |
+| LIFE-02 | Gym, cafeteria/breakfast, coffee amenities | Reviewed and accepted | Built from primitives on every HQ floor, with colliders and clearance tests |
+| LIFE-03 | Worker routines driven by real states | Reviewed and accepted | Idle/done workers take breaks; stale/offline workers never walk. Review fixes 88cd160 |
 | LIFE-04 | Task dependencies (`waitingOn`) | Backlog | Needs backend lane |
 | LIFE-05 | Character variety and Blender pipeline | Backlog | Blender not installed on this host |
 | ORG-01..06 | Executives, estimates, approval desk, marketing, research, onboarding | Backlog | Follows CONSULT-04 |
