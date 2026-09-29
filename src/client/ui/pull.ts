@@ -1,5 +1,6 @@
 import type { GhCheck, GhComment, GhIssue, GhIssueDetail, GhMergeMethod, GhPull, GhPullDetail, GhReviewComment, ServerMsg } from '../../shared/protocol';
 import type { Net } from '../net';
+import { apiFetch } from '../endpoint';
 import { AVATAR_COLORS, store, workerForPull } from '../state';
 import { issuePrompt, type BoardActions } from './boards';
 import { h, openModal, timeAgo, type Modal } from './dom';
@@ -11,13 +12,13 @@ import { buildTree, looksGenerated, parseDiff, renderFileDiff, renderThread, rep
 // reviewed; from here you merge it, or hand it to a worker to review, fix up and merge.
 
 async function getJson<T>(url: string): Promise<T> {
-  const r = await fetch(url, { credentials: 'same-origin' });
+  const r = await apiFetch(url, { credentials: 'same-origin' });
   if (!r.ok) throw new Error((await r.json().catch(() => null))?.error ?? `HTTP ${r.status}`);
   return r.json() as Promise<T>;
 }
 
 async function getText(url: string): Promise<string> {
-  const r = await fetch(url, { credentials: 'same-origin' });
+  const r = await apiFetch(url, { credentials: 'same-origin' });
   if (!r.ok) throw new Error((await r.json().catch(() => null))?.error ?? `HTTP ${r.status}`);
   return r.text();
 }

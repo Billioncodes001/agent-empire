@@ -1,4 +1,5 @@
 /** Installation and service-worker registration. The worker only provides an offline explanation page. */
+import { isAppMode } from '../endpoint';
 
 interface InstallPromptEvent extends Event {
   prompt(): Promise<void>;
@@ -23,6 +24,8 @@ export function onInstallChange(fn: () => void) {
 }
 
 export function installState(): InstallState {
+  // A bundled app is already installed; there is nothing to add to a home screen.
+  if (isAppMode()) return { kind: 'installed' };
   const standalone = window.matchMedia('(display-mode: standalone)').matches || (navigator as { standalone?: boolean }).standalone === true;
   if (standalone || installedNow) return { kind: 'installed' };
   if (!window.isSecureContext) return { kind: 'insecure' };
@@ -53,7 +56,8 @@ export function setupPwa() {
     notify();
   });
   // Development builds skip it so Vite's live reload never meets a stale worker.
-  if (import.meta.env.PROD && 'serviceWorker' in navigator && window.isSecureContext) {
+  // The app bundle is already offline, and a custom-scheme page can't register a worker.
+  if (import.meta.env.PROD && !isAppMode() && 'serviceWorker' in navigator && window.isSecureContext) {
     navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch((err) => console.warn('Offline page unavailable:', err));
   }
 }

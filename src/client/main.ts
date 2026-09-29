@@ -16,6 +16,7 @@ import { sameLook } from '../shared/avatar';
 import { DESK_BY_ID, FLOOR_RISE, SPAWN, deskSeat } from '../shared/layout';
 import type { PeerInfo, WorkerInfo } from '../shared/protocol';
 import { Net } from './net';
+import { apiFetch } from './endpoint';
 import { store, loadProfile, loadSettings, saveSettings, type Profile } from './state';
 import { EYE_HEIGHT, PlayerController, groundAt, isTyping } from './player';
 import { buildOffice, type InteractKind, type Interactable } from './world/office';
@@ -276,7 +277,7 @@ net.onStatus((up) => {
   renderConnection();
   // The host may not offer continuity yet; the socket can also push it.
   if (up)
-    fetch('/api/continuity/status', { cache: 'no-store', credentials: 'same-origin' })
+    apiFetch('/api/continuity/status', { cache: 'no-store', credentials: 'same-origin' })
       .then((res) => (res.ok ? res.json() : null))
       .then((body) => store.setContinuity(body))
       .catch(() => {});

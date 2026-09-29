@@ -1,4 +1,5 @@
 import type { ConsultancyJob } from '../shared/consultancy';
+import { apiFetch } from './endpoint';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const labels: Record<string, string> = { awaiting_approval: 'Your approval', queued: 'Queued', running: 'In progress', needs_attention: 'Needs attention', awaiting_review: 'Ready for review', rejected: 'Declined' };
@@ -19,7 +20,7 @@ function metric(id: string, value: string) {
   el.textContent = value; el.classList.remove('tick'); void el.offsetWidth; el.classList.add('tick');
 }
 async function api<T>(path: string, body?: unknown): Promise<T> {
-  const response = await fetch(`/api/consultancy/${path}`, { credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(12000), ...(body === undefined ? {} : {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}) });
+  const response = await apiFetch(`/api/consultancy/${path}`, { credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(12000), ...(body === undefined ? {} : {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}) });
   const data = await response.json();
   if (!response.ok) throw new Error(response.status === 401 ? 'Your session ended. Open the city and sign in again.' : data.error || 'The host could not complete the request.');
   return data;
