@@ -1,4 +1,4 @@
-import { keyLabel, type Action } from '../controls';
+import { keyLabel } from '../controls';
 import { FLOOR_RISE } from '../../shared/layout';
 import { SITES, type SiteId } from '../../shared/empire';
 import { entranceAccess, entrance, worldPosition, mapPoint, mapWorld } from '../navigation';
@@ -7,6 +7,8 @@ import type { Net } from '../net';
 import type { PlayerController } from '../player';
 import { h, openModal, toast } from './dom';
 import { openManagement } from './management';
+import { mountTouchControls } from './touch';
+import { mountGameMenu } from './game-menu';
 
 export function mountEmpire(
   net: Net,
@@ -30,6 +32,7 @@ export function mountEmpire(
   const management = h(
     'button.btn',
     {
+      id: 'btn-management',
       title: 'Sector reports and construction',
       onclick: () => openOperations(),
     },
@@ -37,36 +40,9 @@ export function mountEmpire(
   );
   document.querySelector('.topbar .controls')?.append(management);
   document.getElementById('hud')!.append(panel);
-  const touch = h('div.empire-touch', {
-    'aria-label': 'Touch movement controls',
-  });
-  for (const [action, symbol] of [
-    ['forward', '↑'],
-    ['left', '←'],
-    ['backward', '↓'],
-    ['right', '→'],
-  ] as [Action, string][]) {
-    const button = h('button.btn', { 'aria-label': `Move ${action}` }, symbol);
-    button.onpointerdown = (e) => {
-      e.preventDefault();
-      button.setPointerCapture(e.pointerId);
-      player.setAction(action, true);
-    };
-    button.onpointerup = button.onpointercancel = () => player.setAction(action, false);
-    touch.append(button);
-  }
-  touch.append(
-    h(
-      'button.btn',
-      {
-        'aria-label': 'Interact with nearby object',
-        onclick: () => (onInteract ? onInteract() : interact()),
-      },
-      'E',
-    ),
-  );
-  if (changeView) touch.append(h('button.btn', { 'aria-label': 'Switch camera view', onclick: changeView }, 'View'));
-  document.getElementById('hud')!.append(touch);
+  // Landscape touch controls (joystick, Jump / Use / View) and the game menu, which also lists tools a phone layout hides.
+  mountTouchControls({ player, interact: () => (onInteract ? onInteract() : interact()), changeView: () => changeView?.() });
+  mountGameMenu({ player, openMap: () => openMap(), openOperations: () => openOperations() });
   let waypoint: { x: number; z: number; name: string } | null = null;
   let fullMap: HTMLCanvasElement | null = null;
   function openMap() {

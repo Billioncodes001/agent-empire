@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone } from 'three/examples/jsm/utils/SkeletonUtils.js';
-import { Human, prepareHumanModel } from '../src/client/world/human';
+import { Human, RUN_FLIGHT_PHASE, landingDip, locomotionClip, prepareHumanModel } from '../src/client/world/human';
 
 // Exercise the actual shipped meshes/rigs on the CPU; texture decode requires a browser.
 async function geometryAsset(name: string) {
@@ -151,4 +151,122 @@ for(const asset of ['founder.glb','chief-of-staff.glb']) test(`${asset}: held ve
  for(let i=0;i<60;i++)human.update(1/60,false,true,false,true);
  root.updateWorldMatrix(true,true);
  for(const side of ['l','r']) {const foot=bones.get(`bip01${side}foot`)!.getWorldPosition(new THREE.Vector3());assert.ok(Math.abs(foot.y-.22)<.06,`foot well ${foot.y}`);assert.ok(Math.abs(foot.z-.62)<.07,`foot well ${foot.z}`);}
+});
+
+// ---- LIFE-01: airborne, landing and walk/run blending ----------------------------------------------
+async function bareHuman(asset: string) {
+  const gltf = await geometryAsset(asset), model = clone(gltf.scene), mixer = prepareHumanModel(model, gltf.animations);
+  const bones = new Map<string, THREE.Bone>();
+  model.traverse(o => { if (o instanceof THREE.Bone) bones.set(o.name.replace(/[^a-z0-9]/gi, '').toLowerCase(), o); });
+  const actions = new Map(gltf.animations.map(c => [c.name, mixer.clipAction(c)]));
+  // As the Human constructor does: a second action on the run clip holds the flight frame.
+  const flight = gltf.animations.find(c => c.name === 'run_neutral')!.clone();
+  flight.name = 'airborne_flight';
+  actions.set(flight.name, mixer.clipAction(flight));
+  const human = Object.create(Human.prototype) as Human, parent = new THREE.Group(), root = new THREE.Group();
+  parent.add(root); root.add(model);
+  Object.assign(human, { root, model, mixer, bones, actions, current: actions.get('idle_neutral_01'), motion: 'idle_neutral_01', transition: null, seatedBaseZ: model.position.z, typingBlend: 0, gestureTime: 0, turnLean: 0, reachRemaining: 0 });
+  const at = (bone: string) => { root.updateWorldMatrix(true, true); return bones.get(bone)!.getWorldPosition(new THREE.Vector3()); };
+  return { gltf, human, root, model, mixer, bones, at };
+}
+
+for (const asset of ['founder.glb', 'chief-of-staff.glb']) test(`${asset}: the held flight frame has both feet off the floor`, async () => {
+  const { gltf, model, mixer, at } = await bareHuman(asset);
+  mixer.stopAllAction();
+  const clip = gltf.animations.find(c => c.name === 'run_neutral')!;
+  const action = mixer.clipAction(clip).reset().play();
+  action.time = RUN_FLIGHT_PHASE * clip.duration;
+  mixer.update(0);
+  model.updateMatrixWorld(true);
+  for (const side of ['l', 'r']) assert.ok(at(`bip01${side}foot`).y > 0.15, `${side} foot is up in the flight frame`);
+});
+
+for (const asset of ['founder.glb', 'chief-of-staff.glb']) test(`${asset}: a jump never plays the idle clip mid-air, tucks, and lands with planted feet`, async () => {
+  const { human, root, model, at } = await bareHuman(asset);
+  const dt = 1 / 60;
+  for (let i = 0; i < 30; i++) human.update(dt, 0);
+  const rest = at('bip01lfoot').y, restY = model.position.y;
+  // The player's jump: JUMP_V 6.4 m/s against GRAVITY 18 m/s².
+  let y = 0, vy = 6.4, peakTuck = 0, landedAt = -1, deepest = 0, worstFoot = 0;
+  for (let i = 0; i < 90; i++) {
+    vy -= 18 * dt;
+    y = Math.max(0, y + vy * dt);
+    root.position.y = y;
+    human.setAirborne(y > 0);
+    human.update(dt, 0);
+    const motion = root.userData.motion as string;
+    if (y > 0.05) {
+      assert.notEqual(motion, 'idle_neutral_01', `frame ${i} is mid-air`);
+      assert.equal(motion, 'airborne', `frame ${i} uses the flight pose`);
+      peakTuck = Math.max(peakTuck, Math.min(at('bip01lfoot').y, at('bip01rfoot').y) - y - rest);
+    } else if (y === 0 && landedAt < 0) landedAt = i;
+    if (landedAt >= 0 && i - landedAt < 18) {
+      deepest = Math.max(deepest, restY - model.position.y);
+      // The touchdown frame may still be toe-first; from the next frame both heels are down.
+      for (const side of ['l', 'r']) {
+        const off = Math.abs(at(`bip01${side}foot`).y - rest);
+        if (i === landedAt) assert.ok(off < 0.06, `touchdown foot ${off}`);
+        else worstFoot = Math.max(worstFoot, off);
+      }
+    }
+  }
+  assert.ok(peakTuck > 0.12, `knees tuck the feet up ${peakTuck}`);
+  assert.ok(landedAt > 0, 'lands');
+  assert.ok(deepest > 0.025 && deepest < 0.095, `landing dip ${deepest}`);
+  assert.ok(worstFoot < 0.03, `feet stay planted through the dip (${worstFoot})`);
+  assert.equal(root.userData.motion, 'idle_neutral_01', 'recovers to standing');
+  assert.ok(Math.abs(model.position.y - restY) < 1e-6, 'hips return to rest height');
+});
+
+test('walk ↔ run selection has hysteresis, so a speed hovering at the boundary does not flicker', () => {
+  assert.equal(locomotionClip(0, 'walk_neutral'), 'idle_neutral_01');
+  assert.equal(locomotionClip(1.65, 'idle_neutral_01'), 'walk_neutral');
+  assert.equal(locomotionClip(4.3, 'walk_neutral'), 'run_neutral');
+  let clip: string = 'walk_neutral', switches = 0;
+  for (let i = 0; i < 200; i++) {
+    const next = locomotionClip(2.5 + Math.sin(i * 1.7) * 0.18, clip);
+    if (next !== clip) switches++;
+    clip = next;
+  }
+  assert.equal(switches, 0, 'noise inside the hysteresis band never switches');
+  assert.equal(landingDip(0, 0.06), 0);
+  assert.ok(landingDip(0.3, 0.06) > 0.059);
+  assert.equal(landingDip(1, 0.06), 0);
+});
+
+for (const asset of ['founder.glb', 'chief-of-staff.glb']) test(`${asset}: accelerating from walk to run keeps the stride continuous`, async () => {
+  const { human, root, at } = await bareHuman(asset);
+  const dt = 1 / 60;
+  const feet = () => ['l', 'r'].map(s => root.worldToLocal(at(`bip01${s}foot`)));
+  let before = feet(), steady = 0, switching = 0, switches = 0, last = 'idle_neutral_01';
+  for (let i = 0; i < 240; i++) {
+    // 1.65 m/s walk, ramp to a 4.3 m/s run over one second, hold, then back.
+    const speed = i < 60 ? 1.65 : i < 120 ? 1.65 + (4.3 - 1.65) * ((i - 60) / 60) : i < 180 ? 4.3 : 4.3 - (4.3 - 1.65) * Math.min(1, (i - 180) / 40);
+    human.update(dt, speed);
+    const now = feet(), jump = Math.max(now[0].distanceTo(before[0]), now[1].distanceTo(before[1]));
+    const motion = root.userData.motion as string;
+    if (motion !== last) { if (i > 0) switches++; last = motion; }
+    // Largest per-frame foot travel while settled in a run versus across the cross-fades.
+    if (i >= 150 && i < 180) steady = Math.max(steady, jump);
+    if ((i >= 60 && i < 150) || i >= 180) switching = Math.max(switching, jump);
+    before = now;
+  }
+  assert.equal(switches, 2, 'one walk→run and one run→walk switch');
+  assert.ok(switching < steady * 1.35, `no pop across the blend (${switching.toFixed(3)} vs steady ${steady.toFixed(3)})`);
+});
+
+for (const asset of ['founder.glb', 'chief-of-staff.glb']) test(`${asset}: amenity poses never accumulate and let go cleanly`, async () => {
+  const { human, root, bones } = await bareHuman(asset);
+  for (const activity of ['weights', 'stretch', 'coffee'] as const) {
+    human.setActivity(activity);
+    for (let i = 0; i < 120; i++) human.update(1 / 60, 0);
+    for (let i = 0; i < 5; i++) human.update(0, 0);
+    const q = bones.get('bip01rforearm')!.quaternion.clone();
+    for (let i = 0; i < 30; i++) human.update(0, 0);
+    assert.ok(q.angleTo(bones.get('bip01rforearm')!.quaternion) < 1e-3, `${activity}: a held frame does not drift`);
+  }
+  human.setActivity('none');
+  for (let i = 0; i < 180; i++) human.update(1 / 60, 0);
+  const props = root.children.filter(o => o.name.startsWith('prop:'));
+  assert.ok(props.length > 0 && props.every(p => !p.visible), 'cup and dumbbells are put away');
 });

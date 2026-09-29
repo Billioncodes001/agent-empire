@@ -4,10 +4,51 @@ import { clone } from 'three/examples/jsm/utils/SkeletonUtils.js';
 
 const assets = new Map<string, Promise<GLTF>>();
 export type VehiclePose = { phase: 'reach' | 'enter' | 'exit' | 'drive'; progress: number; steering?: number; handle?: THREE.Vector3; feet?: { l: THREE.Vector3; r: THREE.Vector3 } };
+/**
+ * A procedural layer over the recorded clips for a worker using an office amenity. It is only
+ * ever set by the routine controller from a real server state (see routines.ts).
+ */
+export type HumanActivity = 'none' | 'bike' | 'weights' | 'stretch' | 'coffee' | 'eat';
 function source(url: string) {
   if (!assets.has(url)) assets.set(url, new GLTFLoader().loadAsync(url));
   return assets.get(url)!;
 }
+
+/**
+ * Normalized run_neutral phase where both feet are off the floor (the flight part of a stride,
+ * measured on both rigs in models.test.ts). A held frame of it is the airborne base pose.
+ */
+export const RUN_FLIGHT_PHASE = 0.16;
+/** Walk → run above this speed (m/s); run → walk below RUN_EXIT. The gap stops flicker at the boundary. */
+export const RUN_ENTER = 2.7;
+export const RUN_EXIT = 2.3;
+/** A fall shorter than this is a step or a stair edge: no airborne pose and no landing dip. */
+const MIN_FLIGHT = 0.12;
+const LANDING_TIME = 0.3;
+/** Ankle-bone height above the floor when standing, on both rigs (models.test.ts). */
+const ANKLE = 0.1;
+const FLIGHT = 'airborne_flight';
+
+/** Which recorded clip a grounded, standing body plays at this speed, with hysteresis between walk and run. */
+export function locomotionClip(speed: number, previous: string): 'idle_neutral_01' | 'walk_neutral' | 'run_neutral' {
+  if (speed <= 0.08) return 'idle_neutral_01';
+  return (previous === 'run_neutral' ? speed > RUN_EXIT : speed > RUN_ENTER) ? 'run_neutral' : 'walk_neutral';
+}
+
+/** Landing dip (m) over normalized landing time u: a quick drop, then an eased recovery. */
+export function landingDip(u: number, depth: number): number {
+  if (u <= 0 || u >= 1) return 0;
+  if (u < 0.3) return depth * Math.sin((u / 0.3) * Math.PI / 2);
+  const v = (u - 0.3) / 0.7;
+  return depth * (1 - v * v * (3 - 2 * v));
+}
+
+// Scratch objects: the per-frame pose layers below allocate nothing.
+const _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _q3 = new THREE.Quaternion();
+const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _axis = new THREE.Vector3();
+const _feet = [new THREE.Vector3(), new THREE.Vector3()];
+const _pedal = new THREE.Vector3();
+
 /** Shared source geometry/textures, independent skeleton and mixer for each adult. */
 export class Human {
   readonly root = new THREE.Group();
@@ -28,6 +69,23 @@ export class Human {
   private turnLean = 0;
   private vehiclePose: VehiclePose | null = null;
   private bonePose?: Map<string, THREE.Quaternion>;
+  // Airborne state. Every field below tolerates `undefined`: models.test.ts builds bare instances.
+  private airborneInput?: boolean;
+  private landingGrace?: number;
+  private airTime?: number;
+  private inFlight?: boolean;
+  private groundedFor?: number;
+  private air?: number;
+  private vy?: number;
+  private minVy?: number;
+  private lastRootY?: number;
+  private landing?: number;
+  private landingDepth?: number;
+  private baseY?: number;
+  private activity?: HumanActivity;
+  private activityBlend?: number;
+  private detail?: boolean;
+  private props?: Map<string, THREE.Object3D>;
   constructor(variant = 0) {
     this.root.name = 'Realistic human';
     void source(variant % 2 ? '/models/chief-of-staff.glb' : '/models/founder.glb')
@@ -36,6 +94,13 @@ export class Human {
         const model = clone(gltf.scene);
         this.mixer = prepareHumanModel(model, gltf.animations);
         for (const clip of gltf.animations) this.actions.set(clip.name, this.mixer.clipAction(clip));
+        // A second action on the run clip holds the flight frame while the stride action keeps its own time.
+        const run = gltf.animations.find((c) => c.name === 'run_neutral');
+        if (run) {
+          const flight = run.clone();
+          flight.name = FLIGHT;
+          this.actions.set(FLIGHT, this.mixer.clipAction(flight));
+        }
         this.current = this.actions.get('idle_neutral_01');
         this.motion = 'idle_neutral_01';
         model.traverse((o) => {
@@ -48,6 +113,7 @@ export class Human {
         this.root.add(model);
         this.model = model;
         this.seatedBaseZ = model.position.z;
+        this.baseY = model.position.y;
         this.ready = true;
       })
       .catch((error) => {
@@ -55,19 +121,30 @@ export class Human {
         this.root.userData.assetError = true;
       });
   }
-  private rotate(name: string, angle: number) {
+  /** Rotate a bone about one of the model's own axes (0 lateral, 1 up, 2 forward), expressed in the bone parent's space. */
+  private rotate(name: string, angle: number, axisIndex: 0 | 1 | 2 = 0) {
     const bone = this.bones.get(name);
-    if (!bone || !this.model) return;
-    // Rotate around the model's lateral axis in the bone parent's space, regardless of source rig axes.
+    if (!bone || !this.model || !angle) return;
+    // Rotate around the model's axis in the bone parent's space, regardless of source rig axes.
     bone.parent!.updateWorldMatrix(true, false);
-    const q = this.model.getWorldQuaternion(new THREE.Quaternion());
-    const axis = new THREE.Vector3(1, 0, 0)
-      .applyQuaternion(q)
-      .applyQuaternion(bone.parent!.getWorldQuaternion(new THREE.Quaternion()).invert());
-    bone.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(axis, angle));
+    this.model.getWorldQuaternion(_q);
+    _axis.set(axisIndex === 0 ? 1 : 0, axisIndex === 1 ? 1 : 0, axisIndex === 2 ? 1 : 0)
+      .applyQuaternion(_q)
+      .applyQuaternion(bone.parent!.getWorldQuaternion(_q2).invert());
+    bone.quaternion.premultiply(_q3.setFromAxisAngle(_axis, angle)).normalize();
   }
   reach() {
     this.reachRemaining = 0.6;
+  }
+  /** Airborne (jumping or falling) as the caller's physics sees it. `grace` absorbs a brief false "grounded" from interpolated peers. */
+  setAirborne(airborne: boolean, grace = 0) {
+    this.airborneInput = airborne;
+    this.landingGrace = grace;
+  }
+  /** Procedural amenity layer; `detail` false skips the IK-heavy parts (low quality preset). */
+  setActivity(activity: HumanActivity, detail = true) {
+    this.activity = activity;
+    this.detail = detail;
   }
   private placeHand(side: 'l' | 'r', x: number, y: number, z: number, weight = 1) {
     const hand = this.bones.get(`bip01${side}hand`);
@@ -109,36 +186,75 @@ export class Human {
     this.transition = name ? { name, progress } : null;
   }
   setVehiclePose(pose: VehiclePose | null) { this.vehiclePose = pose; }
-  private placeFoot(side: 'l' | 'r', target: THREE.Vector3, weight: number) {
+  /** Two-bone foot IK toward a root-local target; allocation-free. */
+  private placeFoot(side: 'l' | 'r', target: THREE.Vector3, weight: number, iterations = 8) {
     const foot = this.bones.get(`bip01${side}foot`);
     if (!foot) return;
     this.root.updateWorldMatrix(true, true);
-    target = foot.getWorldPosition(new THREE.Vector3()).lerp(this.root.localToWorld(target), weight);
-    for (let i = 0; i < 8; i++) for (const part of ['calf', 'thigh']) {
+    const goal = foot.getWorldPosition(_v3).lerp(this.root.localToWorld(_v2.copy(target)), weight);
+    for (let i = 0; i < iterations; i++) for (const part of ['calf', 'thigh']) {
       const bone = this.bones.get(`bip01${side}${part}`);
       if (!bone?.parent) continue;
-      const origin = bone.getWorldPosition(new THREE.Vector3());
-      const delta = new THREE.Quaternion().setFromUnitVectors(foot.getWorldPosition(new THREE.Vector3()).sub(origin).normalize(), target.clone().sub(origin).normalize());
-      const parent = bone.parent.getWorldQuaternion(new THREE.Quaternion());
-      bone.quaternion.premultiply(parent.clone().invert().multiply(delta).multiply(parent)); bone.updateWorldMatrix(true, true);
+      const origin = bone.getWorldPosition(_v);
+      const from = foot.getWorldPosition(_v2).sub(origin).normalize();
+      _q.setFromUnitVectors(from, _axis.copy(goal).sub(origin).normalize());
+      bone.parent.getWorldQuaternion(_q2);
+      bone.quaternion.premultiply(_q3.copy(_q2).invert().multiply(_q).multiply(_q2)); bone.updateWorldMatrix(true, true);
     }
+  }
+  /** Track airborne time, vertical speed and landings; returns whether the flight pose applies. */
+  private updateFlight(dt: number): boolean {
+    const y = this.root.getWorldPosition(_v).y;
+    let rising = false;
+    if (dt > 0 && this.lastRootY !== undefined) {
+      const raw = (y - this.lastRootY) / dt;
+      this.vy = THREE.MathUtils.damp(this.vy ?? 0, raw, 18, dt);
+      // A take-off shows on its first frame, however long that frame was.
+      rising = raw > 1;
+    }
+    this.lastRootY = y;
+    const airborne = !!this.airborneInput;
+    if (airborne) {
+      this.airTime = (this.airTime ?? 0) + dt;
+      this.groundedFor = 0;
+      this.minVy = Math.min(this.minVy ?? 0, this.vy ?? 0);
+    } else this.groundedFor = (this.groundedFor ?? 0) + dt;
+    const airTime = this.airTime ?? 0;
+    // Latched for the rest of this flight once it counts, so the pose never flickers back to a clip.
+    const took = (this.inFlight ||= airTime > MIN_FLIGHT || (airborne && (rising || (this.vy ?? 0) > 1)));
+    if (!airborne && airTime > 0 && (this.groundedFor ?? 0) >= (this.landingGrace ?? 0)) {
+      // Touchdown: a real flight earns a dip proportional to how fast it came down.
+      if (airTime > MIN_FLIGHT) {
+        this.landing = LANDING_TIME;
+        this.landingDepth = THREE.MathUtils.clamp(-(this.minVy ?? 0) * 0.011, 0.03, 0.085);
+      }
+      this.airTime = 0;
+      this.minVy = 0;
+      this.inFlight = false;
+      return false;
+    }
+    return took && airTime > 0;
   }
   update(dt: number, moving: number | boolean = false, seated = false, typing = false, driving = false) {
     if (!this.mixer || !this.model) return;
     const speed = typeof moving === 'number' ? moving : moving ? 1.65 : 0;
+    const flying = !seated && !driving && !this.transition && this.updateFlight(dt);
     const name =
       this.transition?.name ??
-      (seated ? 'sit_chair_idle_neutral_01' : speed > 0.08 ? (speed > 2.5 ? 'run_neutral' : 'walk_neutral') : 'idle_neutral_01');
+      (seated ? 'sit_chair_idle_neutral_01' : flying && this.actions.has(FLIGHT) ? FLIGHT : locomotionClip(speed, this.motion));
     const next = this.actions.get(name) ?? this.actions.get('idle_neutral_01');
     if (next && name !== this.motion) {
       const old = this.current;
       const locomotion = (n: string) => n === 'walk_neutral' || n === 'run_neutral';
-      const phase = old && locomotion(this.motion) && locomotion(name) ? (old.time / old.getClip().duration) % 1 : 0;
+      // Walk and run share foot contacts at the same normalized phase, so switching keeps the stride.
+      const phase = old && locomotion(this.motion) && locomotion(name) ? (old.time / old.getClip().duration) % 1
+        : this.motion === FLIGHT && locomotion(name) ? 0.45 : name === FLIGHT ? RUN_FLIGHT_PHASE : 0;
       next.reset().setEffectiveWeight(1).setEffectiveTimeScale(1).play();
       next.time = phase * next.getClip().duration;
       next.paused = false;
       next.setLoop(THREE.LoopRepeat, Infinity);
-      if (old && old !== next) old.crossFadeTo(next, this.transition ? 0.16 : 0.22, false);
+      const fade = this.transition ? 0.16 : name === FLIGHT ? 0.12 : this.motion === FLIGHT ? 0.08 : locomotion(name) && locomotion(this.motion) ? 0.3 : 0.22;
+      if (old && old !== next) old.crossFadeTo(next, fade, false);
       this.current = next;
       this.motion = name;
     }
@@ -148,6 +264,10 @@ export class Human {
         this.current.clampWhenFinished = true;
         this.current.paused = true;
         this.current.time = Math.min(0.9999, Math.max(0, this.transition.progress)) * this.current.getClip().duration;
+      } else if (name === FLIGHT) {
+        // Held, not played: a stride frame with both feet up. The layer below tucks it by vertical speed.
+        this.current.paused = true;
+        this.current.time = RUN_FLIGHT_PHASE * this.current.getClip().duration;
       } else {
         this.current.paused = false;
         this.current.setEffectiveTimeScale(
@@ -168,7 +288,7 @@ export class Human {
       const turn = (this.vehiclePose?.steering ?? 0) * 2.4;
       for (const [side, sign] of [['l', 1], ['r', -1]] as const) {
         this.placeHand(side, sign * .145 * Math.cos(turn), .80 + sign * .145 * Math.sin(turn), .57);
-        this.placeFoot(side, new THREE.Vector3(sign * .13, .22, .62), 1);
+        this.placeFoot(side, _pedal.set(sign * .13, .22, .62), 1);
       }
     }
     const car = this.vehiclePose;
@@ -184,8 +304,8 @@ export class Human {
         // Right leg enters first, then the left clears the sill; reverse order on exit.
         if (car.feet) for (const side of ['l', 'r'] as const) this.placeFoot(side, this.root.worldToLocal(car.feet[side].clone()), 1);
         else {
-          this.placeFoot('r', new THREE.Vector3(-.13, .22, .62), THREE.MathUtils.smoothstep(seat, .30, .72));
-          this.placeFoot('l', new THREE.Vector3(.13, .22, .62), THREE.MathUtils.smoothstep(seat, .64, .98));
+          this.placeFoot('r', _pedal.set(-.13, .22, .62), THREE.MathUtils.smoothstep(seat, .30, .72));
+          this.placeFoot('l', _pedal.set(.13, .22, .62), THREE.MathUtils.smoothstep(seat, .64, .98));
         }
       }
     }
@@ -206,13 +326,15 @@ export class Human {
         }
       }
     }
+    this.flightLayer(dt, flying);
+    this.activityLayer(dt, seated && !driving);
     // Small upper-body balance during a turn; recorded pelvis, knee and foot tracks remain intact.
     const yaw = this.root.parent?.rotation.y ?? 0;
     const yawSpeed = this.lastYaw === undefined ? 0 : Math.atan2(Math.sin(yaw - this.lastYaw), Math.cos(yaw - this.lastYaw)) / Math.max(dt, .001);
     this.lastYaw = yaw;
-    this.turnLean = THREE.MathUtils.damp(this.turnLean, !seated && speed > .4 ? THREE.MathUtils.clamp(-yawSpeed * .015, -.07, .07) : 0, 6, dt);
+    this.turnLean = THREE.MathUtils.damp(this.turnLean, !seated && !flying && speed > .4 ? THREE.MathUtils.clamp(-yawSpeed * .015, -.07, .07) : 0, 6, dt);
     this.model.rotation.z = this.turnLean;
-    this.root.userData.motion = typing && seated ? 'seated-keyboard' : name;
+    this.root.userData.motion = typing && seated ? 'seated-keyboard' : flying ? 'airborne' : (this.landing ?? 0) > 0 ? 'landing' : name;
     // The source clips contain hip settling, knee flexion and planted heel/toe motion.
     // No synthetic thigh or calf rotations are added on top of recorded locomotion.
     if (this.reachRemaining > 0 && !seated) {
@@ -222,9 +344,168 @@ export class Human {
       this.rotate('bip01rforearm', -reach * 0.45);
     }
   }
+  /**
+   * Airborne and landing layer. In the air the held flight frame gets its knees drawn up while
+   * rising and reaching down for the floor while falling, with the arms lifted for balance. On
+   * touchdown the hips drop and recover while foot IK keeps both feet planted.
+   */
+  private flightLayer(dt: number, flying: boolean) {
+    const model = this.model!;
+    this.baseY ??= model.position.y;
+    this.air = THREE.MathUtils.damp(this.air ?? 0, flying ? 1 : 0, flying ? 16 : 60, dt);
+    const air = this.air;
+    if (air > .005) {
+      const rise = THREE.MathUtils.clamp((this.vy ?? 0) / 6.4, -1, 1);
+      // Knees come up most on the way up and straighten toward the landing.
+      const tuck = air * THREE.MathUtils.clamp(0.55 + 0.35 * rise, 0.15, 0.9);
+      this.rotate('bip01lthigh', -0.55 * tuck);
+      this.rotate('bip01rthigh', -0.35 * tuck);
+      this.rotate('bip01lcalf', 0.95 * tuck);
+      this.rotate('bip01rcalf', 0.8 * tuck);
+      this.rotate('bip01spine', 0.08 * air);
+      // Arms lift forward and out, a little higher at take-off.
+      const lift = air * (0.32 + 0.18 * Math.max(0, rise));
+      this.rotate('bip01lupperarm', -lift);
+      this.rotate('bip01rupperarm', -lift * 0.8);
+      this.rotate('bip01lupperarm', lift * 0.6, 2);
+      this.rotate('bip01rupperarm', -lift * 0.6, 2);
+    }
+    let dip = 0;
+    if ((this.landing ?? 0) > 0 && !flying) {
+      this.landing = Math.max(0, this.landing! - dt);
+      dip = landingDip(1 - this.landing / LANDING_TIME, this.landingDepth ?? 0.05);
+    } else if (flying) this.landing = 0;
+    if (dip > 0.001) {
+      // Record where the feet are, lower the hips, then bend the knees to keep the feet there.
+      this.root.updateWorldMatrix(true, true);
+      const feet = ['l', 'r'] as const;
+      feet.forEach((side, i) => {
+        const foot = this.bones.get(`bip01${side}foot`);
+        // Planted on the floor, even while the flight pose is still fading out of the first frames.
+        if (foot) this.root.worldToLocal(foot.getWorldPosition(_feet[i])).y = ANKLE;
+      });
+      model.position.y = this.baseY - dip;
+      this.rotate('bip01spine', dip * 2.2);
+      // Seed a forward knee bend of the right size (a near-straight chain barely bends under CCD), then solve.
+      const bend = Math.sqrt((2 * dip) / 0.85);
+      for (const side of feet) {
+        this.rotate(`bip01${side}thigh`, -bend);
+        this.rotate(`bip01${side}calf`, 2 * bend);
+      }
+      feet.forEach((side, i) => this.placeFoot(side, _feet[i], 1, 16));
+    } else model.position.y = this.baseY;
+  }
+  /** Amenity poses, blended in and out so arriving and leaving never pops. */
+  private activityLayer(dt: number, seated: boolean) {
+    const activity = this.activity ?? 'none';
+    const target = activity === 'none' ? 0 : 1;
+    this.activityBlend = THREE.MathUtils.damp(this.activityBlend ?? 0, target, 4, dt);
+    const w = this.activityBlend;
+    this.showProp('cup', activity === 'coffee' && w > .5);
+    this.showProp('dumbbell-l', activity === 'weights' && w > .5);
+    this.showProp('dumbbell-r', activity === 'weights' && w > .5);
+    if (w < .005 || activity === 'none') return;
+    const t = this.gestureTime, detail = this.detail !== false;
+    switch (activity) {
+      case 'bike': {
+        if (!seated) break;
+        // Pedal circles under the saddle, hands on the bars. Geometry: amenities.ts (bike).
+        if (detail) {
+          for (const [side, sign, phase] of [['l', 1, 0], ['r', -1, Math.PI]] as const) {
+            const a = t * 5.2 + phase;
+            this.placeFoot(side, _pedal.set(sign * .12, .03 + Math.sin(a) * .15, .22 + Math.cos(a) * .15), w);
+          }
+          for (const [side, sign] of [['l', 1], ['r', -1]] as const) this.placeHand(side, sign * .22, .74, .52, w);
+        }
+        this.rotate('bip01spine', .22 * w);
+        break;
+      }
+      case 'weights': {
+        // Alternating curls: forearms swing up about the elbow.
+        const l = Math.max(0, Math.sin(t * 1.9)), r = Math.max(0, Math.sin(t * 1.9 + Math.PI));
+        this.rotate('bip01lforearm', -1.9 * l * w);
+        this.rotate('bip01rforearm', -1.9 * r * w);
+        break;
+      }
+      case 'stretch': {
+        // Slow overhead reach and release.
+        const s = (0.5 - 0.5 * Math.cos(t * 0.7)) * w;
+        this.rotate('bip01lupperarm', -2.5 * s);
+        this.rotate('bip01rupperarm', -2.5 * s);
+        this.rotate('bip01spine', -.12 * s);
+        break;
+      }
+      case 'coffee': {
+        // Cup held at the chest; a sip every few seconds.
+        const sip = Math.max(0, Math.sin(t * 0.9) - 0.8) / 0.2;
+        this.rotate('bip01rupperarm', -(0.25 + 0.35 * sip) * w);
+        this.rotate('bip01rforearm', -(1.35 + 0.5 * sip) * w);
+        this.placeProp('cup', 'r');
+        break;
+      }
+      case 'eat': {
+        if (!seated) break;
+        if (detail) for (const [side, sign] of [['l', 1], ['r', -1]] as const) this.placeHand(side, sign * .17, .8, .42, .85 * w);
+        const bite = Math.max(0, Math.sin(t * 0.8) - 0.75) / 0.25;
+        this.rotate('bip01rforearm', -1.1 * bite * w);
+        this.rotate('bip01head', .12 * w);
+        break;
+      }
+    }
+    if (activity === 'weights') {
+      this.placeProp('dumbbell-l', 'l');
+      this.placeProp('dumbbell-r', 'r');
+    }
+  }
+  private prop(name: string): THREE.Object3D {
+    this.props ??= new Map();
+    let p = this.props.get(name);
+    if (!p) {
+      p = new THREE.Group();
+      p.name = `prop:${name}`;
+      if (name === 'cup') {
+        const cup = new THREE.Mesh(new THREE.CylinderGeometry(.042, .034, .1, 12), new THREE.MeshStandardMaterial({ color: '#f1eee6', roughness: .4 }));
+        const sleeve = new THREE.Mesh(new THREE.CylinderGeometry(.044, .04, .045, 12), new THREE.MeshStandardMaterial({ color: '#8a6a4a', roughness: .9 }));
+        cup.position.y = sleeve.position.y = .04;
+        p.add(cup, sleeve);
+      } else {
+        const iron = new THREE.MeshStandardMaterial({ color: '#2b3033', roughness: .45, metalness: .6 });
+        const bar = new THREE.Mesh(new THREE.CylinderGeometry(.014, .014, .2, 8), iron);
+        bar.rotation.z = Math.PI / 2;
+        p.add(bar);
+        for (const x of [-.09, .09]) {
+          const plate = new THREE.Mesh(new THREE.CylinderGeometry(.05, .05, .04, 12), iron);
+          plate.rotation.z = Math.PI / 2;
+          plate.position.x = x;
+          p.add(plate);
+        }
+      }
+      p.traverse((o) => { if (o instanceof THREE.Mesh) o.castShadow = true; });
+      p.visible = false;
+      this.root.add(p);
+      this.props.set(name, p);
+    }
+    return p;
+  }
+  private showProp(name: string, visible: boolean) {
+    const p = this.props?.get(name);
+    if (p) p.visible = visible;
+    else if (visible) this.prop(name).visible = true;
+  }
+  /** Keep a prop in the palm (between wrist and middle finger), upright in the body's frame. */
+  private placeProp(name: string, side: 'l' | 'r') {
+    const hand = this.bones.get(`bip01${side}hand`), finger = this.bones.get(`bip01${side}finger2`);
+    if (!hand || !finger) return;
+    const p = this.prop(name);
+    this.root.updateWorldMatrix(true, true);
+    hand.getWorldPosition(_v).lerp(finger.getWorldPosition(_v2), .5);
+    p.position.copy(this.root.worldToLocal(_v));
+    if (name === 'cup') p.position.y -= .03;
+  }
   dispose() {
     this.disposed = true;
     this.mixer?.stopAllAction();
+    this.props?.forEach((p) => p.traverse((o) => { if (o instanceof THREE.Mesh) { o.geometry.dispose(); (o.material as THREE.Material).dispose(); } }));
     this.root.clear();
   }
 }

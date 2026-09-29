@@ -21,11 +21,26 @@ export function tunneledPort(req: http.IncomingMessage, officePort: number): num
   return port && port !== officePort ? port : undefined;
 }
 
-function upstreamHeaders(req: http.IncomingMessage): http.OutgoingHttpHeaders {
+/**
+ * What goes to the worker's server: the request's headers minus the office's own credentials, i.e.
+ * its session cookies, a device token in `Authorization: Bearer …`, and `bearer.<token>` WebSocket
+ * subprotocol entries. Other Authorization schemes and subprotocols belong to the service and pass through.
+ */
+export function upstreamHeaders(req: http.IncomingMessage): http.OutgoingHttpHeaders {
   const headers: http.OutgoingHttpHeaders = { ...req.headers, [RELAYED]: '1' };
   const cookie = withoutOfficeCookies(req.headers.cookie);
   if (cookie) headers.cookie = cookie;
   else delete headers.cookie;
+  if (/^Bearer(\s|$)/i.test(req.headers.authorization ?? '')) delete headers.authorization;
+  const protocol = req.headers['sec-websocket-protocol'];
+  if (protocol !== undefined) {
+    const kept = (Array.isArray(protocol) ? protocol.join(',') : protocol)
+      .split(',')
+      .map((v) => v.trim())
+      .filter((v) => v && !/^bearer\./i.test(v));
+    if (kept.length) headers['sec-websocket-protocol'] = kept.join(', ');
+    else delete headers['sec-websocket-protocol'];
+  }
   return headers;
 }
 
