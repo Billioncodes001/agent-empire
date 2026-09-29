@@ -11,6 +11,7 @@ import { wallFacing, type WallId, type WallRect } from '../../shared/decor';
 import { mesh, roundedBox, textPlane, toon } from './toon';
 import { deskAccessories, furnishOffice } from './furnishing';
 import { FURNISHING_FIXTURES } from './furnishing-layout';
+import { buildAmenities } from './amenities';
 
 export interface Collider {
   minX: number;
@@ -22,7 +23,7 @@ export interface Collider {
   bottom?: number;
 }
 
-export type InteractKind = 'desk' | 'issues' | 'pulls' | 'services' | 'queue' | 'tv' | 'coffee' | 'decor' | 'elevator';
+export type InteractKind = 'desk' | 'issues' | 'pulls' | 'services' | 'queue' | 'tv' | 'coffee' | 'gym' | 'cafeteria' | 'decor' | 'elevator';
 
 /** Something you can use. Its scene object carries it as `userData.interact`, for clicking. */
 export interface Interactable {
@@ -513,6 +514,8 @@ export function buildOffice(): Office {
 
   // Meeting area, reception, kitchen details, storage and print corner; pushed before elevation offsets are captured.
   colliders.push(...furnishOffice(group));
+  // Gym corner, cafeteria and the expanded coffee bar (their footprints are in FURNISHING_COLLIDERS).
+  interactables.push(...buildAmenities(group));
   for (const f of FURNISHING_FIXTURES) fixture(...f);
 
   buildLoft(group, colliders);
