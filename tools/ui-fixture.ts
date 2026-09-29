@@ -86,8 +86,9 @@ const server = createServer(async (req, res) => {
       res.writeHead(204, { 'access-control-allow-origin': APP_ORIGIN, 'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS', 'access-control-allow-headers': 'Authorization, Content-Type', vary: 'Origin' });
       return res.end();
     }
-    if (bearer(req) || url.pathname === '/api/device/login') { res.setHeader('access-control-allow-origin', APP_ORIGIN); res.setHeader('vary', 'Origin'); }
+    if (bearer(req) || url.pathname === '/api/device/login' || url.pathname === '/api/health') { res.setHeader('access-control-allow-origin', APP_ORIGIN); res.setHeader('vary', 'Origin'); }
   }
+  if (url.pathname === '/api/health') return json(res, 200, { ok: true });
   if (url.pathname === '/api/device/login' && req.method === 'POST') {
     let raw = ''; for await (const chunk of req) raw += chunk;
     let body: { password?: unknown; deviceName?: unknown } = {}; try { body = JSON.parse(raw); } catch { return json(res, 400, { error: 'Bad request' }); }
