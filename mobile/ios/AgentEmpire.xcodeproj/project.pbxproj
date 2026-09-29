@@ -1,25 +1,285 @@
 // !$*UTF8*$!
 {
- archiveVersion = 1;
- classes = {};
- objectVersion = 56;
- objects = {
-  A00000000000000000000001 = {isa = PBXProject; attributes = {BuildIndependentTargetsInParallel = YES; LastUpgradeCheck = 1600;}; buildConfigurationList = A00000000000000000000002; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base); mainGroup = A00000000000000000000003; productRefGroup = A00000000000000000000004; projectDirPath = ""; projectRoot = ""; targets = (A00000000000000000000005);};
-  A00000000000000000000002 = {isa = XCConfigurationList; buildConfigurations = (A00000000000000000000010,A00000000000000000000011); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release;};
-  A00000000000000000000003 = {isa = PBXGroup; children = (A00000000000000000000006,A00000000000000000000004); sourceTree = "<group>";};
-  A00000000000000000000004 = {isa = PBXGroup; children = (A00000000000000000000007); name = Products; sourceTree = "<group>";};
-  A00000000000000000000005 = {isa = PBXNativeTarget; buildConfigurationList = A00000000000000000000008; buildPhases = (A00000000000000000000009,A0000000000000000000000A,A0000000000000000000000B); buildRules = (); dependencies = (); name = AgentEmpire; productName = AgentEmpire; productReference = A00000000000000000000007; productType = "com.apple.product-type.application";};
-  A00000000000000000000006 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentEmpire/AgentEmpireApp.swift; sourceTree = "<group>";};
-  A00000000000000000000007 = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AgentEmpire.app; sourceTree = BUILT_PRODUCTS_DIR;};
-  A00000000000000000000008 = {isa = XCConfigurationList; buildConfigurations = (A00000000000000000000012,A00000000000000000000013); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release;};
-  A00000000000000000000009 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A0000000000000000000000C); runOnlyForDeploymentPostprocessing = 0;};
-  A0000000000000000000000A = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0;};
-  A0000000000000000000000B = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0;};
-  A0000000000000000000000C = {isa = PBXBuildFile; fileRef = A00000000000000000000006;};
-  A00000000000000000000010 = {isa = XCBuildConfiguration; name = Debug; buildSettings = {CLANG_ENABLE_MODULES = YES; SDKROOT = iphoneos; IPHONEOS_DEPLOYMENT_TARGET = 16.0; SWIFT_VERSION = 5.0; SWIFT_OPTIMIZATION_LEVEL = "-Onone";};};
-  A00000000000000000000011 = {isa = XCBuildConfiguration; name = Release; buildSettings = {CLANG_ENABLE_MODULES = YES; SDKROOT = iphoneos; IPHONEOS_DEPLOYMENT_TARGET = 16.0; SWIFT_VERSION = 5.0; SWIFT_COMPILATION_MODE = wholemodule;};};
-  A00000000000000000000012 = {isa = XCBuildConfiguration; name = Debug; buildSettings = {PRODUCT_BUNDLE_IDENTIFIER = com.agentempire.mobile; PRODUCT_NAME = "$(TARGET_NAME)"; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_CFBundleDisplayName = "Agent Empire"; INFOPLIST_KEY_UILaunchScreen_Generation = YES; INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES; INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"; TARGETED_DEVICE_FAMILY = "1,2"; MARKETING_VERSION = 0.2.0; CURRENT_PROJECT_VERSION = 1; CODE_SIGN_STYLE = Automatic;};};
-  A00000000000000000000013 = {isa = XCBuildConfiguration; name = Release; buildSettings = {PRODUCT_BUNDLE_IDENTIFIER = com.agentempire.mobile; PRODUCT_NAME = "$(TARGET_NAME)"; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_CFBundleDisplayName = "Agent Empire"; INFOPLIST_KEY_UILaunchScreen_Generation = YES; INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES; INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"; TARGETED_DEVICE_FAMILY = "1,2"; MARKETING_VERSION = 0.2.0; CURRENT_PROJECT_VERSION = 1; CODE_SIGN_STYLE = Automatic;};};
- };
- rootObject = A00000000000000000000001;
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		AE0000000000000000000101 /* AgentEmpireApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE0000000000000000000201 /* AgentEmpireApp.swift */; };
+		AE0000000000000000000102 /* ConnectView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE0000000000000000000202 /* ConnectView.swift */; };
+		AE0000000000000000000103 /* GameView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE0000000000000000000203 /* GameView.swift */; };
+		AE0000000000000000000104 /* GameSchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE0000000000000000000204 /* GameSchemeHandler.swift */; };
+		AE0000000000000000000105 /* HostPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE0000000000000000000205 /* HostPolicy.swift */; };
+		AE0000000000000000000106 /* Keychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE0000000000000000000206 /* Keychain.swift */; };
+		AE0000000000000000000107 /* OfficeAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE0000000000000000000207 /* OfficeAPI.swift */; };
+		AE0000000000000000000108 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AE0000000000000000000208 /* Assets.xcassets */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		AE0000000000000000000200 /* AgentEmpire.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AgentEmpire.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AE0000000000000000000201 /* AgentEmpireApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentEmpireApp.swift; sourceTree = "<group>"; };
+		AE0000000000000000000202 /* ConnectView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectView.swift; sourceTree = "<group>"; };
+		AE0000000000000000000203 /* GameView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameView.swift; sourceTree = "<group>"; };
+		AE0000000000000000000204 /* GameSchemeHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameSchemeHandler.swift; sourceTree = "<group>"; };
+		AE0000000000000000000205 /* HostPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostPolicy.swift; sourceTree = "<group>"; };
+		AE0000000000000000000206 /* Keychain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Keychain.swift; sourceTree = "<group>"; };
+		AE0000000000000000000207 /* OfficeAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeAPI.swift; sourceTree = "<group>"; };
+		AE0000000000000000000208 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		AE0000000000000000000209 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		AE0000000000000000000301 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		AE0000000000000000000400 = {
+			isa = PBXGroup;
+			children = (
+				AE0000000000000000000401 /* AgentEmpire */,
+				AE0000000000000000000402 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		AE0000000000000000000401 /* AgentEmpire */ = {
+			isa = PBXGroup;
+			children = (
+				AE0000000000000000000201 /* AgentEmpireApp.swift */,
+				AE0000000000000000000202 /* ConnectView.swift */,
+				AE0000000000000000000203 /* GameView.swift */,
+				AE0000000000000000000204 /* GameSchemeHandler.swift */,
+				AE0000000000000000000205 /* HostPolicy.swift */,
+				AE0000000000000000000206 /* Keychain.swift */,
+				AE0000000000000000000207 /* OfficeAPI.swift */,
+				AE0000000000000000000208 /* Assets.xcassets */,
+				AE0000000000000000000209 /* Info.plist */,
+			);
+			path = AgentEmpire;
+			sourceTree = "<group>";
+		};
+		AE0000000000000000000402 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				AE0000000000000000000200 /* AgentEmpire.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		AE0000000000000000000500 /* AgentEmpire */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AE0000000000000000000702 /* Build configuration list for PBXNativeTarget "AgentEmpire" */;
+			buildPhases = (
+				AE0000000000000000000601 /* Sources */,
+				AE0000000000000000000301 /* Frameworks */,
+				AE0000000000000000000602 /* Resources */,
+				AE0000000000000000000603 /* Bundle game */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = AgentEmpire;
+			productName = AgentEmpire;
+			productReference = AE0000000000000000000200 /* AgentEmpire.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		AE0000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+			};
+			buildConfigurationList = AE0000000000000000000701 /* Build configuration list for PBXProject "AgentEmpire" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = AE0000000000000000000400;
+			productRefGroup = AE0000000000000000000402 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				AE0000000000000000000500 /* AgentEmpire */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		AE0000000000000000000602 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AE0000000000000000000108 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		AE0000000000000000000603 /* Bundle game */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Bundle game";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# Copies ../../dist/public (npm run build:client) into the app as Game/. Fails if it hasn't been built.\n\"${SRCROOT}/../../tools/sync-ios-game.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		AE0000000000000000000601 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AE0000000000000000000101 /* AgentEmpireApp.swift in Sources */,
+				AE0000000000000000000102 /* ConnectView.swift in Sources */,
+				AE0000000000000000000103 /* GameView.swift in Sources */,
+				AE0000000000000000000104 /* GameSchemeHandler.swift in Sources */,
+				AE0000000000000000000105 /* HostPolicy.swift in Sources */,
+				AE0000000000000000000106 /* Keychain.swift in Sources */,
+				AE0000000000000000000107 /* OfficeAPI.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		AE0000000000000000000801 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		AE0000000000000000000802 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		AE0000000000000000000803 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = AgentEmpire/Info.plist;
+				INFOPLIST_PREPROCESS = YES;
+				INFOPLIST_PREPROCESSOR_DEFINITIONS = "AE_LOOPBACK_HTTP=1";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.3.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.agentempire.mobile;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		AE0000000000000000000804 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = AgentEmpire/Info.plist;
+				INFOPLIST_PREPROCESS = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.3.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.agentempire.mobile;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		AE0000000000000000000701 /* Build configuration list for PBXProject "AgentEmpire" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AE0000000000000000000801 /* Debug */,
+				AE0000000000000000000802 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AE0000000000000000000702 /* Build configuration list for PBXNativeTarget "AgentEmpire" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AE0000000000000000000803 /* Debug */,
+				AE0000000000000000000804 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = AE0000000000000000000001 /* Project object */;
 }

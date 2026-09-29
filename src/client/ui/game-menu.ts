@@ -1,4 +1,4 @@
-import { hostUrl } from '../endpoint';
+import { apiFetch, appConfig, beginUserSignOut, hostUrl, notifySignedOut } from '../endpoint';
 import type { PlayerController } from '../player';
 import { h, modalOpen, openModal, toast, type Modal } from './dom';
 import { openHelp } from './hud';
@@ -56,7 +56,28 @@ export function openTouchHelp(onKeyboard: () => void) {
   });
 }
 
+/** App sign-out: revoke this device's token on the host when reachable, then hand back to the native sign-in. */
+async function appSignOut() {
+  const app = appConfig()!;
+  beginUserSignOut();
+  try {
+    let id = app.deviceId;
+    if (!id) {
+      const who = await apiFetch('/api/whoami', { cache: 'no-store', signal: AbortSignal.timeout(4000) });
+      id = who.ok ? ((await who.json()) as { deviceId?: string }).deviceId : undefined;
+    }
+    if (id) await apiFetch(`/api/devices/${encodeURIComponent(id)}`, { method: 'DELETE', signal: AbortSignal.timeout(6000) });
+  } catch {
+    // Offline: the token is still forgotten on this device; it can be revoked later from Settings on another one.
+  }
+  notifySignedOut('user');
+}
+
 export function signOut() {
+  if (appConfig()) {
+    confirmDialog('Sign out?', 'This signs this device out of the office and forgets its sign-in. Workers and cloud jobs keep running on the host.', 'Sign out', () => void appSignOut());
+    return;
+  }
   confirmDialog('Sign out?', 'This signs this browser out of the office. Workers and cloud jobs keep running on the host.', 'Sign out', () => {
     fetch(hostUrl('/api/logout'), { method: 'POST', credentials: 'include' })
       .then((res) => {
