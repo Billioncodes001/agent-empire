@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node"],
+    "lib": ["ES2022"]
+  },
+  "include": ["src/cloud/**/*.ts", "src/shared/**/*.ts", "src/server/providers/**/*.ts", "src/server/execution-*.ts"]
+}
