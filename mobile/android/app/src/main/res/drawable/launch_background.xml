@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Window background before the first frame (the Android 8-11 launch screen, and behind the WebView): brand ink, never white. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/brand_ink"/>
+    <item android:gravity="center" android:width="176dp" android:height="176dp" android:drawable="@drawable/ic_launcher_foreground"/>
+</layer-list>

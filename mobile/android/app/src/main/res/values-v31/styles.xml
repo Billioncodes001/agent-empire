@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Android 12+: the platform splash screen (no androidx) shows the tower mark on brand ink, and the game draws
+         into every cutout; the page receives cutouts as safe-area insets. -->
+    <style name="GameTheme" parent="Base.GameTheme">
+        <item name="android:windowLayoutInDisplayCutoutMode">always</item>
+        <item name="android:windowSplashScreenBackground">@color/brand_ink</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_icon</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@color/brand_ink</item>
+    </style>
+</resources>

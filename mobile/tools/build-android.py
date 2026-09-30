@@ -1,73 +1,126 @@
 #!/usr/bin/env python3
-"""Build the dependency-free Android shell using an existing SDK and JDK 17+.
+"""Build the Agent Empire Android game app with an existing SDK and JDK 17+, without Gradle or app libraries.
 
-No global installs or SDK licenses are changed. The generated development signing
-key stays under ignored build/. Production signing is deliberately separate.
+The built web client (dist/public, from `npm run build:client`) is bundled into the APK as assets/game and served
+in-app at https://appassets.androidplatform.net/. Two variants:
+
+  release  HTTPS only; not debuggable.
+  debug    debuggable (WebView remote debugging, debug-only test hooks) and cleartext allowed only to the local
+           test hosts 10.0.2.2 / 127.0.0.1 / localhost through the src/debug/res network security config overlay.
+
+Both are signed with a local development key kept under the ignored build/ folder (never an existing signing identity)
+and are for sideloaded testing, not Google Play. No global installs, SDK licenses or network access.
 """
 import argparse
 import hashlib
 import os
 from pathlib import Path
-import subprocess
 import shutil
+import subprocess
 import zipfile
 
-parser = argparse.ArgumentParser()
+parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument('--sdk', required=True, type=Path)
 parser.add_argument('--jdk', required=True, type=Path)
+parser.add_argument('--variant', choices=['release', 'debug', 'all'], default='all')
+parser.add_argument('--game', type=Path, help='built web client folder (default: <repo>/dist/public)')
 args = parser.parse_args()
+
 project = Path(__file__).resolve().parents[2]
 android = project / 'mobile/android'
 source = android / 'app/src/main'
+debug_res = android / 'app/src/debug/res'
 build = android / 'build/portable'
-build.mkdir(parents=True, exist_ok=True)
-# Rebuild from source, without replacing the development signing identity.
-for name in ['classes', 'generated', 'dex']:
-    shutil.rmtree(build / name, ignore_errors=True)
-for name in ['resources.zip', 'unsigned.apk', 'aligned.apk']:
-    (build / name).unlink(missing_ok=True)
+game = (args.game or project / 'dist/public').resolve()
+if not (game / 'index.html').is_file():
+    raise SystemExit(f'Missing built game client: {game}/index.html\nRun `npm run build:client` first (it writes dist/public).')
+
 tools = args.sdk.resolve() / 'build-tools/35.0.0'
 android_jar = args.sdk.resolve() / 'platforms/android-35/android.jar'
 java = args.jdk.resolve() / 'bin/java'
 javac = args.jdk.resolve() / 'bin/javac'
 keytool = args.jdk.resolve() / 'bin/keytool'
 for required in [java, javac, keytool, android_jar, tools / 'core-lambda-stubs.jar', tools / 'aapt2', tools / 'zipalign', tools / 'lib/d8.jar', tools / 'lib/apksigner.jar']:
-    if not required.is_file(): raise SystemExit(f'Missing build tool: {required}')
+    if not required.is_file():
+        raise SystemExit(f'Missing build tool: {required}')
+
 
 def run(*command):
     subprocess.run([str(part) for part in command], cwd=android, check=True)
 
-classes = build / 'classes'
-classes.mkdir(exist_ok=True)
-run(javac, '-d', classes, source / 'java/com/agentempire/mobile/HostPolicy.java', android / 'tests/HostPolicyTest.java')
-run(java, '-cp', classes, 'com.agentempire.mobile.HostPolicyTest')
-resources = build / 'resources.zip'
-run(tools / 'aapt2', 'compile', '--dir', source / 'res', '-o', resources)
-unsigned = build / 'unsigned.apk'
-generated = build / 'generated'
-generated.mkdir(exist_ok=True)
-run(tools / 'aapt2', 'link', '-o', unsigned, '-I', android_jar, '--manifest', source / 'AndroidManifest.xml', '--java', generated, resources)
-bootclasspath = os.pathsep.join([str(android_jar), str(tools / 'core-lambda-stubs.jar')])
-run(javac, '-source', '8', '-target', '8', '-bootclasspath', bootclasspath, '-d', classes, *source.glob('java/**/*.java'), *generated.glob('**/*.java'))
-dex = build / 'dex'
-dex.mkdir(exist_ok=True)
-# Exclude the desktop-only policy harness from the shipped app.
-class_files = [file for file in classes.glob('**/*.class') if not file.name.startswith('HostPolicyTest')]
-run(java, '-cp', tools / 'lib/d8.jar', 'com.android.tools.r8.D8', '--min-api', '26', '--lib', android_jar, '--output', dex, *class_files)
-with zipfile.ZipFile(unsigned, 'a') as archive:
-    for file in dex.glob('*.dex'): archive.write(file, file.name)
-aligned = build / 'aligned.apk'
-run(tools / 'zipalign', '-f', '-p', '4', unsigned, aligned)
+
+build.mkdir(parents=True, exist_ok=True)
+# Rebuild from source every time, keeping only the development signing identity.
+for entry in build.iterdir():
+    if entry.name != 'development.keystore':
+        shutil.rmtree(entry) if entry.is_dir() else entry.unlink()
+
+# 1. Stage the game as assets/game. Hidden files are never shipped (the asset loader refuses them anyway).
+assets = build / 'assets'
+shutil.copytree(game, assets / 'game', ignore=shutil.ignore_patterns('.*'))
+game_files = sum(1 for p in (assets / 'game').rglob('*') if p.is_file())
+game_bytes = sum(p.stat().st_size for p in (assets / 'game').rglob('*') if p.is_file())
+
+# 2. Policy tests on the desktop JVM: origin, asset paths/traversal, MIME, injection, server address, bridge rules,
+#    plus every staged game file being reachable with a known MIME type.
+tests = build / 'test-classes'
+tests.mkdir()
+policies = [source / f'java/com/agentempire/mobile/{name}.java' for name in ('AssetPolicy', 'ServerPolicy', 'BridgePolicy')]
+run(javac, '-d', tests, *policies, android / 'tests/PolicyTest.java')
+run(java, '-cp', tests, 'com.agentempire.mobile.PolicyTest', assets / 'game')
+
+# 3. Resources, compiled once; the debug variant links the debug overlay on top.
+compiled = build / 'res-main.zip'
+run(tools / 'aapt2', 'compile', '--dir', source / 'res', '-o', compiled)
+compiled_debug = build / 'res-debug.zip'
+run(tools / 'aapt2', 'compile', '--dir', debug_res, '-o', compiled_debug)
+
 keystore = build / 'development.keystore'
 if not keystore.exists():
-    run(keytool, '-genkeypair', '-keystore', keystore, '-storepass', 'android', '-keypass', 'android', '-alias', 'androiddebugkey', '-keyalg', 'RSA', '-keysize', '2048', '-validity', '10000', '-dname', 'CN=Agent Empire Development,O=Local Build,C=US')
+    run(keytool, '-genkeypair', '-keystore', keystore, '-storepass', 'android', '-keypass', 'android', '-alias', 'androiddebugkey', '-keyalg', 'RSA',
+        '-keysize', '2048', '-validity', '10000', '-dname', 'CN=Agent Empire Development,O=Local Build,C=US')
     os.chmod(keystore, 0o600)
-release = project / 'release/android'
-release.mkdir(parents=True, exist_ok=True)
-apk = release / 'Agent-Empire-android-development.apk'
-run(java, '-jar', tools / 'lib/apksigner.jar', 'sign', '--ks', keystore, '--ks-pass', 'pass:android', '--key-pass', 'pass:android', '--out', apk, aligned)
-run(java, '-jar', tools / 'lib/apksigner.jar', 'verify', '--verbose', apk)
-run(tools / 'zipalign', '-c', '-p', '4', apk)
-digest = hashlib.sha256(apk.read_bytes()).hexdigest()
-apk.with_suffix('.apk.sha256').write_text(f'{digest}  {apk.name}\n')
-print(f'Development APK: {apk}\nSHA256: {digest}\nSigned for local testing only; not a store release.')
+
+release_dir = project / 'release/android'
+release_dir.mkdir(parents=True, exist_ok=True)
+bootclasspath = os.pathsep.join([str(android_jar), str(tools / 'core-lambda-stubs.jar')])
+variants = ['release', 'debug'] if args.variant == 'all' else [args.variant]
+for variant in variants:
+    out = build / variant
+    out.mkdir()
+    unsigned = out / 'unsigned.apk'
+    generated = out / 'generated'
+    generated.mkdir()
+    link = [tools / 'aapt2', 'link', '-o', unsigned, '-I', android_jar, '--manifest', source / 'AndroidManifest.xml', '--java', generated, '-A', assets, compiled]
+    if variant == 'debug':
+        link += ['-R', compiled_debug, '--auto-add-overlay', '--debug-mode']
+    run(*link)
+    classes = out / 'classes'
+    classes.mkdir()
+    run(javac, '-source', '8', '-target', '8', '-Xlint:-options', '-bootclasspath', bootclasspath, '-d', classes,
+        *sorted(source.glob('java/**/*.java')), *sorted(generated.glob('**/*.java')))
+    dex = out / 'dex'
+    dex.mkdir()
+    run(java, '-cp', tools / 'lib/d8.jar', 'com.android.tools.r8.D8', '--debug' if variant == 'debug' else '--release', '--min-api', '26',
+        '--lib', android_jar, '--output', dex, *sorted(classes.glob('**/*.class')))
+    with zipfile.ZipFile(unsigned, 'a') as archive:
+        for file in dex.glob('*.dex'):
+            archive.write(file, file.name)
+    aligned = out / 'aligned.apk'
+    run(tools / 'zipalign', '-f', '-p', '4', unsigned, aligned)
+    apk = release_dir / f'Agent-Empire-android-{variant}.apk'
+    run(java, '-jar', tools / 'lib/apksigner.jar', 'sign', '--ks', keystore, '--ks-pass', 'pass:android', '--key-pass', 'pass:android', '--out', apk, aligned)
+    run(java, '-jar', tools / 'lib/apksigner.jar', 'verify', '--verbose', apk)
+    run(tools / 'zipalign', '-c', '-p', '4', apk)
+    with zipfile.ZipFile(apk) as archive:
+        names = set(archive.namelist())
+        for required in ['assets/game/index.html', 'classes.dex', 'AndroidManifest.xml']:
+            if required not in names:
+                raise SystemExit(f'{apk.name} is missing {required}')
+        shipped = sum(1 for n in names if n.startswith('assets/game/') and not n.endswith('/'))
+        if shipped != game_files:
+            raise SystemExit(f'{apk.name} has {shipped} game files, expected {game_files}')
+    digest = hashlib.sha256(apk.read_bytes()).hexdigest()
+    apk.with_suffix('.apk.sha256').write_text(f'{digest}  {apk.name}\n')
+    print(f'{variant} APK: {apk}\n  SHA256: {digest}\n  size: {apk.stat().st_size / 1e6:.1f} MB, game: {game_files} files, {game_bytes / 1e6:.1f} MB')
+print('Signed with a local development key for sideloaded testing only; not a store release.')

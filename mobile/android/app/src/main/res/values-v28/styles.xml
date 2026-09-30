@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Android 9-11: draw into cutouts on the short edges (landscape sides); the page gets them as safe-area insets. -->
+    <style name="GameTheme" parent="Base.GameTheme">
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+    </style>
+</resources>
