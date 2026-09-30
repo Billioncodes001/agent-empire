@@ -40,3 +40,10 @@ The following files in `src/client/public/textures/` are [CC0](https://polyhaven
 Locally shipped CC0 footsteps by Kenney; engine idle by RichieMcMullen; engine start by prometheus888; onboard driving by Joseph SARDIN / BigSoundBank; car doors by looneybits / OpenGameArt. Per-file sources, direct download provenance, edits and licenses are documented in `src/client/public/audio/README.md`. No audio in this set was generated through ElevenLabs.
 
 `tools/refine-sedan.py` is the local Blender refinement pass: real wheel apertures, separate steer/spin pivots, sprung body, cabin fixtures, door-handle marker and brake lamps. It rebuilds the original authored geometry without fetching third-party models.
+
+## Sealed-box encryption libraries
+
+The first-launch cloud setup bundles two npm packages to encrypt provider API keys for GitHub Actions secrets (libsodium-compatible `crypto_box_seal`, see `src/client/setup/sealed-box.ts`):
+
+- [tweetnacl](https://github.com/dchest/tweetnacl-js) 1.0.3 — public domain ([Unlicense](https://unlicense.org)).
+- [blakejs](https://github.com/dcposch/blakejs) 1.2.1 — MIT License, Copyright (c) 2022 Blakejs contributors. The full license text ships in the package (`node_modules/blakejs/LICENSE`).
