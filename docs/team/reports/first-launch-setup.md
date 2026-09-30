@@ -109,7 +109,7 @@ Provider keys:
 | `npm test` | **292/292** (259 before; 33 new: `setup-flow` 12, `native-bridge` 7, `setup-cloud` 13, `endpoint` +1). `endpoint.test.ts` was updated for the `app.signedOut` bridge requests |
 | `npm run build` | pass. The setup chunk is 83 kB (29 kB gzip) and loads only when the setup is needed |
 | `tools/mobile-ui-check.ts` (fixture 4707) | **135/135** (113 before). The new checks run the setup on a static copy at 667×375, 874×402 and 932×430: the start button and mode cards fully visible inside the panel's scroll area, touch-sized targets, no overflow, no page errors, reduced motion honoured, and the game bundle not loaded before a choice. The existing checks are unchanged and pass. Its screenshots were reverted, not re-committed |
-| `tools/setup-ui-check.ts` (new; fixture 4707, playwright-core channel chrome) | **48/48**. It covers every step at 874×402 and 1440×900 with an in-page fake iOS bridge and a fake api.github.com (Playwright route; no request leaves the machine). The server path runs end to end against the fixture's device login, including a wrong password, and ends in the game. A not-ready build makes zero GitHub write calls. Only allowlisted keys are stored, and no provider key reaches secure storage. The web token fallback and the web server path (no password on the page) are checked too. Screenshots: `docs/team/reports/setup/{874x402,1440x900}-*.jpg` |
+| `tools/setup-ui-check.ts` (new; fixture 4707, playwright-core channel chrome; phone run uses real touch taps) | **49/49**. It covers every step at 874×402 and 1440×900 with an in-page fake iOS bridge and a fake api.github.com (Playwright route; no request leaves the machine). The server path runs end to end against the fixture's device login, including a wrong password, and ends in the game. A not-ready build makes zero GitHub write calls. Only allowlisted keys are stored, and no provider key reaches secure storage. The web token fallback and the web server path (no password on the page) are checked too. Screenshots: `docs/team/reports/setup/{874x402,1440x900}-*.jpg` |
 | `mobile/ios/Checks/run.sh` | **54/54** |
 | `xcodebuild` | Debug with ad-hoc signing (`CODE_SIGN_IDENTITY=-`) and Release with `CODE_SIGNING_ALLOWED=NO`: both succeed with no Swift warnings. SYMROOT is in the scratchpad `ios-setup` |
 
@@ -132,6 +132,32 @@ The app is left installed. The fixture on 4707 was stopped. Port 4610, `.agent-o
 - iOS zoomed the page when a field under 16px was focused.
 - On touch, errors were hidden under the keyboard. Fields are now blurred on touch, and errors sit above the form.
 - A wrong password now clears the password field.
+
+## "Set up my Empire" does nothing on a fresh install: the tap missed the button
+
+Reported by the coordinator: on a fresh install (uninstall plus `simctl keychain reset`), tapping the Welcome button at landscape (437,271) only showed the focus ring.
+
+**Cause: tap coordinates, not the page.**
+- The simulator tap tool takes coordinates in the device's portrait point frame (402×874). The game runs in landscape.
+- The Debug build now logs where every touch lands (`AEPage touch x,y on <class>` in the simulator log). A tap sent at (437,271) arrived at page (603,402), the bottom edge of `.su-shell`. No button was under it, so there was no click.
+- The focus ring is the setup's own programmatic focus on the primary button at first render.
+- Sent at (271,437), the same tap lands on page (437,271), on `su-btn-label`, and the click fires.
+
+Mapping: for landscape page point (x, y), tap (y, 874 − x). Equivalently, take the pixel position in a raw `simctl io screenshot` (1206×2622) and divide by 3.
+
+**Nothing in the page blocks touch.** During the setup no game code is loaded (`boot.ts` imports `main.ts` only afterwards), so the joystick, camera and menu handlers aren't registered. The setup's only listeners are click, input and keydown, plus a passive pointermove on fine pointers.
+
+**So it can't regress:** `tools/setup-ui-check.ts` now drives the 874×402 run with real touch input: `page.touchscreen.tap` in a `hasTouch` context, which is CDP `Input.dispatchTouchEvent` with the browser's own click synthesis. It also checks that touchstart events actually fired ("the setup is driven by real touch events"). `mobile-ui-check`'s setup section already used `page.tap`.
+
+**Walked again on the simulator with real taps after a fresh install**, fixture on 4707:
+- `ios-12`: the landscape-coordinate tap misses; the page is still on Welcome.
+- `ios-13`: the correct tap advances to the mode choice.
+- `ios-14`: cloud card, then "Sign in with GitHub", shows the native sheet with a real GitHub device code (`E532-B2E6`). It was not entered.
+- `ios-15`: after Cancel, "GitHub sign-in was cancelled." is shown at the top.
+- `ios-16`: server card, the fixture address and a wrong password show "Wrong password." in view.
+- `ios-17`: the correct password signs in (the fixture logged `device signed in`) and the game opens at the founder screen.
+
+**Also fixed:** after a touch submit, WebKit restores the old scroll once the keyboard closes, which hid the error message. It is now scrolled back into view.
 
 ## Not done / not verified
 
