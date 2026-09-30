@@ -25,6 +25,11 @@ export const STATE_FILES = {
   heartbeat: 'state/heartbeat.json',
   /** Recently processed intent ids (idempotency); changes only when intents are consumed. */
   processed: 'state/processed-intents.json',
+  /**
+   * Every job id ever moved to the archive (~39 bytes each; about 100,000 fit the 4 MB read limit).
+   * Changes only when jobs are archived; prevents a replayed submission from paying twice.
+   */
+  archivedJobIds: 'state/archived-job-ids.json',
 } as const;
 export const INTENT_DIR = 'intents/';
 export const INTENT_PATH = /^intents\/([A-Za-z0-9._-]{1,80})\.json$/;
@@ -93,6 +98,7 @@ export interface CloudMeta {
 export interface CloudHeartbeat { schemaVersion: 1; lastRunId?: string; lastRunAt?: number }
 export interface ProcessedIntent { id: string; at: number; outcome: 'applied' | 'rejected' | 'duplicate'; kind?: string }
 export interface CloudProcessedIntents { schemaVersion: 1; entries: ProcessedIntent[] }
+export interface CloudArchivedJobIds { schemaVersion: 1; ids: string[] }
 
 export type CloudJobStatus =
   | 'queued' | 'dispatching' | 'dispatch_uncertain' | 'running' | 'waiting_for_approval' | 'budget_paused' | 'idle' | 'unknown'
@@ -184,6 +190,7 @@ export interface CloudState {
   journal: CloudJournal;
   heartbeat: CloudHeartbeat;
   processed: CloudProcessedIntents;
+  archivedJobIds: CloudArchivedJobIds;
 }
 
 export class SchemaError extends Error {
@@ -219,6 +226,7 @@ export function initialCloudState(now: number, options: { limits?: CloudLimits; 
     journal: { schemaVersion: 1, seq: 0, entries: [] },
     heartbeat: { schemaVersion: 1 },
     processed: { schemaVersion: 1, entries: [] },
+    archivedJobIds: { schemaVersion: 1, ids: [] },
   };
 }
 
@@ -297,6 +305,15 @@ export function validateProcessed(value: unknown): CloudProcessedIntents {
     if (p.kind !== undefined) str(f, p.kind, 40);
   }
   return clone(data) as unknown as CloudProcessedIntents;
+}
+
+export function validateArchivedJobIds(value: unknown): CloudArchivedJobIds {
+  const f = STATE_FILES.archivedJobIds;
+  const data = rec(f, value, ['schemaVersion', 'ids']);
+  if (data.schemaVersion !== 1 || !Array.isArray(data.ids)) throw new SchemaError(f, 'invalid archived job ids');
+  const seen = new Set<string>();
+  for (const id of data.ids) { str(f, id, 36, TASK_ID); if (seen.has(id)) throw new SchemaError(f, 'duplicate archived job id'); seen.add(id); }
+  return clone(data) as unknown as CloudArchivedJobIds;
 }
 
 const REPO = (file: string, value: unknown) => {
@@ -459,6 +476,7 @@ export function parseStateFiles(files: StateFiles, now: number): { state: CloudS
     state: {
       meta: validateMeta(raw.meta), empire: validateEmpire(empire.empire), jobs: validateJobs(raw.jobs), ledger: validateLedger(raw.ledger),
       journal: validateJournal(raw.journal), heartbeat: validateHeartbeat(raw.heartbeat), processed: validateProcessed(raw.processed),
+      archivedJobIds: validateArchivedJobIds(raw.archivedJobIds),
     },
     migrated,
   };
@@ -476,5 +494,6 @@ export function serializeState(state: CloudState): StateFiles {
     [STATE_FILES.journal]: text(state.journal),
     [STATE_FILES.heartbeat]: text(state.heartbeat),
     [STATE_FILES.processed]: text(state.processed),
+    [STATE_FILES.archivedJobIds]: JSON.stringify(state.archivedJobIds) + '\n',
   };
 }

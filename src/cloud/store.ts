@@ -5,7 +5,7 @@
  * by re-reading and recomputing. Browser-safe: no Node built-ins.
  */
 import { INTENT_PATH, STATE_FILES } from './schema.js';
-import { MAX_INTENT_BYTES, MAX_INTENT_SCAN, selectIntentBatch } from './intents.js';
+import { INTENT_FETCH_MARGIN, MAX_INTENT_BYTES, selectIntentBatch } from './intents.js';
 
 export interface StateSnapshot {
   /** Commit the snapshot was read from; the optimistic-concurrency token. */
@@ -87,6 +87,9 @@ export function decodeBase64Utf8(value: string): string {
 export class GitHubError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) { super(message); this.name = 'GitHubError'; }
 }
+/** Read failures caused by the intent file's own content; everything else is retried next run. */
+export const isPermanentIntentReadError = (error: unknown): error is GitHubError =>
+  error instanceof GitHubError && ['file_encoding', 'github_invalid', 'github_response_large'].includes(error.code);
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const NAME = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/;
 const REPO_NAME = /^[A-Za-z0-9_.-]{1,100}$/;
@@ -175,16 +178,17 @@ export class GitHubStateStore implements StateStore, WorkflowControl {
       files[entry.path] = await blob(entry);
     }
     // Client-written intents: anything permanently unreadable is reported, never thrown.
-    const scanned = intents.slice(0, MAX_INTENT_SCAN);
+    const scanned = intents.slice(0, maxIntents + INTENT_FETCH_MARGIN);
     const intentText: Record<string, string> = {};
     for (let i = 0; i < scanned.length; i += 8) {
       await Promise.all(scanned.slice(i, i + 8).map(async entry => {
         if (entry.size !== undefined && entry.size > MAX_INTENT_BYTES) { unreadableIntents.push({ path: entry.path, reason: 'Intent file is larger than 64 KiB.' }); return; }
         try { intentText[entry.path] = await blob(entry); }
         catch (error) {
-          // Network/5xx failures are transient: fail the run and retry next schedule without losing the intent.
-          const permanent = error instanceof GitHubError && error.status !== 0 && (error.status < 500 || ['github_invalid', 'github_response_large'].includes(error.code));
-          if (!permanent) throw error;
+          // Only a property of the file itself is permanent (not UTF-8, unsupported/oversized blob).
+          // Auth, rate limits (401/403/429), 404 and 5xx/network failures are transient: fail the run
+          // and keep the file, so a user's shutdown/cancel/new_job is never deleted unread.
+          if (!isPermanentIntentReadError(error)) throw error;
           unreadableIntents.push({ path: entry.path, reason: error.code === 'file_encoding' ? 'Intent file is not UTF-8 text.' : 'Intent file could not be read as text.' });
         }
       }));
@@ -192,7 +196,7 @@ export class GitHubStateStore implements StateStore, WorkflowControl {
     const batch = selectIntentBatch(intentText, maxIntents);
     for (const path of batch.selected) files[path] = intentText[path];
     unreadableIntents.sort((a, b) => a.path.localeCompare(b.path));
-    return { sha, treeSha, files, unreadableIntents, intentsTruncated: batch.truncated || intents.length > MAX_INTENT_SCAN };
+    return { sha, treeSha, files, unreadableIntents, intentsTruncated: batch.truncated || intents.length > scanned.length };
   }
 
   async commit(base: Pick<StateSnapshot, 'sha' | 'treeSha'>, changes: FileChange[], message: string): Promise<CommitResult> {
@@ -250,12 +254,13 @@ export class MemoryStateStore implements StateStore, WorkflowControl {
   async read(): Promise<StateSnapshot> {
     this.reads++;
     const paths = Object.keys(this.head.files).filter(isStatePath);
-    const intents = paths.filter(path => path.startsWith('intents/')).sort().slice(0, MAX_INTENT_SCAN);
+    const listed = paths.filter(path => path.startsWith('intents/')).sort();
+    const intents = listed.slice(0, this.maxIntents + INTENT_FETCH_MARGIN);
     const unreadableIntents = intents.filter(path => new TextEncoder().encode(this.head.files[path]).length > MAX_INTENT_BYTES).map(path => ({ path, reason: 'Intent file is larger than 64 KiB.' }));
     const readable = Object.fromEntries(intents.filter(path => !unreadableIntents.some(u => u.path === path)).map(path => [path, this.head.files[path]]));
     const batch = selectIntentBatch(readable, this.maxIntents);
     const selected = [...paths.filter(path => !path.startsWith('intents/')), ...batch.selected];
-    return { sha: this.head.sha, treeSha: this.head.sha, files: Object.fromEntries(selected.map(path => [path, this.head.files[path]])), unreadableIntents, intentsTruncated: batch.truncated };
+    return { sha: this.head.sha, treeSha: this.head.sha, files: Object.fromEntries(selected.map(path => [path, this.head.files[path]])), unreadableIntents, intentsTruncated: batch.truncated || listed.length > intents.length };
   }
 
   async commit(base: Pick<StateSnapshot, 'sha' | 'treeSha'>, changes: FileChange[], message: string): Promise<CommitResult> {

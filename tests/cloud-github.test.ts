@@ -24,6 +24,8 @@ class FakeGitHub {
   /** Raw (possibly non-UTF-8 or oversized) blobs by sha, for client-written files. */
   raw = new Map<string, { base64: string; size: number }>();
   blobReads: string[] = [];
+  /** Test hook: HTTP status to return for a blob (e.g. 403 or 429 rate limiting). */
+  blobStatus = new Map<string, number>();
   addRaw(full: string, path: string, base64: string, size: number) {
     const repo = this.repos.get(full)!;
     const tree = new Map(repo.trees.get(repo.commits.get(repo.ref)!.tree)!);
@@ -65,6 +67,7 @@ class FakeGitHub {
     let r: RegExpExecArray | null;
     if ((r = /^\/git\/commits\/([a-f0-9]+)$/.exec(rest))) { const c = repo.commits.get(r[1]); return c ? json({ sha: r[1], tree: { sha: c.tree }, parents: c.parents.map(sha => ({ sha })) }) : json({ message: 'Not Found' }, 404); }
     if ((r = /^\/git\/trees\/([a-f0-9]+)$/.exec(rest)) && method === 'GET') { const t = repo.trees.get(r[1])!; return json({ sha: r[1], truncated: false, tree: [...t].map(([path, sha]) => ({ path, mode: '100644', type: 'blob', sha, size: this.raw.get(sha)?.size ?? repo.blobs.get(sha)!.length })) }); }
+    if ((r = /^\/git\/blobs\/([a-f0-9]+)$/.exec(rest)) && this.blobStatus.has(r[1])) return json({ message: 'API rate limit exceeded' }, this.blobStatus.get(r[1]));
     if ((r = /^\/git\/blobs\/([a-f0-9]+)$/.exec(rest)) && this.raw.has(r[1])) { this.blobReads.push(r[1]); return json({ sha: r[1], encoding: 'base64', content: this.raw.get(r[1])!.base64 }); }
     if ((r = /^\/git\/blobs\/([a-f0-9]+)$/.exec(rest))) return json({ sha: r[1], encoding: 'base64', content: encodeBase64Utf8(repo.blobs.get(r[1])!).replace(/(.{60})/g, '$1\n') });
     if (rest === '/git/trees' && method === 'POST') {
@@ -278,4 +281,41 @@ test('review quick fix: the installer refuses a classic project token and record
   const files = github.files('founder/agent-empire-state');
   assert.equal(JSON.parse(files[STATE_FILES.meta]).schedule.runsPerMonth, 720);
   assert.match(files[WORKFLOW_PATH], /cron: '7 \* \* \* \*'/);
+});
+
+test('re-review M1: rate-limited or forbidden intent reads fail the run and keep the file', async () => {
+  for (const status of [403, 429, 401, 404, 503]) {
+    const github = new FakeGitHub();
+    await install(github);
+    const full = 'founder/agent-empire-state';
+    const store = new GitHubStateStore(client(github), { owner: 'founder', repo: 'agent-empire-state', branch: 'main', workflowFile: 'agent-empire.yml' });
+    await submitIntent(store, { schemaVersion: 1, id: uuid(3), createdAt: T0, kind: 'shutdown' });
+    const repo = github.repos.get(full)!;
+    const blobSha = repo.trees.get(repo.commits.get(repo.ref)!.tree)!.get(`intents/${uuid(3)}.json`)!;
+    github.blobStatus.set(blobSha, status);
+    const tick = () => runCoordinatorTick({ store, provider: new FakeProvider(), now: () => T0, runId: `run-${status}`, retry: { sleep: async () => {} } });
+    await assert.rejects(tick(), (error: unknown) => error instanceof GitHubError && error.status === status, `HTTP ${status} is transient`);
+    assert.ok(github.files(full)[`intents/${uuid(3)}.json`], `the shutdown intent survives HTTP ${status}`);
+    github.blobStatus.clear();
+    const report = await tick();
+    assert.deepEqual(report.intents.map(i => [i.id, i.outcome]), [[uuid(3), 'applied']]);
+    assert.equal(JSON.parse(github.files(full)[STATE_FILES.meta]).lifecycle.status, 'shutdown');
+  }
+});
+
+test('re-review M1: a run fetches only about the batch size of intent blobs', async () => {
+  const github = new FakeGitHub();
+  await install(github);
+  const full = 'founder/agent-empire-state';
+  const changes: Record<string, string> = {};
+  for (let n = 1; n <= 60; n++) changes[`intents/${uuid(n)}.json`] = JSON.stringify({ schemaVersion: 1, id: uuid(n), createdAt: T0 + n, kind: 'start' });
+  github.commitOnBranch(full, changes);
+  const store = new GitHubStateStore(client(github), { owner: 'founder', repo: 'agent-empire-state', branch: 'main' }, { maxIntents: 5 });
+  const before = github.requests.length;
+  const snapshot = await store.read();
+  const blobGets = github.requests.slice(before).filter(r => r.path.includes('/git/blobs/')).length;
+  const stateFiles = Object.values(STATE_FILES).length;
+  assert.ok(blobGets <= stateFiles + 5 + 20, `fetched ${blobGets} blobs`);
+  assert.equal(Object.keys(snapshot.files).filter(p => p.startsWith('intents/')).length, 5);
+  assert.equal(snapshot.intentsTruncated, true);
 });

@@ -253,3 +253,67 @@ test('review fix 1: an oversized intent in the in-memory store is rejected and d
 });
 
 test('fixture sanity', () => { assert.ok(new FakeProvider().canDispatch); });
+
+// ---- re-review of eb1ae85
+
+test('re-review L1: a review session resumed from the Console shows running; accept waits until idle and never interrupts', async () => {
+  const h = harness(makeStore({ limits: { maxConcurrent: 1, perTaskBudgetCents: 100, dailyBudgetCents: 1000 } }));
+  push(h.store, intent(1, { kind: 'empire_action', action: { kind: 'found', sites: ['cafe'] } }), newJob(2, 1));
+  await h.tick();
+  h.provider.branches.set(uuid(1), 'missing');
+  h.provider.finish(uuid(1));
+  await h.tick();
+  let state = await h.state();
+  assert.equal(job(state, 1).status, 'awaiting_review');
+  // The user answers the agent in the provider Console; the session works again.
+  h.provider.sessions.get(h.provider.sessionFor(uuid(1))!)!.status = 'running';
+  h.advance(60_000);
+  push(h.store, intent(3, { kind: 'review', jobId: uuid(1), decision: 'accept' }));
+  const report = await h.tick();
+  state = await h.state();
+  assert.equal(job(state, 1).status, 'running');
+  assert.equal(report.intents[0].outcome, 'rejected');
+  assert.match(report.intents[0].reason!, /working again/);
+  assert.equal(state.empire.economy.rewardedTasks.length, 0, 'nothing paid for live work');
+  assert.ok(!h.provider.calls.some(c => c.startsWith('interrupt') || c.startsWith('archive')), 'live work is never interrupted or archived');
+  // The turn finishes with a pushed branch: reviewable again, archived, then accepted and paid once.
+  h.provider.branches.set(uuid(1), 'e'.repeat(40));
+  h.provider.finish(uuid(1));
+  await h.tick();
+  push(h.store, intent(4, { kind: 'review', jobId: uuid(1), decision: 'accept' }));
+  await h.tick();
+  state = await h.state();
+  assert.equal(job(state, 1).status, 'accepted');
+  assert.deepEqual(state.empire.economy.rewardedTasks, [uuid(1)]);
+  assert.ok(!h.provider.calls.some(c => c.startsWith('interrupt')));
+});
+
+test('re-review L2: an unchanged live session does not bump updatedAt or force a commit', async () => {
+  const h = harness(makeStore());
+  push(h.store, newJob(1, 1));
+  await h.tick();
+  const updatedAt = job(await h.state(), 1).updatedAt;
+  const commits = h.store.commits.length;
+  h.advance(10 * 60_000);
+  const report = await h.tick();
+  assert.equal(report.observed, 1);
+  assert.equal(report.commits, 0);
+  assert.equal(h.store.commits.length, commits);
+  h.advance(60 * 60_000);
+  await h.tick(); // heartbeat
+  assert.equal(job(await h.state(), 1).updatedAt, updatedAt, 'steady observations leave updatedAt alone');
+});
+
+test('re-review L3: a replayed submission of an archived job id is a duplicate and never dispatches again', async () => {
+  const h = harness(makeStore({ mutate: state => { state.jobs.jobs.push(finalJob(7, T0 - 20 * DAY)); } }));
+  await h.tick();
+  let state = await h.state();
+  assert.ok(!state.jobs.jobs.some(j => j.id === uuid(7)), 'archived after 14 days');
+  assert.deepEqual(state.archivedJobIds.ids, [uuid(7)]);
+  push(h.store, newJob(50, 7, { title: 'Old 7', prompt: 'old' }));
+  const report = await h.tick();
+  assert.deepEqual(report.intents.map(i => i.outcome), ['duplicate']);
+  state = await h.state();
+  assert.ok(!state.jobs.jobs.some(j => j.id === uuid(7)));
+  assert.equal(h.provider.calls.filter(c => c.startsWith('dispatch')).length, 0, 'no second paid session');
+});

@@ -137,8 +137,12 @@ export function sortIntents<T extends { intent?: CloudIntent; path: string }>(it
 
 export const intentPath = (id: string) => `intents/${id.toLowerCase()}.json`;
 
-/** Pending intent files scanned per run; beyond this the oldest scanned batch is still processed first. */
-export const MAX_INTENT_SCAN = 500;
+/**
+ * Extra intent blobs fetched beyond the batch size. The Git tree listing carries no timestamps, so
+ * the fetch window is chosen by path (UUIDv7 ids make that time-ordered) and processing within it is
+ * oldest-first by createdAt. Keeps per-run API calls near the batch size, well inside rate limits.
+ */
+export const INTENT_FETCH_MARGIN = 20;
 
 /**
  * Chooses which readable intent files a run processes: the oldest `max` by (createdAt, id), not by

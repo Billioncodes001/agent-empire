@@ -24,7 +24,7 @@ import { intentIdFromPath, parseIntent, sortIntents, IntentError, type CloudInte
 import { DispatchFailure, type ProviderAdapter, type ProviderObservation } from './provider.js';
 import {
   clone, FINAL_STATUSES, holdsSlot, LIMITS, parseStateFiles, promptHash, promptPreview, PROMPT_STATUSES, REVIEW_STATUSES, serializeState, sessionLive, SLOT_STATUSES, STATE_FILES, utcDay,
-  type CloudJob, type CloudState, type EventCursorState, type JournalKind, type SpendEntry,
+  type CloudJob, type CloudState, type EventCursorState, type JournalKind, type SpendEntry, type StopReason,
 } from './schema.js';
 import { updateWithRetry, type FileChange, type RetryOptions, type StateSnapshot, type StateStore, type WorkflowControl } from './store.js';
 
@@ -56,7 +56,9 @@ function releaseReservation(state: CloudState, job: CloudJob, now: number) {
 }
 function setStatus(state: CloudState, ctx: TickContext, job: CloudJob, status: CloudJob['status'], message: string) {
   const changed = job.status !== status;
-  job.status = status; job.message = message.slice(0, 2000); job.updatedAt = ctx.now;
+  const text = message.slice(0, 2000);
+  if (changed || job.message !== text) job.updatedAt = ctx.now; // an unchanged observation must not force a commit
+  job.status = status; job.message = text;
   if (changed) journal(state, ctx, 'job', `${job.title}: ${status.replace(/_/g, ' ')}. ${message}`, { jobId: job.id });
 }
 /** Admission-control totals: the full allowance of every job reserved today or still holding a slot. */
@@ -103,6 +105,8 @@ function applyOne(state: CloudState, intent: CloudIntent, ctx: TickContext): { o
     case 'new_job': {
       const input = intent.job;
       const hash = promptHash(input.prompt);
+      // A job id that already reached the archive can never be dispatched (or paid) again.
+      if (state.archivedJobIds.ids.includes(input.id)) return { outcome: 'duplicate' };
       const existing = state.jobs.jobs.find(job => job.id === input.id);
       if (existing) {
         if (existing.promptHash === hash && existing.title === input.title) return { outcome: 'duplicate' };
@@ -125,6 +129,7 @@ function applyOne(state: CloudState, intent: CloudIntent, ctx: TickContext): { o
     }
     case 'review': {
       const job = findJob(intent.jobId);
+      if (job.status === 'running' && job.stopReason === 'end_turn') reject('session_running', 'The agent is working again in this session (continued from the provider Console). Review it once its turn finishes.');
       if (job.status !== 'awaiting_review') reject('not_reviewable', 'Only a finished turn awaiting review can be accepted or rejected.');
       job.review = { decision: intent.decision === 'accept' ? 'accepted' : 'rejected', at: ctx.now, intentId: intent.id, ...(intent.note ? { note: intent.note } : {}) };
       if (intent.decision === 'accept') {
@@ -247,7 +252,7 @@ export function applyIntents(input: CloudState, files: IntentFile[], ctx: TickCo
 
 // ---------------------------------------------------------------- provider sessions
 
-export interface ProviderTask { jobId: string; sessionId: string; cursor: EventCursorState; checkBranch: boolean }
+export interface ProviderTask { jobId: string; sessionId: string; cursor: EventCursorState; checkBranch: boolean; reason?: StopReason }
 export type BranchEvidence = { state: 'found'; sha: string } | { state: 'missing' } | { state: 'unknown'; reason: string };
 export interface ProviderResult {
   jobId: string; sessionId: string;
@@ -269,7 +274,7 @@ export function collectObservations(state: CloudState): ProviderTask[] {
 /** Phase 2 (mutating): stops already committed to the state branch. */
 export function collectStops(state: CloudState): ProviderTask[] {
   return state.jobs.jobs.filter(job => sessionLive(job) && job.stopRequested)
-    .map(job => ({ jobId: job.id, sessionId: job.sessionId!, cursor: clone(job.cursor ?? {}), checkBranch: false }));
+    .map(job => ({ jobId: job.id, sessionId: job.sessionId!, cursor: clone(job.cursor ?? {}), checkBranch: false, reason: job.stopRequested!.reason }));
 }
 
 /** GET status/events, and for a finished turn GET the task branch head. No provider mutation. */
@@ -292,7 +297,11 @@ export async function observeSessions(tasks: ProviderTask[], provider: ProviderA
   return results;
 }
 
-/** Interrupt if running, archive when idle, then observe. Only for stops durable in state. */
+/**
+ * Interrupt if running, archive when idle, then observe. Only for stops durable in state. Archiving
+ * after a finished turn or a review never interrupts: if the user resumed the session from the
+ * provider Console, the work continues and archival waits until it is idle again.
+ */
 export async function performStops(tasks: ProviderTask[], provider: ProviderAdapter): Promise<ProviderResult[]> {
   const results: ProviderResult[] = [];
   for (const task of tasks) {
@@ -300,7 +309,8 @@ export async function performStops(tasks: ProviderTask[], provider: ProviderAdap
     try {
       let seen = await provider.observe(task.sessionId, task.cursor);
       result.observation = seen.observation; result.cursor = seen.cursor;
-      if (seen.observation.providerStatus === 'running' || seen.observation.providerStatus === 'rescheduling') {
+      const interruptible = task.reason === 'cancel' || task.reason === 'shutdown';
+      if (interruptible && (seen.observation.providerStatus === 'running' || seen.observation.providerStatus === 'rescheduling')) {
         await provider.interrupt(task.sessionId);
         seen = await provider.observe(task.sessionId, seen.cursor);
         result.observation = seen.observation; result.cursor = seen.cursor;
@@ -317,18 +327,35 @@ export async function performStops(tasks: ProviderTask[], provider: ProviderAdap
 }
 
 function applyObservation(state: CloudState, ctx: TickContext, job: CloudJob, observation: ProviderObservation, cursor: EventCursorState | undefined, info: { turnEnded?: boolean; branch?: BranchEvidence } = {}) {
+  // updatedAt moves only when an observed field changes, so a steady live session does not force a commit.
+  const { updatedAt: _u, ...before } = job;
+  const fingerprint = JSON.stringify(before);
+  observeInto(state, ctx, job, observation, cursor, info);
+  const { updatedAt: _v, ...after } = job;
+  if (JSON.stringify(after) !== fingerprint) job.updatedAt = ctx.now;
+}
+
+function observeInto(state: CloudState, ctx: TickContext, job: CloudJob, observation: ProviderObservation, cursor: EventCursorState | undefined, info: { turnEnded?: boolean; branch?: BranchEvidence }) {
   const savedStop = job.cursor?.stopReason; // evidence from an earlier observation, before this cursor replaces it
   job.sessionId = observation.sessionId;
   job.providerStatus = observation.providerStatus;
   if (cursor) job.cursor = cursor;
-  job.updatedAt = ctx.now;
   if (observation.costCents !== undefined) {
     const previous = job.cost?.amountCents ?? 0;
-    const amount = Math.max(previous, observation.costCents);
-    if (amount > previous) spend(state, { at: ctx.now, jobId: job.id, kind: 'cost_observed', cents: amount - previous, day: utcDay(ctx.now), basis: 'provider_reported_list_cost' });
-    job.cost = { amountCents: amount, currency: 'USD', observedAt: ctx.now, basis: 'provider_reported_list_cost' };
+    if (observation.costCents > previous || !job.cost) {
+      const amount = Math.max(previous, observation.costCents);
+      if (amount > previous) spend(state, { at: ctx.now, jobId: job.id, kind: 'cost_observed', cents: amount - previous, day: utcDay(ctx.now), basis: 'provider_reported_list_cost' });
+      job.cost = { amountCents: amount, currency: 'USD', observedAt: ctx.now, basis: 'provider_reported_list_cost' };
+    }
   }
   const closed = observation.status === 'cancelled' || observation.status === 'failed';
+  // A reviewable turn the user continued from the provider Console is live work again: show it as
+  // running (holding its slot), and make it reviewable only after its next finished turn.
+  if (job.status === 'awaiting_review' && observation.status === 'running') {
+    if (job.stopRequested?.reason === 'turn_ended') delete job.stopRequested;
+    setStatus(state, ctx, job, 'running', 'The agent is working again in this session (continued from the provider Console). It becomes reviewable when this turn finishes.');
+    return;
+  }
   // Reviewed or reviewable jobs keep their status; only the session bookkeeping changes.
   if (REVIEW_STATUSES.includes(job.status)) {
     if (closed) { delete job.stopRequested; if (job.status === 'awaiting_review') job.message = 'The session is closed. The finished turn is unverified: review its branch or pull request, then accept or reject.'; }
@@ -347,7 +374,7 @@ function applyObservation(state: CloudState, ctx: TickContext, job: CloudJob, ob
   } else if (observation.status === 'failed') status = 'failed';
   else if (observation.status === 'idle') {
     job.stopReason = cursor?.page ? job.stopReason : (cursor?.stopReason ?? 'unknown');
-    if (info.turnEnded && !reason) { setStatus(state, ctx, job, 'awaiting_review', 'The agent finished its turn.'); decideTurnArchive(state, ctx, job, info.branch); return; }
+    if (info.turnEnded && !reason) { job.status = 'awaiting_review'; decideTurnArchive(state, ctx, job, info.branch); journal(state, ctx, 'job', `${job.title}: awaiting review. ${job.message}`, { jobId: job.id }); return; }
     if (job.stopReason === 'requires_action') { status = 'waiting_for_approval'; message = 'Provider is waiting for tool approval or a tool result. Resolve it in provider controls; the coordinator never approves automatically.'; }
     else if (job.stopReason === 'budget_reached') { status = 'budget_paused'; message = 'Provider paused at the session budget. The coordinator will not raise the budget or resume paid work.'; }
     else if (reason) { status = 'idle'; message = 'Stop requested; archival is not yet confirmed and will be retried next run. The slot and reservation stay held.'; }
@@ -387,8 +414,7 @@ export function recordObservations(input: CloudState, results: ProviderResult[],
     if (!job || job.sessionId !== result.sessionId || !sessionLive(job)) continue;
     if (!result.observation) {
       if (!SLOT_STATUSES.includes(job.status)) continue; // Reviewable jobs keep their status.
-      job.status = 'unknown'; job.updatedAt = ctx.now;
-      job.message = `${result.error ?? 'Provider state could not be read.'} Last-known session identity and reservations were kept.`;
+      setStatus(state, ctx, job, 'unknown', `${result.error ?? 'Provider state could not be read.'} Last-known session identity and reservations were kept.`);
       continue;
     }
     applyObservation(state, ctx, job, result.observation, result.cursor, { turnEnded: result.turnEnded, branch: result.branch });
@@ -500,6 +526,8 @@ export function compactJobs(state: CloudState, ctx: TickContext, tag: string): F
     const path = `archive/jobs/${today}-${ctx.runId}-${tag}.json`;
     files.push({ path, content: JSON.stringify({ schemaVersion: 1, archivedAt: ctx.now, runId: ctx.runId, jobs: archived }, null, 2) + '\n' });
     const ids = new Set(archived.map(job => job.id));
+    const known = new Set(state.archivedJobIds.ids);
+    for (const id of ids) if (!known.has(id)) state.archivedJobIds.ids.push(id);
     state.jobs.jobs = state.jobs.jobs.filter(job => !ids.has(job.id));
     journal(state, ctx, 'job', `${archived.length} finished job(s) moved to ${path}.`);
   }
@@ -566,11 +594,12 @@ export async function runCoordinatorTick(deps: CoordinatorDeps): Promise<TickRep
     const parsed = parseStateFiles(stateFilesOf(snapshot), ctx1.now);
     migrated = parsed.migrated;
     let state = reconcileStaleDispatches(parsed.state, ctx1);
-    const intents = applyIntents(state, intentFilesOf(snapshot), ctx1);
-    state = intents.state;
-    // Read-only provider calls run once per tick; a commit retry reuses these results.
+    // Read-only provider calls run once per tick, before intents, so a review or cancel is judged
+    // against the session's current state. A commit retry reuses these results.
     observations ??= await observeSessions(collectObservations(state), deps.provider, state);
     state = recordObservations(state, observations, ctx1);
+    const intents = applyIntents(state, intentFilesOf(snapshot), ctx1);
+    state = intents.state;
     const plan = planDispatch(state, ctx1, deps.provider.canDispatch);
     state = plan.state;
     const lifecycle = lifecycleStep(state, ctx1);
