@@ -2,7 +2,7 @@
 
 Backend lane report, 2026-09-30. Branch `claude/cloud-coordinator`, based on `08bb4a4`. This implements the [cloud mode plan](../CLOUD_MODE_PLAN.md) decision that the user's own GitHub hosts the Empire: a private state repository plus a scheduled Actions workflow as the coordinator.
 
-It was revised after the independent review of `675677e` (ACCEPT WITH FIXES); see [Review fixes](#review-fixes).
+It was revised after the independent review of `675677e` and the re-review of `eb1ae85` (both ACCEPT WITH FIXES); see [Review fixes](#review-fixes) and [Re-review fixes](#re-review-fixes).
 
 Everything below is **verified only by automated tests with fake GitHub and fake provider transports**. No real GitHub repository, Actions run or Anthropic session was created. There is no evidence yet that the workflow runs on GitHub.
 
@@ -21,7 +21,7 @@ Everything below is **verified only by automated tests with fake GitHub and fake
 | `src/cloud/workflow.ts` | Workflow YAML template with actions pinned to SHAs |
 | `src/cloud/installer.ts` | Installer core with the `encryptSecret` seam and `PROJECT_TOKEN_GUIDANCE` |
 | `src/cloud/cli.ts` | `node agent-empire-coordinator.mjs tick\|status`, with the default-branch guard |
-| `vite.cloud.config.ts`, `npm run build:cloud` | Single-file ES module bundle at `dist/cloud/agent-empire-coordinator.mjs` (~115 KB, no imports). Uses the existing `vite` devDependency; no new dependency |
+| `vite.cloud.config.ts`, `npm run build:cloud` | Single-file ES module bundle at `dist/cloud/agent-empire-coordinator.mjs` (~120 KB, no imports). Uses the existing `vite` devDependency; no new dependency |
 | `tsconfig.cloud.json` | Added to `npm run typecheck` |
 
 Everything under `src/cloud` except `cli.ts` and `anthropic-adapter.ts` is browser-safe: `fetch`, `TextEncoder`, `btoa` and `BigInt` only, no Node built-ins.
@@ -37,6 +37,7 @@ The only change outside `src/cloud` is in `src/server/providers/anthropic-manage
 | `state/meta.json` | `schemaVersion`, `createdAt`, `revision`, `configRevision`, `lifecycle {status, changedAt, workflow}`, `coordinator {economyClockAt}`, `schedule {intervalMinutes, runsPerMonth, billedMinutesPerMonth, basis: estimate_scheduled_runs_only}`, `limits`, `execution` (references only) | Any commit (revision) |
 | `state/heartbeat.json` | `{lastRunId, lastRunAt}` of the last committing run | Every commit, at least hourly |
 | `state/processed-intents.json` | Last 2,000 intent ids with outcome (idempotency) | Only when intents are consumed |
+| `state/archived-job-ids.json` | Every job id ever moved to the archive (~39 bytes each; about 100,000 fit the 4 MB read limit). A `new_job` naming one of them is a duplicate, so a replayed submission can never dispatch or pay twice | Only when jobs are archived |
 | `state/empire.json` | Host `EmpireState` v2 without `supervision` | City actions, and time at each commit |
 | `state/jobs.json` | Hot job list (below) | Job events |
 | `state/ledger.json` | **Real-money** evidence in USD cents: reserved, released and cost-observed entries (last 1,000) and per-UTC-day totals (90 days) | Spending events |
@@ -74,8 +75,8 @@ The worst case (50 × 20 KB prompts plus every other bound at its maximum) is te
 **Intents** (`schemaVersion: 1`, `id` = UUID matching the file name, `createdAt`):
 - **Kinds:** `new_job`, `review`, `cancel`, `resolve_uncertain`, `shutdown`, `start`, `limits`, `configure`, `empire_action`. Payloads are unchanged from the first version.
 - **Validation:** `new_job` uses the host `validateSubmit`; limits and execution use the host `validateConfig`.
-- **Batch order:** each run processes the **oldest** 100 readable intents by `(createdAt, id)`, from up to 500 scanned, never by path. Clients should use time-ordered ids (UUIDv7) so the scan window also favours old intents.
-- **Unreadable files** (oversized by tree size, not UTF-8, unsupported blob) are returned as unreadable. The run rejects, journals and deletes them. Transient network or 5xx errors fail the run and leave the intent for the next one.
+- **Batch order:** each run fetches at most the batch size (100) plus 20 intent blobs, chosen by path because the Git tree listing carries no timestamps. It processes them oldest-first by `(createdAt, id)`. Clients should use time-ordered ids (UUIDv7) so path order is also time order.
+- **Unreadable files** are returned as unreadable only when the problem is the file itself: oversized by tree size, not UTF-8, or an unsupported or oversized blob. The run rejects, journals and deletes them. Any other failure (401/403/404/429 rate limits, 5xx, network) fails the run and **keeps the file**, so a user's shutdown, cancel or job is never deleted unread.
 
 ## Tick algorithm
 
@@ -84,13 +85,15 @@ The worst case (50 × 20 KB prompts plus every other bound at its maximum) is te
 **Phase 1** runs a read-only provider pass, then commits:
 1. **Read** `state/*` and the intent batch. Parse, migrate and validate.
 2. **Reconcile stale dispatches.** A `dispatching` job marked by another run becomes `dispatch_uncertain` and is never retried.
-3. **Apply intents** against a scratch copy each, so a rejected intent leaves no partial change. Duplicates and rejections are recorded. Every read file, including unreadable ones, is deleted in the commit.
-4. **Observe** live sessions of slot-holding jobs that have no stop request. Only GET calls are made. For a finished turn (idle, `end_turn`), the coordinator also GETs the task branch head (`git/ref/heads/agent-empire/task-<id>`) with `PROJECT_GITHUB_TOKEN`.
-5. **Record outcomes:**
+3. **Observe** live sessions of slot-holding jobs that have no stop request. Only GET calls are made. For a finished turn (idle, `end_turn`), the coordinator also GETs the task branch head (`git/ref/heads/agent-empire/task-<id>`) with `PROJECT_GITHUB_TOKEN`. Observation happens *before* intents, so a review or cancel is judged against the session's current state.
+4. **Apply intents** against a scratch copy each, so a rejected intent leaves no partial change. Duplicates and rejections are recorded. Every read file, including unreadable ones, is deleted in the commit.
+5. **Record outcomes** (from step 3):
    - Finished turn → `awaiting_review`. If the branch exists **and** differs from the source commit, the head is recorded and `stopRequested: turn_ended` is set, so the session is archived after the commit. Otherwise the session is **left open and keeps its slot**, so unpushed work or a question is not lost; the user reviews, rejects, or cancels to archive. The branch is re-checked on later runs.
    - `requires_action` → `waiting_for_approval`; `budget_reached` → `budget_paused`; terminated → `failed`; budget mismatch → `unknown`; read error → `unknown`, keeping the session ID and reservation.
    - An archived session with a saved `end_turn` cursor becomes `awaiting_review`, not `cancelled`.
+   - A reviewable job whose session the user continued from the provider Console shows **`running`** again, holding its slot, and becomes reviewable after its next finished turn. An accept or reject sent while it runs is rejected with the reason `session_running`.
    - Reviewed jobs keep their status; only session bookkeeping changes.
+   - `updatedAt` (and `cost.observedAt`) change only when an observed field changes, so a steady live session does not force a commit.
 6. **Plan dispatch** (FIFO). The concurrency, daily-admission and per-job rules are unchanged. Admitted jobs are marked `dispatching` and their reservations recorded.
 7. **Lifecycle, economy, compaction.**
    - Shutdown completes once no **active** session remains live. Finished turns left open for review are journaled and are not archived by shutdown.
@@ -100,7 +103,7 @@ The worst case (50 × 20 KB prompts plus every other bound at its maximum) is te
 
 **Phase 2** makes mutating provider calls, only for intentions already committed:
 
-9. **Stops.** For jobs with a committed `stopRequested` (cancel, shutdown, turn_ended, review): interrupt if running, archive when idle, observe.
+9. **Stops.** For jobs with a committed `stopRequested`, archive when idle and then observe. Only cancel and shutdown interrupt a running session. A finished-turn or review archive never interrupts: if the session is running again, archival waits.
 10. **Dispatch** jobs marked `dispatching`:
 
     | Adapter outcome | Result |
@@ -191,6 +194,37 @@ Each fix has a test in `tests/cloud-review-fixes.test.ts` or `tests/cloud-github
 
 The in-memory review tests import new exports (`PINNED_ACTIONS`, `promptHash`, `LIMITS` fields). To run them against the old code, those imports were shimmed in a scratch copy only. The shims are not committed.
 
+## Re-review fixes
+
+These address the re-review of `eb1ae85`. Each test was run against an export of `eb1ae85` with the new test files copied in: all five fail there and pass on the new code. The other 23 tests in those two files pass on both. Before the fix, `state.archivedJobIds` does not exist, so the L3 test fails at its first assertion, before its no-dispatch check.
+
+| # | Fix | Regression test |
+| --- | --- | --- |
+| M1 | Only file-content problems (not UTF-8, unsupported or oversized blob, oversize by tree size) are permanent. 401/403/404/429/5xx/network fail the run and keep the intent. Per run, at most the batch size + 20 intent blobs are fetched | `re-review M1: rate-limited or forbidden intent reads…` (403, 429, 401, 404, 503; the intent survives and applies on the next run); `re-review M1: a run fetches only about the batch size…` (60 intents, batch of 5) |
+| L1 | Sessions are observed before intents. A review session resumed from the Console shows `running`; accept is rejected while it runs; finished-turn and review archives never interrupt | `re-review L1` |
+| L2 | `updatedAt` and `cost.observedAt` move only on real changes | `re-review L2` (no commit for a steady running session within the hour) |
+| L3 | `state/archived-job-ids.json` keeps every archived job id; a replayed `new_job` with one is a duplicate | `re-review L3` |
+
+## First real run checklist
+
+The owner-approved first run (CLOUD-02) must confirm, and record evidence for:
+
+1. **Pinned action SHAs.** `actions/checkout@11bd719…` is v4.2.2 and `actions/setup-node@49933ea…` is v4.4.0 on github.com.
+2. **Installer.** It creates the private repository and uploads real sealed-box secrets. It commits `.github/workflows/agent-empire.yml`; confirm the Workflows permission the installer token needs.
+3. **First scheduled and `repository_dispatch` runs.**
+   - They run on the default branch, and `AGENT_EMPIRE_STATE_BRANCH` resolves on each trigger.
+   - A `workflow_dispatch` on another branch logs "skipped".
+   - Concurrency is one run at a time.
+4. **Ref update conflict.** A second writer yields HTTP 422 on the `force: false` ref update, and the retry succeeds.
+5. **Task-branch lookup.** `git/ref/heads/agent-empire/task-<id>` (with a slash) returns the head for the fine-grained project token, and 404 when absent.
+6. **L4: Anthropic Managed Agents behaviour.**
+   - (a) After `POST /v1/sessions/{id}/archive`, the session reports `archived_at` set. Record whether `status` reads `terminated` or stays `idle`. The adapter now treats `archived_at` as authoritative.
+   - (b) Archiving right after an `end_turn` whose branch was pushed loses nothing: the branch and PR remain, and the session history stays readable.
+   - (c) A session resumed from the Console after `end_turn` reports `running`, and the coordinator shows the job as running without interrupting it.
+7. **Budget.** `budget.max_list_cost` on a created session equals the job's reservation, and `usage.list_cost` is reported in USD cents.
+8. **Shutdown and start.** Shutdown archives active sessions and disables the workflow (`actions: write`). Start via the app re-enables it with no catch-up revenue.
+9. **Actions minutes.** After a day at the 30-minute default, compare minutes used against `meta.schedule` and recheck the plan allowances.
+
 ## Stubbed or not done
 
 - **Sealed-box encryption.** `EncryptSecret` is an injected seam, tested with a fake. tweetnacl and blakejs belong to the client setup author. I added no dependency.
@@ -198,7 +232,6 @@ The in-memory review tests import new exports (`PINNED_ACTIONS`, `promptHash`, `
 - **OpenAI adapter** (CLOUD-06).
 - **Output import and verification.** Branch evidence is recorded, but code is not reviewed automatically.
 - **Changing the schedule after install** requires re-running setup, because the coordinator's `GITHUB_TOKEN` cannot edit workflow files.
-- **Duplicate detection for archived jobs.** A job id resubmitted as a new intent more than 14 days (or 200 finished jobs) after its original is not recognised as a duplicate. The processed-intents record still catches a retried *intent*.
 - **Duplicate city rules.** `src/cloud/economy.ts` duplicates the rules of `src/server/empire.ts`. Extracting a shared pure module is a follow-up.
 - `build:cloud` is not part of `npm run build`.
 
@@ -219,13 +252,13 @@ The in-memory review tests import new exports (`PINNED_ACTIONS`, `promptHash`, `
   - real sealed-box upload
   - `git/ref/heads/<branch-with-slash>` behaviour
   - tree `size` for blobs
-- **Anthropic wire shapes** are those verified for the host adapter on 2026-09-27. Treating `archived_at` as authoritative, and archiving right after a pushed turn, are untested against the real API.
+- **Anthropic wire shapes** are those verified for the host adapter on 2026-09-27. Treating `archived_at` as authoritative, archiving right after a pushed turn, and resuming a review session from the Console are untested against the real API; they are checklist item 6 (L4).
 - **Plan minute allowances** quoted above need rechecking.
 - **The built bundle** was smoke-run for usage, error and branch-skip paths only. Full ticks are tested from TypeScript source through `main()` with fake transports.
 
 ## Checks
 
 - `npm run typecheck`: pass (server, client and cloud).
-- `npm test`: **300/300**. 259 existing, 41 cloud; 16 of the cloud tests are new in this revision.
+- `npm test`: **305/305**. 259 existing and 46 cloud: 25 original, 16 from the first review, 5 from the re-review.
 - `npm run build`: pass.
-- `npm run build:cloud`: pass, single file (~115 KB, no imports).
+- `npm run build:cloud`: pass, single file (~120 KB, no imports).
