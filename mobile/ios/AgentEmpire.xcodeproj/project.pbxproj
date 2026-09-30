@@ -8,24 +8,24 @@
 
 /* Begin PBXBuildFile section */
 		AE0000000000000000000101 /* AgentEmpireApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE0000000000000000000201 /* AgentEmpireApp.swift */; };
-		AE0000000000000000000102 /* ConnectView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE0000000000000000000202 /* ConnectView.swift */; };
+		AE0000000000000000000102 /* GitHubDeviceFlow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE0000000000000000000202 /* GitHubDeviceFlow.swift */; };
 		AE0000000000000000000103 /* GameView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE0000000000000000000203 /* GameView.swift */; };
 		AE0000000000000000000104 /* GameSchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE0000000000000000000204 /* GameSchemeHandler.swift */; };
 		AE0000000000000000000105 /* HostPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE0000000000000000000205 /* HostPolicy.swift */; };
-		AE0000000000000000000106 /* Keychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE0000000000000000000206 /* Keychain.swift */; };
-		AE0000000000000000000107 /* OfficeAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE0000000000000000000207 /* OfficeAPI.swift */; };
+		AE0000000000000000000106 /* SecureStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE0000000000000000000206 /* SecureStore.swift */; };
+		AE0000000000000000000107 /* BridgeProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE0000000000000000000207 /* BridgeProtocol.swift */; };
 		AE0000000000000000000108 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AE0000000000000000000208 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		AE0000000000000000000200 /* AgentEmpire.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AgentEmpire.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AE0000000000000000000201 /* AgentEmpireApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentEmpireApp.swift; sourceTree = "<group>"; };
-		AE0000000000000000000202 /* ConnectView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectView.swift; sourceTree = "<group>"; };
+		AE0000000000000000000202 /* GitHubDeviceFlow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubDeviceFlow.swift; sourceTree = "<group>"; };
 		AE0000000000000000000203 /* GameView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameView.swift; sourceTree = "<group>"; };
 		AE0000000000000000000204 /* GameSchemeHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameSchemeHandler.swift; sourceTree = "<group>"; };
 		AE0000000000000000000205 /* HostPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostPolicy.swift; sourceTree = "<group>"; };
-		AE0000000000000000000206 /* Keychain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Keychain.swift; sourceTree = "<group>"; };
-		AE0000000000000000000207 /* OfficeAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeAPI.swift; sourceTree = "<group>"; };
+		AE0000000000000000000206 /* SecureStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureStore.swift; sourceTree = "<group>"; };
+		AE0000000000000000000207 /* BridgeProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeProtocol.swift; sourceTree = "<group>"; };
 		AE0000000000000000000208 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		AE0000000000000000000209 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -53,12 +53,12 @@
 			isa = PBXGroup;
 			children = (
 				AE0000000000000000000201 /* AgentEmpireApp.swift */,
-				AE0000000000000000000202 /* ConnectView.swift */,
+				AE0000000000000000000202 /* GitHubDeviceFlow.swift */,
 				AE0000000000000000000203 /* GameView.swift */,
 				AE0000000000000000000204 /* GameSchemeHandler.swift */,
 				AE0000000000000000000205 /* HostPolicy.swift */,
-				AE0000000000000000000206 /* Keychain.swift */,
-				AE0000000000000000000207 /* OfficeAPI.swift */,
+				AE0000000000000000000206 /* SecureStore.swift */,
+				AE0000000000000000000207 /* BridgeProtocol.swift */,
 				AE0000000000000000000208 /* Assets.xcassets */,
 				AE0000000000000000000209 /* Info.plist */,
 			);
@@ -162,12 +162,12 @@
 			buildActionMask = 2147483647;
 			files = (
 				AE0000000000000000000101 /* AgentEmpireApp.swift in Sources */,
-				AE0000000000000000000102 /* ConnectView.swift in Sources */,
+				AE0000000000000000000102 /* GitHubDeviceFlow.swift in Sources */,
 				AE0000000000000000000103 /* GameView.swift in Sources */,
 				AE0000000000000000000104 /* GameSchemeHandler.swift in Sources */,
 				AE0000000000000000000105 /* HostPolicy.swift in Sources */,
-				AE0000000000000000000106 /* Keychain.swift in Sources */,
-				AE0000000000000000000107 /* OfficeAPI.swift in Sources */,
+				AE0000000000000000000106 /* SecureStore.swift in Sources */,
+				AE0000000000000000000107 /* BridgeProtocol.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
