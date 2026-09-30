@@ -14,8 +14,10 @@ const scenarios = ['working', 'idle', 'needs_input', 'turn_ended', 'interrupted'
 let scenario: typeof scenarios[number] = 'needs_input';
 // Like the real server, only ever agree to empire.v1 so a bearer.<token> entry is never echoed back.
 const sockets = new WebSocketServer({ noServer: true, handleProtocols: (offered) => (offered.has('empire.v1') ? 'empire.v1' : false) });
-// Fixture-only device sign-in for the bundled apps: any password works, tokens live in memory, nothing is saved.
+// Fixture-only device sign-in for the bundled apps: any password works (or only FIXTURE_PASSWORD when set, so the
+// setup's wrong-password path can be shown), tokens live in memory, nothing is saved.
 const APP_ORIGIN = 'empire-app://game';
+const fixturePassword = process.env.FIXTURE_PASSWORD || '';
 const devices = new Map<string, { id: string; name: string; createdAt: number }>();
 const socketToken = new Map<WebSocket, string>();
 const bearer = (req: import('node:http').IncomingMessage) => /^Bearer ([A-Za-z0-9_-]+)$/.exec(req.headers.authorization ?? '')?.[1];
@@ -92,7 +94,7 @@ const server = createServer(async (req, res) => {
   if (url.pathname === '/api/device/login' && req.method === 'POST') {
     let raw = ''; for await (const chunk of req) raw += chunk;
     let body: { password?: unknown; deviceName?: unknown } = {}; try { body = JSON.parse(raw); } catch { return json(res, 400, { error: 'Bad request' }); }
-    if (typeof body.password !== 'string' || !body.password) return json(res, 401, { error: 'Wrong password' });
+    if (typeof body.password !== 'string' || !body.password || (fixturePassword && body.password !== fixturePassword)) return json(res, 401, { error: 'Wrong password' });
     const token = randomBytes(32).toString('base64url'), id = randomBytes(6).toString('base64url');
     devices.set(token, { id, name: typeof body.deviceName === 'string' ? body.deviceName.slice(0, 64) : 'Device', createdAt: Date.now() });
     console.log(`fixture device signed in: ${id}`);
