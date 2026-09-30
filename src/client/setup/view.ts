@@ -225,6 +225,11 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
     box.hidden = !message;
     box.replaceChildren(...(message ? [icon(ICONS.warn, 'su-inline-ico'), message] : []));
   };
+  /** Keyboard users go straight back to the field; on touch the on-screen keyboard is dismissed so the error shows. */
+  const focusField = (input: HTMLInputElement) => {
+    if (matchMedia('(pointer: coarse)').matches) (document.activeElement as HTMLElement | null)?.blur();
+    else input.focus();
+  };
   const external = (label: string, url: string) =>
     el('a', {
       class: 'su-link',
@@ -343,7 +348,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
         const parsed = parseServerAddress(address.value);
         if (!parsed.ok) {
           showError(errors, new LoginFailure(parsed.error).message);
-          address.focus();
+          focusField(address);
           return;
         }
         showError(errors, null);
@@ -357,7 +362,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
         }
         if (!password.value) {
           showError(errors, new LoginFailure('empty_password').message);
-          password.focus();
+          focusField(password);
           return;
         }
         setBusy(action, true, 'Checking the server…');
@@ -367,7 +372,9 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
         } catch (err) {
           setBusy(action, false, 'Sign in');
           showError(errors, err instanceof LoginFailure ? err.message : 'Couldn’t sign in. Try again.');
-          (err instanceof LoginFailure && err.code === 'wrong_password' ? password : address).focus();
+          const wrong = err instanceof LoginFailure && err.code === 'wrong_password';
+          if (wrong) password.value = '';
+          focusField(wrong ? password : address);
           return;
         }
         password.value = '';
@@ -401,7 +408,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
         eyebrow: 'Connect my own server',
         title: STEP_TITLES.server,
         lede: state.notice ? el('span', { class: 'su-notice', role: 'status' }, state.notice) : 'Full capabilities: live terminals, service tunnels and local agents, running on hardware you control.',
-        body: [form, errors, needs],
+        body: [errors, form, needs],
         primary: action,
       });
       return { panel, heading };
@@ -439,7 +446,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
           tokenFallback(errors, false),
         );
       }
-      body.push(errors);
+      body.unshift(errors); // first, so it's visible without scrolling on a landscape phone
 
       async function unlink() {
         await Promise.allSettled([deps.native.secureDelete('github.token'), deps.native.secureDelete('github.login')]);
@@ -484,7 +491,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
             e.preventDefault();
             if (busy) return;
             const token = input.value.trim();
-            if (!token) return showError(box, 'Paste a GitHub token first.'), input.focus();
+            if (!token) return showError(box, 'Paste a GitHub token first.'), focusField(input);
             showError(box, null);
             setBusy(check, true, 'Checking…');
             try {
