@@ -7,11 +7,12 @@
  * Bundled app: the native shell injects `window.AGENT_EMPIRE_APP = {host, token, platform, deviceId?}` before any
  * page script runs (never via the query string). The game itself is served from the app bundle; only API and
  * WebSocket traffic goes to `host`, with `Authorization: Bearer <token>` on HTTP and the subprotocols
- * `["empire.v1", "bearer.<token>"]` on the socket. The only native capability used is a single "signedOut"
- * message to `window.webkit.messageHandlers.empire` (iOS; other shells add theirs here).
+ * `["empire.v1", "bearer.<token>"]` on the socket. Native calls (sign-out, secure storage) go through the one bridge in
+ * native.ts. The first-launch setup (setup/) can adopt a session it just signed in with via `setSessionConfig`.
  */
+import { native, PLATFORMS, resetNativeForTests, type AppPlatform, type SignedOutReason } from './native';
 
-export type AppPlatform = 'ios' | 'android' | 'desktop';
+export type { AppPlatform, SignedOutReason };
 
 export interface AppConfig {
   /** Office origin, e.g. https://city.example.com (no path, no credentials). */
@@ -23,14 +24,11 @@ export interface AppConfig {
   deviceId?: string;
 }
 
-export type SignedOutReason = 'user' | 'revoked' | 'unauthorized';
-
 /** The WebSocket subprotocol the server speaks (see WS_PROTOCOL in src/server/server.ts). */
 export const WS_PROTOCOL = 'empire.v1';
 /** Close code the server uses when a device token is revoked. */
 export const WS_REVOKED = 4401;
 
-const PLATFORMS: readonly AppPlatform[] = ['ios', 'android', 'desktop'];
 const TOKEN = /^[A-Za-z0-9_-]{16,256}$/;
 const DEVICE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -73,6 +71,16 @@ export function appConfig(): AppConfig | null {
 /** Tests only: forget the cached config (and the sign-out latch) so another one can be read. */
 export function resetEndpointForTests(config?: AppConfig | null) {
   cached = config;
+  signedOutSent = false;
+  userSigningOut = false;
+  resetNativeForTests();
+}
+
+/** The setup flow signed in and stored a device session: use it from now on, without reloading the page. */
+export function setSessionConfig(config: AppConfig) {
+  const parsed = parseAppConfig(config);
+  if (!parsed) throw new Error('Invalid session');
+  cached = parsed;
   signedOutSent = false;
   userSigningOut = false;
 }
@@ -140,17 +148,9 @@ export function wsProtocols(): string[] | undefined {
   return app ? [WS_PROTOCOL, `bearer.${app.token}`] : undefined;
 }
 
-type NativeBridge = { postMessage(msg: unknown): void };
 let signedOutSent = false;
 /** Set when the player chose Sign out: revoking the device closes our own socket (4401), which is not a surprise. */
 let userSigningOut = false;
-
-/** Finds the one native message channel, if this page runs inside an app shell. */
-function nativeBridge(): NativeBridge | undefined {
-  if (!hasWindow()) return undefined;
-  const w = window as unknown as { webkit?: { messageHandlers?: { empire?: NativeBridge } } };
-  return w.webkit?.messageHandlers?.empire;
-}
 
 /**
  * Tells the native shell this device is signed out (user choice, token revoked, or rejected). Sent at most once per
@@ -160,12 +160,8 @@ export function notifySignedOut(reason: SignedOutReason): boolean {
   if (!isAppMode()) return false;
   if (signedOutSent) return true;
   signedOutSent = true;
-  const bridge = nativeBridge();
-  try {
-    bridge?.postMessage({ type: 'signedOut', reason: userSigningOut ? 'user' : reason });
-  } catch {
-    // Nothing more to do: the token is already unusable or being discarded.
-  }
+  // The shell clears its session keys and returns to the setup's sign-in step; nothing more to do if it can't answer.
+  native().signedOut(userSigningOut ? 'user' : reason).catch(() => {});
   return true;
 }
 
