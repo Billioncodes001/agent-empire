@@ -1,0 +1,387 @@
+/**
+ * CLOUD-01 state repository schema.
+ *
+ * The state repository holds versioned JSON files under `state/` that only the coordinator writes,
+ * and one file per client intent under `intents/`. Everything here is pure and browser-safe so the
+ * client cloud adapter (CLOUD-04) can parse the same snapshot the coordinator commits.
+ */
+import { initialEmpire, newSector, SITES, type EmpireState, type SectorState, type SiteId } from '../shared/empire.js';
+import { DESKS_PER_FLOOR } from '../shared/layout.js';
+import type { ExecutionConfig, ExecutionTask } from '../shared/execution.js';
+import { COMMIT, PROVIDER_ID, TASK_ID, validateConfig } from '../server/execution-validation.js';
+
+export const CLOUD_SCHEMA_VERSION = 1;
+export const STATE_FILES = {
+  meta: 'state/meta.json',
+  empire: 'state/empire.json',
+  jobs: 'state/jobs.json',
+  ledger: 'state/ledger.json',
+  journal: 'state/journal.json',
+} as const;
+export const INTENT_DIR = 'intents/';
+export const INTENT_PATH = /^intents\/([A-Za-z0-9._-]{1,80})\.json$/;
+
+export const LIMITS = { journal: 500, spendEntries: 1000, spendDays: 90, processedIntents: 2000, jobs: 5000, reports: 80 } as const;
+
+/** Same ranges as the host execution ledger (execution-validation.ts). */
+export type CloudLimits = ExecutionConfig['limits'];
+/** Provider references only. Credentials live in encrypted Actions secrets, never in state. */
+export interface CloudExecution {
+  provider: 'anthropic';
+  repository: ExecutionConfig['repository'];
+  anthropic: ExecutionConfig['anthropic'];
+}
+
+export type LifecycleStatus = 'running' | 'shutting_down' | 'shutdown';
+export interface CloudMeta {
+  schemaVersion: 1;
+  createdAt: number;
+  /** Incremented by every coordinator commit. */
+  revision: number;
+  /** Incremented by every limits/execution change; paid job submissions must name the current value. */
+  configRevision: number;
+  lifecycle: {
+    status: LifecycleStatus;
+    changedAt: number;
+    /** `disable_requested` means the coordinator could not (or was not allowed to) disable itself yet. */
+    workflow: 'enabled' | 'disable_requested' | 'disabled';
+  };
+  coordinator: {
+    lastRunId?: string;
+    lastRunAt?: number;
+    /** Wall-clock time up to which city time has been settled. Never advanced while shut down. */
+    economyClockAt?: number;
+  };
+  limits: CloudLimits;
+  execution?: CloudExecution;
+  processedIntents: ProcessedIntent[];
+}
+export interface ProcessedIntent { id: string; at: number; outcome: 'applied' | 'rejected' | 'duplicate'; kind?: string }
+
+export type CloudJobStatus =
+  | 'queued' | 'dispatching' | 'dispatch_uncertain' | 'running' | 'waiting_for_approval' | 'budget_paused' | 'idle' | 'unknown'
+  | 'awaiting_review' | 'accepted' | 'rejected' | 'failed' | 'cancelled';
+export const JOB_STATUSES: readonly CloudJobStatus[] = ['queued', 'dispatching', 'dispatch_uncertain', 'running', 'waiting_for_approval', 'budget_paused', 'idle', 'unknown', 'awaiting_review', 'accepted', 'rejected', 'failed', 'cancelled'];
+/** A job in one of these states may have an accepted provider session, so it holds a concurrency slot. */
+export const SLOT_STATUSES: readonly CloudJobStatus[] = ['dispatching', 'dispatch_uncertain', 'running', 'waiting_for_approval', 'budget_paused', 'idle', 'unknown'];
+export const FINAL_STATUSES: readonly CloudJobStatus[] = ['accepted', 'rejected', 'failed', 'cancelled'];
+export const holdsSlot = (job: CloudJob) => SLOT_STATUSES.includes(job.status);
+
+export interface EventCursorState { after?: string; page?: string; newest?: string; lastEventId?: string; stopReason?: ExecutionTask['stopReason'] }
+export interface CloudJob {
+  id: string;
+  title: string;
+  prompt: string;
+  /** Optional sector link: a manager startup brief or sector work. Rewards default to headquarters. */
+  site?: SiteId;
+  intentId: string;
+  createdAt: number;
+  updatedAt: number;
+  configRevision: number;
+  /** Per-job allowance the user confirmed at submission. Dispatch never reserves more than this. */
+  authorizedCents: number;
+  status: CloudJobStatus;
+  message: string;
+  provider: 'anthropic';
+  repository: ExecutionConfig['repository'];
+  branch: string;
+  sourceCommit?: string;
+  sessionId?: string;
+  cursor?: EventCursorState;
+  providerStatus?: ExecutionTask['providerStatus'];
+  stopReason?: ExecutionTask['stopReason'];
+  /** Admission-control estimate: the full per-job budget, not an observed charge. */
+  reservation?: { cents: number; day: string; basis: 'per_job_allowance_estimate' };
+  cost?: { amountCents: number; currency: 'USD'; observedAt: number; basis: 'provider_reported_list_cost' };
+  dispatch?: { runId: string; preparedAt: number; attempts: number };
+  stopRequested?: { at: number; reason: 'cancel' | 'shutdown' | 'turn_ended' };
+  review?: { decision: 'accepted' | 'rejected'; at: number; intentId: string; note?: string };
+  /** Provider state never verifies code, a branch or a pull request. Review is a user decision. */
+  outputs: 'unverified';
+  rewarded?: boolean;
+}
+export interface CloudJobs { schemaVersion: 1; jobs: CloudJob[] }
+
+/** Real-money evidence, kept apart from the city's simulation-credit ledger in empire.json. */
+export interface SpendEntry {
+  at: number;
+  jobId: string;
+  kind: 'reserved' | 'released' | 'cost_observed';
+  cents: number;
+  day: string;
+  basis: 'per_job_allowance_estimate' | 'provider_reported_list_cost';
+}
+export interface CloudLedger {
+  schemaVersion: 1;
+  currency: 'USD';
+  entries: SpendEntry[];
+  days: Record<string, { reservedCents: number; observedCostCents: number }>;
+}
+
+export type JournalKind = 'intent_applied' | 'intent_rejected' | 'job' | 'dispatch' | 'lifecycle' | 'limits' | 'economy' | 'warning';
+export interface JournalEntry { seq: number; at: number; runId: string; kind: JournalKind; message: string; intentId?: string; jobId?: string }
+export interface CloudJournal { schemaVersion: 1; seq: number; entries: JournalEntry[] }
+
+export interface CloudState {
+  meta: CloudMeta;
+  empire: EmpireState;
+  jobs: CloudJobs;
+  ledger: CloudLedger;
+  journal: CloudJournal;
+}
+
+export class SchemaError extends Error {
+  constructor(readonly file: string, message: string) { super(`${file}: ${message}`); this.name = 'SchemaError'; }
+}
+
+export const DEFAULT_LIMITS: CloudLimits = { maxConcurrent: 1, perTaskBudgetCents: 100, dailyBudgetCents: 500 };
+export const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
+export const utcDay = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+
+export function initialCloudState(now: number, options: { limits?: CloudLimits; execution?: CloudExecution } = {}): CloudState {
+  const limits = validateLimits(options.limits ?? DEFAULT_LIMITS);
+  const empire = initialEmpire(now);
+  empire.reports[0].text = 'Cloud mode: the coordinator in your GitHub state repository keeps the city running. City credits are simulation credits; provider usage is billed by your provider.';
+  return {
+    meta: {
+      schemaVersion: 1, createdAt: now, revision: 0, configRevision: 0,
+      lifecycle: { status: 'running', changedAt: now, workflow: 'enabled' },
+      coordinator: {}, limits,
+      ...(options.execution ? { execution: validateExecution(options.execution) } : {}),
+      processedIntents: [],
+    },
+    empire,
+    jobs: { schemaVersion: 1, jobs: [] },
+    ledger: { schemaVersion: 1, currency: 'USD', entries: [], days: {} },
+    journal: { schemaVersion: 1, seq: 0, entries: [] },
+  };
+}
+
+// ---------------------------------------------------------------- validation helpers
+
+type Rec = Record<string, unknown>;
+function rec(file: string, value: unknown, keys?: readonly string[]): Rec {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new SchemaError(file, 'expected an object');
+  if (keys) { const extra = Object.keys(value).filter(key => !keys.includes(key)); if (extra.length) throw new SchemaError(file, `unexpected field ${extra[0]}`); }
+  return value as Rec;
+}
+function int(file: string, value: unknown, min = 0, max = Number.MAX_SAFE_INTEGER): number {
+  if (!Number.isSafeInteger(value) || (value as number) < min || (value as number) > max) throw new SchemaError(file, `invalid integer ${String(value)}`);
+  return value as number;
+}
+function time(file: string, value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw new SchemaError(file, 'invalid timestamp');
+  return value;
+}
+function str(file: string, value: unknown, max: number, pattern?: RegExp): string {
+  if (typeof value !== 'string' || value.length > max || (pattern && !pattern.test(value))) throw new SchemaError(file, 'invalid text field');
+  return value;
+}
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+const RUN_ID = /^[A-Za-z0-9._-]{1,80}$/;
+
+/** Reuses the host ranges: 1–10 concurrent, per-task 1–100,000 cents, daily ≥ per-task and ≤ 10,000,000. */
+export function validateLimits(value: unknown): CloudLimits {
+  return validateConfig({ schemaVersion: 1, completed: false, mode: 'local', repository: { owner: '', name: '', baseBranch: '' }, anthropic: { agentId: '', environmentId: '' }, githubAuth: 'host_token', limits: value }).limits;
+}
+/** Reuses the host repository/provider-reference validation for a completed Anthropic cloud config. */
+export function validateExecution(value: unknown): CloudExecution {
+  const input = rec('execution', value, ['provider', 'repository', 'anthropic']);
+  if (input.provider !== 'anthropic') throw new SchemaError('execution', 'only the anthropic provider is implemented');
+  const config = validateConfig({ schemaVersion: 1, completed: true, mode: 'anthropic_cloud', repository: input.repository, anthropic: input.anthropic, githubAuth: 'host_token', limits: DEFAULT_LIMITS });
+  return { provider: 'anthropic', repository: config.repository, anthropic: config.anthropic };
+}
+
+export function validateMeta(value: unknown): CloudMeta {
+  const f = STATE_FILES.meta;
+  const m = rec(f, value, ['schemaVersion', 'createdAt', 'revision', 'configRevision', 'lifecycle', 'coordinator', 'limits', 'execution', 'processedIntents']);
+  if (m.schemaVersion !== CLOUD_SCHEMA_VERSION) throw new SchemaError(f, 'unsupported schemaVersion');
+  const lifecycle = rec(f, m.lifecycle, ['status', 'changedAt', 'workflow']);
+  if (!['running', 'shutting_down', 'shutdown'].includes(String(lifecycle.status)) || !['enabled', 'disable_requested', 'disabled'].includes(String(lifecycle.workflow))) throw new SchemaError(f, 'invalid lifecycle');
+  const coordinator = rec(f, m.coordinator, ['lastRunId', 'lastRunAt', 'economyClockAt']);
+  if (coordinator.lastRunId !== undefined) str(f, coordinator.lastRunId, 80, RUN_ID);
+  for (const key of ['lastRunAt', 'economyClockAt']) if (coordinator[key] !== undefined) time(f, coordinator[key]);
+  let limits: CloudLimits;
+  try { limits = validateLimits(m.limits); } catch { throw new SchemaError(f, 'invalid limits'); }
+  let execution: CloudExecution | undefined;
+  if (m.execution !== undefined) { try { execution = validateExecution(m.execution); } catch { throw new SchemaError(f, 'invalid execution references'); } }
+  if (!Array.isArray(m.processedIntents) || m.processedIntents.length > LIMITS.processedIntents) throw new SchemaError(f, 'invalid processedIntents');
+  for (const item of m.processedIntents) {
+    const p = rec(f, item, ['id', 'at', 'outcome', 'kind']);
+    str(f, p.id, 80); time(f, p.at);
+    if (!['applied', 'rejected', 'duplicate'].includes(String(p.outcome))) throw new SchemaError(f, 'invalid intent outcome');
+  }
+  time(f, m.createdAt); int(f, m.revision); int(f, m.configRevision); time(f, lifecycle.changedAt);
+  return { ...(clone(m) as unknown as CloudMeta), limits, ...(execution ? { execution } : {}) };
+}
+
+const REPO = (file: string, value: unknown) => {
+  const r = rec(file, value, ['owner', 'name', 'baseBranch']);
+  return { owner: str(file, r.owner, 39), name: str(file, r.name, 100), baseBranch: str(file, r.baseBranch, 200) };
+};
+export function validateJobs(value: unknown): CloudJobs {
+  const f = STATE_FILES.jobs;
+  const data = rec(f, value, ['schemaVersion', 'jobs']);
+  if (data.schemaVersion !== 1 || !Array.isArray(data.jobs) || data.jobs.length > LIMITS.jobs) throw new SchemaError(f, 'invalid jobs file');
+  const ids = new Set<string>();
+  for (const item of data.jobs) {
+    const j = rec(f, item, ['id', 'title', 'prompt', 'site', 'intentId', 'createdAt', 'updatedAt', 'configRevision', 'authorizedCents', 'status', 'message', 'provider', 'repository', 'branch', 'sourceCommit', 'sessionId', 'cursor', 'providerStatus', 'stopReason', 'reservation', 'cost', 'dispatch', 'stopRequested', 'review', 'outputs', 'rewarded']);
+    const id = str(f, j.id, 36, TASK_ID);
+    if (ids.has(id)) throw new SchemaError(f, `duplicate job ${id}`);
+    ids.add(id);
+    str(f, j.title, 120); str(f, j.prompt, 20_000); str(f, j.intentId, 80); str(f, j.message, 2000);
+    if (!(j.prompt as string).trim()) throw new SchemaError(f, 'empty prompt');
+    if (j.site !== undefined && !SITES.some(s => s.id === j.site)) throw new SchemaError(f, 'invalid site');
+    time(f, j.createdAt); time(f, j.updatedAt); int(f, j.configRevision); int(f, j.authorizedCents, 1, 100_000);
+    if (!JOB_STATUSES.includes(j.status as CloudJobStatus)) throw new SchemaError(f, 'invalid job status');
+    if (j.provider !== 'anthropic' || j.outputs !== 'unverified') throw new SchemaError(f, 'invalid provider/outputs');
+    REPO(f, j.repository);
+    if (j.branch !== `agent-empire/task-${id}`) throw new SchemaError(f, 'invalid branch');
+    if (j.sourceCommit !== undefined) str(f, j.sourceCommit, 64, COMMIT);
+    if (j.sessionId !== undefined) str(f, j.sessionId, 120, PROVIDER_ID.session);
+    if (j.providerStatus !== undefined && !['running', 'rescheduling', 'idle', 'terminated', 'archived'].includes(String(j.providerStatus))) throw new SchemaError(f, 'invalid providerStatus');
+    const stops = ['end_turn', 'requires_action', 'budget_reached', 'error', 'unknown'];
+    if (j.stopReason !== undefined && !stops.includes(String(j.stopReason))) throw new SchemaError(f, 'invalid stopReason');
+    if (j.cursor !== undefined) {
+      const c = rec(f, j.cursor, ['after', 'page', 'newest', 'lastEventId', 'stopReason']);
+      for (const key of ['after', 'newest']) if (c[key] !== undefined && !Number.isFinite(Date.parse(str(f, c[key], 64)))) throw new SchemaError(f, 'invalid cursor');
+      if (c.page !== undefined) str(f, c.page, 2048);
+      if (c.lastEventId !== undefined) str(f, c.lastEventId, 120, PROVIDER_ID.event);
+      if (c.stopReason !== undefined && !stops.includes(String(c.stopReason))) throw new SchemaError(f, 'invalid cursor');
+    }
+    if (j.reservation !== undefined) {
+      const r = rec(f, j.reservation, ['cents', 'day', 'basis']);
+      int(f, r.cents, 1, 100_000); str(f, r.day, 10, DAY);
+      if (r.basis !== 'per_job_allowance_estimate') throw new SchemaError(f, 'invalid reservation basis');
+    }
+    if (j.cost !== undefined) {
+      const c = rec(f, j.cost, ['amountCents', 'currency', 'observedAt', 'basis']);
+      int(f, c.amountCents); time(f, c.observedAt);
+      if (c.currency !== 'USD' || c.basis !== 'provider_reported_list_cost') throw new SchemaError(f, 'invalid cost');
+    }
+    if (j.dispatch !== undefined) { const d = rec(f, j.dispatch, ['runId', 'preparedAt', 'attempts']); str(f, d.runId, 80, RUN_ID); time(f, d.preparedAt); int(f, d.attempts, 0, 100); }
+    if (j.stopRequested !== undefined) { const s = rec(f, j.stopRequested, ['at', 'reason']); time(f, s.at); if (!['cancel', 'shutdown', 'turn_ended'].includes(String(s.reason))) throw new SchemaError(f, 'invalid stop reason'); }
+    if (j.review !== undefined) { const r = rec(f, j.review, ['decision', 'at', 'intentId', 'note']); if (!['accepted', 'rejected'].includes(String(r.decision))) throw new SchemaError(f, 'invalid review'); time(f, r.at); str(f, r.intentId, 80); if (r.note !== undefined) str(f, r.note, 500); }
+    if (j.rewarded !== undefined && typeof j.rewarded !== 'boolean') throw new SchemaError(f, 'invalid rewarded flag');
+    if (holdsSlot(j as unknown as CloudJob) && !j.reservation) throw new SchemaError(f, 'active job without a budget reservation');
+  }
+  return clone(data) as unknown as CloudJobs;
+}
+
+export function validateLedger(value: unknown): CloudLedger {
+  const f = STATE_FILES.ledger;
+  const data = rec(f, value, ['schemaVersion', 'currency', 'entries', 'days']);
+  if (data.schemaVersion !== 1 || data.currency !== 'USD' || !Array.isArray(data.entries) || data.entries.length > LIMITS.spendEntries) throw new SchemaError(f, 'invalid ledger');
+  for (const item of data.entries) {
+    const e = rec(f, item, ['at', 'jobId', 'kind', 'cents', 'day', 'basis']);
+    time(f, e.at); str(f, e.jobId, 36, TASK_ID); int(f, e.cents); str(f, e.day, 10, DAY);
+    if (!['reserved', 'released', 'cost_observed'].includes(String(e.kind)) || !['per_job_allowance_estimate', 'provider_reported_list_cost'].includes(String(e.basis))) throw new SchemaError(f, 'invalid spend entry');
+  }
+  const days = rec(f, data.days);
+  if (Object.keys(days).length > LIMITS.spendDays) throw new SchemaError(f, 'too many ledger days');
+  for (const [day, totals] of Object.entries(days)) {
+    str(f, day, 10, DAY);
+    const t = rec(f, totals, ['reservedCents', 'observedCostCents']);
+    int(f, t.reservedCents); int(f, t.observedCostCents);
+  }
+  return clone(data) as unknown as CloudLedger;
+}
+
+export function validateJournal(value: unknown): CloudJournal {
+  const f = STATE_FILES.journal;
+  const data = rec(f, value, ['schemaVersion', 'seq', 'entries']);
+  if (data.schemaVersion !== 1 || !Array.isArray(data.entries) || data.entries.length > LIMITS.journal) throw new SchemaError(f, 'invalid journal');
+  const seq = int(f, data.seq);
+  const entries = data.entries as unknown[];
+  entries.forEach((item, index) => {
+    const e = rec(f, item, ['seq', 'at', 'runId', 'kind', 'message', 'intentId', 'jobId']);
+    if (e.seq !== seq - entries.length + 1 + index) throw new SchemaError(f, 'journal sequence gap');
+    time(f, e.at); str(f, e.runId, 80); str(f, e.message, 2000);
+    if (!['intent_applied', 'intent_rejected', 'job', 'dispatch', 'lifecycle', 'limits', 'economy', 'warning'].includes(String(e.kind))) throw new SchemaError(f, 'invalid journal kind');
+  });
+  return clone(data) as unknown as CloudJournal;
+}
+
+/** Mirrors the server's empire.json load checks (src/server/empire.ts) without touching the filesystem. */
+export function validateEmpire(value: unknown): EmpireState {
+  const f = STATE_FILES.empire;
+  const saved = rec(f, value) as any;
+  if (saved.version !== 2 || !Array.isArray(saved.sectors) || !Number.isFinite(saved.funds) || saved.funds < 0 || !Number.isFinite(saved.minutes)) throw new SchemaError(f, 'invalid empire save');
+  for (const site of SITES) {
+    if (!saved.sectors.some((s: any) => s.id === site.id && typeof s.built === 'boolean' && Number.isInteger(s.staff) && s.staff >= 0 && s.staff <= site.capacity)) throw new SchemaError(f, `invalid sector ${site.id}`);
+  }
+  const e = saved.economy;
+  if (!saved.setup || typeof saved.setup.completed !== 'boolean' || !e || !Array.isArray(e.rewardedTasks) || !Array.isArray(e.ledger) || !e.employees || Array.isArray(e.employees)
+    || !['startedAt', 'lastHour', 'revenue', 'wages', 'upkeep', 'dividends', 'ownerBalance'].every(key => Number.isFinite(e[key]) && e[key] >= 0) || !Number.isFinite(e.capital)
+    || !saved.sectors.every((s: any) => typeof s.owned === 'boolean' && Number.isInteger(s.level) && s.level >= 1 && s.level <= 3 && ['revenue', 'wages', 'upkeep'].every(key => Number.isFinite(s[key]) && s[key] >= 0))) throw new SchemaError(f, 'invalid economy');
+  const office = saved.office;
+  if (!office || !Number.isSafeInteger(office.floors) || office.floors < 1 || !Number.isSafeInteger(office.workstations) || office.workstations < 1 || office.workstations > office.floors * DESKS_PER_FLOOR) throw new SchemaError(f, 'invalid headquarters capacity');
+  const state = clone(saved) as EmpireState;
+  delete state.supervision;
+  return state;
+}
+
+// ---------------------------------------------------------------- migrations
+
+export type StateFiles = Record<string, string>;
+/**
+ * Registry of whole-snapshot migrations keyed by the meta schemaVersion they upgrade FROM.
+ * Schema version 1 is the first cloud release, so the registry is empty; add `1: files => ...` when v2 ships.
+ * A snapshot written by a newer coordinator is refused rather than downgraded.
+ */
+export const SNAPSHOT_MIGRATIONS: Record<number, (files: Record<string, unknown>) => Record<string, unknown>> = {};
+
+/** City-save migration shared with the host format: version 1 saves become version 2 (see ECONOMY.md). */
+export function migrateEmpire(value: unknown, now: number): { empire: unknown; migrated: boolean } {
+  const saved = value as any;
+  if (!saved || saved.version !== 1 || !Array.isArray(saved.sectors)) return { empire: value, migrated: false };
+  const fresh = initialEmpire(now);
+  const empire: EmpireState = {
+    ...fresh, ...saved,
+    version: 2,
+    office: { floors: 1, workstations: 16 },
+    delegated: true,
+    setup: fresh.setup,
+    economy: fresh.economy,
+    sectors: SITES.map(s => ({ ...newSector(s.id), ...saved.sectors.find((old: SectorState) => old.id === s.id) })),
+  };
+  empire.economy.lastHour = Math.floor(empire.minutes / 60);
+  empire.reports = [{ at: now, sector: 'Chief of staff', text: 'Your existing district and treasury have been preserved. Complete founding setup to appoint your sector managers.' }, ...(Array.isArray(saved.reports) ? saved.reports : [])].slice(0, LIMITS.reports);
+  return { empire, migrated: true };
+}
+
+export function parseStateFiles(files: StateFiles, now: number): { state: CloudState; migrated: string[] } {
+  const raw: Record<string, unknown> = {};
+  for (const [key, file] of Object.entries(STATE_FILES)) {
+    const text = files[file];
+    if (text === undefined) throw new SchemaError(file, 'missing; the state repository is not initialized');
+    try { raw[key] = JSON.parse(text); } catch { throw new SchemaError(file, 'invalid JSON'); }
+  }
+  const migrated: string[] = [];
+  let version = (raw.meta as any)?.schemaVersion;
+  if (!Number.isSafeInteger(version) || version < 1) throw new SchemaError(STATE_FILES.meta, 'missing schemaVersion');
+  if (version > CLOUD_SCHEMA_VERSION) throw new SchemaError(STATE_FILES.meta, `written by a newer coordinator (schema ${version}); upgrade the coordinator instead of downgrading state`);
+  while (version < CLOUD_SCHEMA_VERSION) {
+    const step = SNAPSHOT_MIGRATIONS[version];
+    if (!step) throw new SchemaError(STATE_FILES.meta, `no migration from schema ${version}`);
+    Object.assign(raw, step(raw)); version++; migrated.push(`schema ${version - 1}→${version}`);
+  }
+  const empire = migrateEmpire(raw.empire, now);
+  if (empire.migrated) migrated.push('empire version 1→2');
+  return {
+    state: { meta: validateMeta(raw.meta), empire: validateEmpire(empire.empire), jobs: validateJobs(raw.jobs), ledger: validateLedger(raw.ledger), journal: validateJournal(raw.journal) },
+    migrated,
+  };
+}
+
+/** Stable serialization: identical state produces identical bytes, so unchanged files are not rewritten. */
+export function serializeState(state: CloudState): StateFiles {
+  const { supervision: _ephemeral, ...empire } = state.empire;
+  return {
+    [STATE_FILES.meta]: JSON.stringify(state.meta, null, 2) + '\n',
+    [STATE_FILES.empire]: JSON.stringify(empire, null, 2) + '\n',
+    [STATE_FILES.jobs]: JSON.stringify(state.jobs, null, 2) + '\n',
+    [STATE_FILES.ledger]: JSON.stringify(state.ledger, null, 2) + '\n',
+    [STATE_FILES.journal]: JSON.stringify(state.journal, null, 2) + '\n',
+  };
+}
