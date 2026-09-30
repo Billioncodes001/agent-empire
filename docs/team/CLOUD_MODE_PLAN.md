@@ -54,4 +54,17 @@ A connected server keeps full capabilities.
 | CLOUD-05 | Shutdown and start | Backend + Interface | Explicit in-app control with a confirmation. Sessions are archived, the workflow disabled and the state recorded. Restart resumes |
 | CLOUD-06 | OpenAI Agents adapter | Backend | Adapter behind the same interface as the Anthropic one, tested with fake transports |
 
+## Native bridge contract (one owner: interface lane)
+
+The bundled game detects a shell by `window.AGENT_EMPIRE_APP.platform` (`'ios' | 'android' | 'desktop'`), injected before any page script runs. Calls are asynchronous request/response messages. Each request carries an `id`, and the shell answers through `window.__empireNative.resolve(id, result)` or `window.__empireNative.reject(id, message)`.
+
+| Call | Meaning |
+| --- | --- |
+| `secure.get(key)` / `secure.set(key, value)` / `secure.delete(key)` | Keychain (iOS), Android Keystore-encrypted storage, or Electron safeStorage. Keys come from a fixed allowlist: `mode`, `server.host`, `server.token`, `server.deviceId`, `github.token`, `github.login`, `state.repo` |
+| `github.deviceFlow({clientId, scopes})` | The native side runs GitHub's OAuth device flow. It shows the user code and opens `https://github.com/login/device` in the system browser, then polls. It returns `{token, login}` and never persists the token itself unless the page calls `secure.set` |
+| `app.signedOut(reason)` | The page tells the shell to clear its session keys |
+| `app.openExternal(url)` | Opens an `https` URL in the system browser, only after a user gesture |
+
+Transport: iOS uses `webkit.messageHandlers.empire.postMessage`. Android uses a single `@JavascriptInterface` object that is exposed only to the bundled origin `https://appassets.androidplatform.net` and checks the origin on every call. Electron uses `contextBridge` through the preload script. Nothing else is exposed. Provider API keys pass through the page only during setup, on their way to sealed-box encryption. They are never given to `secure.set`.
+
 APP-03 (iOS) and APP-04 (Android) keep the bundled game, secure storage and landscape full-screen. Their first screen becomes the CLOUD-03 mode choice. They gain a minimal native bridge (secure get/set/delete, GitHub device flow, sign-out) and expose nothing else.
