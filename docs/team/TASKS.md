@@ -46,7 +46,13 @@ Plan: [OFFICE_LIFE_AND_MOBILE_PLAN.md](OFFICE_LIFE_AND_MOBILE_PLAN.md).
 | APP-01 | Server device tokens, bearer auth, CORS for app origins | Reviewed and accepted | [Report](reports/app-device-auth.md). Security review accepted after fixes c791b97 |
 | APP-02 | Client configurable server base and token | Planned | APP-01 |
 | APP-03 | iOS bundled game app (native launch/connect, Keychain, scheme handler, landscape full-screen) | Planned | APP-01/02, MOBILE-01/02 |
-| APP-04 | Android bundled game app | Planned | APP-01/02, MOBILE-01/02 |
+| APP-04 | Android bundled game app | In progress | APP-01/02, MOBILE-01/02. First screen becomes the CLOUD-03 mode choice |
+| CLOUD-01 | State repository schema and headless coordinator tick | Planned | [Cloud mode plan](CLOUD_MODE_PLAN.md). The user chose GitHub-hosted cloud mode (2026-09-30) |
+| CLOUD-02 | Actions coordinator workflow and installer | Planned | CLOUD-01 |
+| CLOUD-03 | First-launch setup: cloud accounts or own server | Planned | Replaces the APP-03 server-address-first connect screen |
+| CLOUD-04 | Client cloud adapter (state repo snapshots and intents) | Planned | CLOUD-01, CLOUD-03 |
+| CLOUD-05 | In-app shut down and start | Planned | CLOUD-02 |
+| CLOUD-06 | OpenAI Agents adapter | Planned | — |
 | APP-05 | Desktop bundled remote mode | Planned | APP-01/02 |
 | LIFE-01 | Jump and landing animation, locomotion polish | Reviewed and accepted | [Report](reports/office-life.md). No idle clip in mid-air |
 | LIFE-02 | Gym, cafeteria/breakfast, coffee amenities | Reviewed and accepted | Built from primitives on every HQ floor, with colliders and clearance tests |
