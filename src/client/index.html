@@ -8,6 +8,8 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="apple-touch-icon" href="/assets/pwa/apple-touch-180-v1.png" />
     <meta name="theme-color" content="#15232a" />
+    <!-- Public GitHub OAuth App client id for the first-launch device-flow sign-in (no secret). Override at build time with VITE_AGENT_EMPIRE_GITHUB_CLIENT_ID. -->
+    <meta name="agent-empire-github-client-id" content="Ov23li3G3aR4rgZ0lCJ3" />
     <link rel="stylesheet" href="./style.css" />
     <!-- Critical splash styles: painted before the game bundle downloads. -->
     <style>
@@ -112,6 +114,6 @@
       </div>
       <div id="modal-root"></div>
     </div>
-    <script type="module" src="./main.ts"></script>
+    <script type="module" src="./boot.ts"></script>
   </body>
 </html>

@@ -68,5 +68,43 @@ check(GameSchemeHandler.mimeType(for: URL(fileURLWithPath: "/a/b.glb")) == "mode
 check(GameSchemeHandler.mimeType(for: URL(fileURLWithPath: "/a/b.js")).hasPrefix("text/javascript"), "js MIME")
 check(GameSchemeHandler.mimeType(for: URL(fileURLWithPath: "/a/b.wav")) == "audio/wav", "wav MIME")
 
+// MARK: Bridge protocol (docs/team/CLOUD_MODE_PLAN.md)
+
+func parsed(_ body: Any) -> BridgeProtocol.Request? { if case .success(let r) = BridgeProtocol.parse(body) { return r }; return nil }
+func valid(_ key: BridgeProtocol.Key, _ value: Any?, loopback: Bool = false) -> Bool {
+    if case .success = BridgeProtocol.validate(key, value: value, allowLoopbackHTTP: loopback) { return true }
+    return false
+}
+
+check(parsed(["id": "k1-2-abc", "method": "secure.get", "params": ["key": "mode"]])?.method == .secureGet, "bridge request parsed")
+check(parsed(["id": "k1", "method": "eval", "params": [:]]) == nil, "unknown method refused")
+check(parsed(["id": "bad id\"", "method": "secure.get"]) == nil, "malformed id refused")
+check(parsed("not an object") == nil, "non-object refused")
+check(BridgeProtocol.Key.allCases.map(\.rawValue) == ["mode", "server.host", "server.token", "server.deviceId", "github.token", "github.login", "state.repo"], "key allowlist matches the contract")
+if case .failure(.badKey) = BridgeProtocol.key(["key": "provider.anthropic"]) { check(true, "provider keys are not storable") } else { check(false, "provider keys are not storable") }
+check(valid(.mode, "cloud") && valid(.mode, "server") && !valid(.mode, "admin"), "mode values")
+check(valid(.serverHost, "https://city.example.com") && !valid(.serverHost, "https://city.example.com/"), "server.host must be an exact origin")
+check(!valid(.serverHost, "http://127.0.0.1:4707") && valid(.serverHost, "http://127.0.0.1:4707", loopback: true), "loopback http only when the build allows it")
+check(!valid(.serverHost, "http://city.example.com", loopback: true), "remote http never")
+check(valid(.serverToken, String(repeating: "a", count: 43)) && !valid(.serverToken, "short"), "device token shape")
+check(!valid(.githubToken, "gho_x y") && valid(.githubToken, "gho_abc"), "GitHub token without whitespace")
+check(valid(.stateRepo, "octo/agent-empire-state") && !valid(.stateRepo, "../x"), "state repo shape")
+check(!valid(.mode, String(repeating: "x", count: 9000)), "oversized values refused")
+if case .success(let a) = BridgeProtocol.deviceFlow(["clientId": "Ov23li3G3aR4rgZ0lCJ3", "scopes": ["repo", "workflow", "repo"]]) {
+    check(a.scopes == ["repo", "workflow"], "device flow scopes de-duplicated")
+} else { check(false, "device flow scopes de-duplicated") }
+if case .failure(.badScopes) = BridgeProtocol.deviceFlow(["clientId": "Ov23li3G3aR4rgZ0lCJ3", "scopes": ["admin:org"]]) { check(true, "unknown scopes refused") } else { check(false, "unknown scopes refused") }
+if case .failure(.badClientId) = BridgeProtocol.deviceFlow(["clientId": "", "scopes": ["repo"]]) { check(true, "empty client id refused") } else { check(false, "empty client id refused") }
+if case .failure = BridgeProtocol.externalURL(["url": "http://example.com"]) { check(true, "openExternal: http refused") } else { check(false, "openExternal: http refused") }
+if case .success = BridgeProtocol.externalURL(["url": "https://github.com/login/device"]) { check(true, "openExternal: https allowed") } else { check(false, "openExternal: https allowed") }
+check(BridgeProtocol.resolveScript(id: "a1", result: ["token": "t\"</script>", "login": "o"]) == #"window.__empireNative&&window.__empireNative.resolve("a1",{"login":"o","token":"t\"<\/script>"});"#, "resolve script JSON-encodes its values")
+check(BridgeProtocol.rejectScript(id: "a1", message: "line\u{2028}break").contains("\\u2028"), "U+2028 escaped in scripts")
+let withSession = BridgeProtocol.configScript(deviceName: "iPhone", mode: "server", host: "https://city.example.com", token: String(repeating: "t", count: 20), deviceId: "dev_1", signedOut: nil, allowLoopbackHTTP: false)
+check(withSession.contains(#""host":"https:\/\/city.example.com""#) && withSession.contains(#""platform":"ios""#) && withSession.contains(#""deviceId":"dev_1""#), "config carries a valid server session")
+let cloudCfg = BridgeProtocol.configScript(deviceName: "iPhone", mode: "cloud", host: "https://city.example.com", token: String(repeating: "t", count: 20), deviceId: nil, signedOut: "revoked", allowLoopbackHTTP: false)
+check(!cloudCfg.contains("token") && cloudCfg.contains(#""mode":"cloud""#) && cloudCfg.contains(#""signedOut":"revoked""#), "no server session injected outside server mode")
+let firstRun = BridgeProtocol.configScript(deviceName: "iPhone", mode: nil, host: nil, token: nil, deviceId: nil, signedOut: nil)
+check(firstRun.contains(#""platform":"ios""#) && !firstRun.contains("mode"), "first launch injects only the platform")
+
 print(failures == 0 ? "All checks passed" : "\(failures) check(s) failed")
 exit(failures == 0 ? 0 : 1)

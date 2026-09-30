@@ -4,16 +4,13 @@ import WebKit
 
 /// The game: full screen, landscape, no status bar, home indicator auto-hidden, system edge gestures deferred.
 struct GameScreen: View {
-    @EnvironmentObject private var model: AppModel
-    let session: DeviceSession
-
     var body: some View {
-        Group {
+        ZStack {
+            Color.brandBackground.ignoresSafeArea()
             if let root = GameSchemeHandler.bundledRoot {
-                GameWebView(session: session, root: root) { reason in model.signedOut(reason: reason) }
-                    .ignoresSafeArea()
+                GameWebView(root: root).ignoresSafeArea()
             } else {
-                MissingGameView { model.signedOut(reason: "user") }
+                MissingGameView()
             }
         }
         .statusBarHidden(true)
@@ -24,32 +21,22 @@ struct GameScreen: View {
 
 /// Shown only when a build was made without copying the web client into the app.
 struct MissingGameView: View {
-    let signOut: () -> Void
     var body: some View {
         VStack(spacing: 14) {
             Image(systemName: "exclamationmark.triangle.fill").font(.largeTitle).foregroundStyle(Color.brandWarn)
             Text("The game files are missing from this build.").font(.headline).foregroundStyle(Color.brandInk)
             Text("Run npm run build:client, then build the app again.").font(.callout).foregroundStyle(Color.brandMuted)
-            Button("Sign out", action: signOut)
         }
         .padding()
     }
 }
 
 struct GameWebView: UIViewControllerRepresentable {
-    let session: DeviceSession
     let root: URL
-    let onSignedOut: (String) -> Void
 
-    func makeUIViewController(context: Context) -> GameViewController {
-        GameViewController(session: session, root: root, onSignedOut: onSignedOut)
-    }
-
+    func makeUIViewController(context: Context) -> GameViewController { GameViewController(root: root) }
     func updateUIViewController(_ controller: GameViewController, context: Context) {}
-
-    static func dismantleUIViewController(_ controller: GameViewController, coordinator: ()) {
-        controller.tearDown()
-    }
+    static func dismantleUIViewController(_ controller: GameViewController, coordinator: ()) { controller.tearDown() }
 }
 
 /// Holds only a weak reference, so the content controller doesn't keep the game alive.
@@ -61,32 +48,63 @@ private final class WeakMessageHandler: NSObject, WKScriptMessageHandler {
     }
 }
 
-final class GameViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
+#if DEBUG
+/// Debug builds only: page errors, rejections and console.error lines go to the simulator log. Never in Release.
+private final class DebugLog: NSObject, WKScriptMessageHandler {
+    static let script = "(()=>{const h=window.webkit.messageHandlers.empireDebug;const s=(m)=>{try{h.postMessage(String(m).slice(0,800))}catch{}};addEventListener('error',e=>s('error: '+e.message+' @'+e.filename+':'+e.lineno));addEventListener('unhandledrejection',e=>s('rejection: '+(e.reason&&e.reason.stack||e.reason)));const ce=console.error.bind(console);console.error=(...a)=>{s('console.error: '+a.join(' '));ce(...a)};})();"
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        NSLog("AEPage %@", String(describing: message.body))
+    }
+}
+#endif
+
+/// Records when the player last touched the game, without taking part in any gesture. Used to tell a link the
+/// player tapped from one a script opened on its own.
+private final class TouchRecorder: UIGestureRecognizer {
+    var lastTouch = Date.distantPast
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        lastTouch = Date()
+        state = .failed
+    }
+}
+
+final class GameViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, UIGestureRecognizerDelegate {
     /// The single native message channel the page can use: window.webkit.messageHandlers.empire.
     static let bridgeName = "empire"
-    static let signOutReasons: Set<String> = ["user", "revoked", "unauthorized"]
     static let brand = UIColor(red: 0x0F / 255, green: 0x1B / 255, blue: 0x21 / 255, alpha: 1)
 
-    private let session: DeviceSession
     private let root: URL
-    private let onSignedOut: (String) -> Void
     private var webView: WKWebView?
+    private let touches = TouchRecorder()
+    /// Why the last session ended; shown once by the setup's sign-in step after the reload.
+    private var signedOutReason: String?
+    private var deviceFlowTask: Task<Void, Never>?
 
-    init(session: DeviceSession, root: URL, onSignedOut: @escaping (String) -> Void) {
-        self.session = session
+    init(root: URL) {
         self.root = root
-        self.onSignedOut = onSignedOut
         super.init(nibName: nil, bundle: nil)
     }
 
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    /// The config the web client reads before it starts (see src/client/endpoint.ts). JSON-encoded, so no value
-    /// can break out of the literal; read-only and non-enumerable on window.
-    static func configScript(for session: DeviceSession) -> String {
-        let payload = ["host": session.host, "token": session.token, "platform": "ios", "deviceId": session.deviceId]
-        let json = (try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])).flatMap { String(data: $0, encoding: .utf8) } ?? "null"
-        return "Object.defineProperty(window,'AGENT_EMPIRE_APP',{value:Object.freeze(\(json)),writable:false,configurable:false,enumerable:false});"
+    /// The config the page reads before it starts, from what is in secure storage right now.
+    private func configScript() -> String {
+        BridgeProtocol.configScript(deviceName: UIDevice.current.name, mode: SecureStore.get(.mode), host: SecureStore.get(.serverHost),
+                                    token: SecureStore.get(.serverToken), deviceId: SecureStore.get(.serverDeviceId), signedOut: signedOutReason)
+    }
+
+    /// Re-injects the config for the next page load (after a sign-in, a sign-out or a web content process restart).
+    private func refreshConfig() {
+        guard let controller = webView?.configuration.userContentController else { return }
+        controller.removeAllUserScripts()
+        installScripts(controller)
+    }
+
+    private func installScripts(_ controller: WKUserContentController) {
+        controller.addUserScript(WKUserScript(source: configScript(), injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        #if DEBUG
+        controller.addUserScript(WKUserScript(source: DebugLog.script, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        #endif
     }
 
     override func loadView() {
@@ -100,8 +118,11 @@ final class GameViewController: UIViewController, WKNavigationDelegate, WKUIDele
         config.dataDetectorTypes = []
         config.preferences.javaScriptCanOpenWindowsAutomatically = false
         config.preferences.isTextInteractionEnabled = true
-        config.userContentController.addUserScript(WKUserScript(source: Self.configScript(for: session), injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        installScripts(config.userContentController)
         config.userContentController.add(WeakMessageHandler(self), contentWorld: .page, name: Self.bridgeName)
+        #if DEBUG
+        config.userContentController.add(DebugLog(), name: "empireDebug") // Debug only: page errors reach the simulator log
+        #endif
 
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.isOpaque = false
@@ -117,6 +138,10 @@ final class GameViewController: UIViewController, WKNavigationDelegate, WKUIDele
         webView.allowsBackForwardNavigationGestures = false
         webView.navigationDelegate = self
         webView.uiDelegate = self
+        touches.cancelsTouchesInView = false
+        touches.delaysTouchesBegan = false
+        touches.delegate = self
+        webView.addGestureRecognizer(touches)
         #if DEBUG
         if #available(iOS 16.4, *) { webView.isInspectable = true }
         #endif
@@ -145,7 +170,10 @@ final class GameViewController: UIViewController, WKNavigationDelegate, WKUIDele
     override var preferredScreenEdgesDeferringSystemGestures: UIRectEdge { .all }
     override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .landscape }
 
+    func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+
     func tearDown() {
+        deviceFlowTask?.cancel()
         guard let webView else { return }
         webView.configuration.userContentController.removeAllScriptMessageHandlers()
         webView.configuration.userContentController.removeAllUserScripts()
@@ -159,16 +187,119 @@ final class GameViewController: UIViewController, WKNavigationDelegate, WKUIDele
         url?.scheme?.lowercased() == GameSchemeHandler.scheme && url?.host?.lowercased() == GameSchemeHandler.host
     }
 
-    // MARK: Bridge: only {type: "signedOut", reason} from the game's own main frame is accepted.
+    // MARK: Bridge (docs/team/CLOUD_MODE_PLAN.md): only requests from the game's own main frame are answered.
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         let origin = message.frameInfo.securityOrigin
         guard message.name == Self.bridgeName, message.frameInfo.isMainFrame,
-              origin.protocol == GameSchemeHandler.scheme, origin.host == GameSchemeHandler.host,
-              let body = message.body as? [String: Any], body["type"] as? String == "signedOut" else { return }
-        let reason = body["reason"] as? String ?? "unauthorized"
-        tearDown()
-        onSignedOut(Self.signOutReasons.contains(reason) ? reason : "unauthorized")
+              origin.protocol == GameSchemeHandler.scheme, origin.host == GameSchemeHandler.host else { return }
+        switch BridgeProtocol.parse(message.body) {
+        case .failure: return // no id to answer; the page's own timeout reports it
+        case .success(let request): handle(request)
+        }
+    }
+
+    private func resolve(_ id: String, _ result: Any?) {
+        webView?.evaluateJavaScript(BridgeProtocol.resolveScript(id: id, result: result), completionHandler: nil)
+    }
+
+    private func reject(_ id: String, _ message: String) {
+        webView?.evaluateJavaScript(BridgeProtocol.rejectScript(id: id, message: message), completionHandler: nil)
+    }
+
+    private func handle(_ request: BridgeProtocol.Request) {
+        let id = request.id
+        switch request.method {
+        case .secureGet:
+            switch BridgeProtocol.key(request.params) {
+            case .failure(let f): reject(id, f.message)
+            case .success(let key): resolve(id, SecureStore.get(key))
+            }
+        case .secureSet:
+            guard case .success(let key) = BridgeProtocol.key(request.params) else { return reject(id, BridgeProtocol.Failure.badKey.message) }
+            switch BridgeProtocol.validate(key, value: request.params["value"]) {
+            case .failure(let f): reject(id, f.message)
+            case .success(let value):
+                do {
+                    try SecureStore.set(key, value)
+                    if key == .serverToken { signedOutReason = nil }
+                    refreshConfig()
+                    resolve(id, true)
+                } catch {
+                    reject(id, "This device couldn't store that securely.")
+                }
+            }
+        case .secureDelete:
+            switch BridgeProtocol.key(request.params) {
+            case .failure(let f): reject(id, f.message)
+            case .success(let key):
+                SecureStore.delete(key)
+                refreshConfig()
+                resolve(id, true)
+            }
+        case .githubDeviceFlow:
+            switch BridgeProtocol.deviceFlow(request.params) {
+            case .failure(let f): reject(id, f.message)
+            case .success(let args): runDeviceFlow(id: id, clientId: args.clientId, scopes: args.scopes)
+            }
+        case .signedOut:
+            let reason = (try? BridgeProtocol.reason(request.params).get()) ?? "unauthorized"
+            resolve(id, true)
+            signOut(reason: reason)
+        case .openExternal:
+            switch BridgeProtocol.externalURL(request.params) {
+            case .failure(let f): reject(id, f.message)
+            case .success(let url):
+                // Straight to Safari right after a tap; anything else asks first.
+                if Date().timeIntervalSince(touches.lastTouch) < 5 {
+                    UIApplication.shared.open(url)
+                    resolve(id, true)
+                } else {
+                    offerExternal(url) { opened in opened ? self.resolve(id, true) : self.reject(id, "Not opened.") }
+                }
+            }
+        }
+    }
+
+    /// The session ended: forget the device token (keep the chosen mode and the server address for the sign-in
+    /// step), then reload so the setup's sign-in step shows why.
+    private func signOut(reason: String) {
+        SecureStore.delete(.serverToken)
+        SecureStore.delete(.serverDeviceId)
+        signedOutReason = reason
+        refreshConfig()
+        DispatchQueue.main.async { self.webView?.load(URLRequest(url: GameSchemeHandler.startURL)) }
+    }
+
+    private func runDeviceFlow(id: String, clientId: String, scopes: [String]) {
+        guard deviceFlowTask == nil, presentedViewController == nil else { return reject(id, "GitHub sign-in is already open.") }
+        var sheet: UIViewController?
+        let model = DeviceFlowModel(onCancel: { [weak self] in self?.deviceFlowTask?.cancel() }, onOpen: { url in UIApplication.shared.open(url) })
+        let host = UIHostingController(rootView: DeviceFlowSheet(model: model))
+        host.modalPresentationStyle = .fullScreen
+        host.view.backgroundColor = Self.brand
+        sheet = host
+        present(host, animated: true)
+        deviceFlowTask = Task { @MainActor [weak self] in
+            defer {
+                sheet?.dismiss(animated: true)
+                self?.deviceFlowTask = nil
+            }
+            do {
+                let code = try await GitHubDeviceFlow.start(clientId: clientId, scopes: scopes)
+                model.phase = .waiting(code)
+                let token = try await GitHubDeviceFlow.poll(clientId: clientId, code: code)
+                model.phase = .finishing
+                let login = try await GitHubDeviceFlow.login(token: token)
+                self?.resolve(id, ["token": token, "login": login])
+            } catch let failure as GitHubDeviceFlow.Failure {
+                self?.reject(id, failure.message)
+            } catch is CancellationError {
+                self?.reject(id, GitHubDeviceFlow.Failure.cancelled.message)
+            } catch {
+                self?.reject(id, GitHubDeviceFlow.Failure.network.message)
+            }
+        }
     }
 
     // MARK: Navigation: the web view only ever shows the bundled game.
@@ -184,17 +315,20 @@ final class GameViewController: UIViewController, WKNavigationDelegate, WKUIDele
 
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for action: WKNavigationAction,
                  windowFeatures: WKWindowFeatures) -> WKWebView? {
-        // window.open / target=_blank (e.g. a pull request link): never a new web view; ask before leaving the app.
+        // window.open / target=_blank: never a new web view; ask before leaving the app.
         if let url = action.request.url { offerExternal(url) }
         return nil
     }
 
     /// External https links open in Safari only after the player confirms. Nothing else leaves the app.
-    private func offerExternal(_ url: URL) {
-        guard url.scheme?.lowercased() == "https", let host = url.host, presentedViewController == nil else { return }
+    private func offerExternal(_ url: URL, done: ((Bool) -> Void)? = nil) {
+        guard url.scheme?.lowercased() == "https", let host = url.host, presentedViewController == nil else { done?(false); return }
         let alert = UIAlertController(title: "Open in Safari?", message: host, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Open", style: .default) { _ in UIApplication.shared.open(url) })
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in done?(false) })
+        alert.addAction(UIAlertAction(title: "Open", style: .default) { _ in
+            UIApplication.shared.open(url)
+            done?(true)
+        })
         present(alert, animated: true)
     }
 
@@ -239,6 +373,7 @@ final class GameViewController: UIViewController, WKNavigationDelegate, WKUIDele
 
     /// If the web content process dies (memory pressure), bring the game back rather than leave a blank screen.
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        refreshConfig()
         webView.load(URLRequest(url: GameSchemeHandler.startURL))
     }
 }

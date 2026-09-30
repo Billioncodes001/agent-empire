@@ -2,7 +2,7 @@ import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   beginUserSignOut, apiFetch, apiInit, apiUrl, appConfig, normaliseHost, notifySignedOut, parseAppConfig, resetEndpointForTests, signedOutNotified,
-  wsProtocols, wsUrl, WS_PROTOCOL, WS_REVOKED, type AppConfig,
+  setSessionConfig, wsProtocols, wsUrl, WS_PROTOCOL, WS_REVOKED, type AppConfig,
 } from '../src/client/endpoint';
 import { Net } from '../src/client/net';
 import { WS_PROTOCOL as SERVER_WS_PROTOCOL, APP_ORIGINS } from '../src/server/server';
@@ -20,6 +20,15 @@ afterEach(() => {
   resetEndpointForTests(undefined);
 });
 
+/** The reasons of the app.signedOut bridge requests the page sent (each a {id, method, params} request). */
+const signOuts = (posted: unknown[]) =>
+  posted.map((m) => {
+    const r = m as { id?: unknown; method?: string; params?: { reason?: string } };
+    assert.equal(typeof r.id, 'string', 'every bridge request carries an id');
+    assert.equal(r.method, 'app.signedOut');
+    return r.params?.reason;
+  });
+
 /** A fake window carrying the injected config and the one native bridge, recording what the page posts. */
 function fakeWindow(config: unknown) {
   const posted: unknown[] = [];
@@ -27,6 +36,15 @@ function fakeWindow(config: unknown) {
   resetEndpointForTests(undefined);
   return posted;
 }
+
+test('app: a session signed in by the first-launch setup is adopted without a reload, and validated', () => {
+  resetEndpointForTests(null);
+  assert.equal(apiUrl('/api/whoami'), '/api/whoami');
+  setSessionConfig(app({ host: 'http://127.0.0.1:4707' }));
+  assert.equal(apiUrl('/api/whoami'), 'http://127.0.0.1:4707/api/whoami');
+  assert.deepEqual(wsProtocols(), ['empire.v1', `bearer.${TOKEN}`]);
+  assert.throws(() => setSessionConfig(app({ token: 'short' })), /Invalid session/);
+});
 
 test('the client and server agree on the WebSocket subprotocol and the iOS origin', () => {
   assert.equal(WS_PROTOCOL, SERVER_WS_PROTOCOL);
@@ -101,7 +119,7 @@ test('app: a 401 tells the native shell once, through the single empire bridge',
   await apiFetch('/api/whoami');
   assert.equal(seen[0][0], 'https://city.example.com/api/continuity/status');
   assert.equal(new Headers(seen[0][1].headers).get('authorization'), `Bearer ${TOKEN}`);
-  assert.deepEqual(posted, [{ type: 'signedOut', reason: 'unauthorized' }]);
+  assert.deepEqual(signOuts(posted), ['unauthorized']);
   assert.equal(signedOutNotified(), true);
 });
 
@@ -130,7 +148,7 @@ test('Net (app): connects with the bearer subprotocol, and a revoked socket (440
   assert.doesNotMatch(ws.url, /bearer|token/i);
   assert.deepEqual(ws.protocols, ['empire.v1', `bearer.${TOKEN}`]);
   await ws.onclose!({ code: WS_REVOKED });
-  assert.deepEqual(posted, [{ type: 'signedOut', reason: 'revoked' }]);
+  assert.deepEqual(signOuts(posted), ['revoked']);
   assert.equal(fetched, 0, 'no whoami probe after an explicit revoke');
   net.reconnectNow();
   assert.equal(FakeSocket.last, ws, 'no reconnect after sign-out');
@@ -162,5 +180,5 @@ test('app: after the player chooses Sign out, the revoke that closes our own soc
   beginUserSignOut();
   await FakeSocket.last!.onclose!({ code: WS_REVOKED });
   notifySignedOut('user');
-  assert.deepEqual(posted, [{ type: 'signedOut', reason: 'user' }]);
+  assert.deepEqual(signOuts(posted), ['user']);
 });

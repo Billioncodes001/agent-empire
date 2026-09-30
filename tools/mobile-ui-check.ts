@@ -298,6 +298,39 @@ try {
     await context.close();
   }
 
+  // First-launch setup, as a static copy of the game with no server behind it shows it (whoami answers 404):
+  // fits every landscape phone, keeps touch-sized targets, no horizontal overflow, honours reduced motion.
+  for (const [w, hgt] of [[667, 375], [874, 402], [932, 430]] as const) {
+    const context = await browser.newContext({ viewport: { width: w, height: hgt }, deviceScaleFactor: 1, isMobile: true, hasTouch: true, reducedMotion: w === 667 ? 'reduce' : 'no-preference' });
+    const page = await context.newPage();
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    await page.route('**/api/whoami', (r) => r.fulfill({ status: 404, body: 'static copy' }));
+    await page.goto(base);
+    await page.waitForSelector('.su-hero-title', { timeout: 20_000 });
+    const tag = `${w}x${hgt} setup`;
+    const start = await rect(page, '.su-hero .su-primary');
+    check(`${tag}: start button on screen and touch-sized`, !!start && inside(start, w, hgt) && start.h >= 44);
+    check(`${tag}: game bundle not loaded before a choice`, !(await page.evaluate(() => performance.getEntriesByType('resource').some((e) => /three\.module/.test(e.name)))));
+    if (w === 667) check(`${tag}: reduced motion stops the title animation`, (await page.evaluate(() => getComputedStyle(document.querySelector('.su-letter')!).animationName)) === 'none');
+    await page.tap('.su-hero .su-primary');
+    await page.waitForTimeout(400);
+    const cards = [await rect(page, '.su-card-cloud', 'cloud card'), await rect(page, '.su-card-server', 'server card')];
+    // Fully visible means inside the panel's scroll area (not hidden under its footer), not merely inside the viewport.
+    const area = await rect(page, '.su-panel:not(.su-leave) .su-body', 'body');
+    check(`${tag}: both mode cards fully visible without scrolling`, !!area && cards.every((c) => !!c && inside(c, w, hgt) && c.y >= area.y - 0.5 && c.y + c.h <= area.y + area.h + 0.5),
+      cards.map((c) => c && `${c.name} bottom ${(c.y + c.h).toFixed(0)}`).join(', ') + (area ? `, visible to ${(area.y + area.h).toFixed(0)}` : ''));
+    const back = await rect(page, '.su-panel:not(.su-leave) .su-back', 'back');
+    check(`${tag}: Back reachable and touch-sized`, !!back && inside(back, w, hgt) && back.h >= 44);
+    await page.tap('.su-card-server');
+    await page.waitForTimeout(400);
+    const next = await rect(page, '.su-panel:not(.su-leave) .su-foot .su-primary', 'continue');
+    check(`${tag}: server address and Continue on screen`, !!(await rect(page, '#su-address')) && !!next && inside(next, w, hgt));
+    check(`${tag}: no horizontal overflow`, (await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)) <= 0);
+    check(`${tag}: no page errors`, !errors.length, errors.slice(0, 3).join(' | '));
+    await context.close();
+  }
+
   // Sign-in page: rebrand, ids kept, fits a landscape phone.
   {
     const context = await browser.newContext({ viewport: { width: 667, height: 375 }, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
