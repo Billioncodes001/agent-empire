@@ -49,9 +49,10 @@ private final class WeakMessageHandler: NSObject, WKScriptMessageHandler {
 }
 
 #if DEBUG
-/// Debug builds only: page errors, rejections and console.error lines go to the simulator log. Never in Release.
+/// Debug builds only: page errors, rejections, console.error lines, and where touches and clicks land (to check
+/// simulator tap coordinates) go to the simulator log as `AEPage …`. Never in Release.
 private final class DebugLog: NSObject, WKScriptMessageHandler {
-    static let script = "(()=>{const h=window.webkit.messageHandlers.empireDebug;const s=(m)=>{try{h.postMessage(String(m).slice(0,800))}catch{}};addEventListener('error',e=>s('error: '+e.message+' @'+e.filename+':'+e.lineno));addEventListener('unhandledrejection',e=>s('rejection: '+(e.reason&&e.reason.stack||e.reason)));const ce=console.error.bind(console);console.error=(...a)=>{s('console.error: '+a.join(' '));ce(...a)};})();"
+    static let script = "(()=>{const h=window.webkit.messageHandlers.empireDebug;const s=(m)=>{try{h.postMessage(String(m).slice(0,800))}catch{}};addEventListener('error',e=>s('error: '+e.message+' @'+e.filename+':'+e.lineno));addEventListener('unhandledrejection',e=>s('rejection: '+(e.reason&&e.reason.stack||e.reason)));const ce=console.error.bind(console);console.error=(...a)=>{s('console.error: '+a.join(' '));ce(...a)};addEventListener('touchstart',e=>{const t=e.touches[0];s('touch '+Math.round(t.clientX)+','+Math.round(t.clientY)+' on '+(e.target&&e.target.className)+' viewport '+innerWidth+'x'+innerHeight)},{capture:true,passive:true});addEventListener('click',e=>s('click on '+(e.target&&e.target.className)),true);})();"
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         NSLog("AEPage %@", String(describing: message.body))
     }

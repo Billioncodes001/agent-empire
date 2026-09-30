@@ -224,6 +224,10 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
   const showError = (box: HTMLElement, message: string | null) => {
     box.hidden = !message;
     box.replaceChildren(...(message ? [icon(ICONS.warn, 'su-inline-ico'), message] : []));
+    if (!message) return;
+    requestAnimationFrame(() => box.scrollIntoView({ block: 'nearest' }));
+    // On touch the on-screen keyboard is closing and WebKit restores the old scroll afterwards: show the error again.
+    if (matchMedia('(pointer: coarse)').matches) setTimeout(() => box.scrollIntoView({ block: 'nearest' }), 450);
   };
   /** Keyboard users go straight back to the field; on touch the on-screen keyboard is dismissed so the error shows. */
   const focusField = (input: HTMLInputElement) => {
