@@ -5,6 +5,8 @@
  */
 import type { ExecutionConfig, ExecutionTask } from '../shared/execution.js';
 import { safeExecutionError } from '../server/execution-errors.js';
+import { COMMIT } from '../server/execution-validation.js';
+import { GitHubClient, GitHubError } from './store.js';
 import { AnthropicManaged, type ProviderCredentials } from '../server/providers/anthropic-managed.js';
 import { DispatchFailure, type DispatchRequest, type ProviderAdapter, type ProviderObservation } from './provider.js';
 import { utcDay, type CloudExecution, type EventCursorState } from './schema.js';
@@ -19,8 +21,11 @@ export class AnthropicCloudAdapter implements ProviderAdapter {
   /** One read-only definition check per coordinator run and execution config. */
   private checked = new Map<string, Promise<{ agentVersion: number; sourceCommit: string }>>();
 
+  private github: GitHubClient;
+
   constructor(private credentials: ProviderCredentials, options: { fetch?: typeof fetch; timeoutMs?: number; now?: () => number } = {}) {
     this.client = new AnthropicManaged(options.fetch ?? fetch, options.timeoutMs ?? 15_000);
+    this.github = new GitHubClient(credentials.githubToken, { ...(options.fetch ? { fetch: options.fetch } : {}), timeoutMs: options.timeoutMs ?? 15_000 });
     this.canDispatch = !!credentials.apiKey && !!credentials.githubToken;
     this.now = options.now ?? Date.now;
   }
@@ -67,4 +72,19 @@ export class AnthropicCloudAdapter implements ProviderAdapter {
   }
   interrupt(sessionId: string) { return this.client.interrupt(sessionId, this.credentials.apiKey); }
   archive(sessionId: string) { return this.client.archive(sessionId, this.credentials.apiKey); }
+
+  async branchHead(execution: CloudExecution, branch: string): Promise<{ state: 'found'; sha: string } | { state: 'missing' }> {
+    if (!this.credentials.githubToken) throw new Error('The project GitHub token is not configured.');
+    if (!/^agent-empire\/task-[a-f0-9-]{36}$/.test(branch)) throw new Error('Unexpected task branch name.');
+    const { owner, name } = execution.repository;
+    try {
+      const ref = await this.github.request('GET', `/repos/${owner}/${name}/git/ref/heads/${branch}`);
+      const sha = ref.data?.object?.sha;
+      if (typeof sha !== 'string' || !COMMIT.test(sha)) throw new Error('GitHub returned an invalid branch head.');
+      return { state: 'found', sha };
+    } catch (error) {
+      if (error instanceof GitHubError && error.status === 404) return { state: 'missing' };
+      throw error;
+    }
+  }
 }

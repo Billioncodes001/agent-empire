@@ -5,13 +5,20 @@
  * by re-reading and recomputing. Browser-safe: no Node built-ins.
  */
 import { INTENT_PATH, STATE_FILES } from './schema.js';
+import { MAX_INTENT_BYTES, MAX_INTENT_SCAN, selectIntentBatch } from './intents.js';
 
 export interface StateSnapshot {
   /** Commit the snapshot was read from; the optimistic-concurrency token. */
   sha: string;
   treeSha: string;
-  /** `state/*.json` and up to `maxIntents` `intents/*.json` files, by path. */
+  /** `state/*.json` and the oldest `maxIntents` readable `intents/*.json` files, by path. */
   files: Record<string, string>;
+  /**
+   * Intent files that can never be parsed (oversized, not UTF-8, unsupported blob). They are
+   * returned instead of thrown so the coordinator rejects, journals and deletes them; one bad
+   * client file must never block later cancel/shutdown intents.
+   */
+  unreadableIntents: { path: string; reason: string }[];
   /** True when more intent files exist than were read; the rest wait for the next tick. */
   intentsTruncated: boolean;
 }
@@ -36,12 +43,22 @@ export class ConflictRetriesExhausted extends Error {
  * Read → compute → commit, retrying from a fresh read when the ref moved. `build` must be a pure
  * function of the snapshot (plus data it already holds) so a retry cannot duplicate side effects.
  */
+export interface RetryOptions {
+  maxAttempts?: number;
+  /** First backoff delay; doubles per conflict (250, 500, 1000 ms …). */
+  backoffMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+}
+export const defaultSleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+
 export async function updateWithRetry<T>(
   store: StateStore,
   build: (snapshot: StateSnapshot, attempt: number) => { changes: FileChange[]; message: string; value: T } | Promise<{ changes: FileChange[]; message: string; value: T }>,
-  maxAttempts = 5,
+  options: RetryOptions | number = {},
 ): Promise<{ value: T; sha: string; attempts: number; changed: boolean }> {
+  const { maxAttempts = 5, backoffMs = 250, sleep = defaultSleep } = typeof options === 'number' ? { maxAttempts: options } : options;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (attempt > 1 && backoffMs > 0) await sleep(backoffMs * 2 ** (attempt - 2));
     const snapshot = await store.read();
     const next = await build(snapshot, attempt);
     const result = await store.commit(snapshot, next.changes, next.message);
@@ -143,19 +160,39 @@ export class GitHubStateStore implements StateStore, WorkflowControl {
     const state = entries.filter(entry => !entry.path.startsWith('intents/'));
     const intents = entries.filter(entry => entry.path.startsWith('intents/')).sort((a, b) => a.path.localeCompare(b.path));
     const maxIntents = this.options.maxIntents ?? 100;
-    const selected = [...state, ...intents.slice(0, maxIntents)];
     const maxBytes = this.options.maxFileBytes ?? 4 * 1024 * 1024;
     const files: Record<string, string> = {};
-    for (let i = 0; i < selected.length; i += 8) {
-      await Promise.all(selected.slice(i, i + 8).map(async entry => {
-        if (entry.size !== undefined && entry.size > maxBytes) throw new GitHubError(413, 'state_file_large', `${entry.path} exceeds the supported size.`);
-        const blob = await this.client.request('GET', `${this.base}/git/blobs/${entry.sha}`);
-        if (blob.data?.encoding !== 'base64' || typeof blob.data?.content !== 'string') throw new GitHubError(502, 'github_invalid', `GitHub returned an unsupported blob for ${entry.path}.`);
-        try { files[entry.path] = decodeBase64Utf8(blob.data.content); }
-        catch { throw new GitHubError(422, 'state_file_encoding', `${entry.path} is not UTF-8 text.`); }
+    const unreadableIntents: StateSnapshot['unreadableIntents'] = [];
+    const blob = async (entry: { path: string; sha: string }) => {
+      const response = await this.client.request('GET', `${this.base}/git/blobs/${entry.sha}`);
+      if (response.data?.encoding !== 'base64' || typeof response.data?.content !== 'string') throw new GitHubError(502, 'github_invalid', `GitHub returned an unsupported blob for ${entry.path}.`);
+      try { return decodeBase64Utf8(response.data.content); }
+      catch { throw new GitHubError(422, 'file_encoding', `${entry.path} is not UTF-8 text.`); }
+    };
+    // Coordinator-written state: bounded by design; a failure here is a real fault and stops the run.
+    for (const entry of state) {
+      if (entry.size !== undefined && entry.size > maxBytes) throw new GitHubError(413, 'state_file_large', `${entry.path} exceeds the supported size.`);
+      files[entry.path] = await blob(entry);
+    }
+    // Client-written intents: anything permanently unreadable is reported, never thrown.
+    const scanned = intents.slice(0, MAX_INTENT_SCAN);
+    const intentText: Record<string, string> = {};
+    for (let i = 0; i < scanned.length; i += 8) {
+      await Promise.all(scanned.slice(i, i + 8).map(async entry => {
+        if (entry.size !== undefined && entry.size > MAX_INTENT_BYTES) { unreadableIntents.push({ path: entry.path, reason: 'Intent file is larger than 64 KiB.' }); return; }
+        try { intentText[entry.path] = await blob(entry); }
+        catch (error) {
+          // Network/5xx failures are transient: fail the run and retry next schedule without losing the intent.
+          const permanent = error instanceof GitHubError && error.status !== 0 && (error.status < 500 || ['github_invalid', 'github_response_large'].includes(error.code));
+          if (!permanent) throw error;
+          unreadableIntents.push({ path: entry.path, reason: error.code === 'file_encoding' ? 'Intent file is not UTF-8 text.' : 'Intent file could not be read as text.' });
+        }
       }));
     }
-    return { sha, treeSha, files, intentsTruncated: intents.length > maxIntents };
+    const batch = selectIntentBatch(intentText, maxIntents);
+    for (const path of batch.selected) files[path] = intentText[path];
+    unreadableIntents.sort((a, b) => a.path.localeCompare(b.path));
+    return { sha, treeSha, files, unreadableIntents, intentsTruncated: batch.truncated || intents.length > MAX_INTENT_SCAN };
   }
 
   async commit(base: Pick<StateSnapshot, 'sha' | 'treeSha'>, changes: FileChange[], message: string): Promise<CommitResult> {
@@ -213,9 +250,12 @@ export class MemoryStateStore implements StateStore, WorkflowControl {
   async read(): Promise<StateSnapshot> {
     this.reads++;
     const paths = Object.keys(this.head.files).filter(isStatePath);
-    const intents = paths.filter(path => path.startsWith('intents/')).sort();
-    const selected = [...paths.filter(path => !path.startsWith('intents/')), ...intents.slice(0, this.maxIntents)];
-    return { sha: this.head.sha, treeSha: this.head.sha, files: Object.fromEntries(selected.map(path => [path, this.head.files[path]])), intentsTruncated: intents.length > this.maxIntents };
+    const intents = paths.filter(path => path.startsWith('intents/')).sort().slice(0, MAX_INTENT_SCAN);
+    const unreadableIntents = intents.filter(path => new TextEncoder().encode(this.head.files[path]).length > MAX_INTENT_BYTES).map(path => ({ path, reason: 'Intent file is larger than 64 KiB.' }));
+    const readable = Object.fromEntries(intents.filter(path => !unreadableIntents.some(u => u.path === path)).map(path => [path, this.head.files[path]]));
+    const batch = selectIntentBatch(readable, this.maxIntents);
+    const selected = [...paths.filter(path => !path.startsWith('intents/')), ...batch.selected];
+    return { sha: this.head.sha, treeSha: this.head.sha, files: Object.fromEntries(selected.map(path => [path, this.head.files[path]])), unreadableIntents, intentsTruncated: batch.truncated };
   }
 
   async commit(base: Pick<StateSnapshot, 'sha' | 'treeSha'>, changes: FileChange[], message: string): Promise<CommitResult> {

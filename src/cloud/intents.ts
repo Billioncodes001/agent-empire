@@ -126,9 +126,29 @@ export function parseIntent(path: string, text: string): CloudIntent {
   }
 }
 
-/** Deterministic processing order: client timestamp, then id. */
+/**
+ * Deterministic processing order: client timestamp, then intent id (never the file path).
+ * Unreadable files sort first by their file id; they are only rejected, so order does not matter.
+ */
 export function sortIntents<T extends { intent?: CloudIntent; path: string }>(items: T[]): T[] {
-  return [...items].sort((a, b) => (a.intent?.createdAt ?? 0) - (b.intent?.createdAt ?? 0) || a.path.localeCompare(b.path));
+  const id = (item: T) => (item.intent?.id ?? intentIdFromPath(item.path) ?? item.path).toLowerCase();
+  return [...items].sort((a, b) => (a.intent?.createdAt ?? 0) - (b.intent?.createdAt ?? 0) || (id(a) < id(b) ? -1 : id(a) > id(b) ? 1 : 0));
 }
 
 export const intentPath = (id: string) => `intents/${id.toLowerCase()}.json`;
+
+/** Pending intent files scanned per run; beyond this the oldest scanned batch is still processed first. */
+export const MAX_INTENT_SCAN = 500;
+
+/**
+ * Chooses which readable intent files a run processes: the oldest `max` by (createdAt, id), not by
+ * path, so a later cancel can never be applied before an earlier job submission across batches.
+ */
+export function selectIntentBatch(files: Record<string, string>, max: number): { selected: string[]; truncated: boolean } {
+  const keyed = Object.entries(files).map(([path, text]) => {
+    let createdAt = Number.MAX_SAFE_INTEGER;
+    try { const value = JSON.parse(text); if (typeof value?.createdAt === 'number' && Number.isFinite(value.createdAt)) createdAt = value.createdAt; } catch { createdAt = -1; /* rejected first */ }
+    return { path, createdAt, id: (intentIdFromPath(path) ?? path).toLowerCase() };
+  }).sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return { selected: keyed.slice(0, max).map(item => item.path), truncated: keyed.length > max };
+}

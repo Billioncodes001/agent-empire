@@ -4,6 +4,10 @@
  * The state repository holds versioned JSON files under `state/` that only the coordinator writes,
  * and one file per client intent under `intents/`. Everything here is pure and browser-safe so the
  * client cloud adapter (CLOUD-04) can parse the same snapshot the coordinator commits.
+ *
+ * Size discipline: the files read every run stay bounded. Full prompts live in `state/jobs.json`
+ * only while a job still needs dispatching; finished jobs move to write-only `archive/` files that
+ * the coordinator never reads.
  */
 import { initialEmpire, newSector, SITES, type EmpireState, type SectorState, type SiteId } from '../shared/empire.js';
 import { DESKS_PER_FLOOR } from '../shared/layout.js';
@@ -17,11 +21,27 @@ export const STATE_FILES = {
   jobs: 'state/jobs.json',
   ledger: 'state/ledger.json',
   journal: 'state/journal.json',
+  /** Small file with the last committing run; separated so meta.json is not rewritten every run. */
+  heartbeat: 'state/heartbeat.json',
+  /** Recently processed intent ids (idempotency); changes only when intents are consumed. */
+  processed: 'state/processed-intents.json',
 } as const;
 export const INTENT_DIR = 'intents/';
 export const INTENT_PATH = /^intents\/([A-Za-z0-9._-]{1,80})\.json$/;
+export const ARCHIVE_DIR = 'archive/';
 
-export const LIMITS = { journal: 500, spendEntries: 1000, spendDays: 90, processedIntents: 2000, jobs: 5000, reports: 80 } as const;
+export const LIMITS = {
+  journal: 500, spendEntries: 1000, spendDays: 90, processedIntents: 2000, reports: 80,
+  /** Queued jobs keep their full prompt (≤ 20,000 chars), so the queue is capped. */
+  queuedJobs: 50,
+  /** Finished turns the user has not reviewed yet. */
+  unreviewedJobs: 200,
+  /** Final jobs retained in the hot file for display, newest first, before archiving. */
+  finalRetained: 200,
+  finalRetentionMs: 14 * 24 * 3600_000,
+  /** Hard ceiling on hot-file jobs (queued + active + unreviewed + retained final). */
+  hotJobs: 600,
+} as const;
 
 /** Same ranges as the host execution ledger (execution-validation.ts). */
 export type CloudLimits = ExecutionConfig['limits'];
@@ -30,6 +50,22 @@ export interface CloudExecution {
   provider: 'anthropic';
   repository: ExecutionConfig['repository'];
   anthropic: ExecutionConfig['anthropic'];
+}
+
+/** Scheduled-run cost estimate shown by setup. Dispatch-triggered runs come on top. */
+export interface ScheduleEstimate {
+  intervalMinutes: number;
+  runsPerMonth: number;
+  /** GitHub bills each job rounded up to whole minutes; assumes each run finishes within one minute. */
+  billedMinutesPerMonth: number;
+  basis: 'estimate_scheduled_runs_only';
+}
+export const SCHEDULE_INTERVALS = [15, 20, 30, 60] as const;
+export const DEFAULT_INTERVAL_MINUTES = 30;
+export function scheduleEstimate(intervalMinutes: number = DEFAULT_INTERVAL_MINUTES): ScheduleEstimate {
+  if (!SCHEDULE_INTERVALS.includes(intervalMinutes as (typeof SCHEDULE_INTERVALS)[number])) throw new Error('The coordinator interval must be 15, 20, 30 or 60 minutes.');
+  const runsPerMonth = Math.round((30 * 24 * 60) / intervalMinutes);
+  return { intervalMinutes, runsPerMonth, billedMinutesPerMonth: runsPerMonth, basis: 'estimate_scheduled_runs_only' };
 }
 
 export type LifecycleStatus = 'running' | 'shutting_down' | 'shutdown';
@@ -47,31 +83,46 @@ export interface CloudMeta {
     workflow: 'enabled' | 'disable_requested' | 'disabled';
   };
   coordinator: {
-    lastRunId?: string;
-    lastRunAt?: number;
     /** Wall-clock time up to which city time has been settled. Never advanced while shut down. */
     economyClockAt?: number;
   };
+  schedule: ScheduleEstimate;
   limits: CloudLimits;
   execution?: CloudExecution;
-  processedIntents: ProcessedIntent[];
 }
+export interface CloudHeartbeat { schemaVersion: 1; lastRunId?: string; lastRunAt?: number }
 export interface ProcessedIntent { id: string; at: number; outcome: 'applied' | 'rejected' | 'duplicate'; kind?: string }
+export interface CloudProcessedIntents { schemaVersion: 1; entries: ProcessedIntent[] }
 
 export type CloudJobStatus =
   | 'queued' | 'dispatching' | 'dispatch_uncertain' | 'running' | 'waiting_for_approval' | 'budget_paused' | 'idle' | 'unknown'
   | 'awaiting_review' | 'accepted' | 'rejected' | 'failed' | 'cancelled';
 export const JOB_STATUSES: readonly CloudJobStatus[] = ['queued', 'dispatching', 'dispatch_uncertain', 'running', 'waiting_for_approval', 'budget_paused', 'idle', 'unknown', 'awaiting_review', 'accepted', 'rejected', 'failed', 'cancelled'];
-/** A job in one of these states may have an accepted provider session, so it holds a concurrency slot. */
+/** A job in one of these states may have an accepted, working provider session. */
 export const SLOT_STATUSES: readonly CloudJobStatus[] = ['dispatching', 'dispatch_uncertain', 'running', 'waiting_for_approval', 'budget_paused', 'idle', 'unknown'];
+export const REVIEW_STATUSES: readonly CloudJobStatus[] = ['awaiting_review', 'accepted', 'rejected'];
 export const FINAL_STATUSES: readonly CloudJobStatus[] = ['accepted', 'rejected', 'failed', 'cancelled'];
-export const holdsSlot = (job: CloudJob) => SLOT_STATUSES.includes(job.status);
+/** Only these states still need the full prompt (it is sent at dispatch). */
+export const PROMPT_STATUSES: readonly CloudJobStatus[] = ['queued', 'dispatching'];
+/** A session not yet archived or terminated by the provider. */
+export const sessionLive = (job: CloudJob) => !!job.sessionId && job.providerStatus !== 'archived' && job.providerStatus !== 'terminated';
+/**
+ * Holds a concurrency slot: any active state, or a reviewable job whose session was deliberately
+ * left open because its branch output could not be confirmed (so unpushed work is not archived).
+ */
+export const holdsSlot = (job: CloudJob) => SLOT_STATUSES.includes(job.status) || (REVIEW_STATUSES.includes(job.status) && sessionLive(job));
 
 export interface EventCursorState { after?: string; page?: string; newest?: string; lastEventId?: string; stopReason?: ExecutionTask['stopReason'] }
 export interface CloudJob {
   id: string;
   title: string;
-  prompt: string;
+  /** Full prompt; present only while the job is queued or dispatching. */
+  prompt?: string;
+  promptPreview: string;
+  /** FNV-1a fingerprint for duplicate-submission checks; not a security hash. */
+  promptHash: string;
+  /** Write-only archive path holding the full prompt after it left the hot file. */
+  promptArchive?: string;
   /** Optional sector link: a manager startup brief or sector work. Rewards default to headquarters. */
   site?: SiteId;
   intentId: string;
@@ -90,16 +141,19 @@ export interface CloudJob {
   cursor?: EventCursorState;
   providerStatus?: ExecutionTask['providerStatus'];
   stopReason?: ExecutionTask['stopReason'];
+  /** Task branch head observed with the project token: evidence of a push, not verification. */
+  branchHead?: { sha: string; observedAt: number };
   /** Admission-control estimate: the full per-job budget, not an observed charge. */
   reservation?: { cents: number; day: string; basis: 'per_job_allowance_estimate' };
   cost?: { amountCents: number; currency: 'USD'; observedAt: number; basis: 'provider_reported_list_cost' };
   dispatch?: { runId: string; preparedAt: number; attempts: number };
-  stopRequested?: { at: number; reason: 'cancel' | 'shutdown' | 'turn_ended' };
+  stopRequested?: { at: number; reason: StopReason };
   review?: { decision: 'accepted' | 'rejected'; at: number; intentId: string; note?: string };
   /** Provider state never verifies code, a branch or a pull request. Review is a user decision. */
   outputs: 'unverified';
   rewarded?: boolean;
 }
+export type StopReason = 'cancel' | 'shutdown' | 'turn_ended' | 'review';
 export interface CloudJobs { schemaVersion: 1; jobs: CloudJob[] }
 
 /** Real-money evidence, kept apart from the city's simulation-credit ledger in empire.json. */
@@ -128,6 +182,8 @@ export interface CloudState {
   jobs: CloudJobs;
   ledger: CloudLedger;
   journal: CloudJournal;
+  heartbeat: CloudHeartbeat;
+  processed: CloudProcessedIntents;
 }
 
 export class SchemaError extends Error {
@@ -138,7 +194,15 @@ export const DEFAULT_LIMITS: CloudLimits = { maxConcurrent: 1, perTaskBudgetCent
 export const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 export const utcDay = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 
-export function initialCloudState(now: number, options: { limits?: CloudLimits; execution?: CloudExecution } = {}): CloudState {
+/** 64-bit FNV-1a over UTF-16 code units, hex. Deterministic and browser-safe; not cryptographic. */
+export function promptHash(text: string): string {
+  let hash = 0xcbf29ce484222325n;
+  for (let i = 0; i < text.length; i++) { hash ^= BigInt(text.charCodeAt(i)); hash = (hash * 0x100000001b3n) & 0xffffffffffffffffn; }
+  return hash.toString(16).padStart(16, '0');
+}
+export const promptPreview = (text: string) => text.length > 200 ? text.slice(0, 199) + '…' : text;
+
+export function initialCloudState(now: number, options: { limits?: CloudLimits; execution?: CloudExecution; intervalMinutes?: number } = {}): CloudState {
   const limits = validateLimits(options.limits ?? DEFAULT_LIMITS);
   const empire = initialEmpire(now);
   empire.reports[0].text = 'Cloud mode: the coordinator in your GitHub state repository keeps the city running. City credits are simulation credits; provider usage is billed by your provider.';
@@ -146,14 +210,15 @@ export function initialCloudState(now: number, options: { limits?: CloudLimits; 
     meta: {
       schemaVersion: 1, createdAt: now, revision: 0, configRevision: 0,
       lifecycle: { status: 'running', changedAt: now, workflow: 'enabled' },
-      coordinator: {}, limits,
+      coordinator: {}, schedule: scheduleEstimate(options.intervalMinutes), limits,
       ...(options.execution ? { execution: validateExecution(options.execution) } : {}),
-      processedIntents: [],
     },
     empire,
     jobs: { schemaVersion: 1, jobs: [] },
     ledger: { schemaVersion: 1, currency: 'USD', entries: [], days: {} },
     journal: { schemaVersion: 1, seq: 0, entries: [] },
+    heartbeat: { schemaVersion: 1 },
+    processed: { schemaVersion: 1, entries: [] },
   };
 }
 
@@ -194,25 +259,44 @@ export function validateExecution(value: unknown): CloudExecution {
 
 export function validateMeta(value: unknown): CloudMeta {
   const f = STATE_FILES.meta;
-  const m = rec(f, value, ['schemaVersion', 'createdAt', 'revision', 'configRevision', 'lifecycle', 'coordinator', 'limits', 'execution', 'processedIntents']);
+  const m = rec(f, value, ['schemaVersion', 'createdAt', 'revision', 'configRevision', 'lifecycle', 'coordinator', 'schedule', 'limits', 'execution']);
   if (m.schemaVersion !== CLOUD_SCHEMA_VERSION) throw new SchemaError(f, 'unsupported schemaVersion');
   const lifecycle = rec(f, m.lifecycle, ['status', 'changedAt', 'workflow']);
   if (!['running', 'shutting_down', 'shutdown'].includes(String(lifecycle.status)) || !['enabled', 'disable_requested', 'disabled'].includes(String(lifecycle.workflow))) throw new SchemaError(f, 'invalid lifecycle');
-  const coordinator = rec(f, m.coordinator, ['lastRunId', 'lastRunAt', 'economyClockAt']);
-  if (coordinator.lastRunId !== undefined) str(f, coordinator.lastRunId, 80, RUN_ID);
-  for (const key of ['lastRunAt', 'economyClockAt']) if (coordinator[key] !== undefined) time(f, coordinator[key]);
+  const coordinator = rec(f, m.coordinator, ['economyClockAt']);
+  if (coordinator.economyClockAt !== undefined) time(f, coordinator.economyClockAt);
+  const schedule = rec(f, m.schedule, ['intervalMinutes', 'runsPerMonth', 'billedMinutesPerMonth', 'basis']);
+  let expected: ScheduleEstimate;
+  try { expected = scheduleEstimate(schedule.intervalMinutes as number); } catch { throw new SchemaError(f, 'invalid schedule'); }
+  if (JSON.stringify(expected) !== JSON.stringify({ intervalMinutes: schedule.intervalMinutes, runsPerMonth: schedule.runsPerMonth, billedMinutesPerMonth: schedule.billedMinutesPerMonth, basis: schedule.basis })) throw new SchemaError(f, 'inconsistent schedule estimate');
   let limits: CloudLimits;
   try { limits = validateLimits(m.limits); } catch { throw new SchemaError(f, 'invalid limits'); }
   let execution: CloudExecution | undefined;
   if (m.execution !== undefined) { try { execution = validateExecution(m.execution); } catch { throw new SchemaError(f, 'invalid execution references'); } }
-  if (!Array.isArray(m.processedIntents) || m.processedIntents.length > LIMITS.processedIntents) throw new SchemaError(f, 'invalid processedIntents');
-  for (const item of m.processedIntents) {
+  time(f, m.createdAt); int(f, m.revision); int(f, m.configRevision); time(f, lifecycle.changedAt);
+  return { ...(clone(m) as unknown as CloudMeta), schedule: expected, limits, ...(execution ? { execution } : {}) };
+}
+
+export function validateHeartbeat(value: unknown): CloudHeartbeat {
+  const f = STATE_FILES.heartbeat;
+  const h = rec(f, value, ['schemaVersion', 'lastRunId', 'lastRunAt']);
+  if (h.schemaVersion !== 1) throw new SchemaError(f, 'unsupported schemaVersion');
+  if (h.lastRunId !== undefined) str(f, h.lastRunId, 80, RUN_ID);
+  if (h.lastRunAt !== undefined) time(f, h.lastRunAt);
+  return clone(h) as unknown as CloudHeartbeat;
+}
+
+export function validateProcessed(value: unknown): CloudProcessedIntents {
+  const f = STATE_FILES.processed;
+  const data = rec(f, value, ['schemaVersion', 'entries']);
+  if (data.schemaVersion !== 1 || !Array.isArray(data.entries) || data.entries.length > LIMITS.processedIntents) throw new SchemaError(f, 'invalid processed intents');
+  for (const item of data.entries) {
     const p = rec(f, item, ['id', 'at', 'outcome', 'kind']);
     str(f, p.id, 80); time(f, p.at);
     if (!['applied', 'rejected', 'duplicate'].includes(String(p.outcome))) throw new SchemaError(f, 'invalid intent outcome');
+    if (p.kind !== undefined) str(f, p.kind, 40);
   }
-  time(f, m.createdAt); int(f, m.revision); int(f, m.configRevision); time(f, lifecycle.changedAt);
-  return { ...(clone(m) as unknown as CloudMeta), limits, ...(execution ? { execution } : {}) };
+  return clone(data) as unknown as CloudProcessedIntents;
 }
 
 const REPO = (file: string, value: unknown) => {
@@ -222,18 +306,20 @@ const REPO = (file: string, value: unknown) => {
 export function validateJobs(value: unknown): CloudJobs {
   const f = STATE_FILES.jobs;
   const data = rec(f, value, ['schemaVersion', 'jobs']);
-  if (data.schemaVersion !== 1 || !Array.isArray(data.jobs) || data.jobs.length > LIMITS.jobs) throw new SchemaError(f, 'invalid jobs file');
+  if (data.schemaVersion !== 1 || !Array.isArray(data.jobs) || data.jobs.length > LIMITS.hotJobs) throw new SchemaError(f, 'invalid jobs file');
   const ids = new Set<string>();
   for (const item of data.jobs) {
-    const j = rec(f, item, ['id', 'title', 'prompt', 'site', 'intentId', 'createdAt', 'updatedAt', 'configRevision', 'authorizedCents', 'status', 'message', 'provider', 'repository', 'branch', 'sourceCommit', 'sessionId', 'cursor', 'providerStatus', 'stopReason', 'reservation', 'cost', 'dispatch', 'stopRequested', 'review', 'outputs', 'rewarded']);
+    const j = rec(f, item, ['id', 'title', 'prompt', 'promptPreview', 'promptHash', 'promptArchive', 'site', 'intentId', 'createdAt', 'updatedAt', 'configRevision', 'authorizedCents', 'status', 'message', 'provider', 'repository', 'branch', 'sourceCommit', 'sessionId', 'cursor', 'providerStatus', 'stopReason', 'branchHead', 'reservation', 'cost', 'dispatch', 'stopRequested', 'review', 'outputs', 'rewarded']);
     const id = str(f, j.id, 36, TASK_ID);
     if (ids.has(id)) throw new SchemaError(f, `duplicate job ${id}`);
     ids.add(id);
-    str(f, j.title, 120); str(f, j.prompt, 20_000); str(f, j.intentId, 80); str(f, j.message, 2000);
-    if (!(j.prompt as string).trim()) throw new SchemaError(f, 'empty prompt');
+    str(f, j.title, 120); str(f, j.intentId, 80); str(f, j.message, 2000); str(f, j.promptPreview, 200); str(f, j.promptHash, 16, /^[a-f0-9]{16}$/);
+    if (!JOB_STATUSES.includes(j.status as CloudJobStatus)) throw new SchemaError(f, 'invalid job status');
+    if (j.prompt !== undefined && !str(f, j.prompt, 20_000).trim()) throw new SchemaError(f, 'empty prompt');
+    if (PROMPT_STATUSES.includes(j.status as CloudJobStatus) && j.prompt === undefined) throw new SchemaError(f, 'a job awaiting dispatch needs its prompt');
+    if (j.promptArchive !== undefined) str(f, j.promptArchive, 120, /^archive\/prompts\/[a-f0-9-]{36}\.txt$/);
     if (j.site !== undefined && !SITES.some(s => s.id === j.site)) throw new SchemaError(f, 'invalid site');
     time(f, j.createdAt); time(f, j.updatedAt); int(f, j.configRevision); int(f, j.authorizedCents, 1, 100_000);
-    if (!JOB_STATUSES.includes(j.status as CloudJobStatus)) throw new SchemaError(f, 'invalid job status');
     if (j.provider !== 'anthropic' || j.outputs !== 'unverified') throw new SchemaError(f, 'invalid provider/outputs');
     REPO(f, j.repository);
     if (j.branch !== `agent-empire/task-${id}`) throw new SchemaError(f, 'invalid branch');
@@ -249,6 +335,7 @@ export function validateJobs(value: unknown): CloudJobs {
       if (c.lastEventId !== undefined) str(f, c.lastEventId, 120, PROVIDER_ID.event);
       if (c.stopReason !== undefined && !stops.includes(String(c.stopReason))) throw new SchemaError(f, 'invalid cursor');
     }
+    if (j.branchHead !== undefined) { const b = rec(f, j.branchHead, ['sha', 'observedAt']); str(f, b.sha, 64, COMMIT); time(f, b.observedAt); }
     if (j.reservation !== undefined) {
       const r = rec(f, j.reservation, ['cents', 'day', 'basis']);
       int(f, r.cents, 1, 100_000); str(f, r.day, 10, DAY);
@@ -260,7 +347,7 @@ export function validateJobs(value: unknown): CloudJobs {
       if (c.currency !== 'USD' || c.basis !== 'provider_reported_list_cost') throw new SchemaError(f, 'invalid cost');
     }
     if (j.dispatch !== undefined) { const d = rec(f, j.dispatch, ['runId', 'preparedAt', 'attempts']); str(f, d.runId, 80, RUN_ID); time(f, d.preparedAt); int(f, d.attempts, 0, 100); }
-    if (j.stopRequested !== undefined) { const s = rec(f, j.stopRequested, ['at', 'reason']); time(f, s.at); if (!['cancel', 'shutdown', 'turn_ended'].includes(String(s.reason))) throw new SchemaError(f, 'invalid stop reason'); }
+    if (j.stopRequested !== undefined) { const s = rec(f, j.stopRequested, ['at', 'reason']); time(f, s.at); if (!['cancel', 'shutdown', 'turn_ended', 'review'].includes(String(s.reason))) throw new SchemaError(f, 'invalid stop reason'); }
     if (j.review !== undefined) { const r = rec(f, j.review, ['decision', 'at', 'intentId', 'note']); if (!['accepted', 'rejected'].includes(String(r.decision))) throw new SchemaError(f, 'invalid review'); time(f, r.at); str(f, r.intentId, 80); if (r.note !== undefined) str(f, r.note, 500); }
     if (j.rewarded !== undefined && typeof j.rewarded !== 'boolean') throw new SchemaError(f, 'invalid rewarded flag');
     if (holdsSlot(j as unknown as CloudJob) && !j.reservation) throw new SchemaError(f, 'active job without a budget reservation');
@@ -369,7 +456,10 @@ export function parseStateFiles(files: StateFiles, now: number): { state: CloudS
   const empire = migrateEmpire(raw.empire, now);
   if (empire.migrated) migrated.push('empire version 1→2');
   return {
-    state: { meta: validateMeta(raw.meta), empire: validateEmpire(empire.empire), jobs: validateJobs(raw.jobs), ledger: validateLedger(raw.ledger), journal: validateJournal(raw.journal) },
+    state: {
+      meta: validateMeta(raw.meta), empire: validateEmpire(empire.empire), jobs: validateJobs(raw.jobs), ledger: validateLedger(raw.ledger),
+      journal: validateJournal(raw.journal), heartbeat: validateHeartbeat(raw.heartbeat), processed: validateProcessed(raw.processed),
+    },
     migrated,
   };
 }
@@ -377,11 +467,14 @@ export function parseStateFiles(files: StateFiles, now: number): { state: CloudS
 /** Stable serialization: identical state produces identical bytes, so unchanged files are not rewritten. */
 export function serializeState(state: CloudState): StateFiles {
   const { supervision: _ephemeral, ...empire } = state.empire;
+  const text = (value: unknown) => JSON.stringify(value, null, 2) + '\n';
   return {
-    [STATE_FILES.meta]: JSON.stringify(state.meta, null, 2) + '\n',
-    [STATE_FILES.empire]: JSON.stringify(empire, null, 2) + '\n',
-    [STATE_FILES.jobs]: JSON.stringify(state.jobs, null, 2) + '\n',
-    [STATE_FILES.ledger]: JSON.stringify(state.ledger, null, 2) + '\n',
-    [STATE_FILES.journal]: JSON.stringify(state.journal, null, 2) + '\n',
+    [STATE_FILES.meta]: text(state.meta),
+    [STATE_FILES.empire]: text(empire),
+    [STATE_FILES.jobs]: text(state.jobs),
+    [STATE_FILES.ledger]: text(state.ledger),
+    [STATE_FILES.journal]: text(state.journal),
+    [STATE_FILES.heartbeat]: text(state.heartbeat),
+    [STATE_FILES.processed]: text(state.processed),
   };
 }

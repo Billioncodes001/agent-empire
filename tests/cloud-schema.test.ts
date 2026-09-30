@@ -27,7 +27,7 @@ test('cloud schema: invalid or newer snapshots are refused rather than repaired'
   assert.throws(() => parseStateFiles(edit(STATE_FILES.meta, m => { m.execution.anthropic.apiKey = 'sk-secret'; }), T0), SchemaError);
   assert.throws(() => parseStateFiles(edit(STATE_FILES.journal, j => { j.seq = 3; j.entries = [{ seq: 1, at: T0, runId: 'r', kind: 'job', message: 'x' }]; }), T0), /sequence gap/);
   assert.throws(() => parseStateFiles(edit(STATE_FILES.jobs, j => {
-    j.jobs.push({ id: uuid(1), title: 't', prompt: 'p', intentId: uuid(2), createdAt: T0, updatedAt: T0, configRevision: 0, authorizedCents: 100, status: 'running', message: '', provider: 'anthropic', repository: EXECUTION.repository, branch: `agent-empire/task-${uuid(1)}`, outputs: 'unverified' });
+    j.jobs.push({ id: uuid(1), title: 't', promptPreview: 'p', promptHash: '0'.repeat(16), intentId: uuid(2), createdAt: T0, updatedAt: T0, configRevision: 0, authorizedCents: 100, status: 'running', message: '', provider: 'anthropic', repository: EXECUTION.repository, branch: `agent-empire/task-${uuid(1)}`, outputs: 'unverified' });
   }), T0), /without a budget reservation/);
   assert.throws(() => parseStateFiles(edit(STATE_FILES.empire, e => { e.funds = -1; }), T0), SchemaError);
   assert.throws(() => parseStateFiles({ ...files(), [STATE_FILES.ledger]: '{not json' }, T0), /invalid JSON/);

@@ -11,8 +11,12 @@ import {
 import { DESKS_PER_FLOOR } from '../shared/layout.js';
 import { LIMITS, type CloudJob } from './schema.js';
 
-/** Longest wall-clock gap one tick may settle. Longer gaps (Actions outage, missed schedules) earn nothing extra. */
-export const MAX_SETTLE_MS = 20 * 60_000;
+/**
+ * Longest wall-clock gap one tick may settle: three schedule intervals, at least 90 minutes (runs
+ * with nothing to record skip their commit for up to an hour). Longer gaps (Actions outage, missed
+ * schedules) earn nothing extra.
+ */
+export const settleCapMs = (intervalMinutes: number) => Math.max(90, intervalMinutes * 3) * 60_000;
 
 function report(state: EmpireState, now: number, sector: string, text: string) {
   state.reports.unshift({ at: now, sector, text });
@@ -112,23 +116,27 @@ export function applyEmpireAction(state: EmpireState, action: EmpireAction, now:
 }
 
 /**
- * Manager appointments follow their linked cloud jobs (job.site). A finished turn awaiting review
- * counts as ready, matching the host rule "startup turn ended; brief not yet verified".
+ * Manager appointments follow their startup job (the linked cloud job, job.site). A finished turn
+ * awaiting review counts as ready, matching the host rule "startup turn ended; brief not yet
+ * verified". Once ready, the appointment stays ready: later sector jobs that queue, fail or are
+ * cancelled never demote it. Until then, the most recent linked job is the current startup attempt.
  */
 export function syncManagers(state: EmpireState, jobs: CloudJob[], now: number) {
   for (const sector of state.sectors) {
     const manager = sector.manager;
-    if (!manager) continue;
-    const linked = jobs.filter(job => job.site === sector.id).sort((a, b) => b.createdAt - a.createdAt)[0];
-    if (!linked) continue;
+    if (!manager || manager.status === 'ready') continue;
+    const linked = jobs.filter(job => job.site === sector.id).sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1));
+    if (!linked.length) continue;
+    const reached = linked.find(job => ['awaiting_review', 'accepted'].includes(job.status));
+    const startup = reached ?? linked[0];
     const old = manager.status;
-    manager.taskId = linked.id;
-    manager.jobKey = `cloud-job-${linked.id}`;
-    manager.status = linked.status === 'queued' ? 'queued'
-      : ['awaiting_review', 'accepted'].includes(linked.status) ? 'ready'
-        : ['waiting_for_approval', 'budget_paused'].includes(linked.status) ? 'needs_input'
-          : ['running', 'dispatching', 'idle'].includes(linked.status) ? 'working' : 'offline';
-    manager.error = manager.status === 'offline' ? linked.message.slice(0, 300) : undefined;
+    manager.taskId = startup.id;
+    manager.jobKey = `cloud-job-${startup.id}`;
+    manager.status = reached ? 'ready'
+      : startup.status === 'queued' ? 'queued'
+        : ['waiting_for_approval', 'budget_paused'].includes(startup.status) ? 'needs_input'
+          : ['running', 'dispatching', 'idle'].includes(startup.status) ? 'working' : 'offline';
+    manager.error = manager.status === 'offline' ? startup.message.slice(0, 300) : undefined;
     if (old !== manager.status && ['ready', 'offline', 'needs_input'].includes(manager.status)) {
       report(state, now, 'Chief of staff', `${manager.name}: ${manager.status === 'ready' ? 'startup turn ended; brief not yet verified' : manager.status === 'offline' ? 'startup needs attention' : 'needs your input in provider controls'}.`);
     }
@@ -162,8 +170,8 @@ export function rewardAcceptedJob(state: EmpireState, job: CloudJob, now: number
  * Advances city time for `elapsedMs` of coordinator uptime: one real second is one city minute and
  * every city hour settles payroll exactly as the host does. The caller passes zero while shut down.
  */
-export function advanceEconomy(state: EmpireState, elapsedMs: number, now: number): { minutes: number; hours: number } {
-  const minutes = Math.floor(Math.max(0, Math.min(elapsedMs, MAX_SETTLE_MS)) / 1000);
+export function advanceEconomy(state: EmpireState, elapsedMs: number, now: number, capMs = settleCapMs(30)): { minutes: number; hours: number } {
+  const minutes = Math.floor(Math.max(0, Math.min(elapsedMs, capMs)) / 1000);
   state.minutes += minutes;
   for (const sector of state.sectors) {
     const site = SITES.find(s => s.id === sector.id)!;

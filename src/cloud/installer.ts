@@ -12,6 +12,18 @@ import { initialCloudState, serializeState, validateExecution, validateLimits, t
 import { GitHubClient, GitHubError, GitHubStateStore, validateRepoRef, type FileChange } from './store.js';
 import { COORDINATOR_BUNDLE_PATH, coordinatorWorkflow, WORKFLOW_FILE, WORKFLOW_PATH, type WorkflowOptions } from './workflow.js';
 
+/**
+ * Shown by the setup UI next to the project-token field. The installer enforces the first point
+ * (classic `ghp_` tokens are refused); the rest is guidance the user must follow on github.com.
+ */
+export const PROJECT_TOKEN_GUIDANCE = [
+  'Use a fine-grained personal access token (github_pat_…), not a classic token.',
+  'Repository access: only the project repositories you selected, never "All repositories".',
+  'Permissions: Contents read/write and Pull requests read/write; nothing else. It is sent to Anthropic to mount the repository in the agent sandbox.',
+  'Protect the default branch of each project repository (require a pull request before merging) so agent work can only arrive as reviewable branches.',
+  'Set an expiry; re-run setup to replace it.',
+] as const;
+
 /** Returns base64 ciphertext of `value` sealed to `publicKeyBase64`. Implemented by the caller. */
 export type EncryptSecret = (publicKeyBase64: string, value: string) => Promise<string>;
 export const SECRET_NAMES = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'PROJECT_GITHUB_TOKEN'] as const;
@@ -35,6 +47,9 @@ export async function installStateRepository(client: GitHubClient, options: Inst
   const execution = options.execution ? validateExecution(options.execution) : undefined;
   if (!options.coordinatorBundle || options.coordinatorBundle.length > 5 * 1024 * 1024) throw new GitHubError(400, 'bundle_invalid', 'A coordinator bundle is required.');
   for (const name of Object.keys(options.secrets)) if (!SECRET_NAMES.includes(name as SecretName)) throw new GitHubError(400, 'secret_name_invalid', 'Unsupported secret name.');
+  const projectToken = options.secrets.PROJECT_GITHUB_TOKEN?.trim();
+  if (projectToken && !projectToken.startsWith('github_pat_')) throw new GitHubError(400, 'project_token_not_fine_grained', 'The project token must be a fine-grained personal access token scoped to the selected repositories (github_pat_…). Classic and OAuth tokens grant too much access.');
+  const intervalMinutes = options.workflow?.intervalMinutes;
 
   const user = await client.request('GET', '/user');
   const owner = user.data?.login;
@@ -74,7 +89,7 @@ export async function installStateRepository(client: GitHubClient, options: Inst
   ];
   // Never overwrite an existing Empire: re-running setup updates the workflow and coordinator only.
   if (!alreadyInstalled) {
-    for (const [path, content] of Object.entries(serializeState(initialCloudState(options.now, { limits, ...(execution ? { execution } : {}) })))) changes.push({ path, content });
+    for (const [path, content] of Object.entries(serializeState(initialCloudState(options.now, { limits, ...(execution ? { execution } : {}), ...(intervalMinutes ? { intervalMinutes } : {}) })))) changes.push({ path, content });
   }
   const result = await store.commit(snapshot, changes, alreadyInstalled ? 'Agent Empire: update coordinator' : 'Agent Empire: initial state and coordinator');
   if (!result.ok) throw new GitHubError(409, 'state_repository_busy', 'The state repository changed during setup. Run setup again.');

@@ -134,7 +134,9 @@ export class AnthropicManaged {
   private observation(response: Record<string, unknown>): ProviderObservation {
     if (typeof response.id !== 'string' || !PROVIDER_ID.session.test(response.id)) throw new ExecutionError(502, 'session_response_invalid', 'Provider session identity was not confirmed. Dispatch may have succeeded; do not submit another task.');
     const raw = response.status;
-    const archived = typeof response.archived_at === 'string' && Number.isFinite(Date.parse(response.archived_at)) && raw === 'terminated';
+    // A set archived_at means archived whatever the status field says, so a slot can never be held
+    // forever by an archived session still reported as idle.
+    const archived = typeof response.archived_at === 'string' && Number.isFinite(Date.parse(response.archived_at));
     const providerStatus = archived ? 'archived' : ['running', 'rescheduling', 'idle', 'terminated'].includes(String(raw)) ? raw as ExecutionTask['providerStatus'] : undefined;
     const cost = (response.usage as any)?.list_cost;
     const costCents = cost?.currency === 'USD' && typeof cost.amount === 'string' && /^(0|[1-9]\d{0,12})$/.test(cost.amount) ? Number(cost.amount) : undefined;

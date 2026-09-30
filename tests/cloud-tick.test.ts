@@ -25,7 +25,7 @@ test('cloud tick: each intent is consumed once; replays and duplicates never cre
   state = await h.state();
   assert.equal(state.jobs.jobs.length, 1);
   assert.equal(h.provider.calls.filter(c => c.startsWith('dispatch')).length, 1);
-  assert.deepEqual(state.meta.processedIntents.map(p => p.outcome), ['applied', 'duplicate'], 'an already-processed id is dropped without a second record');
+  assert.deepEqual(state.processed.entries.map(p => p.outcome), ['applied', 'duplicate'], 'an already-processed id is dropped without a second record');
 });
 
 test('cloud tick: invalid intents are consumed and journaled as rejected with a reason', async () => {
@@ -55,6 +55,7 @@ test('cloud tick: concurrency, per-job and daily limits gate dispatch; nothing d
   assert.equal(reservedToday(state, h.now), 200);
   // Finishing job 1 frees a slot, but 200 + 100 > 250: the daily admission limit blocks job 3.
   h.provider.finish(uuid(1)); h.advance(600_000);
+  await h.tick(); // the finished turn is archived after commit 1, so its slot frees for the next run
   await h.tick();
   state = await h.state();
   assert.equal(job(state, 1).status, 'awaiting_review');
@@ -117,7 +118,10 @@ test('cloud tick: review accepts once for city credits; cancel stops sessions or
   assert.equal(job(state, 1).status, 'cancelled');
   assert.ok(h.provider.calls.includes(`interrupt:${h.provider.sessionFor(uuid(1))}`));
   assert.match(state.journal.entries.find(e => e.intentId === uuid(100_007))!.message, /awaiting review/);
-  assert.equal(job(state, 3).status, 'running', 'the freed slot is reused in the same tick');
+  assert.equal(job(state, 3).status, 'queued', 'stops run after commit 1, so the slot frees for the next run');
+  await h.tick();
+  state = await h.state();
+  assert.equal(job(state, 3).status, 'running');
   const fundsBefore = state.empire.funds;
   h.provider.finish(uuid(3));
   await h.tick();
@@ -165,7 +169,7 @@ test('cloud tick: a run that died after marking dispatch leaves the job uncertai
   let calls = 0;
   store.commit = async (...args) => (++calls >= 2 ? { ok: false, reason: 'conflict' } as const : original(...args));
   const lines: string[] = [];
-  await assert.rejects(runCoordinatorTick({ store, provider: new FakeProvider(), now: () => T0, runId: 'run-crashed', log: line => lines.push(line) }), ConflictRetriesExhausted);
+  await assert.rejects(runCoordinatorTick({ store, provider: new FakeProvider(), now: () => T0, runId: 'run-crashed', log: line => lines.push(line), retry: { sleep: async () => {} } }), ConflictRetriesExhausted);
   store.commit = original;
   assert.equal(store.commits.length, commitsBefore + 1);
   assert.ok(lines.some(line => line.startsWith(`UNSAVED dispatch receipt job=${uuid(1)} session=sesn_fake0001`)), 'the Actions log preserves the session id');

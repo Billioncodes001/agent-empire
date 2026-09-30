@@ -10,7 +10,7 @@ export interface CloudView {
   state: CloudState;
   /** Commit the view was read from. */
   sha: string;
-  /** Milliseconds since the coordinator last committed; undefined before its first run. Never "live". */
+  /** Milliseconds since the coordinator last committed (heartbeat at least hourly); undefined before its first run. Never "live". */
   snapshotAgeMs?: number;
   pendingIntents: string[];
 }
@@ -19,11 +19,13 @@ export async function readCloudView(store: StateStore, now: number): Promise<Clo
   const snapshot = await store.read();
   const stateFiles = Object.fromEntries(Object.entries(snapshot.files).filter(([path]) => !path.startsWith('intents/')));
   const { state } = parseStateFiles(stateFiles, now);
-  const last = state.meta.coordinator.lastRunAt;
+  // Runs with nothing to record skip their commit (heartbeat at least hourly), so this is the age of
+  // the last committed observation, not proof the coordinator is currently running.
+  const last = state.heartbeat.lastRunAt;
   return {
     state, sha: snapshot.sha,
     ...(last !== undefined ? { snapshotAgeMs: Math.max(0, now - last) } : {}),
-    pendingIntents: Object.keys(snapshot.files).filter(path => path.startsWith('intents/')).sort(),
+    pendingIntents: [...Object.keys(snapshot.files).filter(path => path.startsWith("intents/")), ...snapshot.unreadableIntents.map(item => item.path)].sort(),
   };
 }
 

@@ -54,6 +54,15 @@ export class FakeProvider implements ProviderAdapter {
   }
   async interrupt(sessionId: string) { this.calls.push(`interrupt:${sessionId}`); const s = this.sessions.get(sessionId)!; s.status = 'idle'; s.stopReason = 'end_turn'; }
   async archive(sessionId: string) { this.calls.push(`archive:${sessionId}`); const s = this.sessions.get(sessionId)!; if (s.status === 'idle') { s.archived = true; s.status = 'terminated'; } }
+  /** Task-branch heads by job id; default: pushed (a head different from the source commit). */
+  branches = new Map<string, 'missing' | 'unchanged' | 'error' | string>();
+  async branchHead(_execution: unknown, branch: string) {
+    this.calls.push(`branch:${branch}`);
+    const setting = this.branches.get(branch.replace('agent-empire/task-', '')) ?? 'c'.repeat(40);
+    if (setting === 'missing') return { state: 'missing' as const };
+    if (setting === 'error') throw new Error('github down');
+    return { state: 'found' as const, sha: setting === 'unchanged' ? SHA : setting };
+  }
 }
 
 export function makeStore(options: { limits?: CloudLimits; execution?: CloudExecution | null; mutate?: (state: CloudState) => void } = {}) {
@@ -80,7 +89,7 @@ export function harness(store: MemoryStateStore, provider = new FakeProvider(), 
     get now() { return now; },
     advance(ms: number) { now += ms; },
     async tick(options: { allowSelfDisable?: boolean } = {}): Promise<TickReport> {
-      return runCoordinatorTick({ store, provider, now: () => now, runId: `run-${++run}`, allowSelfDisable: options.allowSelfDisable ?? true });
+      return runCoordinatorTick({ store, provider, now: () => now, runId: `run-${++run}`, allowSelfDisable: options.allowSelfDisable ?? true, retry: { sleep: async () => {} } });
     },
     async view() { return readCloudView(store, now); },
     async state() { return (await readCloudView(store, now)).state; },

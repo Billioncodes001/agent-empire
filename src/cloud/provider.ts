@@ -39,6 +39,12 @@ export interface ProviderAdapter {
   observe(sessionId: string, cursor: EventCursorState): Promise<{ observation: ProviderObservation; cursor: EventCursorState }>;
   interrupt(sessionId: string): Promise<void>;
   archive(sessionId: string): Promise<void>;
+  /**
+   * Read-only check of the task branch in the project repository (project token). Used before
+   * archiving a finished turn: `found` with a head different from the source commit is evidence the
+   * agent pushed; it does not verify the work. Throws when the answer is unknown.
+   */
+  branchHead(execution: CloudExecution, branch: string): Promise<{ state: 'found'; sha: string } | { state: 'missing' }>;
 }
 
 /** Used when no provider credential is configured: observation and dispatch both refuse safely. */
@@ -50,4 +56,5 @@ export class UnavailableProvider implements ProviderAdapter {
   async observe(): Promise<never> { throw new Error(this.reason); }
   async interrupt(): Promise<never> { throw new Error(this.reason); }
   async archive(): Promise<never> { throw new Error(this.reason); }
+  async branchHead(): Promise<never> { throw new Error(this.reason); }
 }
