@@ -16,7 +16,7 @@ let scenario: typeof scenarios[number] = 'needs_input';
 const sockets = new WebSocketServer({ noServer: true, handleProtocols: (offered) => (offered.has('empire.v1') ? 'empire.v1' : false) });
 // Fixture-only device sign-in for the bundled apps: any password works (or only FIXTURE_PASSWORD when set, so the
 // setup's wrong-password path can be shown), tokens live in memory, nothing is saved.
-const APP_ORIGIN = 'empire-app://game';
+const APP_ORIGINS = new Set(['empire-app://game', 'https://appassets.androidplatform.net']); // iOS and Android bundled games, as on the real server
 const fixturePassword = process.env.FIXTURE_PASSWORD || '';
 const devices = new Map<string, { id: string; name: string; createdAt: number }>();
 const socketToken = new Map<WebSocket, string>();
@@ -83,12 +83,13 @@ const server = createServer(async (req, res) => {
     for (const ws of sockets.clients) scenario === 'disconnected' ? ws.close() : publish(ws);
     return res.end(`Scenario: ${scenario}`);
   }
-  if (req.headers.origin === APP_ORIGIN) {
+  const appOrigin = req.headers.origin && APP_ORIGINS.has(req.headers.origin) ? req.headers.origin : undefined;
+  if (appOrigin) {
     if (req.method === 'OPTIONS') {
-      res.writeHead(204, { 'access-control-allow-origin': APP_ORIGIN, 'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS', 'access-control-allow-headers': 'Authorization, Content-Type', vary: 'Origin' });
+      res.writeHead(204, { 'access-control-allow-origin': appOrigin, 'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS', 'access-control-allow-headers': 'Authorization, Content-Type', vary: 'Origin' });
       return res.end();
     }
-    if (bearer(req) || url.pathname === '/api/device/login' || url.pathname === '/api/health') { res.setHeader('access-control-allow-origin', APP_ORIGIN); res.setHeader('vary', 'Origin'); }
+    if (bearer(req) || url.pathname === '/api/device/login' || url.pathname === '/api/health') { res.setHeader('access-control-allow-origin', appOrigin); res.setHeader('vary', 'Origin'); }
   }
   if (url.pathname === '/api/health') return json(res, 200, { ok: true });
   if (url.pathname === '/api/device/login' && req.method === 'POST') {
@@ -124,14 +125,14 @@ const server = createServer(async (req, res) => {
 });
 server.on('upgrade', (req, socket, head) => {
   if (scenario === 'disconnected' || new URL(req.url || '/', `http://localhost:${port}`).pathname !== '/ws') { socket.destroy(); return; }
-  // App sockets: empire.v1 plus exactly one bearer.<token>, from no origin, this fixture, or the iOS app origin.
+  // App sockets: empire.v1 plus exactly one bearer.<token>, from no origin, this fixture, or an app origin (iOS, Android).
   const offered = String(req.headers['sec-websocket-protocol'] ?? '').split(',').map((v) => v.trim()).filter(Boolean);
   const tokens = offered.filter((v) => v.startsWith('bearer.'));
   let token: string | undefined;
-  if (tokens.length || req.headers.origin === APP_ORIGIN) {
+  if (tokens.length || APP_ORIGINS.has(req.headers.origin ?? '')) {
     token = tokens.length === 1 ? tokens[0].slice('bearer.'.length) : undefined;
     const origin = req.headers.origin;
-    const originOk = !origin || origin === APP_ORIGIN || [`http://localhost:${port}`, `http://127.0.0.1:${port}`].includes(origin);
+    const originOk = !origin || APP_ORIGINS.has(origin) || [`http://localhost:${port}`, `http://127.0.0.1:${port}`].includes(origin);
     if (!originOk || !offered.includes('empire.v1') || !token || !devices.has(token)) { socket.end('HTTP/1.1 401 Unauthorized\r\n\r\n'); return; }
   }
   sockets.handleUpgrade(req, socket, head, ws => { if (token) socketToken.set(ws, token); ws.on('close', () => socketToken.delete(ws)); sockets.emit('connection', ws); });

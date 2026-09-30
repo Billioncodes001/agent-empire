@@ -7,7 +7,7 @@
  *
  * Transports (exactly one per shell; nothing else is used):
  *   iOS      window.webkit.messageHandlers.empire.postMessage(request)       (structured object)
- *   Android  window.EmpireNative.postMessage(JSON.stringify(request))         (one @JavascriptInterface, bundled origin only)
+ *   Android  window.empireAndroid.postMessage(JSON.stringify(request))        (one @JavascriptInterface, bundled origin only)
  *   desktop  window.empireDesktop.postMessage(request)                        (Electron contextBridge)
  *
  * In a plain browser there is no shell: `webNative` keeps the non-secret keys in localStorage, refuses to store
@@ -97,7 +97,7 @@ function findTransport(w: Win, platform: AppPlatform | null): Transport | undefi
     return handler ? { post: (r) => handler.postMessage(r) } : undefined;
   }
   if (platform === 'android') {
-    const android = w.EmpireNative as { postMessage?(json: string): void } | undefined;
+    const android = w.empireAndroid as { postMessage?(json: string): void } | undefined;
     return typeof android?.postMessage === 'function' ? { post: (r) => android.postMessage!(JSON.stringify(r)) } : undefined;
   }
   const desktop = w.empireDesktop as { postMessage?(m: unknown): void } | undefined;

@@ -60,9 +60,9 @@ test('bridge: the device flow returns {token, login} and rejects malformed answe
   await assert.rejects(new NativeBridge(bad.w).githubDeviceFlow({ clientId: 'abc', scopes: ['repo'] }), (e: unknown) => e instanceof BridgeError && e.code === 'invalid');
 });
 
-test('bridge: Android posts one JSON string to EmpireNative; desktop posts to empireDesktop; neither without a platform', async () => {
+test('bridge: Android posts one JSON string to empireAndroid; desktop posts to empireDesktop; neither without a platform', async () => {
   const strings: string[] = [];
-  const android: Win = { AGENT_EMPIRE_APP: { platform: 'android' }, EmpireNative: { postMessage: (s: string) => strings.push(s) } };
+  const android: Win = { AGENT_EMPIRE_APP: { platform: 'android' }, empireAndroid: { postMessage: (s: string) => strings.push(s) } };
   const a = new NativeBridge(android);
   const p = a.signedOut('revoked');
   const req = JSON.parse(strings[0]) as BridgeRequest;
@@ -71,8 +71,10 @@ test('bridge: Android posts one JSON string to EmpireNative; desktop posts to em
   await p;
   const objs: BridgeRequest[] = [];
   const desktop: Win = { AGENT_EMPIRE_APP: { platform: 'desktop' }, empireDesktop: { postMessage: (m: BridgeRequest) => objs.push(m) } };
-  void new NativeBridge(desktop).openExternal('https://github.com/login/device').catch(() => {});
+  const opening = new NativeBridge(desktop).openExternal('https://github.com/login/device');
   assert.equal(objs[0].method, 'app.openExternal');
+  receiver(desktop).resolve(objs[0].id, true);
+  await opening;
   const plain = new NativeBridge({ webkit: { messageHandlers: { empire: { postMessage() { throw new Error('should not be used'); } } } } });
   assert.equal(plain.available, false, 'a transport without the injected platform is not a shell');
   await assert.rejects(plain.secureGet('mode'), (e: unknown) => e instanceof BridgeError && e.code === 'unavailable');
