@@ -84,15 +84,24 @@ Object.assign(sun.shadow.camera, { left: -22, right: 22, top: 22, bottom: -22, n
 sun.shadow.bias = -0.00008;
 sun.shadow.normalBias = 0.02;
 scene.add(sun, sun.target);
-const environment = new THREE.PMREMGenerator(renderer);
-new HDRLoader().load('/textures/coastal-sky.hdr', hdr => {
-  hdr.mapping = THREE.EquirectangularReflectionMapping;
-  scene.background = hdr;
-  scene.backgroundIntensity = .85;
-  scene.environment = environment.fromEquirectangular(hdr).texture;
-  scene.environmentIntensity = .7;
-  environment.dispose();
-}, undefined, error => console.warn('HDR sky unavailable', error));
+// The sky is also the image-based lighting every PBR material needs; without it skin and clothes go dark.
+// A failed download is retried twice. The splash waits for it (data-assets below), and if it only arrives after a
+// player chose "Enter anyway", three.js sees the new scene.environment and rebuilds the affected programs itself.
+function loadSky(attempt = 0) {
+  new HDRLoader().load('/textures/coastal-sky.hdr', hdr => {
+    const environment = new THREE.PMREMGenerator(renderer);
+    hdr.mapping = THREE.EquirectangularReflectionMapping;
+    scene.background = hdr;
+    scene.backgroundIntensity = .85;
+    scene.environment = environment.fromEquirectangular(hdr).texture;
+    scene.environmentIntensity = .7;
+    environment.dispose();
+  }, undefined, error => {
+    console.warn('HDR sky unavailable', error);
+    if (attempt < 2) window.setTimeout(() => loadSky(attempt + 1), 1500 * (attempt + 1));
+  });
+}
+loadSky();
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
 const ao = new SSAOPass(scene, camera, window.innerWidth, window.innerHeight);
@@ -1250,7 +1259,10 @@ function frame(ts?: number) {
   canvas.dataset.traversal = tower.active ? 'elevator' : traversal.state;
   canvas.dataset.floor = String(office.floor + 1);
   canvas.dataset.motion = me.motion ?? 'loading';
-  canvas.dataset.assets = me.ready && city.car.userData.ready && scene.environment ? 'ready' : 'loading';
+  // The splash hands over only when the player is textured and the sky lighting is in (ui/loading.ts).
+  const pending = [!me.materialsReady && 'character', !scene.environment && 'sky lighting', !city.car.userData.ready && 'car'].filter(Boolean).join(', ');
+  canvas.dataset.assets = pending ? 'loading' : 'ready';
+  canvas.dataset.pending = pending;
   canvas.dataset.fps = String(Math.round(1 / Math.max(dt,.001)));
 
 
