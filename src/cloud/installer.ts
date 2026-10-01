@@ -145,7 +145,10 @@ export async function installStateRepository(client: GitHubClient, options: Inst
       const key = (await client.request('GET', `${base}/actions/secrets/public-key`)).data;
       if (typeof key?.key !== 'string' || typeof key?.key_id !== 'string') throw new InstallError('secrets', 'github_invalid', 'GitHub did not return the repository public key.');
       for (const [name, value] of entries) {
-        const encrypted = await encryptSecret(key.key, value.trim());
+        let encrypted: string;
+        // A key GitHub sent that cannot be used (wrong length or encoding) must not surface as "something went wrong".
+        try { encrypted = await encryptSecret(key.key, value.trim()); }
+        catch { throw new InstallError('secrets', 'secret_encryption_failed', 'This app could not encrypt your keys with the repository’s public key from GitHub. Nothing was stored; try again.'); }
         if (typeof encrypted !== 'string' || !encrypted || encrypted === value || encrypted.includes(value.trim())) throw new InstallError('secrets', 'secret_encryption_invalid', 'Secret encryption did not produce ciphertext.');
         await client.request('PUT', `${base}/actions/secrets/${name}`, { encrypted_value: encrypted, key_id: key.key_id });
         uploaded.push(name);

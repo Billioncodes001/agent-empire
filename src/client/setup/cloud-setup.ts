@@ -17,6 +17,7 @@ import { INSTALL_STEPS, InstallError, installStateRepository, type InstallStep, 
 import type { CloudLimits } from '../../cloud/schema';
 import { linkedProviders, parseCents, STATE_REPO_NAME, type Interval, type Limits, type ProviderId, type RepoRef } from './model';
 import { sealForGitHub } from './sealed-box';
+import { GITHUB_API, githubApiBase } from '../cloud/api-base';
 
 export const SECRET_NAMES: Record<ProviderId, SecretName> = { anthropic: 'ANTHROPIC_API_KEY', openai: 'OPENAI_API_KEY' };
 /** Where the client build ships the coordinator (tools/ship-coordinator.mjs) and its integrity manifest. */
@@ -131,7 +132,8 @@ export async function createEmpire(plan: CloudPlan, token: string, deps: CreateD
   // Before any GitHub call: a build without its coordinator creates nothing at all.
   const bundle = await (deps.bundle ?? (() => loadCoordinatorBundle(deps.fetch)))();
   const seal = deps.seal ?? sealForGitHub;
-  const client = new CloudGitHubClient(token, { browser: true, ...(deps.fetch ? { fetch: deps.fetch } : {}), ...(deps.apiBase ? { apiBase: deps.apiBase } : {}), timeoutMs: 30_000 });
+  const apiBase = deps.apiBase ?? githubApiBase();
+  const client = new CloudGitHubClient(token, { browser: true, ...(deps.fetch ? { fetch: deps.fetch } : {}), ...(apiBase !== GITHUB_API ? { apiBase } : {}), timeoutMs: 30_000 });
   try {
     const result = await installStateRepository(
       client,

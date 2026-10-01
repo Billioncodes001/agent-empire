@@ -249,6 +249,11 @@ test('cloud setup: plan → secrets and limits; keys are optional per provider, 
   await assert.rejects(createEmpire(plan({ projectToken: 'ghp_classic' + 'x'.repeat(30) }), 't', deps(gh)), (e: unknown) => e instanceof CloudSetupError && e.code === 'invalid' && /fine-grained/.test(e.message));
   assert.equal(gh.requests.length, 0, 'refused before any GitHub call');
   assert.deepEqual(SECRET_NAMES, { anthropic: 'ANTHROPIC_API_KEY', openai: 'OPENAI_API_KEY' });
+  // An unusable repository key from GitHub is reported plainly at the secrets step, and nothing is stored.
+  const bad = github().gh;
+  bad.publicKey = 'c2hvcnQ=';
+  await assert.rejects(createEmpire(plan(), 't', deps(bad, { seal: undefined })), (e: unknown) => e instanceof CloudSetupError && e.step === 'secrets' && /could not encrypt your keys/.test(e.message));
+  assert.equal(bad.repos.get(STATE_REPO)!.secrets.size, 0);
 });
 
 test('setup model: the schedule defaults to 30 minutes and the Actions estimate is compared with the plan', () => {

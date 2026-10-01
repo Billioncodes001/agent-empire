@@ -3,8 +3,9 @@
  * there, never as a cookie and never in a URL. `fetchImpl` is injected so tests use a fake GitHub.
  */
 import type { RepoRef } from './model';
+import { GITHUB_API, githubApiBase } from '../cloud/api-base';
 
-export const GITHUB_API = 'https://api.github.com';
+export { GITHUB_API };
 export const GITHUB_OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 export const GITHUB_REPO = /^[A-Za-z0-9._-]{1,100}$/;
 
@@ -73,7 +74,7 @@ export class GitHubClient {
   constructor(
     private readonly token: string,
     private readonly fetchImpl: typeof fetch = (...args) => fetch(...args),
-    private readonly base = GITHUB_API,
+    private readonly base = githubApiBase(),
   ) {
     if (!token || /\s/.test(token)) throw new GitHubError('Enter a GitHub token.', 0);
   }

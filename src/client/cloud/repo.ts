@@ -16,8 +16,7 @@ import { INTENT_PATH, parseStateFiles, STATE_FILES, type CloudState } from '../.
 import { encodeBase64Utf8 } from '../../cloud/store';
 import { WORKFLOW_FILE } from '../../cloud/workflow';
 import { uuidv7 } from './uuid';
-
-export const GITHUB_API = 'https://api.github.com';
+import { githubApiBase } from './api-base';
 const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 const NAME = /^[A-Za-z0-9_.-]{1,100}$/;
 const MAX_STATE_FILE = 4 * 1024 * 1024;
@@ -77,7 +76,7 @@ export class CloudRepo {
     readonly repo: RepoRef,
     private readonly token: string,
     private readonly fetchImpl: typeof fetch = (...a) => fetch(...a),
-    private readonly base = GITHUB_API,
+    private readonly base = githubApiBase(),
     branch?: string,
   ) {
     if (!parseRepo(repoLabel(repo))) throw new RepoError('invalid', 'Invalid state repository.');
