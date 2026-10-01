@@ -24,7 +24,7 @@ function createSecureStore(file, encryption) {
     }
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Saved sign-in could not be opened.');
     // Anything outside the allowlist, or no longer valid, is ignored rather than handed to the page.
-    return Object.fromEntries(KEYS.filter((k) => typeof parsed[k] === 'string' && !invalidValue(k, parsed[k])).map((k) => [k, parsed[k]]));
+    return Object.fromEntries(KEYS.filter((k) => typeof parsed[k] === 'string' && !invalidValue(k, parsed[k], { trusted: true })).map((k) => [k, parsed[k]]));
   }
 
   function writeAll(value) {
@@ -46,8 +46,9 @@ function createSecureStore(file, encryption) {
       if (!KEYS.includes(key)) throw new Error('Key not allowed.');
       return readAll()[key] ?? null;
     },
-    set(key, value) {
-      const problem = invalidValue(key, value);
+    /** `trusted` only from the main process's own code (mode=local after the confirmation), never for a page request. */
+    set(key, value, { trusted = false } = {}) {
+      const problem = invalidValue(key, value, { trusted });
       if (problem) throw new Error(problem);
       const all = readAll();
       all[key] = value;
