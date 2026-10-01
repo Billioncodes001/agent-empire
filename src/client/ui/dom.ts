@@ -1,3 +1,5 @@
+import { isTextEntry, isTouchDevice, trackKeyboard } from '../keyboard';
+
 type Attrs = Record<string, string | number | boolean | EventListener | undefined | null>;
 type Child = Node | string | number | null | undefined | false;
 
@@ -33,6 +35,8 @@ export interface Modal {
 }
 
 const stack: Modal[] = [];
+// Dialogs shrink to the area above the on-screen keyboard while a field in them is focused (html.ae-kb).
+if (typeof document !== 'undefined') trackKeyboard();
 const listeners = new Set<(open: boolean) => void>();
 
 export function onModalChange(fn: (open: boolean) => void) {
@@ -127,7 +131,9 @@ export function openModal(content: HTMLElement, opts: { escCloses?: boolean; onC
   requestAnimationFrame(() => {
     if (closed || stack[stack.length - 1] !== modal || content.contains(document.activeElement) || content.querySelector('.xterm')) return;
     const preferred = content.querySelector<HTMLElement>('[autofocus], [aria-selected="true"][role="tab"]');
-    (preferred ?? focusables(content)[0] ?? content).focus({ preventScroll: true });
+    const target = preferred ?? focusables(content)[0] ?? content;
+    // On touch a text field would open the keyboard over the dialog: the dialog itself takes focus instead.
+    (isTouchDevice() && isTextEntry(target) ? content : target).focus({ preventScroll: true });
   });
   return modal;
 }
