@@ -18,6 +18,8 @@ export class GitHubError extends Error {
 export interface GitHubUser {
   login: string;
   name?: string | null;
+  /** GitHub plan name (free, pro, …) when the token may see it; used only for the Actions minutes estimate. */
+  plan?: string | null;
 }
 export interface RepoListing extends RepoRef {
   description?: string | null;
@@ -108,9 +110,10 @@ export class GitHubClient {
   }
 
   async user(): Promise<GitHubUser> {
-    const { data } = await this.request<{ login?: unknown; name?: unknown }>('GET', '/user');
+    const { data } = await this.request<{ login?: unknown; name?: unknown; plan?: { name?: unknown } }>('GET', '/user');
     if (typeof data?.login !== 'string' || !GITHUB_OWNER.test(data.login)) throw new GitHubError('GitHub returned an unexpected account.', 200);
-    return { login: data.login, name: typeof data.name === 'string' ? data.name : null };
+    const plan = typeof data.plan?.name === 'string' && /^[a-z_ -]{1,40}$/i.test(data.plan.name) ? data.plan.name.toLowerCase() : null;
+    return { login: data.login, name: typeof data.name === 'string' ? data.name : null, plan };
   }
 
   /** Repositories the account can see, most recently pushed first, 100 per page. */

@@ -1,6 +1,9 @@
 /**
  * Page entry. Decides between the game and the first-launch setup before any heavy code loads:
  * the game bundle (main.ts, three.js, models) is imported only once the Empire has somewhere to run.
+ *
+ * Cloud mode: with a stored GitHub sign-in the game opens straight away and shows the Empire from its state
+ * repository (CLOUD-04). Without one (a browser after the page closed) the player signs in again first.
  */
 import { appConfig, setSessionConfig } from './endpoint';
 import { dismissKeyboard } from './keyboard';
@@ -14,10 +17,20 @@ function startGame() {
   void import('./main');
 }
 
+/** Hands the cloud session to the game, then loads it. The token stays in memory (and the app's secure storage). */
+async function startCloudGame(session: { token: string; repo: string; login?: string }) {
+  const { setCloudSession, parseRepo } = await import('./cloud/session');
+  const repo = parseRepo(session.repo);
+  if (!repo) throw new Error('Invalid state repository');
+  setCloudSession({ repo, token: session.token, ...(session.login ? { login: session.login } : {}) });
+  document.documentElement.dataset.boot = 'loading';
+  startGame();
+}
+
 async function showSetup(decision: Exclude<LaunchDecision, { kind: 'game' } | { kind: 'redirect' }>) {
   if (splash) splash.style.display = 'none';
   document.documentElement.dataset.boot = 'setup';
-  const [{ mountSetup, mountCloudPending }, { initialState }, { githubClientId }] = await Promise.all([
+  const [{ mountSetup, mountCloudUnlock }, { initialState }, { githubClientId }] = await Promise.all([
     import('./setup/view'),
     import('./setup/model'),
     import('./setup/config'),
@@ -26,12 +39,24 @@ async function showSetup(decision: Exclude<LaunchDecision, { kind: 'game' } | { 
   const shell = shellInfo();
   // Forgets the cloud choice on this device only; the state repository on GitHub is left untouched.
   const changeSetup = async () => {
-    await Promise.allSettled([bridge.secureDelete('mode'), bridge.secureDelete('state.repo')]);
+    const { forgetSavedSnapshots } = await import('./cloud/session');
+    forgetSavedSnapshots();
+    await Promise.allSettled([bridge.secureDelete('mode'), bridge.secureDelete('state.repo'), bridge.secureDelete('github.token'), bridge.secureDelete('github.login')]);
     location.reload();
   };
 
   if (decision.kind === 'cloud') {
-    mountCloudPending({ repo: decision.repo, native: bridge, onChangeSetup: changeSetup });
+    const root = mountCloudUnlock({
+      repo: decision.repo,
+      native: bridge,
+      clientId: githubClientId(),
+      onChangeSetup: changeSetup,
+      onUnlocked: async (session) => {
+        dismissKeyboard();
+        await startCloudGame(session);
+        root.remove();
+      },
+    });
     return;
   }
 
@@ -47,9 +72,10 @@ async function showSetup(decision: Exclude<LaunchDecision, { kind: 'game' } | { 
       await view.leave();
     },
     onWebServer: (host) => location.assign(host === location.origin ? '/login' : `${host}/login`),
-    onCloudCreated: async (repo) => {
+    onCloudCreated: async (repo, github) => {
+      dismissKeyboard();
+      await startCloudGame({ token: github.token, login: github.login, repo: `${repo.owner}/${repo.name}` });
       await view.leave();
-      mountCloudPending({ repo: `${repo.owner}/${repo.name}`, native: bridge, onChangeSetup: changeSetup });
     },
   });
 }
@@ -65,6 +91,11 @@ async function boot() {
   });
   if (decision.kind === 'game') return startGame();
   if (decision.kind === 'redirect') return location.replace(decision.url);
+  if (decision.kind === 'cloud' && decision.repo) {
+    // Relaunch: a stored sign-in opens the Empire at once (the game shows the last saved snapshot, then GitHub's).
+    const token = await bridge.secureGet('github.token').catch(() => null);
+    if (token) return startCloudGame({ token, repo: decision.repo, login: (await bridge.secureGet('github.login').catch(() => null)) ?? undefined }).catch(() => showSetup(decision));
+  }
   await showSetup(decision);
 }
 

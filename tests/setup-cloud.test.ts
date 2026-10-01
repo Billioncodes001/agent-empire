@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import nacl from 'tweetnacl';
 import { fromBase64, sealBox, sealForGitHub, sealNonce, sealOpen, SEAL_OVERHEAD, toBase64 } from '../src/client/setup/sealed-box';
 import { GitHubClient, GitHubError, utf8Base64 } from '../src/client/setup/github';
-import {
-  CloudSetupError, createEmpire, githubCloudSetup, pendingWorkflow, readiness, SECRET_NAMES, SETUP_INTENT_PATH, setupIntent, sodiumSealer,
-  type CloudPlan, type Sealer, type WorkflowSource,
-} from '../src/client/setup/cloud-setup';
-import { DEFAULT_LIMITS } from '../src/client/setup/model';
+import { createHash } from 'node:crypto';
+import { CloudSetupError, createEmpire, loadCoordinatorBundle, planLimits, planSecrets, SECRET_NAMES, type CloudPlan, type CreateDeps } from '../src/client/setup/cloud-setup';
+import { actionsEstimate, DEFAULT_LIMITS, initialState, reduce, validateProjectToken } from '../src/client/setup/model';
+import { COORDINATOR_BUNDLE_PATH, WORKFLOW_PATH } from '../src/cloud/workflow';
+import { FakeGitHub } from './fake-github';
 import { LoginFailure, parseServerAddress, revokeDevice, signInToServer } from '../src/client/setup/server-login';
 
 // ---- Sealed box ----------------------------------------------------------------------------------------
@@ -109,92 +109,165 @@ const plan = (over: Partial<CloudPlan> = {}): CloudPlan => ({
   projects: [{ owner: 'octo', name: 'app', private: true, defaultBranch: 'main' }],
   providers: { anthropic: 'sk-ant-' + 'A'.repeat(40), openai: '' },
   limits: { ...DEFAULT_LIMITS },
+  interval: 30,
   platform: 'ios',
   ...over,
 });
-const workflow: WorkflowSource = { available: true, path: '.github/workflows/agent-empire.yml', content: 'name: Agent Empire (test)\non: workflow_dispatch\n' };
+const BUNDLE = '// coordinator bundle (test)\nexport {};\n';
+const STATE_REPO = 'octo/agent-empire-state';
+function github() {
+  const gh = new FakeGitHub();
+  gh.login = 'octo';
+  const recipient = nacl.box.keyPair();
+  gh.publicKey = toBase64(recipient.publicKey);
+  return { gh, recipient };
+}
+const deps = (gh: FakeGitHub, extra: Partial<CreateDeps> = {}): CreateDeps => ({ fetch: gh.fetch, bundle: async () => BUNDLE, now: () => Date.parse('2026-10-01T12:00:00Z'), sleep: async () => {}, ...extra });
 
-test('cloud setup: creates the private state repo, uploads sealed secrets, installs the workflow and writes a setup intent', async () => {
-  const gh = fakeGitHub();
+test('cloud setup: “Create my Empire” runs the real installer against a fake GitHub, with sealed secrets, state, bundle and workflow last', async () => {
+  const { gh, recipient } = github();
   const steps: string[] = [];
-  const p = plan({ providers: { anthropic: 'sk-ant-' + 'A'.repeat(40), openai: 'sk-proj-' + 'B'.repeat(40) } });
-  const repo = await createEmpire(p, githubCloudSetup(new GitHubClient('gho_tok', gh.fetchImpl), sodiumSealer, workflow, () => new Date('2026-09-30T12:00:00Z')),
-    readiness(sodiumSealer, workflow), (s, st) => steps.push(`${s}:${st}`));
-  assert.deepEqual(repo, { owner: 'octo', name: 'agent-empire-state', created: true });
-  assert.deepEqual(steps, ['repo:running', 'repo:done', 'secrets:running', 'secrets:done', 'workflow:running', 'workflow:done', 'state:running', 'state:done']);
-  const create = gh.calls.find((c) => c.method === 'POST')!;
-  assert.equal(create.path, '/user/repos');
-  assert.equal(create.body!.private, true);
-  assert.equal(create.body!.name, 'agent-empire-state');
-  // Secrets: sealed to the repository key; the fake GitHub (holding the private key) can open them.
-  assert.deepEqual([...gh.secrets.keys()].sort(), ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY']);
-  for (const [name, value] of [['ANTHROPIC_API_KEY', p.providers.anthropic], ['OPENAI_API_KEY', p.providers.openai]] as const) {
-    const s = gh.secrets.get(name)!;
-    assert.equal(s.key_id, 'kid-1');
-    assert.equal(new TextDecoder().decode(sealOpen(fromBase64(s.encrypted_value), gh.recipient.publicKey, gh.recipient.secretKey)!), value);
-  }
-  // Keys never appear in plain text in any request, and every request is bearer-authenticated without cookies.
-  for (const c of gh.calls) {
-    assert.doesNotMatch(JSON.stringify(c.body ?? {}), /sk-ant-|sk-proj-/);
+  const p = plan({ providers: { anthropic: 'sk-ant-' + 'A'.repeat(40), openai: 'sk-proj-' + 'B'.repeat(40) }, projectToken: 'github_pat_' + 'C'.repeat(40), interval: 60 });
+  const repo = await createEmpire(p, 'gho_tok', deps(gh), (s, st) => steps.push(`${s}:${st}`));
+  assert.deepEqual(repo, { owner: 'octo', name: 'agent-empire-state', created: true, alreadyInstalled: false });
+  assert.deepEqual(steps, ['repo:running', 'repo:done', 'secrets:running', 'secrets:done', 'state:running', 'state:done', 'workflow:running', 'workflow:done', 'verify:running', 'verify:done']);
+  const create = gh.requests.find((c) => c.method === 'POST' && c.path === '/user/repos')!;
+  assert.equal(create.body.private, true);
+  assert.equal(create.body.name, 'agent-empire-state');
+  // Secrets are real libsodium sealed boxes: the repository's key pair opens them.
+  const stored = gh.repos.get(STATE_REPO)!.secrets;
+  assert.deepEqual([...stored.keys()].sort(), ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'PROJECT_GITHUB_TOKEN']);
+  for (const [name, value] of [['ANTHROPIC_API_KEY', p.providers.anthropic], ['OPENAI_API_KEY', p.providers.openai], ['PROJECT_GITHUB_TOKEN', p.projectToken!]] as const)
+    assert.equal(new TextDecoder().decode(sealOpen(fromBase64(stored.get(name)!.encrypted_value), recipient.publicKey, recipient.secretKey)!), value);
+  for (const c of gh.requests) {
+    assert.doesNotMatch(JSON.stringify(c.body ?? {}), /sk-ant-|sk-proj-|github_pat_/, `${c.method} ${c.path} carries no plaintext key`);
     assert.equal(c.auth, 'Bearer gho_tok');
-    assert.equal(c.credentials, 'omit');
   }
-  assert.equal(gh.files.get('.github/workflows/agent-empire.yml'), workflow.content);
-  const intent = JSON.parse(gh.files.get(SETUP_INTENT_PATH)!);
-  assert.deepEqual(intent, {
-    schemaVersion: 1, type: 'setup', createdAt: '2026-09-30T12:00:00.000Z', createdBy: { login: 'octo', platform: 'ios' },
-    projects: [{ owner: 'octo', name: 'app', defaultBranch: 'main' }], providers: ['anthropic', 'openai'],
-    limits: { maxConcurrentJobs: 1, perJobCents: 500, dailyCents: 2000, approveEachJob: true }, changes: 'branches-and-pull-requests-only',
-  });
-  assert.doesNotMatch(gh.files.get(SETUP_INTENT_PATH)!, /sk-/);
+  const files = gh.files(STATE_REPO);
+  assert.equal(files[COORDINATOR_BUNDLE_PATH], BUNDLE, 'the shipped bundle is committed where the workflow runs it');
+  assert.match(files[WORKFLOW_PATH], /cron: '7 \* \* \* \*'/, 'the chosen schedule');
+  const meta = JSON.parse(files['state/meta.json']);
+  assert.deepEqual(meta.limits, { maxConcurrent: 1, perTaskBudgetCents: 500, dailyBudgetCents: 2000 });
+  assert.equal(meta.schedule.billedMinutesPerMonth, 720);
+  assert.equal(JSON.parse(files['state/jobs.json']).jobs.length, 0, 'setup never queues paid work');
+  assert.equal(gh.repos.get(STATE_REPO)!.dispatches.length, 0, 'setup never triggers a run');
+  assert.ok(!gh.requests.some((r) => /dispatches|actions\/workflows/.test(r.path)), 'no workflow is enabled, dispatched or run');
+  const repoState = gh.repos.get(STATE_REPO)!;
+  assert.equal(repoState.commits.get(repoState.ref)!.message, 'Agent Empire: install the coordinator workflow', 'the workflow is the last commit');
+  assert.ok(!Object.keys(files).some((f) => f.startsWith('intents/')), 'no intent is written by setup');
 });
 
-test('cloud setup: this build lacks the coordinator workflow, so nothing at all is sent to GitHub', async () => {
-  const gh = fakeGitHub();
-  const ready = readiness(sodiumSealer, pendingWorkflow);
-  assert.deepEqual(ready, [pendingWorkflow.reason]);
-  await assert.rejects(createEmpire(plan(), githubCloudSetup(new GitHubClient('t', gh.fetchImpl), sodiumSealer, pendingWorkflow), ready),
+test('cloud setup: a build without its coordinator, or with a mismatched one, creates nothing on GitHub', async () => {
+  const { gh } = github();
+  const missing = (async () => new Response('Not Found', { status: 404 })) as unknown as typeof fetch;
+  await assert.rejects(createEmpire(plan(), 't', deps(gh, { bundle: () => loadCoordinatorBundle(missing) })),
     (e: unknown) => e instanceof CloudSetupError && e.code === 'not_ready' && /Nothing was created/.test(e.message) && e.reasons.length === 1);
-  assert.equal(gh.calls.length, 0);
-  const noCrypto: Sealer = { available: false, reason: 'Encryption library pending approval', seal: () => { throw new Error('unreachable'); } };
-  assert.deepEqual(readiness(noCrypto, workflow), ['Encryption library pending approval']);
+  const html = '<!doctype html><title>app</title>';
+  const lying = (async (u: string) => u.endsWith('.json')
+    ? new Response(JSON.stringify({ file: 'agent-empire-coordinator.mjs', bytes: 999, sha256: 'a'.repeat(64) }), { status: 200 })
+    : new Response(html, { status: 200 })) as unknown as typeof fetch;
+  await assert.rejects(createEmpire(plan(), 't', deps(gh, { bundle: () => loadCoordinatorBundle(lying) })), (e: unknown) => e instanceof CloudSetupError && e.code === 'not_ready' && /does not match/.test(e.reasons[0]));
+  assert.equal(gh.requests.length, 0, 'no GitHub call at all');
+  // The real manifest format is accepted.
+  const sha = createHash('sha256').update(BUNDLE).digest('hex');
+  const good = (async (u: string) => u.endsWith('.json') ? new Response(JSON.stringify({ file: 'x', bytes: Buffer.byteLength(BUNDLE), sha256: sha })) : new Response(BUNDLE)) as unknown as typeof fetch;
+  assert.equal(await loadCoordinatorBundle(good), BUNDLE);
 });
 
-test('cloud setup: an existing private state repo of the same account is reused (resumed setup); a public or foreign one is refused', async () => {
-  const reuse = fakeGitHub({ existing: { private: true } });
-  const repo = await createEmpire(plan(), githubCloudSetup(new GitHubClient('t', reuse.fetchImpl), sodiumSealer, workflow), []);
+test('cloud setup: after a failure, Try again resumes; the repository is reused and finished steps are skipped', async () => {
+  const { gh } = github();
+  gh.failures.push({ method: 'PUT', path: /\/actions\/secrets\/ANTHROPIC_API_KEY$/, status: 502, times: 1 });
+  const first: string[] = [];
+  await assert.rejects(createEmpire(plan(), 't', deps(gh), (s, st) => first.push(`${s}:${st}`)),
+    (e: unknown) => e instanceof CloudSetupError && e.code === 'github' && e.step === 'secrets' && /GitHub is having trouble/.test(e.message) && /finished steps are kept/.test(e.message));
+  assert.deepEqual(first, ['repo:running', 'repo:done', 'secrets:running']);
+  // A ref update failing during the workflow commit (after state was committed).
+  let refPatches = 0;
+  const second: [string, string, string?][] = [];
+  const failOnWorkflow = { method: 'POST', path: /\/git\/trees$/, status: 503, times: 0 };
+  gh.failures.push(failOnWorkflow);
+  const origFetch = gh.fetch;
+  const counting = (async (input: string, init: RequestInit = {}) => {
+    if ((init.method ?? 'GET') === 'PATCH') refPatches++;
+    if ((init.method ?? 'GET') === 'POST' && String(input).endsWith('/git/trees') && refPatches === 1) failOnWorkflow.times = 1;
+    return origFetch(input, init);
+  }) as unknown as typeof fetch;
+  await assert.rejects(createEmpire(plan(), 't', deps(gh, { fetch: counting }), (s, st, d) => second.push([s, st, d])), (e: unknown) => e instanceof CloudSetupError && e.step === 'workflow');
+  assert.deepEqual(second.filter(([, st]) => st !== 'running').map(([s, st, d]) => `${s}:${st}:${d}`), ['repo:done:already there', 'secrets:done:ANTHROPIC_API_KEY', 'state:done:initial state written']);
+  assert.equal(gh.requests.filter((r) => r.method === 'POST' && r.path === '/user/repos').length, 1, 'the repository is created once');
+  const third: [string, string, string?][] = [];
+  const repo = await createEmpire(plan(), 't', deps(gh), (s, st, d) => third.push([s, st, d]));
+  assert.equal(repo.alreadyInstalled, true);
+  assert.deepEqual(third.filter(([, st]) => st !== 'running').map(([s, st]) => `${s}:${st}`), ['repo:done', 'secrets:done', 'state:skipped', 'workflow:done', 'verify:done']);
+  const fourth: string[] = [];
+  await createEmpire(plan(), 't', deps(gh), (s, st) => st !== 'running' && fourth.push(`${s}:${st}`));
+  assert.deepEqual(fourth, ['repo:done', 'secrets:done', 'state:skipped', 'workflow:skipped', 'verify:done'], 'a complete install is left as it is');
+  assert.equal(JSON.parse(gh.files(STATE_REPO)['state/meta.json']).createdAt, Date.parse('2026-10-01T12:00:00Z'), 'the Empire written first is kept');
+});
+
+test('cloud setup: a repository the user created (even empty) is reused; a token that cannot create one is told what to do', async () => {
+  const { gh } = github();
+  gh.createStatus = 403;
+  await assert.rejects(createEmpire(plan(), 't', deps(gh)), (e: unknown) => e instanceof CloudSetupError && e.code === 'repo_conflict' && e.step === 'repo' && /Create a private repository named agent-empire-state/.test(e.message));
+  assert.equal(gh.repos.size, 0);
+  gh.create(STATE_REPO, true, null); // created on github.com without a README: no commits
+  const repo = await createEmpire(plan(), 't', deps(gh));
   assert.equal(repo.created, false);
-  assert.ok(reuse.secrets.has('ANTHROPIC_API_KEY'));
-  // Looked up before any create: a token without Administration (repository pre-created by the user) is enough.
-  assert.equal(reuse.calls.filter((c) => c.method === 'POST' && c.path === '/user/repos').length, 0, 'no create call for an existing repository');
-  for (const existing of [{ private: false }, { private: true, owner: 'someone-else' }]) {
-    const gh = fakeGitHub({ existing });
-    await assert.rejects(createEmpire(plan(), githubCloudSetup(new GitHubClient('t', gh.fetchImpl), sodiumSealer, workflow), []),
-      (e: unknown) => e instanceof CloudSetupError && e.code === 'repo_conflict' && e.step === 'repo');
-    assert.equal(gh.secrets.size, 0, 'no secret is uploaded to a repository we did not verify');
-  }
+  assert.ok(gh.requests.some((r) => r.method === 'PUT' && r.path.endsWith('/contents/README.md')), 'an empty repository gets a first commit through the Contents API');
+  assert.ok(gh.files(STATE_REPO)['state/meta.json']);
 });
 
-test('cloud setup: a GitHub failure names the step and a plain reason; files are updated with their sha on retry', async () => {
-  const gh = fakeGitHub({ failSecret: true });
-  await assert.rejects(createEmpire(plan(), githubCloudSetup(new GitHubClient('t', gh.fetchImpl), sodiumSealer, workflow), []),
-    (e: unknown) => e instanceof CloudSetupError && e.code === 'github' && e.step === 'secrets' && /permission/.test(e.message));
-  const ok = fakeGitHub();
-  const setup = githubCloudSetup(new GitHubClient('t', ok.fetchImpl), sodiumSealer, workflow);
-  await createEmpire(plan(), setup, []);
-  await createEmpire(plan(), setup, []); // second run: files exist, PUT carries their sha
-  const puts = ok.calls.filter((c) => c.method === 'PUT' && c.path.includes('/contents/'));
-  assert.equal(puts.length, 4);
-  assert.equal(puts[2].body!.sha, 'sha-.github/workflows/agent-empire.yml');
-  await assert.rejects(setup.uploadSecret({ owner: 'octo', name: 'agent-empire-state', created: false }, 'GITHUB_TOKEN', 'x'), /Unknown secret/);
-  await assert.rejects(createEmpire(plan({ providers: { anthropic: '', openai: '' } }), setup, []), /at least one API key/);
+test('cloud setup: waits for GitHub to finish creating the repository; refuses public or foreign ones before any secret', async () => {
+  const slow = github().gh;
+  slow.autoInitDelay = 2;
+  await createEmpire(plan(), 't', deps(slow));
+  assert.ok(slow.files(STATE_REPO)['state/meta.json']);
+  const never = github().gh;
+  never.autoInitDelay = 99;
+  await assert.rejects(createEmpire(plan(), 't', deps(never)), (e: unknown) => e instanceof CloudSetupError && e.step === 'repo' && /hasn’t finished creating/.test(e.message));
+  const pub = github().gh;
+  pub.create(STATE_REPO, false);
+  await assert.rejects(createEmpire(plan(), 't', deps(pub)), (e: unknown) => e instanceof CloudSetupError && e.code === 'repo_conflict' && /public/.test(e.message));
+  assert.equal(pub.repos.get(STATE_REPO)!.secrets.size, 0, 'no secret is uploaded to a repository we did not verify');
+  const foreign = github().gh;
+  foreign.create(STATE_REPO, true).owner = 'someone-else';
+  await assert.rejects(createEmpire(plan(), 't', deps(foreign)), (e: unknown) => e instanceof CloudSetupError && e.code === 'repo_conflict');
+  assert.equal(foreign.repos.get(STATE_REPO)!.secrets.size, 0);
+  const foreignState = github().gh;
+  foreignState.create(STATE_REPO, true, { 'state/meta.json': '{"schemaVersion":99}' });
+  await assert.rejects(createEmpire(plan(), 't', deps(foreignState)), (e: unknown) => e instanceof CloudSetupError && e.step === 'state' && /not a valid Empire state/.test(e.message) && /Nothing was changed/.test(e.message));
+  assert.equal(foreignState.files(STATE_REPO)['state/meta.json'], '{"schemaVersion":99}', 'an unknown state is never overwritten');
+  assert.ok(!foreignState.files(STATE_REPO)[WORKFLOW_PATH] && !foreignState.files(STATE_REPO)[COORDINATOR_BUNDLE_PATH], 'nothing is installed that would fail on every run');
 });
 
-test('cloud setup: the setup intent carries names and limits only', () => {
-  const intent = setupIntent(plan(), new Date(0));
-  assert.deepEqual(intent.providers, ['anthropic']);
-  assert.doesNotMatch(JSON.stringify(intent), /sk-ant/);
+test('cloud setup: plan → secrets and limits; keys are optional per provider, the project token only when given', async () => {
+  assert.deepEqual(planSecrets(plan()), { ANTHROPIC_API_KEY: 'sk-ant-' + 'A'.repeat(40) });
+  assert.deepEqual(Object.keys(planSecrets(plan({ projectToken: ' github_pat_x ' }))), ['ANTHROPIC_API_KEY', 'PROJECT_GITHUB_TOKEN']);
+  assert.deepEqual(planLimits({ maxConcurrent: 2, perJob: '1.50', daily: '$10', approveEachJob: true }), { maxConcurrent: 2, perTaskBudgetCents: 150, dailyBudgetCents: 1000 });
+  const { gh } = github();
+  await assert.rejects(createEmpire(plan({ providers: { anthropic: '', openai: '' } }), 't', deps(gh)), /at least one API key/);
+  await assert.rejects(createEmpire(plan({ projectToken: 'ghp_classic' + 'x'.repeat(30) }), 't', deps(gh)), (e: unknown) => e instanceof CloudSetupError && e.code === 'invalid' && /fine-grained/.test(e.message));
+  assert.equal(gh.requests.length, 0, 'refused before any GitHub call');
   assert.deepEqual(SECRET_NAMES, { anthropic: 'ANTHROPIC_API_KEY', openai: 'OPENAI_API_KEY' });
+});
+
+test('setup model: the schedule defaults to 30 minutes and the Actions estimate is compared with the plan', () => {
+  assert.equal(initialState().interval, 30);
+  const e = actionsEstimate(30, 'free');
+  assert.deepEqual([e.runs, e.minutes, e.included, Math.round(e.share! * 100)], [1440, 1440, 2000, 72]);
+  assert.equal(actionsEstimate(60, 'pro').share, 720 / 3000);
+  assert.equal(actionsEstimate(15, null).included, undefined);
+  let s = { ...initialState(), step: 'limits' as const };
+  s = reduce(s, { type: 'setInterval', interval: 45 });
+  assert.equal(s.interval, 30, 'only 15/20/30/60');
+  s = reduce(s, { type: 'setInterval', interval: 15 });
+  assert.equal(s.interval, 15);
+  assert.equal(validateProjectToken('ghp_' + 'x'.repeat(36)), 'Use a fine-grained token (it starts with github_pat_). Classic tokens grant too much access.');
+  assert.equal(validateProjectToken(''), null);
+  assert.equal(validateProjectToken('github_pat_' + 'A1_'.repeat(10)), null);
+  s = reduce({ ...s, step: 'providers' }, { type: 'setProjectToken', value: 'github_pat_' + 'Z'.repeat(30) });
+  assert.equal(reduce(s, { type: 'forgetSecrets' }).projectToken, '', 'forgotten with the API keys');
+  assert.equal(reduce(s, { type: 'changeMode' }).projectToken, '');
 });
 
 test('GitHub client: repositories are listed with push permission; errors become plain messages; paths are validated', async () => {
