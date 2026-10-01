@@ -117,6 +117,21 @@ public final class MainActivity extends Activity implements NativeBridge.Host {
         root = new FrameLayout(this);
         root.setBackgroundColor(getColor(R.color.brand_ink));
         setContentView(root);
+        if (Build.VERSION.SDK_INT >= 30) {
+            // With setDecorFitsSystemWindows(false), adjustResize no longer shrinks the window for the on-screen keyboard,
+            // which then covers the focused field. Lift the game above the keyboard instead: the page sees a shorter
+            // viewport and fits its setup and dialogs (with the focused field and primary action) into it.
+            root.setOnApplyWindowInsetsListener((view, insets) -> {
+                int ime = insets.getInsets(WindowInsets.Type.ime()).bottom;
+                if (view.getPaddingBottom() != ime) {
+                    view.setPadding(0, 0, 0, ime);
+                    // Re-dispatch once the new size is laid out, so the WebView re-reads the display cutout for
+                    // env(safe-area-inset-*) against its final frame (it otherwise drops the cutout inset).
+                    view.post(view::requestApplyInsets);
+                }
+                return insets;
+            });
+        }
         createWebView();
         splash = buildSplash();
         root.addView(splash, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));

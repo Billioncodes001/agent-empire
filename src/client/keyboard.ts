@@ -78,14 +78,22 @@ export function trackKeyboard() {
   tracking = true;
   const root = document.documentElement;
   const vv = window.visualViewport;
+  // The page height without a keyboard. iOS keeps the layout viewport and shrinks only the visual one; the Android app
+  // shrinks the whole WebView above the keyboard, so the height before a field took focus is the reference.
+  let full = innerHeight;
+  let fullWidth = innerWidth;
   let raf = 0;
   const update = () => {
     raf = 0;
     const active = document.activeElement;
     const height = vv ? vv.height : innerHeight;
     const top = vv ? vv.offsetTop : 0;
-    // The keyboard is open when a field has focus and the visible area is clearly shorter than the layout viewport.
-    const open = isTouchDevice() && isTextEntry(active) && innerHeight - height > 60;
+    if (innerWidth !== fullWidth || !isTextEntry(active)) {
+      full = Math.max(innerHeight, height);
+      fullWidth = innerWidth;
+    } else full = Math.max(full, innerHeight);
+    // The keyboard is open when a field has focus and the visible area is clearly shorter than the full page.
+    const open = isTouchDevice() && isTextEntry(active) && full - height > 60;
     root.classList.toggle('ae-kb', open);
     if (open) {
       root.style.setProperty('--ae-vvh', `${Math.round(height)}px`);
