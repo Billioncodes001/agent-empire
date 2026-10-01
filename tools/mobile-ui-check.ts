@@ -282,8 +282,171 @@ async function landscape(browser: Browser, width: number, height: number, full: 
   }
 }
 
+/**
+ * Every in-game window on a landscape phone with a notch / Dynamic Island on one side (real env(safe-area-inset-*)
+ * values through CDP Emulation.setSafeAreaInsetsOverride): the window sits inside the safe area and is centred in it,
+ * big windows use the full safe height, header, close button and footer stay on screen, the close button is a
+ * hit-testable >= 44px target, and nothing overflows sideways.
+ */
+type Insets = { top: number; right: number; bottom: number; left: number };
+type WinSpec = { name: string; open: (page: Page) => Promise<unknown>; big?: boolean; shot?: boolean };
+const WINDOWS: WinSpec[] = [
+  { name: 'menu', shot: true, open: (p) => p.evaluate(() => document.getElementById('btn-menu')!.click()) },
+  { name: 'help', open: (p) => p.evaluate(() => document.getElementById('btn-help')!.click()) },
+  { name: 'settings', shot: true, open: (p) => p.evaluate(() => document.getElementById('btn-settings')!.click()) },
+  { name: 'management', shot: true, open: (p) => p.evaluate(() => document.getElementById('btn-management')!.click()), big: true },
+  { name: 'issues', shot: true, open: (p) => p.evaluate(() => document.getElementById('btn-issues')!.click()), big: true },
+  { name: 'pulls', open: (p) => p.evaluate(() => document.getElementById('btn-pulls')!.click()), big: true },
+  { name: 'queue', shot: true, open: (p) => p.evaluate(() => document.getElementById('btn-queue')!.click()) },
+  {
+    name: 'terminal',
+    big: true,
+    shot: true,
+    open: async (p) => {
+      await p.evaluate(() => document.getElementById('btn-queue')!.click());
+      await p.locator('#modal-root .modal button', { hasText: 'Terminal' }).first().click();
+      await p.waitForSelector('#modal-root .modal.term');
+    },
+  },
+  {
+    name: 'changes',
+    big: true,
+    shot: true,
+    open: async (p) => {
+      await p.evaluate(() => document.getElementById('btn-queue')!.click());
+      await p.locator('#modal-root .modal button', { hasText: 'Terminal' }).first().click();
+      await p.locator('#modal-root .modal.term button', { hasText: 'Changes' }).click();
+      await p.waitForSelector('#modal-root .modal.desk-changes');
+    },
+  },
+  { name: 'team', open: (p) => p.evaluate(() => document.getElementById('btn-team')!.click()) },
+  { name: 'upgrade', open: (p) => p.evaluate(() => document.getElementById('btn-upgrade')!.click()) },
+  { name: 'services', open: (p) => p.evaluate(() => document.getElementById('btn-services')!.click()) },
+  { name: 'workers', open: (p) => p.evaluate(() => (document.querySelector('#status-strip .status-workforce') as HTMLElement).click()) },
+];
+
+async function topWindow(page: Page) {
+  return page.evaluate(() => {
+    const backs = [...document.querySelectorAll('#modal-root .backdrop')];
+    const modal = backs[backs.length - 1]?.querySelector<HTMLElement>(':scope > .modal');
+    if (!modal) return null;
+    const box = (el: Element | null | undefined) => {
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { x: r.left, y: r.top, w: r.width, h: r.height };
+    };
+    const close = modal.querySelector<HTMLElement>(':scope > header .close, .close');
+    const header = modal.querySelector<HTMLElement>(':scope > header');
+    const footer = modal.querySelector<HTMLElement>(':scope > footer');
+    let closeHit = false;
+    if (close) {
+      const r = close.getBoundingClientRect();
+      const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      closeHit = !!top && close.contains(top);
+    }
+    const clipped = [header, footer].filter((el): el is HTMLElement => !!el && el.scrollWidth > el.clientWidth + 1).map((el) => el.tagName.toLowerCase());
+    // Header items must not be drawn over each other (e.g. a title squeezed under the close button).
+    const crowded: string[] = [];
+    const items = header ? [...header.children].filter((el) => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden') : [];
+    for (let i = 0; i < items.length; i++) for (let j = i + 1; j < items.length; j++) {
+      const a = items[i].getBoundingClientRect(), b = items[j].getBoundingClientRect();
+      if (a.width && b.width && a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1)
+        crowded.push(`${items[i].className || items[i].tagName}/${items[j].className || items[j].tagName}`);
+    }
+    // ...and the title keeps room to be read (not squeezed to nothing beside the other header items).
+    const title = header?.querySelector('h2');
+    if (title) {
+      const w = title.getBoundingClientRect().width;
+      if (w < Math.min(title.scrollWidth, 80) - 1) crowded.push(`title squeezed to ${w.toFixed(0)}px`);
+    }
+    return {
+      cls: modal.className,
+      modal: box(modal)!,
+      close: box(close),
+      header: box(header),
+      footer: box(footer),
+      closeHit,
+      clipped,
+      crowded,
+      pageOverflow: document.documentElement.scrollWidth - innerWidth,
+    };
+  });
+}
+
+async function windowsCheck(browser: Browser, width: number, height: number, insets: Insets, side: string) {
+  const label = `${width}x${height} ${side}`;
+  const winOut = resolve(import.meta.dirname, '../docs/team/reports/phone-windows');
+  mkdirSync(winOut, { recursive: true });
+  const desktop = side === 'desktop';
+  const phone = height <= 500;
+  const { context, page, errors } = await open(browser, { width, height, touch: !desktop });
+  try {
+    const cdp = await context.newCDPSession(page);
+    await cdp.send('Emulation.setSafeAreaInsetsOverride' as any, { insets });
+    await page.waitForTimeout(100);
+    const seen = await page.evaluate(() => {
+      const d = document.createElement('div');
+      d.style.cssText = 'position:fixed;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)';
+      document.body.append(d);
+      const c = getComputedStyle(d);
+      const v = [c.paddingTop, c.paddingRight, c.paddingBottom, c.paddingLeft].map((s) => parseFloat(s));
+      d.remove();
+      return v;
+    });
+    check(`${label} page sees the emulated safe-area insets`, seen.join() === [insets.top, insets.right, insets.bottom, insets.left].join(), seen.join('/'));
+    const safe = { x: insets.left, y: insets.top, r: width - insets.right, b: height - insets.bottom };
+    const inSafe = (r: { x: number; y: number; w: number; h: number }) => r.x >= safe.x - 0.5 && r.y >= safe.y - 0.5 && r.x + r.w <= safe.r + 0.5 && r.y + r.h <= safe.b + 0.5;
+    for (const win of WINDOWS) {
+      await win.open(page);
+      await page.waitForSelector('#modal-root .backdrop > .modal', { timeout: 5000 }).catch(() => null);
+      await page.waitForTimeout(260);
+      const t = await topWindow(page);
+      if (!t) {
+        check(`${label} ${win.name}: window opens`, false);
+        continue;
+      }
+      const m = t.modal;
+      const fmt = (r: { x: number; y: number; w: number; h: number }) => `${r.x.toFixed(0)},${r.y.toFixed(0)} ${r.w.toFixed(0)}x${r.h.toFixed(0)}`;
+      const problems: string[] = [];
+      if (!inSafe(m)) problems.push(`window ${fmt(m)} outside safe ${safe.x},${safe.y}-${safe.r},${safe.b}`);
+      const off = m.x + m.w / 2 - (safe.x + safe.r) / 2;
+      if (Math.abs(off) > 1.5) problems.push(`off-centre by ${off.toFixed(1)}px`);
+      if (phone && win.big && m.h < safe.b - safe.y - 2 * 16 - 1) problems.push(`big window only ${m.h.toFixed(0)}px of ${safe.b - safe.y}px safe height`);
+      if (!t.close) problems.push('no close button');
+      else {
+        if (!inSafe(t.close) || t.close.x + t.close.w > m.x + m.w + 0.5) problems.push(`close ${fmt(t.close)} not inside the window/safe area`);
+        if (!desktop && (t.close.w < 44 - 0.5 || t.close.h < 44 - 0.5)) problems.push(`close ${t.close.w.toFixed(0)}x${t.close.h.toFixed(0)} < 44px`);
+        if (!t.closeHit) problems.push('close button covered');
+      }
+      if (t.header && !inSafe(t.header)) problems.push(`header ${fmt(t.header)} off screen`);
+      if (t.footer && !inSafe(t.footer)) problems.push(`footer ${fmt(t.footer)} off screen`);
+      if (t.clipped.length) problems.push(`${t.clipped.join('+')} overflows sideways`);
+      if (t.crowded.length) problems.push(`header items overlap: ${t.crowded.join(', ')}`);
+      if (t.pageOverflow > 0) problems.push(`page scrollWidth +${t.pageOverflow}`);
+      check(`${label} ${win.name}: inside safe area, centred, close/header/footer reachable`, !problems.length, problems.join('; ') || fmt(m));
+      // Screenshots for the report: island on the left at 667 and 874, plus tablet and desktop.
+      if (win.shot && ['left', 'tablet', 'desktop'].includes(side) && width !== 812)
+        await page.screenshot({ animations: 'disabled', type: 'jpeg', quality: 72, path: resolve(winOut, `${win.name}-${width}x${height}-${side}.jpg`) });
+      // Close by tapping the close button where it is drawn, as a finger would.
+      const before = await page.locator('#modal-root .backdrop').count();
+      if (t.close) await (desktop ? page.mouse.click(t.close.x + t.close.w / 2, t.close.y + t.close.h / 2) : touchTap(page, center({ ...t.close, name: 'close' })));
+      await page.waitForTimeout(150);
+      const after = await page.locator('#modal-root .backdrop').count();
+      if (t.close) check(`${label} ${win.name}: tapping the close button closes it`, after < before || after === 0, `${before} -> ${after} windows`);
+      for (let i = 0; i < 4 && (await page.locator('#modal-root .backdrop').count()); i++) {
+        await page.keyboard.press('Escape');
+        await page.waitForTimeout(120);
+      }
+    }
+    check(`${label} no console/page errors`, !errors.length, errors.slice(0, 3).join(' | '));
+  } finally {
+    await context.close();
+  }
+}
+
 const browser = await chromium.launch({ channel: 'chrome', headless: true, args: ['--enable-webgl', '--ignore-gpu-blocklist'] });
 try {
+  if (process.env.MOBILE_UI_ONLY !== 'windows') {
   await landscape(browser, 667, 375, true);
   await landscape(browser, 812, 375, false);
   await landscape(browser, 874, 402, true);
@@ -386,6 +549,16 @@ try {
     await page.screenshot({ animations: 'disabled', path: resolve(out,'login-667x375.png') });
     await context.close();
   }
+  }
+
+  // In-game windows against the notch / Dynamic Island on either side (phone-windows report).
+  for (const [w, hgt, inset, bottom] of [[667, 375, 44, 21], [812, 375, 44, 21], [874, 402, 62, 20]] as const) {
+    await windowsCheck(browser, w, hgt, { top: 0, right: 0, bottom, left: inset }, 'left');
+    await windowsCheck(browser, w, hgt, { top: 0, right: inset, bottom, left: 0 }, 'right');
+  }
+  await windowsCheck(browser, 874, 402, { top: 0, right: 62, bottom: 20, left: 62 }, 'both');
+  await windowsCheck(browser, 1024, 768, { top: 0, right: 0, bottom: 0, left: 0 }, 'tablet');
+  await windowsCheck(browser, 1440, 900, { top: 0, right: 0, bottom: 0, left: 0 }, 'desktop');
 } finally {
   await browser.close();
 }
