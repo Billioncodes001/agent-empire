@@ -122,6 +122,20 @@ public final class AssetPolicy {
      * page script (the game's scripts are modules, which run after this classic, blocking script).
      * Returns null when the document has no <head> tag (the caller then refuses to serve it).
      */
+    /**
+     * Content-Security-Policy of every HTML document GameAssets serves (the only HTML path). frame-src 'self' keeps
+     * other origins' documents out of the game, so no foreign frame shares the window where window.empireAndroid lives.
+     */
+    public static final String HTML_CSP = "frame-src 'self'; child-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'";
+
+    /** Headers added to an HTML document's response (besides the shared nosniff headers). */
+    public static java.util.Map<String, String> htmlHeaders() {
+        java.util.Map<String, String> headers = new java.util.LinkedHashMap<>();
+        headers.put("Cache-Control", "no-cache");
+        headers.put("Content-Security-Policy", HTML_CSP);
+        return headers;
+    }
+
     public static String injectConfigScript(String html) {
         String lower = html.toLowerCase(Locale.ROOT);
         int head = lower.indexOf("<head");

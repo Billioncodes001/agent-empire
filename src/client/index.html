@@ -14,6 +14,8 @@
     <!-- Critical splash styles: painted before the game bundle downloads. -->
     <style>
       html, body { background: #0f1b21; }
+      /* No WebKit/Chromium text inflation: landscape iOS otherwise enlarges paragraph text unevenly (setup steps). */
+      html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
       #splash { position: fixed; inset: 0; z-index: 2000; display: grid; place-items: center; overflow: hidden;
         padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
         background: radial-gradient(120% 90% at 50% 110%, #1d3a44 0, #15232a 45%, #0c161b 100%); color: #e4e8e7;

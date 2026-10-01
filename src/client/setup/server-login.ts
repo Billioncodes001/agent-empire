@@ -32,8 +32,12 @@ export class LoginFailure extends Error {
 
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
 
-/** "city.example.com" means https. Plain http is accepted only for this device's loopback address. */
-export function parseServerAddress(input: string): { ok: true; host: string } | { ok: false; error: LoginError } {
+/**
+ * "city.example.com" means https. Plain http is accepted only for this device's loopback address, and in the Android
+ * app also for 10.0.2.2, the emulator's alias for the host computer's loopback. The shell stays the authority: a
+ * release Android build refuses cleartext and won't store that address, a debug build allows it for local testing.
+ */
+export function parseServerAddress(input: string, opts: { androidEmulator?: boolean } = {}): { ok: true; host: string } | { ok: false; error: LoginError } {
   let text = input.trim();
   if (!text) return { ok: false, error: 'empty_host' };
   if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) text = `https://${text}`;
@@ -46,7 +50,7 @@ export function parseServerAddress(input: string): { ok: true; host: string } | 
   if (url.protocol !== 'https:' && url.protocol !== 'http:') return { ok: false, error: 'bad_host' };
   if (url.username || url.password || url.search || url.hash || (url.pathname !== '/' && url.pathname !== '')) return { ok: false, error: 'has_path' };
   if (!url.hostname || !/^[a-z0-9.[\]:-]+$/i.test(url.hostname)) return { ok: false, error: 'bad_host' };
-  if (url.protocol === 'http:' && !LOOPBACK.has(url.hostname)) return { ok: false, error: 'https_required' };
+  if (url.protocol === 'http:' && !LOOPBACK.has(url.hostname) && !(opts.androidEmulator && url.hostname === '10.0.2.2')) return { ok: false, error: 'https_required' };
   const host = normaliseHost(url.origin);
   return host ? { ok: true, host } : { ok: false, error: 'bad_host' };
 }
@@ -71,11 +75,11 @@ async function send(fetchImpl: typeof fetch, url: string, init: RequestInit, tim
 
 /** Probes GET /api/health, then signs this device in. Throws LoginFailure with a plain message. */
 export async function signInToServer(
-  opts: { host: string; password: string; deviceName: string },
+  opts: { host: string; password: string; deviceName: string; androidEmulator?: boolean },
   fetchImpl: typeof fetch = fetch,
   timeoutMs = 15_000,
 ): Promise<ServerSession> {
-  const parsed = parseServerAddress(opts.host);
+  const parsed = parseServerAddress(opts.host, { androidEmulator: opts.androidEmulator });
   if (!parsed.ok) throw new LoginFailure(parsed.error);
   if (!opts.password) throw new LoginFailure('empty_password');
   const host = parsed.host;

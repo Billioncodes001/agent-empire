@@ -127,6 +127,9 @@ test('launch (web): a page served by a signed-in server is the game; signed out 
   assert.deepEqual(await decideLaunch(env({ probe: async () => 'signed-out' })), { kind: 'redirect', url: '/login' });
   assert.deepEqual(await decideLaunch(env({ probe: async () => { throw new Error('x'); } })), { kind: 'setup', step: 'welcome' });
   assert.deepEqual(await decideLaunch(env({ store: { mode: 'server', 'server.host': 'https://city.example' } })), { kind: 'redirect', url: 'https://city.example/' });
+  for (const stored of ['javascript:alert(1)//', 'https://city.example/phish?x=1', 'https://user:pw@city.example', 'data:text/html,x', '//evil.example', 'not a url'])
+    assert.deepEqual(await decideLaunch(env({ store: { mode: 'server', 'server.host': stored } })), { kind: 'setup', step: 'welcome' }, `stored host refused: ${stored}`);
+  assert.deepEqual(await decideLaunch(env({ store: { mode: 'server', 'server.host': 'https://City.Example:443' } })), { kind: 'redirect', url: 'https://city.example/' }, 'normalised before use');
   const failingStore = env({ get: async () => { throw new Error('storage blocked'); } });
   assert.deepEqual(await decideLaunch(failingStore), { kind: 'setup', step: 'welcome' });
 });

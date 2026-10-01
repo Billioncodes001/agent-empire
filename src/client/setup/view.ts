@@ -12,7 +12,8 @@ import {
 import { defaultDeviceName, LoginFailure, parseServerAddress, revokeDevice, signInToServer, type ServerSession } from './server-login';
 import { GitHubClient, GitHubError, type RepoListing } from './github';
 import { CloudSetupError, createEmpire, CREATE_STEPS, githubCloudSetup, pendingWorkflow, readiness, sodiumSealer, type CreateStep, type StateRepo, type WorkflowSource } from './cloud-setup';
-import { GITHUB_SCOPES, GITHUB_TOKEN_URL, PROVIDER_KEY_URLS } from './config';
+import { GITHUB_NEW_STATE_REPO_URL, GITHUB_SCOPES, GITHUB_TOKEN_URL, PROVIDER_KEY_URLS } from './config';
+import { dismissKeyboard, isTouchDevice, trackKeyboard } from '../keyboard';
 
 // ---- Tiny DOM helper --------------------------------------------------------------------------------
 
@@ -24,6 +25,9 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Record<string,
     if (k === 'class') node.className = String(v);
     else if (k === 'text') node.textContent = String(v);
     else if (k === 'html') node.innerHTML = String(v); // static, trusted markup only (icons)
+    // Field values are set as the live property, never as an attribute: a typed API key must not appear in the DOM
+    // markup (outerHTML, serialisers, attribute selectors).
+    else if (k === 'value' && (node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement)) node.value = String(v);
     else if (k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2), v as EventListener);
     else if (k in node && typeof v !== 'string') (node as unknown as Record<string, unknown>)[k] = v;
     else node.setAttribute(k, v === true ? '' : String(v));
@@ -133,6 +137,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
   const stage = el('main', { class: 'su-stage' });
   root.append(skyline(lite), el('div', { class: 'su-shell' }, rail, stage), live);
   document.body.append(root);
+  trackKeyboard();
   const fetchImpl = deps.fetchImpl ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
   const workflow = deps.workflow ?? pendingWorkflow;
 
@@ -231,7 +236,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
   };
   /** Keyboard users go straight back to the field; on touch the on-screen keyboard is dismissed so the error shows. */
   const focusField = (input: HTMLInputElement) => {
-    if (matchMedia('(pointer: coarse)').matches) (document.activeElement as HTMLElement | null)?.blur();
+    if (isTouchDevice()) dismissKeyboard();
     else input.focus();
   };
   const external = (label: string, url: string) =>
@@ -253,15 +258,21 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
     refresh = () => {};
     renderRail();
     const view = STEP_VIEWS[state.step]();
-    const old = stage.firstElementChild as HTMLElement | null;
     const forward = from === null || order(state.step) >= order(from);
     view.panel.classList.add('su-enter', forward ? 'from-right' : 'from-left');
-    if (old && !reduced) {
+    // Every panel still shown leaves, not just the first child: two quick steps (Back, then a card within the
+    // 260 ms transition) would otherwise leave the middle panel on screen over the new one.
+    for (const old of [...stage.children] as HTMLElement[]) {
+      if (old.classList.contains('su-leave')) continue;
+      if (reduced) {
+        old.remove();
+        continue;
+      }
       old.classList.add('su-leave', forward ? 'to-left' : 'to-right');
       old.setAttribute('aria-hidden', 'true');
       old.inert = true;
       setTimeout(() => old.remove(), 260);
-    } else old?.remove();
+    }
     stage.append(view.panel);
     requestAnimationFrame(() => view.panel.classList.remove('su-enter'));
     const path = progress(state);
@@ -349,7 +360,8 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
       if (!app) form.append(el('p', { class: 'su-note', text: 'Your server’s own sign-in page opens next. This browser page doesn’t see your password.' }));
       async function submit() {
         if (busy) return;
-        const parsed = parseServerAddress(address.value);
+        const androidEmulator = deps.shell?.platform === 'android';
+        const parsed = parseServerAddress(address.value, { androidEmulator });
         if (!parsed.ok) {
           showError(errors, new LoginFailure(parsed.error).message);
           focusField(address);
@@ -372,7 +384,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
         setBusy(action, true, 'Checking the server…');
         let session: ServerSession;
         try {
-          session = await signInToServer({ host: parsed.host, password: password.value, deviceName: deps.shell?.deviceName ?? defaultDeviceName(deps.shell?.platform ?? null, navigator.userAgent) }, fetchImpl);
+          session = await signInToServer({ host: parsed.host, password: password.value, deviceName: deps.shell?.deviceName ?? defaultDeviceName(deps.shell?.platform ?? null, navigator.userAgent), androidEmulator }, fetchImpl);
         } catch (err) {
           setBusy(action, false, 'Sign in');
           showError(errors, err instanceof LoginFailure ? err.message : 'Couldn’t sign in. Try again.');
@@ -394,6 +406,8 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
           showError(errors, 'Signed in, but this device couldn’t store the sign-in securely, so it was removed again. Nothing was saved insecurely.');
           return;
         }
+        // The game takes over: close the on-screen keyboard so it doesn't stay up over the loading screen.
+        dismissKeyboard();
         action.querySelector('.su-btn-label')!.textContent = 'Connected';
         action.classList.add('is-done');
         live.textContent = `Connected to ${session.host}. Opening your Empire.`;
@@ -508,8 +522,9 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
           },
         },
           el('ol', { class: 'su-howto' },
-            el('li', {}, external('Create a fine-grained token on GitHub', GITHUB_TOKEN_URL), '. Repository access: All repositories.'),
-            el('li', { text: 'Repository permissions, Read and write: Administration (creates your private state repository), Contents, Secrets, Workflows, Actions and Pull requests. Metadata: Read.' }),
+            el('li', {}, external('Create a private repository named agent-empire-state', GITHUB_NEW_STATE_REPO_URL), ' in your account (your Empire’s home). Creating it yourself means the token needs no Administration permission.'),
+            el('li', {}, external('Create a fine-grained token', GITHUB_TOKEN_URL), '. Expiration: 30 days or less (link again when it expires). Repository access: Only select repositories, that is agent-empire-state and the projects you want to use.'),
+            el('li', { text: 'Repository permissions, Read and write: Contents, Secrets, Workflows, Actions and Pull requests. Metadata: Read. Nothing else.' }),
             el('li', { text: 'Paste it here.' }),
           ),
           el('div', { class: 'su-row' }, field('GitHub token', input), check),

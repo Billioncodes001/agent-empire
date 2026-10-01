@@ -50,13 +50,15 @@ final class NativeBridge {
 
     private final Host host;
     private final SecureStore store;
+    private final boolean debuggable;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private GitHubDeviceFlow flow;
 
-    NativeBridge(Host host, SecureStore store) {
+    NativeBridge(Host host, SecureStore store, boolean debuggable) {
         this.host = host;
         this.store = store;
+        this.debuggable = debuggable;
     }
 
     /** Called by the WebView on its JavaBridge thread, from any frame; everything is re-checked on the UI thread. */
@@ -112,7 +114,10 @@ final class NativeBridge {
                 String key = params.optString("key", null);
                 Object value = params.opt("value");
                 if (!BridgePolicy.isKey(key)) { reject(id, "Key not allowed"); return; }
-                if (!(value instanceof String) || !BridgePolicy.isValue((String) value)) { reject(id, "Value must be a string of at most 8192 characters"); return; }
+                if (!(value instanceof String)) { reject(id, "That value can't be stored."); return; }
+                // Same per-key rules as iOS (mode, exact server origin, token/id/login/repo shapes).
+                String invalid = BridgePolicy.invalidValue(key, (String) value, debuggable);
+                if (invalid != null) { reject(id, invalid); return; }
                 io.execute(() -> {
                     try {
                         store.set(key, (String) value);

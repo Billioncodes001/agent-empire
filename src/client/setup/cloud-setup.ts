@@ -106,10 +106,15 @@ export function setupIntent(plan: CloudPlan, now: Date): Record<string, unknown>
 export function githubCloudSetup(gh: GitHubClient, sealer: Sealer, workflow: WorkflowSource, now: () => Date = () => new Date()): CloudSetup {
   return {
     async createStateRepo(login) {
-      const created = await gh.createPrivateRepo(STATE_REPO_NAME, 'Agent Empire state. Written by the Empire coordinator; keep this repository private.');
-      if (created) return { owner: created.owner, name: created.name, created: true };
-      // The name is taken: reuse it only when it is this account's own private repository (a resumed setup).
-      const existing: RepoListing | null = await gh.getRepo(login, STATE_REPO_NAME);
+      // An existing repository is looked up first: a resumed setup, or one the user created on GitHub so that a
+      // fine-grained token limited to selected repositories (no Administration permission) is enough.
+      let existing: RepoListing | null = await gh.getRepo(login, STATE_REPO_NAME);
+      if (!existing) {
+        const created = await gh.createPrivateRepo(STATE_REPO_NAME, 'Agent Empire state. Written by the Empire coordinator; keep this repository private.');
+        if (created) return { owner: created.owner, name: created.name, created: true };
+        existing = await gh.getRepo(login, STATE_REPO_NAME); // created meanwhile (422): check it like any existing one
+      }
+      // Reuse it only when it is this account's own private repository.
       if (existing && existing.private && existing.owner.toLowerCase() === login.toLowerCase()) return { owner: existing.owner, name: existing.name, created: false };
       throw new CloudSetupError(
         existing && !existing.private

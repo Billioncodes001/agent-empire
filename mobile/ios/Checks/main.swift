@@ -106,5 +106,24 @@ check(!cloudCfg.contains("token") && cloudCfg.contains(#""mode":"cloud""#) && cl
 let firstRun = BridgeProtocol.configScript(deviceName: "iPhone", mode: nil, host: nil, token: nil, deviceId: nil, signedOut: nil)
 check(firstRun.contains(#""platform":"ios""#) && !firstRun.contains("mode"), "first launch injects only the platform")
 
+// Security review fixes (M1, L4, L5)
+check(BridgeProtocol.sessionKeys.map(\.rawValue) == ["server.token", "server.deviceId", "github.token", "github.login"], "sign-out clears every credential (same set as Android SESSION_KEYS)")
+check(!BridgeProtocol.sessionKeys.contains(.mode) && !BridgeProtocol.sessionKeys.contains(.serverHost) && !BridgeProtocol.sessionKeys.contains(.stateRepo), "sign-out keeps mode, server address and state repository")
+check(BridgeProtocol.isGitHubVerificationURL(URL(string: "https://github.com/login/device")!), "device flow: github.com verification page accepted")
+check(BridgeProtocol.isGitHubVerificationURL(URL(string: "https://www.github.com/login/device")!), "device flow: a github.com subdomain accepted")
+check(!BridgeProtocol.isGitHubVerificationURL(URL(string: "https://evilgithub.com/login/device")!), "device flow: look-alike host evilgithub.com refused")
+check(!BridgeProtocol.isGitHubVerificationURL(URL(string: "https://github.com.evil.io/login/device")!), "device flow: github.com prefix on another host refused")
+check(!BridgeProtocol.isGitHubVerificationURL(URL(string: "http://github.com/login/device")!), "device flow: http verification page refused")
+do {
+    var gate = BridgeProtocol.GestureGate()
+    let t0 = Date()
+    check(!gate.consume(at: t0), "openExternal: no touch, no direct open")
+    gate.touched(at: t0)
+    check(gate.consume(at: t0.addingTimeInterval(1)), "openExternal: a touch allows one direct open")
+    check(!gate.consume(at: t0.addingTimeInterval(1.5)), "openExternal: the same touch can't open a second page")
+    gate.touched(at: t0)
+    check(!gate.consume(at: t0.addingTimeInterval(6)), "openExternal: a touch older than 5 s doesn't count")
+}
+
 print(failures == 0 ? "All checks passed" : "\(failures) check(s) failed")
 exit(failures == 0 ? 0 : 1)

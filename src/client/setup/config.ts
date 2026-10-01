@@ -18,6 +18,8 @@ export function githubClientId(doc: Pick<Document, 'querySelector'> | null = typ
 
 /** Where a fine-grained token is created (web fallback, or when sign-in isn't configured). */
 export const GITHUB_TOKEN_URL = 'https://github.com/settings/personal-access-tokens/new';
+/** GitHub's new-repository page, prefilled: a private agent-empire-state (so a token needs no Administration permission). */
+export const GITHUB_NEW_STATE_REPO_URL = 'https://github.com/new?name=agent-empire-state&visibility=private&description=Agent+Empire+state';
 export const PROVIDER_KEY_URLS = {
   anthropic: 'https://console.anthropic.com/settings/keys',
   openai: 'https://platform.openai.com/api-keys',

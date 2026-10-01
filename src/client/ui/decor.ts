@@ -1,6 +1,7 @@
 import { FRAMES, checkImageUrl, type Decoration } from '../../shared/decor';
 import { store } from '../state';
 import { holdPicture, loadPicture, type Picture } from '../world/gallery';
+import { autoFocus } from '../keyboard';
 import { h, openModal, timeAgo } from './dom';
 import { confirmDialog } from './prompt';
 
@@ -158,7 +159,7 @@ export function openHangDialog(opts: { initial?: Decoration; onDone(choice: Hang
     finish();
   });
   if (urlIn.value) void load();
-  setTimeout(() => (init ? titleIn : urlIn).focus(), 30);
+  setTimeout(() => autoFocus(init ? titleIn : urlIn, form), 30);
 }
 
 /** A closer look at a picture on the wall, with who hung it and ways to move, edit or take it down. */

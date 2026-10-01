@@ -58,6 +58,15 @@ test('bridge: the device flow returns {token, login} and rejects malformed answe
   assert.deepEqual(sent[0].params, { clientId: 'Ov23li3G3aR4rgZ0lCJ3', scopes: ['repo', 'workflow'] });
   const bad = iosWindow((req, win) => receiver(win).resolve(req.id, { token: '' }));
   await assert.rejects(new NativeBridge(bad.w).githubDeviceFlow({ clientId: 'abc', scopes: ['repo'] }), (e: unknown) => e instanceof BridgeError && e.code === 'invalid');
+  const badLogin = iosWindow((req, win) => receiver(win).resolve(req.id, { token: 'gho_abc', login: 42 }));
+  await assert.rejects(new NativeBridge(badLogin.w).githubDeviceFlow({ clientId: 'abc', scopes: ['repo'] }), (e: unknown) => e instanceof BridgeError && e.code === 'invalid');
+});
+
+test('bridge: a device flow without a login (GitHub /user failed natively) still signs in; the page reads the login itself', async () => {
+  const { w } = iosWindow((req, win) => setTimeout(() => receiver(win).resolve(req.id, { token: 'gho_abc', login: null }), 5));
+  assert.deepEqual(await new NativeBridge(w).githubDeviceFlow({ clientId: 'Ov23li3G3aR4rgZ0lCJ3', scopes: ['repo'] }), { token: 'gho_abc', login: null });
+  const missing = iosWindow((req, win) => setTimeout(() => receiver(win).resolve(req.id, { token: 'gho_abc' }), 5));
+  assert.deepEqual(await new NativeBridge(missing.w).githubDeviceFlow({ clientId: 'Ov23li3G3aR4rgZ0lCJ3', scopes: ['repo'] }), { token: 'gho_abc', login: null });
 });
 
 test('bridge: Android posts one JSON string to empireAndroid; desktop posts to empireDesktop; neither without a platform', async () => {

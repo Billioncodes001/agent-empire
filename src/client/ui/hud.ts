@@ -152,7 +152,7 @@ export function openHelp(keys: KeyBindings = DEFAULT_KEYS) {
   ];
   const close = h('button.btn.close', { 'aria-label': 'Close' }, '✕');
   const el = h(
-    'div.modal',
+    'div.modal.game-help.ae-dark',
     { role: 'dialog', 'aria-label': 'Controls' },
     h('header', {}, h('h2', {}, '🎮 Controls'), close),
     h('div.body', {}, h('div.help-grid', {}, ...rows.flatMap(([k, v]) => [h('span.key', {}, k), h('span', {}, v)]))),

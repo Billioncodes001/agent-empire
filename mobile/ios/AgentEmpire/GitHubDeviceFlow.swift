@@ -60,7 +60,7 @@ enum GitHubDeviceFlow {
         let obj = try await json(form(URL(string: "https://github.com/login/device/code")!, ["client_id": clientId, "scope": scopes.joined(separator: " ")]))
         if let error = obj["error"] as? String { throw error == "device_flow_disabled" ? Failure.disabled : Failure.github(error) }
         guard let deviceCode = obj["device_code"] as? String, let userCode = obj["user_code"] as? String,
-              let uri = obj["verification_uri"] as? String, let url = URL(string: uri), url.scheme == "https", url.host?.hasSuffix("github.com") == true
+              let uri = obj["verification_uri"] as? String, let url = URL(string: uri), BridgeProtocol.isGitHubVerificationURL(url)
         else { throw Failure.badResponse }
         let expires = (obj["expires_in"] as? Double) ?? 900
         let interval = max(5, (obj["interval"] as? Double) ?? 5)

@@ -3,6 +3,7 @@
  * the game bundle (main.ts, three.js, models) is imported only once the Empire has somewhere to run.
  */
 import { appConfig, setSessionConfig } from './endpoint';
+import { dismissKeyboard } from './keyboard';
 import { native, shellInfo } from './native';
 import { decideLaunch, probeOwnOrigin, type LaunchDecision } from './setup/launch';
 
@@ -39,6 +40,7 @@ async function showSetup(decision: Exclude<LaunchDecision, { kind: 'game' } | { 
     shell,
     clientId: githubClientId(),
     onServerSession: async (session) => {
+      dismissKeyboard();
       setSessionConfig({ host: session.host, token: session.token, deviceId: session.deviceId, platform: shell?.platform ?? 'ios' });
       document.documentElement.dataset.boot = 'loading';
       startGame();
