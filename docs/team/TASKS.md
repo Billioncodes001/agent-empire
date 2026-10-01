@@ -44,14 +44,14 @@ Plan: [OFFICE_LIFE_AND_MOBILE_PLAN.md](OFFICE_LIFE_AND_MOBILE_PLAN.md).
 | MOBILE-03 | Phone HUD and camera framing | Reviewed and accepted | One-row top bar, compact minimap, safe-area insets |
 | MOBILE-04 | Native launch screens (superseded by APP-03/04) | Superseded | iOS simulator build of the old companion succeeded on Xcode 27 / iOS 27. The user chose bundled game apps |
 | APP-01 | Server device tokens, bearer auth, CORS for app origins | Reviewed and accepted | [Report](reports/app-device-auth.md). Security review accepted after fixes c791b97 |
-| APP-02 | Client configurable server base and token | Planned | APP-01 |
-| APP-03 | iOS bundled game app (native launch/connect, Keychain, scheme handler, landscape full-screen) | Planned | APP-01/02, MOBILE-01/02 |
-| APP-04 | Android bundled game app | In progress | APP-01/02, MOBILE-01/02. First screen becomes the CLOUD-03 mode choice |
-| CLOUD-01 | State repository schema and headless coordinator tick | Planned | [Cloud mode plan](CLOUD_MODE_PLAN.md). The user chose GitHub-hosted cloud mode (2026-09-30) |
-| CLOUD-02 | Actions coordinator workflow and installer | Planned | CLOUD-01 |
-| CLOUD-03 | First-launch setup: cloud accounts or own server | Planned | Replaces the APP-03 server-address-first connect screen |
-| CLOUD-04 | Client cloud adapter (state repo snapshots and intents) | Planned | CLOUD-01, CLOUD-03 |
-| CLOUD-05 | In-app shut down and start | Planned | CLOUD-02 |
+| APP-02 | Client configurable server base and token | Reviewed and accepted | [iOS report](reports/ios-app.md). A single endpoint helper adds the bearer token only for the signed-in server; WebSocket subprotocol token |
+| APP-03 | iOS bundled game app (launch, bridge, Keychain, scheme handler, landscape full-screen) | Reviewed and accepted | [Report](reports/ios-app.md), [polish](reports/mobile-polish.md). iPhone 18 Pro simulator walk with real taps. Open: the first tap on the founder name field opens no keyboard on the simulator; check on a real device. No device, TestFlight or signing yet |
+| APP-04 | Android bundled game app | Reviewed and accepted | [Report](reports/android-app.md), [polish](reports/mobile-polish.md). Pixel 7 / API 35 emulator walk with real taps. Not run: API < 30, physical device, Play signing |
+| CLOUD-01 | State repository schema and headless coordinator tick | Reviewed and accepted | [Report](reports/cloud-coordinator.md). Three money-safety review rounds. Fake GitHub/Anthropic only; first real run follows the report's checklist with owner approval |
+| CLOUD-02 | Actions coordinator workflow and installer | Core accepted; installer wiring pending | Workflow template (30-minute default, pinned action SHAs verified) and installer core with a sealed-box seam. Still to do: the setup's "Create my Empire" calls the installer and ships the coordinator bundle |
+| CLOUD-03 | First-launch setup: cloud accounts or own server | Reviewed and accepted | [Report](reports/first-launch-setup.md). Mode choice, the server path end to end, and the cloud path through GitHub device sign-in (client id Ov23li3G3aR4rgZ0lCJ3), repositories, keys (libsodium sealed box), limits and review |
+| CLOUD-04 | Client cloud adapter (state repo snapshots and intents) | Planned | CLOUD-01, CLOUD-03. Intent IDs must be UUIDv7 (review note) |
+| CLOUD-05 | In-app shut down and start | Core accepted; UI pending | Tick semantics and REST enable/disable in CLOUD-01/02. The in-game control comes with CLOUD-04 |
 | CLOUD-06 | OpenAI Agents adapter | Planned | — |
 | APP-05 | Desktop bundled remote mode | Planned | APP-01/02 |
 | LIFE-01 | Jump and landing animation, locomotion polish | Reviewed and accepted | [Report](reports/office-life.md). No idle clip in mid-air |
