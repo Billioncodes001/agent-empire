@@ -13,6 +13,7 @@ import { defaultDeviceName, LoginFailure, parseServerAddress, revokeDevice, sign
 import { GitHubClient, GitHubError, type RepoListing } from './github';
 import { CloudSetupError, createEmpire, CREATE_STEPS, githubCloudSetup, pendingWorkflow, readiness, sodiumSealer, type CreateStep, type StateRepo, type WorkflowSource } from './cloud-setup';
 import { GITHUB_SCOPES, GITHUB_TOKEN_URL, PROVIDER_KEY_URLS } from './config';
+import { dismissKeyboard, isTouchDevice, trackKeyboard } from '../keyboard';
 
 // ---- Tiny DOM helper --------------------------------------------------------------------------------
 
@@ -133,6 +134,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
   const stage = el('main', { class: 'su-stage' });
   root.append(skyline(lite), el('div', { class: 'su-shell' }, rail, stage), live);
   document.body.append(root);
+  trackKeyboard();
   const fetchImpl = deps.fetchImpl ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
   const workflow = deps.workflow ?? pendingWorkflow;
 
@@ -231,7 +233,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
   };
   /** Keyboard users go straight back to the field; on touch the on-screen keyboard is dismissed so the error shows. */
   const focusField = (input: HTMLInputElement) => {
-    if (matchMedia('(pointer: coarse)').matches) (document.activeElement as HTMLElement | null)?.blur();
+    if (isTouchDevice()) dismissKeyboard();
     else input.focus();
   };
   const external = (label: string, url: string) =>
@@ -253,15 +255,21 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
     refresh = () => {};
     renderRail();
     const view = STEP_VIEWS[state.step]();
-    const old = stage.firstElementChild as HTMLElement | null;
     const forward = from === null || order(state.step) >= order(from);
     view.panel.classList.add('su-enter', forward ? 'from-right' : 'from-left');
-    if (old && !reduced) {
+    // Every panel still shown leaves, not just the first child: two quick steps (Back, then a card within the
+    // 260 ms transition) would otherwise leave the middle panel on screen over the new one.
+    for (const old of [...stage.children] as HTMLElement[]) {
+      if (old.classList.contains('su-leave')) continue;
+      if (reduced) {
+        old.remove();
+        continue;
+      }
       old.classList.add('su-leave', forward ? 'to-left' : 'to-right');
       old.setAttribute('aria-hidden', 'true');
       old.inert = true;
       setTimeout(() => old.remove(), 260);
-    } else old?.remove();
+    }
     stage.append(view.panel);
     requestAnimationFrame(() => view.panel.classList.remove('su-enter'));
     const path = progress(state);
@@ -394,6 +402,8 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
           showError(errors, 'Signed in, but this device couldn’t store the sign-in securely, so it was removed again. Nothing was saved insecurely.');
           return;
         }
+        // The game takes over: close the on-screen keyboard so it doesn't stay up over the loading screen.
+        dismissKeyboard();
         action.querySelector('.su-btn-label')!.textContent = 'Connected';
         action.classList.add('is-done');
         live.textContent = `Connected to ${session.host}. Opening your Empire.`;
