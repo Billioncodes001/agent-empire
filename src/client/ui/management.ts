@@ -3,6 +3,7 @@ import { store } from '../state';
 import type { Net } from '../net';
 import { h, openModal } from './dom';
 import { fmtCost } from './usage';
+import { cloudManagerView, cloudStatus, jobCounts } from '../cloud/map';
 import { ageLabel, chiefView, delegationLabel, managerView, monitorView, unknownView, workforceView, type StatusView } from './status';
 
 type Tab = 'overview' | 'sectors' | 'accounts' | 'reports';
@@ -100,7 +101,7 @@ export function openManagement(net: Net, actions: ManagementActions, selected?: 
       const sector = store.empire.sectors.find((s) => s.id === site.id);
       return sector ? managerView(sector, store.queue.tasks, store.workers, ev) : null;
     });
-    const next = JSON.stringify([tab, selected, rest, sup, ev.fresh, ev.reason, managers, store.usage, [...store.workers.keys()]]);
+    const next = JSON.stringify([tab, selected, rest, sup, ev.fresh, ev.reason, managers, store.usage, [...store.workers.keys()], store.cloud && [store.cloud.snapshot?.sha, store.cloud.source, store.cloud.error?.code, cloudAge()]]);
     // Freshness ticks only touch the header text; the panel is rebuilt when what it shows changes.
     if (next === signature) return;
     signature = next;
@@ -139,7 +140,7 @@ export function openManagement(net: Net, actions: ManagementActions, selected?: 
     }, 0);
     const usage = store.usage;
     return [
-      h(
+      store.cloud ? cloudSupervision() : h(
         'section.empire-section',
         { 'aria-labelledby': 'empire-supervision' },
         h('h3', { id: 'empire-supervision' }, 'Supervision'),
@@ -201,9 +202,48 @@ export function openManagement(net: Net, actions: ManagementActions, selected?: 
           metric('Today', fmtCost(usage.today.cost), usage.budget !== undefined ? `of ${fmtCost(usage.budget)} budget` : undefined),
           metric('All time', fmtCost(usage.total.cost)),
         ),
-        h('p.setting-note', {}, 'Estimated from worker sessions and billed by your provider. Separate from simulation credits.'),
+        h('p.setting-note', {}, store.cloud ? 'Provider-reported list cost recorded by your cloud coordinator; “All time” covers its 90-day ledger. Billed by your provider. Separate from simulation credits.' : 'Estimated from worker sessions and billed by your provider. Separate from simulation credits.'),
       ),
     ];
+  }
+
+  /** Cloud mode: the age of the snapshot everything here comes from. */
+  function cloudAge() {
+    const c = store.cloud;
+    return c ? cloudStatus({ snapshot: c.snapshot, source: c.source, checkedAt: c.checkedAt, error: c.error, now: Date.now() }).age || 'unknown' : '';
+  }
+
+  /** Cloud mode replaces live supervision with what the coordinator last recorded, and says how old it is. */
+  function cloudSupervision(): HTMLElement {
+    const c = store.cloud!;
+    const view = cloudStatus({ snapshot: c.snapshot, source: c.source, checkedAt: c.checkedAt, error: c.error, now: Date.now() });
+    const state = store.empire;
+    const hq = state.sectors.find((s) => s.id === 'hq');
+    const counts = c.snapshot ? jobCounts(c.snapshot.state) : null;
+    const requested = state.delegated;
+    return h(
+      'section.empire-section',
+      { 'aria-labelledby': 'empire-supervision' },
+      h('h3', { id: 'empire-supervision' }, 'Supervision ', h('span.empire-tag', {}, 'cloud snapshot')),
+      h(
+        'div.status-cards',
+        {},
+        statusCard('Cloud coordinator', view, button('cloud-open', 'Open Cloud Empire', actions.openQueue)),
+        statusCard('Chief of staff · HQ manager', hq ? cloudManagerView(hq, view.age || 'unknown') : { tone: 'unknown', label: 'Status unknown', detail: 'Not recorded.' }),
+        statusCard(
+          'Oversight preference',
+          { tone: 'idle', label: delegationLabel(requested), detail: 'A preference only. Paid jobs and reviews always need your confirmation.' },
+          button('delegate', requested ? 'Resume CEO oversight' : 'Request delegation', () => send({ kind: 'delegate', enabled: !requested })),
+        ),
+      ),
+      h(
+        'div.empire-metrics',
+        { 'aria-label': 'Cloud jobs as of the snapshot' },
+        metric('Cloud jobs active', counts ? String(counts.active) : '—', view.age ? `as of ${view.age} ago` : undefined),
+        metric('Need you', counts ? String(counts.attention + counts.review) : '—'),
+        metric('Queued jobs', counts ? String(counts.queued) : '—'),
+      ),
+    );
   }
 
   function sectors(): HTMLElement[] {
@@ -214,7 +254,7 @@ export function openManagement(net: Net, actions: ManagementActions, selected?: 
       const r = hourlyRates(sector),
         m = sector.manager;
       const act = (kind: 'build' | 'hire' | 'buy-land' | 'upgrade' | 'retry-manager') => send({ kind, site: site.id });
-      const view = site.id === 'hq' ? chiefView(state.supervision, ev) : managerView(sector, store.queue.tasks, store.workers, ev);
+      const view = store.cloud ? cloudManagerView(sector, cloudAge()) : site.id === 'hq' ? chiefView(state.supervision, ev) : managerView(sector, store.queue.tasks, store.workers, ev);
       const blockedWorker = ev.fresh && m?.status === 'needs_input' && m.workerId && store.workers.has(m.workerId) ? m.workerId : null;
       const titleId = `empire-site-${site.id}`;
       return h(

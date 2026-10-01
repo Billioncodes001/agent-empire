@@ -162,6 +162,9 @@
 
 /* ---- Mode cards --------------------------------------------------------------------------------------- */
 .su-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: clamp(10px, 1.8vw, 18px); }
+.su-cards.su-cards-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.su-card-local { background: linear-gradient(170deg, rgba(36, 50, 66, .72), rgba(18, 24, 30, .9)); }
+.su-card.is-busy { opacity: .7; cursor: progress; }
 .su-card { --mx: 50%; --my: 0%; position: relative; overflow: hidden; text-align: left; font: inherit; color: var(--ink); cursor: pointer;
   display: flex; flex-direction: column; gap: 10px; padding: clamp(14px, 2.4vh, 22px) clamp(14px, 1.8vw, 22px); border-radius: 16px; min-height: 44px;
   background: linear-gradient(170deg, rgba(34, 60, 68, .8), rgba(14, 28, 34, .85)); border: 1px solid var(--line);
@@ -222,6 +225,15 @@
 .su-money-wrap { position: relative; display: block; }
 .su-money-sign { position: absolute; left: 14px; top: 50%; translate: 0 -50%; color: var(--faint); }
 .su-money { padding-left: 28px; font-variant-numeric: tabular-nums; }
+.su-schedule { margin: 14px 0 12px; }
+.su-segment { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 2px; }
+.su-seg { position: relative; display: inline-flex; cursor: pointer; }
+.su-seg input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+.su-seg span { min-height: 36px; display: inline-flex; align-items: center; padding: 0 14px; border: 1px solid var(--line); border-radius: 999px; font-size: 13px; font-weight: 600; color: var(--muted); transition: background .2s, border-color .2s, color .2s; }
+.su-seg input:checked + span { color: var(--accent-2); background: rgba(155, 209, 186, .16); border-color: var(--accent); }
+.su-seg input:focus-visible + span { outline: 2px solid var(--focus); outline-offset: 2px; }
+.su-estimate { margin-top: 6px; }
+.su-estimate.is-over { color: var(--warn); }
 .su-toggle { display: flex; align-items: center; gap: 14px; padding: 12px 14px; border-radius: 14px; border: 1px solid rgba(155, 209, 186, .14); cursor: pointer; }
 .su-toggle-text { display: flex; flex-direction: column; font-size: 13px; color: var(--muted); }
 .su-toggle-text strong { color: var(--ink); font-size: 15px; }
@@ -297,7 +309,7 @@
   .su-rail { flex-direction: row; align-items: center; padding: 0; gap: 12px; }
   .su-steps { flex-direction: row; gap: 4px; }
   .su-steps::before, .su-step-label, .su-rail-note, .su-word { display: none; }
-  .su-cards, .su-limits { grid-template-columns: minmax(0, 1fr); }
+  .su-cards, .su-cards.su-cards-3, .su-limits { grid-template-columns: minmax(0, 1fr); }
   .su-review { grid-template-columns: minmax(0, 1fr); }
   .su-review dt { padding-bottom: 0; border-bottom: 0; }
 }
@@ -327,3 +339,6 @@ html.ae-kb .su-panel { height: 100%; }
 }
 .su-lite .su-grid { display: none; }
 .su-lite .su-panel, .su-lite .su-card { backdrop-filter: none; -webkit-backdrop-filter: none; background: #13252c; }
+
+/* The centered shells (cloud unlock) have no rail at any size. */
+.su-shell.su-shell-center { grid-template-columns: minmax(0, 1fr); }

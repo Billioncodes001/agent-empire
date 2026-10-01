@@ -1,6 +1,7 @@
 import { DEFAULT_KEYS, sanitizeKeys, type KeyBindings } from './controls';
 import { initialEmpire } from '../shared/empire';
-import { evidence } from './ui/status';
+import { cloudEvidence, evidence } from './ui/status';
+import type { CloudInfo } from './cloud/types';
 import { parseContinuity } from './ui/continuity';
 import type { ContinuityStatus } from '../shared/continuity';
 import type { ChatLine, GhIssue, GhPull, GhState, PeerInfo, ProjectInfo, QueueState, QueueTask, ServerMsg, ServicesState, TeamState, UpgradeState, Usage, UsageState, WorkerInfo } from '../shared/protocol';
@@ -8,7 +9,7 @@ import type { ScreenState } from './world/laptop';
 import { randomLook, sanitizeLook, type Look } from '../shared/avatar';
 import type { Decoration } from '../shared/decor';
 
-type Topic = 'empire' | 'peers' | 'workers' | 'issues' | 'pulls' | 'chat' | 'project' | 'screens' | 'team' | 'upgrade' | 'services' | 'decor' | 'usage' | 'queue' | 'connection' | 'freshness' | 'continuity';
+type Topic = 'cloud' | 'empire' | 'peers' | 'workers' | 'issues' | 'pulls' | 'chat' | 'project' | 'screens' | 'team' | 'upgrade' | 'services' | 'decor' | 'usage' | 'queue' | 'connection' | 'freshness' | 'continuity';
 
 const zeroUsage = (): Usage => ({ input: 0, output: 0, cacheWrite: 0, cacheRead: 0, cost: 0, calls: 0 });
 
@@ -117,6 +118,8 @@ class Store {
   decor: Decoration[] = [];
   usage: UsageState = { total: zeroUsage(), today: zeroUsage(), day: '', pauseHiring: false };
   queue: QueueState = { tasks: [], maxWorkers: 0 };
+  /** Cloud mode only: the state-repository snapshot this game is showing, with its age. Null in server mode. */
+  cloud: CloudInfo | null = null;
   private subs = new Map<Topic, Set<() => void>>();
 
   on(topic: Topic, fn: () => void) {
@@ -140,7 +143,15 @@ class Store {
     this.checkFreshness();
   }
 
+  setCloud(info: CloudInfo) {
+    this.cloud = info;
+    this.emit('cloud');
+    this.checkFreshness();
+  }
+
   evidence(now = performance.now()) {
+    // Cloud mode: everything comes from a committed snapshot, so nothing is ever "fresh" (live).
+    if (this.cloud) return cloudEvidence(this.cloud.snapshot?.state.heartbeat.lastRunAt ?? this.cloud.snapshot?.state.meta.createdAt, Date.now());
     return evidence(this.empire.supervision, this.connected, this.empireReceivedAt, now, this.connectedAt > 0);
   }
 

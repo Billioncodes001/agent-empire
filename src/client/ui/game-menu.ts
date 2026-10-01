@@ -88,6 +88,14 @@ export function signOut() {
   });
 }
 
+export interface MenuEntry { label: string; detail: string; run: () => void; cls?: string }
+/** Extra entries for a mode (cloud mode adds Cloud Empire and Shut down / Start) and its own sign-out. */
+export interface MenuExtension { items(): MenuEntry[]; signOut?: MenuEntry }
+let extension: MenuExtension | null = null;
+export function setMenuExtension(ext: MenuExtension | null) {
+  extension = ext;
+}
+
 export function mountGameMenu(opts: { player: PlayerController; openMap: () => void; openOperations: () => void }) {
   let menu: Modal | null = null;
   const trigger = h(
@@ -130,6 +138,7 @@ export function mountGameMenu(opts: { player: PlayerController; openMap: () => v
         item('Management', 'Sectors, workers and reports', opts.openOperations),
         item('Settings', 'Camera, graphics, sound, keys', () => document.getElementById('btn-settings')?.click()),
         item('Controls', touchMode() ? 'Touch and keyboard help' : 'Keyboard and mouse help', help),
+        ...(extension?.items() ?? []).map((e) => item(e.label, e.detail, e.run, e.cls ?? '')),
         touchMode() && chat
           ? item('Chat', 'Message people in the office', () => {
               document.documentElement.classList.add('ae-chat-open');
@@ -145,7 +154,7 @@ export function mountGameMenu(opts: { player: PlayerController; openMap: () => v
             h('div.menu-tool-row', {}, ...tools.map((b) => item(toolLabel(b), b.title && b.title !== toolLabel(b) ? b.title : '', () => b.click(), '.tool'))),
           )
         : null,
-      h('div.menu-foot', {}, item('Sign out', 'Workers keep running on the host', signOut, '.danger')),
+      h('div.menu-foot', {}, extension?.signOut ? item(extension.signOut.label, extension.signOut.detail, extension.signOut.run, '.danger') : item('Sign out', 'Workers keep running on the host', signOut, '.danger')),
     );
     menu = openModal(
       h(

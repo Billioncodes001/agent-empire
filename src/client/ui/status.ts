@@ -9,7 +9,8 @@ export interface StatusView {
 }
 export interface Evidence {
   fresh: boolean;
-  reason?: 'connecting' | 'disconnected' | 'missing' | 'stale';
+  /** `snapshot`: cloud mode, where state comes from a committed snapshot and is never live. */
+  reason?: 'connecting' | 'disconnected' | 'missing' | 'stale' | 'snapshot';
   /** Milliseconds since the last empire message was received, by the client's own clock. */
   age: number;
 }
@@ -26,6 +27,11 @@ export function evidence(supervision: SupervisionState | undefined, connected: b
   return { fresh: true, age };
 }
 
+/** Cloud mode: the age of the coordinator's last committed snapshot. Never fresh. */
+export function cloudEvidence(snapshotAt: number | undefined, now: number): Evidence {
+  return { fresh: false, reason: 'snapshot', age: snapshotAt === undefined ? Infinity : Math.max(0, now - snapshotAt) };
+}
+
 export function ageLabel(ms: number): string {
   if (!Number.isFinite(ms)) return 'never';
   const s = Math.round(ms / 1000);
@@ -40,6 +46,8 @@ export function unknownView(ev: Evidence): StatusView {
       ? 'Connecting to the office server…'
       : ev.reason === 'disconnected'
       ? 'Disconnected from the office server. Reconnecting…'
+      : ev.reason === 'snapshot'
+      ? Number.isFinite(ev.age) ? `From the cloud snapshot recorded ${ageLabel(ev.age)}; not live.` : 'The cloud Empire has not been loaded yet.'
       : ev.reason === 'missing'
         ? 'The server has not reported supervision evidence.'
         : `No update received for ${ageLabel(ev.age).replace(' ago', '')}.`;

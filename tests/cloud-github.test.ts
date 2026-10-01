@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { GitHubClient, GitHubError, GitHubStateStore, updateWithRetry, encodeBase64Utf8, decodeBase64Utf8 } from '../src/cloud/store';
-import { installStateRepository } from '../src/cloud/installer';
+import { InstallError, installStateRepository } from '../src/cloud/installer';
 import { coordinatorWorkflow, COORDINATOR_BUNDLE_PATH, WORKFLOW_PATH } from '../src/cloud/workflow';
 import { main } from '../src/cloud/cli';
 import { readCloudView, submitIntent, requestShutdown, requestStart } from '../src/cloud/client';
@@ -10,85 +10,7 @@ import { EXECUTION, FakeProvider, T0, uuid } from './cloud-fixtures';
 import { runCoordinatorTick } from '../src/cloud/tick';
 
 const USER_TOKEN = 'ghu_fixture_user_token';
-const json = (data: unknown, status = 200) => new Response(data === undefined ? null : JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });
-
-interface Repo { private: boolean; default_branch: string; ref: string; commits: Map<string, { tree: string; parents: string[]; message: string }>; trees: Map<string, Map<string, string>>; blobs: Map<string, string>; secrets: Map<string, { encrypted_value: string; key_id: string }>; workflow: 'active' | 'disabled_manually'; dispatches: string[] }
-/** Emulates the subset of api.github.com the state store and installer use. */
-class FakeGitHub {
-  repos = new Map<string, Repo>();
-  requests: { method: string; path: string; auth?: string; body?: any }[] = [];
-  private n = 0;
-  /** Test hook: run before the next ref update is evaluated (simulate a concurrent pusher). */
-  beforeRefUpdate?: () => void;
-  sha() { return (++this.n).toString(16).padStart(40, 'f'); }
-  /** Raw (possibly non-UTF-8 or oversized) blobs by sha, for client-written files. */
-  raw = new Map<string, { base64: string; size: number }>();
-  blobReads: string[] = [];
-  /** Test hook: HTTP status to return for a blob (e.g. 403 or 429 rate limiting). */
-  blobStatus = new Map<string, number>();
-  addRaw(full: string, path: string, base64: string, size: number) {
-    const repo = this.repos.get(full)!;
-    const tree = new Map(repo.trees.get(repo.commits.get(repo.ref)!.tree)!);
-    const b = this.sha(); repo.blobs.set(b, ''); this.raw.set(b, { base64, size }); tree.set(path, b);
-    const t = this.sha(); repo.trees.set(t, tree); const c = this.sha(); repo.commits.set(c, { tree: t, parents: [repo.ref], message: 'raw client write' }); repo.ref = c;
-    return b;
-  }
-  create(full: string, isPrivate = true, files: Record<string, string> = { 'README.md': '# state\n' }) {
-    const repo: Repo = { private: isPrivate, default_branch: 'main', ref: '', commits: new Map(), trees: new Map(), blobs: new Map(), secrets: new Map(), workflow: 'active', dispatches: [] };
-    const tree = new Map<string, string>();
-    for (const [path, content] of Object.entries(files)) { const b = this.sha(); repo.blobs.set(b, content); tree.set(path, b); }
-    const treeSha = this.sha(); repo.trees.set(treeSha, tree);
-    const commit = this.sha(); repo.commits.set(commit, { tree: treeSha, parents: [], message: 'Initial commit' }); repo.ref = commit;
-    this.repos.set(full, repo); return repo;
-  }
-  files(full: string) {
-    const repo = this.repos.get(full)!; const tree = repo.trees.get(repo.commits.get(repo.ref)!.tree)!;
-    return Object.fromEntries([...tree].map(([path, blob]) => [path, repo.blobs.get(blob)!]));
-  }
-  commitOnBranch(full: string, changes: Record<string, string | null>, message = 'concurrent write') {
-    const repo = this.repos.get(full)!;
-    const tree = new Map(repo.trees.get(repo.commits.get(repo.ref)!.tree)!);
-    for (const [path, content] of Object.entries(changes)) { if (content === null) tree.delete(path); else { const b = this.sha(); repo.blobs.set(b, content); tree.set(path, b); } }
-    const t = this.sha(); repo.trees.set(t, tree); const c = this.sha(); repo.commits.set(c, { tree: t, parents: [repo.ref], message }); repo.ref = c;
-  }
-  handle = async (url: URL, init: RequestInit): Promise<Response> => {
-    const method = init.method ?? 'GET'; const body = init.body ? JSON.parse(String(init.body)) : undefined;
-    const auth = (init.headers as Record<string, string>)?.authorization;
-    this.requests.push({ method, path: url.pathname, auth, body });
-    const p = url.pathname;
-    if (p === '/user' && method === 'GET') return json({ login: 'founder' });
-    if (p === '/user/repos' && method === 'POST') { this.create(`founder/${body.name}`, body.private === true); return json({ name: body.name, private: body.private, default_branch: 'main' }, 201); }
-    const m = /^\/repos\/([^/]+)\/([^/]+)(\/.*)?$/.exec(p);
-    if (!m) return json({ message: 'Not Found' }, 404);
-    const full = `${m[1]}/${m[2]}`; const rest = m[3] ?? ''; const repo = this.repos.get(full);
-    if (!repo) return json({ message: 'Not Found' }, 404);
-    if (rest === '' && method === 'GET') return json({ full_name: full, private: repo.private, default_branch: repo.default_branch });
-    if (rest === `/git/ref/heads/main`) return json({ ref: 'refs/heads/main', object: { sha: repo.ref, type: 'commit' } });
-    let r: RegExpExecArray | null;
-    if ((r = /^\/git\/commits\/([a-f0-9]+)$/.exec(rest))) { const c = repo.commits.get(r[1]); return c ? json({ sha: r[1], tree: { sha: c.tree }, parents: c.parents.map(sha => ({ sha })) }) : json({ message: 'Not Found' }, 404); }
-    if ((r = /^\/git\/trees\/([a-f0-9]+)$/.exec(rest)) && method === 'GET') { const t = repo.trees.get(r[1])!; return json({ sha: r[1], truncated: false, tree: [...t].map(([path, sha]) => ({ path, mode: '100644', type: 'blob', sha, size: this.raw.get(sha)?.size ?? repo.blobs.get(sha)!.length })) }); }
-    if ((r = /^\/git\/blobs\/([a-f0-9]+)$/.exec(rest)) && this.blobStatus.has(r[1])) return json({ message: 'API rate limit exceeded' }, this.blobStatus.get(r[1]));
-    if ((r = /^\/git\/blobs\/([a-f0-9]+)$/.exec(rest)) && this.raw.has(r[1])) { this.blobReads.push(r[1]); return json({ sha: r[1], encoding: 'base64', content: this.raw.get(r[1])!.base64 }); }
-    if ((r = /^\/git\/blobs\/([a-f0-9]+)$/.exec(rest))) return json({ sha: r[1], encoding: 'base64', content: encodeBase64Utf8(repo.blobs.get(r[1])!).replace(/(.{60})/g, '$1\n') });
-    if (rest === '/git/trees' && method === 'POST') {
-      const tree = new Map(repo.trees.get(body.base_tree)!);
-      for (const entry of body.tree) { if (entry.sha === null) tree.delete(entry.path); else { const b = this.sha(); repo.blobs.set(b, entry.content); tree.set(entry.path, b); } }
-      const t = this.sha(); repo.trees.set(t, tree); return json({ sha: t }, 201);
-    }
-    if (rest === '/git/commits' && method === 'POST') { const c = this.sha(); repo.commits.set(c, { tree: body.tree, parents: body.parents, message: body.message }); return json({ sha: c }, 201); }
-    if (rest === '/git/refs/heads/main' && method === 'PATCH') {
-      const hook = this.beforeRefUpdate; this.beforeRefUpdate = undefined; hook?.();
-      const commit = repo.commits.get(body.sha)!;
-      if (!body.force && !commit.parents.includes(repo.ref)) return json({ message: 'Update is not a fast forward' }, 422);
-      repo.ref = body.sha; return json({ ref: 'refs/heads/main', object: { sha: body.sha } });
-    }
-    if (rest === '/actions/secrets/public-key') return json({ key_id: 'key-1', key: 'cHVibGljLWtleS1iYXNlNjQ=' });
-    if ((r = /^\/actions\/secrets\/([A-Z_]+)$/.exec(rest)) && method === 'PUT') { repo.secrets.set(r[1], body); return json(undefined, 201); }
-    if ((r = /^\/actions\/workflows\/agent-empire\.yml\/(enable|disable)$/.exec(rest)) && method === 'PUT') { repo.workflow = r[1] === 'enable' ? 'active' : 'disabled_manually'; return json(undefined, 204); }
-    if (rest === '/dispatches' && method === 'POST') { repo.dispatches.push(body.event_type); return json(undefined, 204); }
-    return json({ message: 'Not Found' }, 404);
-  };
-}
+import { FakeGitHub, json } from './fake-github';
 
 /** Anthropic + project-repository endpoints, mirroring tests/execution.test.ts. */
 class FakeAnthropic {
@@ -136,7 +58,8 @@ test('cloud installer: creates a private repo, uploads only ciphertext via the e
   assert.ok(!wire.includes('sk-ant-fixture') && !wire.includes('github_pat_fixture'), 'no plaintext secret leaves the installer');
   const files = github.files('founder/agent-empire-state');
   for (const path of [WORKFLOW_PATH, COORDINATOR_BUNDLE_PATH, ...Object.values(STATE_FILES)]) assert.ok(files[path], path);
-  assert.equal(repo.commits.get(repo.ref)!.parents.length, 1, 'one atomic commit on top of the initial commit');
+  assert.deepEqual(repo.commits.get(repo.commits.get(repo.ref)!.parents[0])!.message, 'Agent Empire: initial state and coordinator', 'state and bundle are one atomic commit, before the workflow commit');
+  assert.equal(repo.commits.get(repo.ref)!.message, 'Agent Empire: install the coordinator workflow', 'the workflow is committed last');
   assert.equal(JSON.parse(files[STATE_FILES.jobs]).jobs.length, 0, 'setup never queues paid work');
   assert.equal(repo.dispatches.length, 0, 'setup does not trigger a run');
   // Re-running setup updates the coordinator but never overwrites an existing Empire.
@@ -150,7 +73,7 @@ test('cloud installer: creates a private repo, uploads only ciphertext via the e
 test('cloud installer: refuses a public repository', async () => {
   const github = new FakeGitHub();
   github.create('founder/agent-empire-state', false);
-  await assert.rejects(install(github), (error: unknown) => error instanceof GitHubError && error.code === 'state_repository_public');
+  await assert.rejects(install(github), (error: unknown) => error instanceof InstallError && error.code === 'state_repository_public' && error.step === 'repo');
 });
 
 test('cloud github: commits are atomic and a moved ref is a conflict that retry resolves', async () => {
@@ -275,7 +198,7 @@ test('review fix 7: a run dispatched on another branch skips instead of coordina
 
 test('review quick fix: the installer refuses a classic project token and records the schedule estimate', async () => {
   const github = new FakeGitHub();
-  await assert.rejects(install(github, { secrets: { ANTHROPIC_API_KEY: 'sk-ant-fixture', PROJECT_GITHUB_TOKEN: 'ghp_classic' } }), (error: unknown) => error instanceof GitHubError && error.code === 'project_token_not_fine_grained');
+  await assert.rejects(install(github, { secrets: { ANTHROPIC_API_KEY: 'sk-ant-fixture', PROJECT_GITHUB_TOKEN: 'ghp_classic' } }), (error: unknown) => error instanceof InstallError && error.code === 'project_token_not_fine_grained');
   assert.equal(github.repos.size, 0, 'refused before creating anything');
   await install(github, { workflow: { intervalMinutes: 60 } });
   const files = github.files('founder/agent-empire-state');

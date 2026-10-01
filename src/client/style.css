@@ -1077,3 +1077,41 @@ html.ae-kb .modal footer .btn { min-height: 38px; }
 html.ae-kb .modal .btn.close { width: 36px; min-height: 36px; height: 36px; }
 html.ae-kb .charsel .charsel-stage { display: none; }
 html.ae-kb .charsel .body { grid-template-columns: 1fr; }
+
+/* ---- Cloud mode (CLOUD-04/05): the Empire lives in the user's GitHub; nothing here is live ---- */
+html.ae-cloud .topbar .controls > .btn.cloud-unavailable { opacity: .42; filter: saturate(.3); cursor: help; }
+html.ae-cloud #hud .status-strip.cloud-strip .status-key { color: #9bd1ba; }
+html.ae-cloud #hud .status-strip.cloud-strip .status-monitor { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 360px; }
+.cloud-modal .cloud-jobs { list-style: none; margin: 0 0 14px; padding: 0; display: grid; gap: 8px; }
+.cloud-job { padding: 12px 14px; background: var(--hud-raised); border: 1px solid var(--hud-line); border-radius: 10px; }
+.cloud-job[data-tone=attention] { border-color: #f2a48866; }
+.cloud-job[data-tone=unknown] { border-style: dashed; }
+.cloud-job-head { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.cloud-job-head strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.cloud-pill { flex: none; padding: 2px 8px; border: 1px solid #ffffff2e; border-radius: 999px; font-size: 11px; color: var(--hud-muted); }
+.cloud-job[data-tone=attention] .cloud-pill { color: var(--tone-attention); border-color: #f2a48866; }
+.cloud-job[data-tone=active] .cloud-pill { color: var(--tone-active); border-color: #9bd1ba66; }
+.cloud-job p { margin: 6px 0 0; font-size: 12px; line-height: 1.5; color: var(--hud-muted); overflow-wrap: anywhere; }
+.cloud-job .sector-actions { margin-top: 8px; }
+.cloud-form { display: grid; gap: 12px; max-width: 720px; }
+.cloud-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.cloud-field { display: grid; gap: 5px; font-size: 12px; color: var(--hud-muted); }
+.cloud-field small { font-size: 11px; }
+.cloud-field input, .cloud-field textarea, .cloud-field select { width: 100%; min-height: 40px; box-sizing: border-box; font: inherit; font-size: 15px; color: var(--hud-text); background: rgba(6, 14, 18, .6); border: 1px solid var(--hud-line); border-radius: 8px; padding: 8px 11px; }
+.cloud-field textarea { min-height: 110px; resize: vertical; }
+.cloud-field input:focus-visible, .cloud-field textarea:focus-visible, .cloud-field select:focus-visible { outline: 2px solid var(--tone-active); outline-offset: 1px; }
+.cloud-error:empty { display: none; }
+.cloud-error { color: var(--tone-attention) !important; }
+.cloud-limits { margin: 0; padding-left: 18px; color: var(--hud-muted); font-size: 12px; line-height: 1.6; }
+.modal.cloud-confirm { width: min(560px, 94vw); }
+.cloud-confirm .body p { margin: 0 0 10px; line-height: 1.5; }
+.cloud-dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0 0 14px; font-size: 13px; line-height: 1.45; }
+.cloud-dl dt { color: var(--muted); font-weight: 600; }
+.cloud-dl dd { margin: 0; }
+.cloud-check { display: flex; gap: 10px; align-items: flex-start; }
+.cloud-check input { width: 20px; height: 20px; margin: 0; flex: none; }
+@media (max-width: 600px) {
+  .cloud-dl { grid-template-columns: 1fr; }
+  .cloud-dl dd { margin-bottom: 6px; }
+  html.ae-cloud #hud .status-strip.cloud-strip .status-monitor { display: none; }
+}

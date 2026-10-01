@@ -101,10 +101,17 @@ export class GitHubClient {
   private transport: typeof fetch;
   private timeoutMs: number;
   private apiBase: string;
-  constructor(private token: string, options: { fetch?: typeof fetch; timeoutMs?: number; apiBase?: string } = {}) {
+  private browser: boolean;
+  /**
+   * `browser: true` is for the app: no User-Agent header (browsers set their own, and a custom one would need a CORS
+   * preflight allowance) and `cache: 'no-store'`, because api.github.com marks GETs cacheable for 60 s and a cached
+   * branch head would make every commit after a write conflict.
+   */
+  constructor(private token: string, options: { fetch?: typeof fetch; timeoutMs?: number; apiBase?: string; browser?: boolean } = {}) {
     this.transport = options.fetch ?? ((...args: Parameters<typeof fetch>) => fetch(...args));
     this.timeoutMs = options.timeoutMs ?? 15_000;
     this.apiBase = options.apiBase ?? 'https://api.github.com';
+    this.browser = options.browser ?? false;
   }
 
   async request(method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE', route: string, body?: unknown): Promise<{ status: number; data: any }> {
@@ -116,7 +123,8 @@ export class GitHubClient {
       try {
         response = await this.transport(this.apiBase + route, {
           method, redirect: 'error', signal: controller.signal,
-          headers: { authorization: `Bearer ${this.token}`, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28', 'user-agent': 'Agent-Empire-Coordinator', ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+          ...(this.browser ? { cache: 'no-store' as const, credentials: 'omit' as const } : {}),
+          headers: { authorization: `Bearer ${this.token}`, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28', ...(this.browser ? {} : { 'user-agent': 'Agent-Empire-Coordinator' }), ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         });
       } catch {

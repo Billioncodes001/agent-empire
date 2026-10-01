@@ -1,65 +1,49 @@
 /**
- * "Create my Empire" for cloud mode: the Empire's state lives in a private repository in the player's own GitHub
- * (docs/team/CLOUD_MODE_PLAN.md). Four steps, each a real api.github.com call through GitHubClient:
+ * "Create my Empire" for cloud mode (CLOUD-02 wiring). The Empire's state lives in a private repository in the
+ * player's own GitHub (docs/team/CLOUD_MODE_PLAN.md). This runs the coordinator's installer (src/cloud/installer.ts)
+ * against api.github.com with the player's token:
  *
- *   1. createStateRepo    private <login>/agent-empire-state (reused only if it already exists and is private)
- *   2. uploadSecret       provider API keys as encrypted Actions secrets (libsodium sealed box, sealed-box.ts)
- *   3. installWorkflow    the always-on coordinator workflow (owned by CLOUD-02)
- *   4. writeInitialState  a setup *intent* (clients write intents; only the coordinator writes state)
+ *   repo      use or create the private <login>/agent-empire-state
+ *   secrets   provider keys and the project token as sealed-box encrypted Actions secrets (sealed-box.ts)
+ *   state     the coordinator bundle (shipped with this build) and the initial state, never overwriting an Empire
+ *   workflow  the always-on coordinator workflow, committed last
+ *   verify    read back and parse with the coordinator's own rules
  *
- * Readiness is checked before any network call, so a build that lacks a piece creates nothing at all.
- * Provider keys leave the page only inside a sealed box addressed to the repository's Actions public key.
+ * Every step checks what is already there, so "Try again" after a failure continues where it stopped. Nothing paid
+ * starts: no job is queued and no run is triggered. The bundle is loaded and checked before the first GitHub call.
  */
-import { GitHubClient, GitHubError, type RepoListing } from './github';
-import { linkedProviders, parseCents, STATE_REPO_NAME, type Limits, type ProviderId, type RepoRef } from './model';
+import { GitHubClient as CloudGitHubClient } from '../../cloud/store';
+import { INSTALL_STEPS, InstallError, installStateRepository, type InstallStep, type SecretName, type StepStatus } from '../../cloud/installer';
+import type { CloudLimits } from '../../cloud/schema';
+import { linkedProviders, parseCents, STATE_REPO_NAME, type Interval, type Limits, type ProviderId, type RepoRef } from './model';
 import { sealForGitHub } from './sealed-box';
+import { GITHUB_API, githubApiBase } from '../cloud/api-base';
 
-export const SECRET_NAMES: Record<ProviderId, string> = { anthropic: 'ANTHROPIC_API_KEY', openai: 'OPENAI_API_KEY' };
-export const SETUP_INTENT_PATH = 'intents/setup.json';
+export const SECRET_NAMES: Record<ProviderId, SecretName> = { anthropic: 'ANTHROPIC_API_KEY', openai: 'OPENAI_API_KEY' };
+/** Where the client build ships the coordinator (tools/ship-coordinator.mjs) and its integrity manifest. */
+export const COORDINATOR_URL = 'cloud/agent-empire-coordinator.mjs';
+export const COORDINATOR_MANIFEST_URL = 'cloud/coordinator.json';
 
 export interface StateRepo {
   owner: string;
   name: string;
   created: boolean;
+  /** The repository already held an Empire, which was kept as it is. */
+  alreadyInstalled?: boolean;
 }
-
-/** Seals a secret value for a repository's Actions public key. */
-export interface Sealer {
-  readonly available: boolean;
-  readonly reason?: string;
-  seal(publicKeyBase64: string, value: string): string;
-}
-export const sodiumSealer: Sealer = { available: true, seal: sealForGitHub };
-
-/** The coordinator workflow committed to the state repository. Its content is owned by CLOUD-02. */
-export interface WorkflowSource {
-  readonly available: boolean;
-  readonly reason?: string;
-  readonly path: string;
-  readonly content: string;
-}
-export const pendingWorkflow: WorkflowSource = {
-  available: false,
-  reason: 'The always-on coordinator (the GitHub Actions workflow) isn’t in this build yet.',
-  path: '.github/workflows/agent-empire.yml',
-  content: '',
-};
 
 export interface CloudPlan {
   login: string;
   projects: RepoRef[];
   providers: Record<ProviderId, string>;
+  projectToken?: string;
   limits: Limits;
+  interval: Interval;
   platform: string;
 }
 
-export type CreateStep = 'repo' | 'secrets' | 'workflow' | 'state';
-export const CREATE_STEPS: { step: CreateStep; label: string }[] = [
-  { step: 'repo', label: 'Create your private state repository' },
-  { step: 'secrets', label: 'Encrypt and store your API keys' },
-  { step: 'workflow', label: 'Install the always-on coordinator' },
-  { step: 'state', label: 'Record your setup' },
-];
+export type CreateStep = InstallStep;
+export const CREATE_STEPS = INSTALL_STEPS;
 
 export class CloudSetupError extends Error {
   constructor(message: string, readonly code: 'not_ready' | 'repo_conflict' | 'github' | 'invalid', readonly step?: CreateStep, readonly reasons: string[] = []) {
@@ -68,113 +52,110 @@ export class CloudSetupError extends Error {
   }
 }
 
-/** The four operations, as an interface so a fake can stand in during tests. */
-export interface CloudSetup {
-  createStateRepo(login: string): Promise<StateRepo>;
-  uploadSecret(repo: StateRepo, name: string, value: string): Promise<void>;
-  installWorkflow(repo: StateRepo): Promise<void>;
-  writeInitialState(repo: StateRepo, plan: CloudPlan): Promise<void>;
+/** Plan limits in the coordinator's units. */
+export function planLimits(l: Limits): CloudLimits {
+  const per = parseCents(l.perJob);
+  const day = parseCents(l.daily);
+  if (per === null || day === null) throw new CloudSetupError('The spending limits are invalid.', 'invalid', 'state');
+  return { maxConcurrent: l.maxConcurrent, perTaskBudgetCents: per, dailyBudgetCents: day };
 }
 
-/** What stops creation in this build (empty when everything is in place). */
-export function readiness(sealer: Sealer, workflow: WorkflowSource): string[] {
-  const reasons: string[] = [];
-  if (!sealer.available) reasons.push(sealer.reason ?? 'The encryption library is not available.');
-  if (!workflow.available || !workflow.content) reasons.push(workflow.reason ?? 'The coordinator workflow is not available.');
-  return reasons;
+/** Secrets to upload: only what the player gave. Values exist only in memory until they are sealed. */
+export function planSecrets(plan: CloudPlan): Partial<Record<SecretName, string>> {
+  const out: Partial<Record<SecretName, string>> = {};
+  for (const id of linkedProviders(plan.providers)) out[SECRET_NAMES[id]] = plan.providers[id].trim();
+  if (plan.projectToken?.trim()) out.PROJECT_GITHUB_TOKEN = plan.projectToken.trim();
+  return out;
 }
 
-/** The setup intent the coordinator applies on its first run. Names and limits only, never a key. */
-export function setupIntent(plan: CloudPlan, now: Date): Record<string, unknown> {
-  return {
-    schemaVersion: 1,
-    type: 'setup',
-    createdAt: now.toISOString(),
-    createdBy: { login: plan.login, platform: plan.platform },
-    projects: plan.projects.map((r) => ({ owner: r.owner, name: r.name, defaultBranch: r.defaultBranch })),
-    providers: linkedProviders(plan.providers),
-    limits: {
-      maxConcurrentJobs: plan.limits.maxConcurrent,
-      perJobCents: parseCents(plan.limits.perJob),
-      dailyCents: parseCents(plan.limits.daily),
-      approveEachJob: plan.limits.approveEachJob,
-    },
-    changes: 'branches-and-pull-requests-only',
-  };
-}
-
-export function githubCloudSetup(gh: GitHubClient, sealer: Sealer, workflow: WorkflowSource, now: () => Date = () => new Date()): CloudSetup {
-  return {
-    async createStateRepo(login) {
-      // An existing repository is looked up first: a resumed setup, or one the user created on GitHub so that a
-      // fine-grained token limited to selected repositories (no Administration permission) is enough.
-      let existing: RepoListing | null = await gh.getRepo(login, STATE_REPO_NAME);
-      if (!existing) {
-        const created = await gh.createPrivateRepo(STATE_REPO_NAME, 'Agent Empire state. Written by the Empire coordinator; keep this repository private.');
-        if (created) return { owner: created.owner, name: created.name, created: true };
-        existing = await gh.getRepo(login, STATE_REPO_NAME); // created meanwhile (422): check it like any existing one
-      }
-      // Reuse it only when it is this account's own private repository.
-      if (existing && existing.private && existing.owner.toLowerCase() === login.toLowerCase()) return { owner: existing.owner, name: existing.name, created: false };
-      throw new CloudSetupError(
-        existing && !existing.private
-          ? `${login}/${STATE_REPO_NAME} already exists and is public. Make it private or rename it on GitHub, then try again.`
-          : `A repository named ${login}/${STATE_REPO_NAME} already exists and can’t be used. Rename it on GitHub, then try again.`,
-        'repo_conflict',
-        'repo',
-      );
-    },
-    async uploadSecret(repo, name, value) {
-      if (!Object.values(SECRET_NAMES).includes(name)) throw new CloudSetupError('Unknown secret.', 'invalid', 'secrets');
-      if (!sealer.available) throw new CloudSetupError(sealer.reason ?? 'Encryption unavailable.', 'not_ready', 'secrets');
-      const { keyId, key } = await gh.actionsPublicKey(repo.owner, repo.name);
-      await gh.putSecret(repo.owner, repo.name, name, sealer.seal(key, value.trim()), keyId);
-    },
-    async installWorkflow(repo) {
-      if (!workflow.available || !workflow.content) throw new CloudSetupError(workflow.reason ?? 'Workflow unavailable.', 'not_ready', 'workflow');
-      await gh.putFile(repo.owner, repo.name, workflow.path, workflow.content, 'Install the Agent Empire coordinator');
-    },
-    async writeInitialState(repo, plan) {
-      await gh.putFile(repo.owner, repo.name, SETUP_INTENT_PATH, `${JSON.stringify(setupIntent(plan, now()), null, 2)}\n`, 'Agent Empire setup');
-    },
-  };
+async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 /**
- * Runs the four steps in order, reporting progress. On any failure it stops and says which step failed; steps
- * already done stay done, and running again resumes (the repository is reused, secrets and files are replaced).
+ * Loads the coordinator bundle shipped with this build and checks it against its manifest, so an HTML fallback page or
+ * a truncated download is never committed as the coordinator. Throws a not_ready CloudSetupError otherwise.
  */
-export async function createEmpire(
-  plan: CloudPlan,
-  setup: CloudSetup,
-  ready: string[],
-  onStep: (step: CreateStep, state: 'running' | 'done') => void = () => {},
-): Promise<StateRepo> {
-  if (ready.length) throw new CloudSetupError('This build can’t create your Empire yet. Nothing was created in your GitHub.', 'not_ready', undefined, ready);
-  const providers = linkedProviders(plan.providers);
-  if (!providers.length) throw new CloudSetupError('Add at least one API key.', 'invalid', 'secrets');
-  if (!plan.projects.length) throw new CloudSetupError('Choose at least one project repository.', 'invalid', 'repo');
-  let step: CreateStep = 'repo';
+export async function loadCoordinatorBundle(fetchImpl: typeof fetch = (...a) => fetch(...a), base = ''): Promise<string> {
+  const fail = (why: string) => new CloudSetupError('This build can’t create your Empire: its coordinator is missing. Nothing was created in your GitHub.', 'not_ready', undefined, [why]);
+  let manifest: { file?: unknown; bytes?: unknown; sha256?: unknown };
+  let text: string;
   try {
-    onStep(step, 'running');
-    const repo = await setup.createStateRepo(plan.login);
-    onStep(step, 'done');
-    step = 'secrets';
-    onStep(step, 'running');
-    for (const id of providers) await setup.uploadSecret(repo, SECRET_NAMES[id], plan.providers[id]);
-    onStep(step, 'done');
-    step = 'workflow';
-    onStep(step, 'running');
-    await setup.installWorkflow(repo);
-    onStep(step, 'done');
-    step = 'state';
-    onStep(step, 'running');
-    await setup.writeInitialState(repo, plan);
-    onStep(step, 'done');
-    return repo;
-  } catch (err) {
-    if (err instanceof CloudSetupError) throw err.step ? err : new CloudSetupError(err.message, err.code, step, err.reasons);
-    const message = err instanceof GitHubError ? err.message : 'Something went wrong while setting up your Empire.';
-    throw new CloudSetupError(message, 'github', step);
+    const m = await fetchImpl(`${base}${COORDINATOR_MANIFEST_URL}`, { cache: 'no-store' });
+    if (!m.ok) throw fail(`The coordinator manifest could not be loaded (${m.status}).`);
+    manifest = await m.json();
+    const r = await fetchImpl(`${base}${COORDINATOR_URL}`, { cache: 'no-store' });
+    if (!r.ok) throw fail(`The coordinator could not be loaded (${r.status}).`);
+    text = await r.text();
+  } catch (error) {
+    if (error instanceof CloudSetupError) throw error;
+    throw fail('The coordinator could not be loaded from this app.');
+  }
+  if (typeof manifest.sha256 !== 'string' || typeof manifest.bytes !== 'number') throw fail('The coordinator manifest is malformed.');
+  if (new TextEncoder().encode(text).length !== manifest.bytes || (await sha256Hex(text)) !== manifest.sha256) throw fail('The coordinator file does not match its manifest.');
+  return text;
+}
+
+const httpMessage = (status: number, message: string, step: CreateStep): string => {
+  if (status === 0) return 'Can’t reach GitHub. Check your connection and try again.';
+  if (status === 401) return 'GitHub didn’t accept this sign-in. It may have expired or been revoked; link GitHub again.';
+  if ((status === 403 || status === 429) && /rate limit/i.test(message)) return 'GitHub’s rate limit was reached. Wait a few minutes and try again.';
+  if (status === 403 || status === 404)
+    return step === 'secrets'
+      ? 'GitHub refused to store the secrets. The token needs Secrets read and write on agent-empire-state.'
+      : step === 'workflow'
+        ? 'GitHub refused to install the workflow. The token needs Workflows read and write on agent-empire-state.'
+        : 'GitHub refused this step. The token needs Contents, Secrets, Workflows and Actions read and write on agent-empire-state.';
+  if (status >= 500) return 'GitHub is having trouble. Try again shortly.';
+  return `GitHub answered with an error (${status}). Try again.`;
+};
+
+export interface CreateDeps {
+  fetch?: typeof fetch;
+  /** The coordinator bundle; defaults to the copy shipped with this build. */
+  bundle?: () => Promise<string>;
+  seal?: (publicKeyBase64: string, value: string) => string;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+  apiBase?: string;
+}
+
+/**
+ * Runs the installer, reporting progress. On a failure it says which step failed and why; steps already done stay
+ * done, and running it again resumes (the repository is reused, existing state kept, unchanged files skipped).
+ */
+export async function createEmpire(plan: CloudPlan, token: string, deps: CreateDeps = {}, onStep: (step: CreateStep, state: StepStatus | 'failed', detail?: string) => void = () => {}): Promise<StateRepo> {
+  if (!linkedProviders(plan.providers).length) throw new CloudSetupError('Add at least one API key.', 'invalid', 'secrets');
+  if (!plan.projects.length) throw new CloudSetupError('Choose at least one project repository.', 'invalid', 'repo');
+  const limits = planLimits(plan.limits);
+  // Before any GitHub call: a build without its coordinator creates nothing at all.
+  const bundle = await (deps.bundle ?? (() => loadCoordinatorBundle(deps.fetch)))();
+  const seal = deps.seal ?? sealForGitHub;
+  const apiBase = deps.apiBase ?? githubApiBase();
+  const client = new CloudGitHubClient(token, { browser: true, ...(deps.fetch ? { fetch: deps.fetch } : {}), ...(apiBase !== GITHUB_API ? { apiBase } : {}), timeoutMs: 30_000 });
+  try {
+    const result = await installStateRepository(
+      client,
+      {
+        repo: STATE_REPO_NAME,
+        secrets: planSecrets(plan),
+        limits,
+        coordinatorBundle: bundle,
+        workflow: { intervalMinutes: plan.interval },
+        now: (deps.now ?? Date.now)(),
+        onStep,
+        ...(deps.sleep ? { sleep: deps.sleep } : {}),
+      },
+      async (key, value) => seal(key, value),
+    );
+    return { owner: result.owner, name: result.repo, created: result.created, alreadyInstalled: result.alreadyInstalled };
+  } catch (error) {
+    if (error instanceof InstallError) {
+      const ours = !['github_http', 'github_unreachable', 'github_timeout', 'github_response_large'].includes(error.code);
+      const code = ['state_repository_public', 'repo_conflict', 'repo_create_forbidden', 'state_invalid'].includes(error.code) ? 'repo_conflict' : ['invalid', 'bundle_invalid', 'secret_name_invalid', 'project_token_not_fine_grained'].includes(error.code) ? 'invalid' : 'github';
+      throw new CloudSetupError(ours ? error.message : httpMessage(error.status, error.message, error.step), code, error.step);
+    }
+    throw new CloudSetupError('Something went wrong while setting up your Empire. Try again.', 'github');
   }
 }
