@@ -97,7 +97,7 @@ Fixtures 4707, 4708 and 4710 were stopped. The `localhost:4610` session was not 
 - **Desktop and Android serving `cloud/*.mjs` and `.json`.** iOS maps both (`GameSchemeHandler`). The desktop `app-protocol.cjs` serves "only extensions on a fixed MIME list"; the desktop author must confirm `.mjs` and `.json` are on it, or "Create my Empire" reports the coordinator as missing. Android was not run.
 - **Pre-existing modal safe-area issue on iOS landscape**, not introduced here. Large `.empire-modal` windows (Management, and Cloud Empire, which reuses its CSS) sit off-centre, under the Dynamic Island, with the close button at the edge (`ios-05`, `ios-06`). Owned by the interface/mobile lane.
 - **The ☁ glyph** in the HUD renders small on iOS. It is cosmetic.
-- **Execution settings** (Anthropic agent and environment IDs, project repository) are entered in the Cloud Empire → Limits tab after setup. Setup doesn't create Anthropic agents. Until they are set, jobs wait with "cloud execution is not configured".
+- **Execution settings**: superseded by [cloud-exec-setup](cloud-exec-setup.md). Setup with an Anthropic key now asks the coordinator to find or create the Anthropic agent and environment on its first run; IDs can still be entered by hand under Cloud Empire → Limits. Without execution settings the coordinator *rejects* new jobs (it never let them wait; the old dialog copy was wrong and is fixed).
 - **OpenAI-only setups** store the key, but there is no OpenAI adapter yet (CLOUD-06), so jobs can't run.
 - **"Ask me before each job"** in setup is not a coordinator setting. Every cloud job is already confirmed explicitly in the app.
 - **Plan minute allowances** (2,000 / 3,000) are from memory, as the coordinator report said. Recheck against github.com/pricing.
@@ -122,7 +122,12 @@ Do it on a **throwaway GitHub account** or a disposable `agent-empire-state`, wi
    - Trigger `workflow_dispatch` from the Actions tab once, or wait for the cron.
    - **Expect:** `state/heartbeat.json` is written. The app shows "Snapshot N min ago" within a minute of a poll.
    - Verify the ETag 304 in the browser devtools Network panel.
-6. **Execution.** In Cloud Empire → Limits, enter the Anthropic agent and environment IDs and the project. Wait for the coordinator to apply them (Journal).
+6. **Execution: the first real Anthropic call (owner-approved; cloud-exec-setup).** The coordinator's first run uses the owner's `ANTHROPIC_API_KEY` secret to list, then create, an agent "Agent Empire worker" and an environment `agent-empire-worker` (control-plane calls only; no session).
+   - **Before:** in the Claude Console, note the existing agents and environments of the key's workspace.
+   - **Expect:** the run log line `execution setup: ready (agent created, environment created)`; `state/meta.json` gets `execution` with an `agent_…` and an `env_…` ID and loses `provisioning`; the Journal says "Execution ready … No session was started and nothing was charged". In the Console: exactly one new agent (model `claude-opus-5-5`, built-in toolset, metadata `agent_empire_role: worker`) and one new cloud environment (limited networking, package managers allowed), and **no session**. Billing shows no new charge.
+   - **Idempotence:** "Set up automatically" under Limits, then the next run: the log says `reused` for both, nothing new appears in the Console.
+   - **Record:** whether `limited` networking with `allow_package_managers` lets the session's git proxy clone and push (checked in step 7), and the exact HTTP status the API gives for a duplicate environment name (assumed 409).
+   - If the key lacks Managed Agents access, expect a `provisioning.status: failed` with the provider's HTTP status and no retry until "Set up automatically" is chosen again.
 7. **One paid job, approved by the owner.**
    - New job → confirmation → tick → start.
    - **Expect:** an intent file, a `repository_dispatch` run, then `dispatching` / `running`, the session budget equal to the allowance, a branch `agent-empire/task-<id>`, then "Ready for review".
