@@ -99,7 +99,10 @@ public final class PolicyTest {
         check(BridgePolicy.isRequestId("42") && BridgePolicy.isRequestId("req-1:a.b") && !BridgePolicy.isRequestId("a'b") && !BridgePolicy.isRequestId("x);alert(1") && !BridgePolicy.isRequestId(""), "ids");
         check(BridgePolicy.isClientId("Ov23li3G3aR4rgZ0lCJ3") && !BridgePolicy.isClientId("a b") && !BridgePolicy.isClientId("x&scope=admin"), "client ids");
         eq(BridgePolicy.scopes(Arrays.asList("repo", "workflow", "read:user")), "repo workflow read:user");
-        eq(BridgePolicy.scopes(Arrays.<String>asList()), "");
+        eq(BridgePolicy.scopes(Arrays.asList("repo", "workflow", "repo")), "repo workflow");
+        check(BridgePolicy.scopes(Arrays.<String>asList()) == null, "no scopes refused (iOS parity)");
+        for (String bad : new String[]{"admin:org", "delete_repo", "user", "write:packages", "admin:repo_hook", "gist", "Repo", "repo:status"})
+            check(BridgePolicy.scopes(Arrays.asList("repo", bad)) == null, "scope outside {repo, workflow, read:user} refused: " + bad);
         check(BridgePolicy.scopes(Arrays.asList("repo", "a b")) == null && BridgePolicy.scopes(Arrays.asList("repo&x=1")) == null && BridgePolicy.scopes(null) == null
             && BridgePolicy.scopes(Arrays.asList("a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k")) == null && BridgePolicy.scopes(Arrays.asList((String) null)) == null, "scopes rejected");
         check(BridgePolicy.isValue(repeat("x", 8192)) && !BridgePolicy.isValue(repeat("x", 8193)) && !BridgePolicy.isValue(null), "value length");
@@ -114,6 +117,42 @@ public final class PolicyTest {
         check(BridgePolicy.gestureAllows(1000, 1000) && BridgePolicy.gestureAllows(1000, 6000) && !BridgePolicy.gestureAllows(1000, 6001)
             && !BridgePolicy.gestureAllows(0, 10) && !BridgePolicy.gestureAllows(1000, 999), "gesture window");
         check(BridgePolicy.isDeviceToken("abcdefghijklmnop_-") && !BridgePolicy.isDeviceToken("short") && !BridgePolicy.isDeviceToken("has space in the token"), "device token shape");
+        valueRules();
+        config();
+        check(BridgePolicy.SESSION_KEYS.toString().equals("[server.token, server.deviceId, github.token, github.login]"), "session keys: the same set iOS clears");
+        check(AssetPolicy.htmlHeaders().get("Content-Security-Policy").equals(AssetPolicy.HTML_CSP) && AssetPolicy.HTML_CSP.contains("frame-src 'self'")
+            && AssetPolicy.HTML_CSP.contains("object-src 'none'") && !AssetPolicy.HTML_CSP.contains("*"), "every HTML response carries the CSP that keeps foreign frames out");
+    }
+
+    /** secure.set per-key rules, the same as iOS BridgeProtocol.validate. */
+    private static void valueRules() {
+        String[][] ok = {{"mode", "cloud"}, {"mode", "server"}, {"server.host", "https://city.example.com"}, {"server.host", "https://city.example.com:8443"},
+            {"server.token", repeat("a", 43)}, {"server.deviceId", "dev_1"}, {"github.token", "gho_abc"}, {"github.login", "octo-cat"}, {"state.repo", "octo/agent-empire-state"}};
+        for (String[] kv : ok) check(BridgePolicy.invalidValue(kv[0], kv[1], false) == null, "value ok: " + kv[0] + "=" + kv[1]);
+        String[][] bad = {{"mode", "admin"}, {"mode", ""}, {"server.host", "https://city.example.com/"}, {"server.host", "http://city.example.com"},
+            {"server.host", "https://u:p@city.example.com"}, {"server.host", "http://10.0.2.2:4713"}, {"server.token", "short"}, {"server.token", "has space in the token!!"},
+            {"server.deviceId", "a b"}, {"github.token", "gho_x y"}, {"github.token", repeat("x", 513)}, {"github.login", "-octo"}, {"github.login", "a/b"},
+            {"state.repo", "../x"}, {"state.repo", "octo"}, {"openai.key", "sk-x"}, {"mode", repeat("x", 9000)}};
+        for (String[] kv : bad) check(BridgePolicy.invalidValue(kv[0], kv[1], false) != null, "value refused: " + kv[0] + "=" + kv[1]);
+        check(BridgePolicy.invalidValue("server.host", "http://10.0.2.2:4713", true) == null, "debug build accepts the emulator host");
+        check(BridgePolicy.invalidValue("mode", null, false) != null, "null value refused");
+    }
+
+    /** window.AGENT_EMPIRE_APP fields: parity with iOS (deviceName, mode, signedOut; server session only when valid). */
+    private static void config() {
+        String token = repeat("t", 20);
+        java.util.Map<String, String> server = BridgePolicy.configFields("Pixel 7", "server", "https://city.example.com", token, "dev_1", null, false);
+        eq(server.toString(), "{deviceName=Pixel 7, mode=server, host=https://city.example.com, token=" + token + ", deviceId=dev_1}");
+        java.util.Map<String, String> cloud = BridgePolicy.configFields("Pixel 7", "cloud", "https://city.example.com", token, "dev_1", "revoked", false);
+        eq(cloud.toString(), "{deviceName=Pixel 7, mode=cloud, signedOut=revoked}");
+        java.util.Map<String, String> signedOut = BridgePolicy.configFields("Pixel 7", "server", "https://city.example.com", null, null, "unauthorized", false);
+        eq(signedOut.toString(), "{deviceName=Pixel 7, mode=server, signedOut=unauthorized}");
+        eq(BridgePolicy.configFields(null, null, null, null, null, null, false).toString(), "{deviceName=Android}");
+        eq(BridgePolicy.configFields("Pixel", "admin", null, null, null, "hacked", false).toString(), "{deviceName=Pixel}");
+        check(!BridgePolicy.configFields("Pixel", "server", "http://evil.test", token, null, null, false).containsKey("token"), "no token for an invalid host");
+        check(!BridgePolicy.configFields("Pixel", "server", "https://city.example.com", token, "a b", null, false).containsKey("deviceId"), "malformed device id dropped");
+        eq(BridgePolicy.configFields(repeat("n", 80), null, null, null, null, null, false).get("deviceName"), repeat("n", 64));
+        eq(BridgePolicy.configFields("Pixel", null, "https://city.example.com", token, null, null, false).get("token"), token); // APP-02 session (no mode)
     }
 
     /** Every staged game file is reachable at its own URL path and has a non-generic MIME type (except known binaries). */

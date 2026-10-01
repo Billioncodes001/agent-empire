@@ -94,6 +94,8 @@ public final class MainActivity extends Activity implements NativeBridge.Host {
     private OnBackInvokedCallback backCallback;
     /** Debug builds only: a local fake GitHub for device-flow tests (see handleDebugIntent). */
     private volatile String debugGithubBase;
+    /** Why the last session ended; handed to the page once (config "signedOut") so the sign-in step can say why. */
+    private volatile String signedOutReason;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -163,7 +165,7 @@ public final class MainActivity extends Activity implements NativeBridge.Host {
             @Override public WebResourceResponse shouldInterceptRequest(WebResourceRequest request) { return GameAssets.text(403, "Forbidden"); }
         });
 
-        bridge = new NativeBridge(this, store);
+        bridge = new NativeBridge(this, store, debuggable);
         web.addJavascriptInterface(bridge, NativeBridge.NAME);
         web.setWebViewClient(new GameClient());
         web.setWebChromeClient(new WebChromeClient() {
@@ -251,19 +253,12 @@ public final class MainActivity extends Activity implements NativeBridge.Host {
             config.put("platform", "android");
             config.put("appVersion", VERSION);
             config.put("bridge", NativeBridge.NAME);
-            // APP-02 compatibility: a stored server session is handed to the game exactly like the iOS shell does, so the
-            // current client (src/client/endpoint.ts) talks to that server with its device token.
-            String mode = store.get("mode");
-            if (mode == null || mode.equals("server")) {
-                String host = store.get("server.host");
-                String token = store.get("server.token");
-                if (host != null && token != null && ServerPolicy.isValid(host, debuggable) && BridgePolicy.isDeviceToken(token)) {
-                    config.put("host", ServerPolicy.normalise(host, debuggable));
-                    config.put("token", token);
-                    String deviceId = store.get("server.deviceId");
-                    if (deviceId != null) config.put("deviceId", deviceId);
-                }
-            }
+            // Same fields as the iOS shell: device name, stored mode, a valid server session (APP-02 compatible: the
+            // current client talks to that server with its device token), and a one-shot sign-out reason.
+            String reason = signedOutReason;
+            signedOutReason = null;
+            for (java.util.Map.Entry<String, String> field : BridgePolicy.configFields(deviceName(), store.get("mode"), store.get("server.host"),
+                store.get("server.token"), store.get("server.deviceId"), reason, debuggable).entrySet()) config.put(field.getKey(), field.getValue());
         } catch (Exception error) {
             Log.w(TAG, "App config incomplete: " + error.getClass().getSimpleName());
         }
@@ -389,9 +384,23 @@ public final class MainActivity extends Activity implements NativeBridge.Host {
             : new GitHubDeviceFlow(this, clientId, scope, base, base, callback);
     }
 
+    /** The name a server shows for this device's sign-in: the user's device name if set, else maker and model. */
+    private String deviceName() {
+        try {
+            String name = android.provider.Settings.Global.getString(getContentResolver(), android.provider.Settings.Global.DEVICE_NAME);
+            if (name != null && !name.trim().isEmpty()) return name;
+        } catch (Exception unavailable) {
+            // fall through
+        }
+        String model = Build.MODEL == null ? "" : Build.MODEL;
+        String maker = Build.MANUFACTURER == null ? "" : Build.MANUFACTURER;
+        return model.toLowerCase(java.util.Locale.ROOT).startsWith(maker.toLowerCase(java.util.Locale.ROOT)) ? model : (maker + " " + model).trim();
+    }
+
     @Override
     public void signedOut(String reason) {
-        Log.i(TAG, "Signed out (" + reason + "); session keys cleared, reloading the game");
+        signedOutReason = BridgePolicy.SIGN_OUT_REASONS.contains(reason) ? reason : "unauthorized";
+        Log.i(TAG, "Signed out (" + signedOutReason + "); session keys cleared, reloading the game");
         // The reload re-runs the injected config without the cleared credentials; the page shows its setup/sign-in.
         if (web != null) web.loadUrl(AssetPolicy.START_URL);
     }

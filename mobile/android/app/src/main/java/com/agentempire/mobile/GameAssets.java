@@ -60,9 +60,8 @@ final class GameAssets {
             }
             String injected = AssetPolicy.injectConfigScript(html);
             if (injected == null) return text(500, "Internal Error");
-            headers.put("Cache-Control", "no-cache");
             // No foreign frames or plugins inside the game; this keeps the bridge away from other origins' documents.
-            headers.put("Content-Security-Policy", "frame-src 'self'; child-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'");
+            headers.putAll(AssetPolicy.htmlHeaders());
             return response(mime, 200, "OK", headers, injected.getBytes(StandardCharsets.UTF_8));
         }
         headers.put("Cache-Control", rawPath.startsWith("/assets/") ? "max-age=31536000, immutable" : "no-cache");
