@@ -18,17 +18,19 @@ test('bridge policy: method and key allowlists, session keys and per-key values'
   assert.deepEqual([...policy.SESSION_KEYS], ['server.token', 'server.deviceId', 'github.token', 'github.login']);
   assert.equal(policy.isMethod('secure.get'), true);
   assert.equal(policy.isMethod('shell.exec'), false);
+  assert.deepEqual([...policy.METHODS], ['secure.get', 'secure.set', 'secure.delete', 'github.deviceFlow', 'app.signedOut', 'app.openExternal', 'app.runLocal']);
+  assert.deepEqual([...policy.MODES], ['cloud', 'server', 'local']);
   for (const key of ['anthropic.key', 'openai.key', 'password', '__proto__', '']) assert.equal(policy.isKey(key), false, key);
 
   const ok: [string, string][] = [
-    ['mode', 'cloud'], ['mode', 'server'],
+    ['mode', 'cloud'], ['mode', 'server'], ['mode', 'local'],
     ['server.host', 'https://city.example.com'], ['server.host', 'http://127.0.0.1:4714'], ['server.host', 'http://localhost:4600'], ['server.host', 'https://city.example.com:8443'],
     ['server.token', 'A'.repeat(43)], ['server.deviceId', 'abc_DEF-1'],
     ['github.token', 'gho_abcdefghijklmnop'], ['github.login', 'octo-cat'], ['state.repo', 'octo-cat/agent-empire-state'],
   ];
   for (const [k, v] of ok) assert.equal(policy.invalidValue(k, v), null, `${k}=${v}`);
   const bad: [string, unknown][] = [
-    ['mode', 'local'], ['mode', ''],
+    ['mode', 'desktop'], ['mode', ''],
     ['server.host', 'http://city.example.com'], ['server.host', 'https://city.example.com/path'], ['server.host', 'https://user:pw@city.example.com'],
     ['server.host', 'https://city.example.com/?token=x'], ['server.host', 'javascript:alert(1)'], ['server.host', 'http://192.168.1.4:4600'], ['server.host', 'https://city.example.com/'],
     ['server.token', 'short'], ['server.token', 'A'.repeat(20) + ' x'], ['server.deviceId', 'a/b'],
@@ -76,6 +78,8 @@ test('bridge policy: requests are validated before any handler runs', () => {
   assert.match(policy.parseRequest({ id: 'a1', method: 'github.deviceFlow', params: { clientId: 'Ov23li3G3aR4rgZ0lCJ3', scopes: ['repo', 'admin:org'] } }).error, /^invalid_request/);
   assert.match(policy.parseRequest({ id: 'a1', method: 'app.openExternal', params: { url: 'http://example.com' } }).error, /https/);
   assert.equal(policy.parseRequest({ id: 'a1', method: 'app.signedOut', params: { reason: 'weird' } }).params.reason, 'unauthorized');
+  // app.runLocal takes no parameters from the page: the project and the confirmation are the shell's.
+  assert.deepEqual(policy.parseRequest({ id: 'a1', method: 'app.runLocal', params: { project: '/etc', confirmed: true } }), { id: 'a1', method: 'app.runLocal', params: {} });
 });
 
 test('bridge policy: page config carries a session only in server mode with a valid host and token', () => {
@@ -89,6 +93,12 @@ test('bridge policy: page config carries a session only in server mode with a va
   assert.equal(policy.configFor({ mode: 'server', host: 'http://127.0.0.1:5000', token, local: true }).local, true);
   assert.equal(policy.configFor({ mode: 'server', local: true }).local, undefined);
   assert.equal(policy.configFor({ deviceName: '' }).deviceName, 'Desktop app');
+  // Desktop announces "Run on this computer"; a local session is the bundled loopback server only.
+  assert.equal(policy.configFor({ localAvailable: true }).localAvailable, true);
+  assert.equal(policy.configFor({}).localAvailable, undefined);
+  assert.deepEqual(policy.configFor({ deviceName: 'Mac', mode: 'local', host: 'http://127.0.0.1:52492', token, deviceId: 'd1', local: true, localAvailable: true }),
+    { platform: 'desktop', deviceName: 'Mac', mode: 'local', host: 'http://127.0.0.1:52492', token, deviceId: 'd1', local: true, localAvailable: true });
+  assert.equal(policy.configFor({ mode: 'local', host: 'https://remote.example', token }).token, undefined, 'local mode never carries a remote session');
 });
 
 test('app protocol: serves the bundle with correct MIME and refuses traversal, web-only pages and escapes', async () => {
