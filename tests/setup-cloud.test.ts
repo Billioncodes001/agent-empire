@@ -129,8 +129,8 @@ test('cloud setup: “Create my Empire” runs the real installer against a fake
   const steps: string[] = [];
   const p = plan({ providers: { anthropic: 'sk-ant-' + 'A'.repeat(40), openai: 'sk-proj-' + 'B'.repeat(40) }, projectToken: 'github_pat_' + 'C'.repeat(40), interval: 60 });
   const repo = await createEmpire(p, 'gho_tok', deps(gh), (s, st) => steps.push(`${s}:${st}`));
-  assert.deepEqual(repo, { owner: 'octo', name: 'agent-empire-state', created: true, alreadyInstalled: false });
-  assert.deepEqual(steps, ['repo:running', 'repo:done', 'secrets:running', 'secrets:done', 'state:running', 'state:done', 'workflow:running', 'workflow:done', 'verify:running', 'verify:done']);
+  assert.deepEqual(repo, { owner: 'octo', name: 'agent-empire-state', created: true, alreadyInstalled: false, execution: 'requested' });
+  assert.deepEqual(steps, ['repo:running', 'repo:done', 'secrets:running', 'secrets:done', 'state:running', 'state:done', 'execution:running', 'execution:done', 'workflow:running', 'workflow:done', 'verify:running', 'verify:done']);
   const create = gh.requests.find((c) => c.method === 'POST' && c.path === '/user/repos')!;
   assert.equal(create.body.private, true);
   assert.equal(create.body.name, 'agent-empire-state');
@@ -193,15 +193,15 @@ test('cloud setup: after a failure, Try again resumes; the repository is reused 
     return origFetch(input, init);
   }) as unknown as typeof fetch;
   await assert.rejects(createEmpire(plan(), 't', deps(gh, { fetch: counting }), (s, st, d) => second.push([s, st, d])), (e: unknown) => e instanceof CloudSetupError && e.step === 'workflow');
-  assert.deepEqual(second.filter(([, st]) => st !== 'running').map(([s, st, d]) => `${s}:${st}:${d}`), ['repo:done:already there', 'secrets:done:ANTHROPIC_API_KEY', 'state:done:initial state written']);
+  assert.deepEqual(second.filter(([, st]) => st !== 'running').map(([s, st, d]) => `${s}:${st}:${d}`), ['repo:done:already there', 'secrets:done:ANTHROPIC_API_KEY', 'state:done:initial state written', 'execution:done:requested: your coordinator creates or reuses them on its first run']);
   assert.equal(gh.requests.filter((r) => r.method === 'POST' && r.path === '/user/repos').length, 1, 'the repository is created once');
   const third: [string, string, string?][] = [];
   const repo = await createEmpire(plan(), 't', deps(gh), (s, st, d) => third.push([s, st, d]));
   assert.equal(repo.alreadyInstalled, true);
-  assert.deepEqual(third.filter(([, st]) => st !== 'running').map(([s, st]) => `${s}:${st}`), ['repo:done', 'secrets:done', 'state:skipped', 'workflow:done', 'verify:done']);
+  assert.deepEqual(third.filter(([, st]) => st !== 'running').map(([s, st]) => `${s}:${st}`), ['repo:done', 'secrets:done', 'state:skipped', 'execution:skipped', 'workflow:done', 'verify:done']);
   const fourth: string[] = [];
   await createEmpire(plan(), 't', deps(gh), (s, st) => st !== 'running' && fourth.push(`${s}:${st}`));
-  assert.deepEqual(fourth, ['repo:done', 'secrets:done', 'state:skipped', 'workflow:skipped', 'verify:done'], 'a complete install is left as it is');
+  assert.deepEqual(fourth, ['repo:done', 'secrets:done', 'state:skipped', 'execution:skipped', 'workflow:skipped', 'verify:done'], 'a complete install is left as it is');
   assert.equal(JSON.parse(gh.files(STATE_REPO)['state/meta.json']).createdAt, Date.parse('2026-10-01T12:00:00Z'), 'the Empire written first is kept');
 });
 
@@ -235,7 +235,10 @@ test('cloud setup: waits for GitHub to finish creating the repository; refuses p
   assert.equal(foreign.repos.get(STATE_REPO)!.secrets.size, 0);
   const foreignState = github().gh;
   foreignState.create(STATE_REPO, true, { 'state/meta.json': '{"schemaVersion":99}' });
-  await assert.rejects(createEmpire(plan(), 't', deps(foreignState)), (e: unknown) => e instanceof CloudSetupError && e.step === 'state' && /not a valid Empire state/.test(e.message) && /Nothing was changed/.test(e.message));
+  // Checked at the repository step, before any secret or file is written (security review #2).
+  await assert.rejects(createEmpire(plan(), 't', deps(foreignState)), (e: unknown) => e instanceof CloudSetupError && e.step === 'repo' && /not a valid Empire state/.test(e.message) && /Nothing was written to GitHub/.test(e.message));
+  assert.equal(foreignState.repos.get(STATE_REPO)!.secrets.size, 0, 'no secret is uploaded next to a state this app cannot use');
+  assert.deepEqual(foreignState.writes, [], 'nothing at all is written');
   assert.equal(foreignState.files(STATE_REPO)['state/meta.json'], '{"schemaVersion":99}', 'an unknown state is never overwritten');
   assert.ok(!foreignState.files(STATE_REPO)[WORKFLOW_PATH] && !foreignState.files(STATE_REPO)[COORDINATOR_BUNDLE_PATH], 'nothing is installed that would fail on every run');
 });
@@ -252,7 +255,7 @@ test('cloud setup: plan → secrets and limits; keys are optional per provider, 
   // An unusable repository key from GitHub is reported plainly at the secrets step, and nothing is stored.
   const bad = github().gh;
   bad.publicKey = 'c2hvcnQ=';
-  await assert.rejects(createEmpire(plan(), 't', deps(bad, { seal: undefined })), (e: unknown) => e instanceof CloudSetupError && e.step === 'secrets' && /could not encrypt your keys/.test(e.message));
+  await assert.rejects(createEmpire(plan(), 't', deps(bad, { seal: undefined })), (e: unknown) => e instanceof CloudSetupError && e.step === 'secrets' && /could not encrypt your ANTHROPIC_API_KEY/.test(e.message) && /Already done on GitHub: created the private repository octo\/agent-empire-state\./.test(e.message));
   assert.equal(bad.repos.get(STATE_REPO)!.secrets.size, 0);
 });
 

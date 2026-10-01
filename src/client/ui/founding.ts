@@ -3,7 +3,7 @@ import { store } from '../state';
 import type { Net } from '../net';
 import { CloudNet } from '../cloud/net';
 import { foundingBriefs, foundingSpend } from '../cloud/founding-plan';
-import { dollars } from '../cloud/map';
+import { dollars, executionStatus } from '../cloud/map';
 import { h, openModal } from './dom';
 
 /** Founding copy that differs between a server (or this computer) and cloud mode. */
@@ -59,7 +59,7 @@ export function openFounding(net: Net) {
     const state = cloud.info.snapshot?.state;
     if (!state) return { state: null, briefs: [], spend: null, blocked: 'Waiting for your Empire to load from GitHub…' } as const;
     // Without execution settings the coordinator refuses new jobs: founding then records the plan only.
-    const briefs = state.meta.execution ? foundingBriefs(state.empire, selected) : [];
+    const briefs = executionStatus(state).canSubmit ? foundingBriefs(state.empire, selected) : [];
     const blocked = state.meta.lifecycle.status !== 'running' ? 'Your Empire is shut down. Start it from the menu before founding your city.' : '';
     return { state, briefs, spend: foundingSpend(state, briefs.length, Date.now()), blocked } as const;
   };
@@ -93,8 +93,9 @@ export function openFounding(net: Net) {
     if (!state || !spend) {
       usage.textContent = blocked;
       footerNote.textContent = 'Nothing is sent until your Empire has loaded.';
-    } else if (!state.meta.execution) {
-      usage.textContent = `Cloud execution is not set up yet (Cloud Empire → Limits), so founding queues no paid jobs: it records your plan only. Assign each manager’s startup brief later from Management → Sectors; every job is confirmed and paid separately.`;
+    } else if (!state.meta.execution || !executionStatus(state).canSubmit) {
+      const exec = executionStatus(state);
+      usage.textContent = `${exec.kind === 'setting_up' ? 'Cloud execution is still being set up by your coordinator' : exec.kind === 'failed' ? 'Cloud execution setup needs you (Cloud Empire → Limits)' : 'Cloud execution is not set up yet (Cloud Empire → Limits)'}, so founding queues no paid jobs: it records your plan only. Assign each manager’s startup brief later from Management → Sectors; every job is confirmed and paid separately.`;
       footerNote.textContent = 'Records your founding plan. No paid jobs.';
     } else {
       const repo = `${state.meta.execution.repository.owner}/${state.meta.execution.repository.name}`;

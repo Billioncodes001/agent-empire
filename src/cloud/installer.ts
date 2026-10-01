@@ -3,11 +3,19 @@
  *
  * Steps, each reported through `onStep` so the setup screen can show progress:
  *   repo      use or create the private `<login>/agent-empire-state` (a repository the user created on GitHub,
- *             with or without an initial commit, is reused when it is theirs and private)
+ *             with or without an initial commit, is reused when it is theirs and private). Any Empire state
+ *             already there is read and parsed HERE, before anything is written: an incompatible one stops
+ *             setup with nothing changed.
  *   secrets   upload the chosen provider keys / project token as encrypted Actions secrets
  *   state     commit the coordinator bundle and the initial state (an existing Empire is never overwritten)
+ *   execution ask the coordinator to find or create the Anthropic agent and environment (src/cloud/provisioning.ts):
+ *             a `provisioning` request in a new Empire's starting state, or a `provision` intent for an existing
+ *             Empire without execution settings. Setup itself never calls Anthropic (api.anthropic.com refuses
+ *             browser calls to these endpoints) and never starts a session.
  *   workflow  commit the workflow YAML, last, so no scheduled run can start before the state exists
  *   verify    read the repository back and parse the state with the coordinator's own rules
+ *
+ * Every error carries exactly what this run already wrote to GitHub (`InstallError.written`).
  *
  * Idempotent and resumable: every step checks what is already there, so running it again after a partial failure
  * continues where it stopped. Commits use the Git Data API with `force: false`; a concurrent writer is retried.
@@ -19,7 +27,9 @@
  * Setup never starts paid work: the initial state has no jobs, nothing is dispatched, and the workflow has no push
  * trigger, so committing it does not start a run.
  */
-import { initialCloudState, parseStateFiles, serializeState, STATE_FILES, validateExecution, validateLimits, type CloudExecution, type CloudLimits } from './schema.js';
+import { initialCloudState, parseStateFiles, serializeState, STATE_FILES, validateExecution, validateLimits, validateProvisionRepository, type CloudExecution, type CloudLimits, type CloudState } from './schema.js';
+import { intentPath, parseIntent } from './intents.js';
+import type { ExecutionConfig } from '../shared/execution.js';
 import { decodeBase64Utf8, defaultSleep, encodeBase64Utf8, GitHubClient, GitHubError, GitHubStateStore, validateRepoRef, type FileChange } from './store.js';
 import { COORDINATOR_BUNDLE_PATH, coordinatorWorkflow, WORKFLOW_FILE, WORKFLOW_PATH, type WorkflowOptions } from './workflow.js';
 
@@ -41,11 +51,12 @@ export const SECRET_NAMES = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'PROJECT_GIT
 export type SecretName = (typeof SECRET_NAMES)[number];
 export const DEFAULT_STATE_REPO = 'agent-empire-state';
 
-export type InstallStep = 'repo' | 'secrets' | 'state' | 'workflow' | 'verify';
+export type InstallStep = 'repo' | 'secrets' | 'state' | 'execution' | 'workflow' | 'verify';
 export const INSTALL_STEPS: readonly { step: InstallStep; label: string }[] = [
   { step: 'repo', label: 'Prepare your private state repository' },
   { step: 'secrets', label: 'Encrypt and store your keys as Actions secrets' },
   { step: 'state', label: 'Write your Empire’s starting state' },
+  { step: 'execution', label: 'Request your Anthropic agent and environment' },
   { step: 'workflow', label: 'Install the always-on coordinator' },
   { step: 'verify', label: 'Check everything is in place' },
 ];
@@ -54,7 +65,13 @@ export type StepStatus = 'running' | 'done' | 'skipped';
 export type OnStep = (step: InstallStep, status: StepStatus, detail?: string) => void;
 
 export class InstallError extends Error {
+  /** What this run had already written to GitHub when it failed (user-safe phrases, no secret values). */
+  written: readonly string[] = [];
   constructor(readonly step: InstallStep, readonly code: string, message: string, readonly status = 0) { super(message); this.name = 'InstallError'; }
+}
+/** One sentence saying exactly what a failed run already wrote, for the end of an error message. */
+export function writtenSummary(written: readonly string[]): string {
+  return written.length ? `Already done on GitHub: ${written.join('; ')}.` : 'Nothing was written to GitHub.';
 }
 
 export interface InstallOptions {
@@ -62,6 +79,13 @@ export interface InstallOptions {
   secrets: Partial<Record<SecretName, string>>;
   limits: CloudLimits;
   execution?: CloudExecution;
+  /**
+   * The project repository jobs run on. When given (setup passes it only with an Anthropic key), the coordinator
+   * is asked to find or create the Anthropic agent and environment for it. Ignored when `execution` is given.
+   */
+  provision?: ExecutionConfig['repository'];
+  /** Random UUID source (tests); defaults to crypto.getRandomValues. */
+  uuid?: () => string;
   /** Contents of the built single-file coordinator (npm run build:cloud). */
   coordinatorBundle: string;
   workflow?: WorkflowOptions;
@@ -77,6 +101,8 @@ export interface InstallResult {
   commit?: string;
   /** The state files were already there; they were left untouched. */
   alreadyInstalled: boolean;
+  /** What the execution step did: `requested` (the coordinator sets it up on its next run) or why it did not. */
+  execution: 'requested' | 'already_configured' | 'already_requested' | 'no_anthropic_key';
   steps: Record<InstallStep, 'done' | 'skipped'>;
 }
 
@@ -92,19 +118,36 @@ export function checkInstallOptions(options: InstallOptions) {
   try { limits = validateLimits(options.limits); } catch { throw new InstallError('state', 'invalid', 'The spending limits are invalid.'); }
   let execution: CloudExecution | undefined;
   try { execution = options.execution ? validateExecution(options.execution) : undefined; } catch { throw new InstallError('state', 'invalid', 'The execution settings are invalid.'); }
+  let provision: ExecutionConfig['repository'] | undefined;
+  try { provision = options.provision && !execution ? validateProvisionRepository(options.provision) : undefined; } catch { throw new InstallError('execution', 'invalid', 'The project repository for jobs is invalid.'); }
   if (!options.coordinatorBundle || options.coordinatorBundle.length > 5 * 1024 * 1024) throw new InstallError('state', 'bundle_invalid', 'A coordinator bundle is required.');
   for (const name of Object.keys(options.secrets)) if (!SECRET_NAMES.includes(name as SecretName)) throw new InstallError('secrets', 'secret_name_invalid', 'Unsupported secret name.');
   const projectToken = options.secrets.PROJECT_GITHUB_TOKEN?.trim();
   if (projectToken && !projectToken.startsWith('github_pat_')) throw new InstallError('secrets', 'project_token_not_fine_grained', 'The project token must be a fine-grained personal access token scoped to the selected repositories (github_pat_…). Classic and OAuth tokens grant too much access.');
   const workflow = coordinatorWorkflow(options.workflow); // validates the interval
-  return { repoName, limits, execution, workflow };
+  return { repoName, limits, execution, provision, workflow };
+}
+
+/** RFC 4122 version 4 from getRandomValues (also available outside secure contexts, unlike randomUUID). */
+function randomUuid(): string {
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
+  const hex = [...b].map(x => x.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/** Parses an existing Empire's state files with the coordinator's rules; an InstallError says why it is unusable. */
+function parseExisting(step: InstallStep, files: Record<string, string>, now: number, where: string): CloudState {
+  try { return parseStateFiles(files, now).state; }
+  catch (error) { throw new InstallError(step, 'state_invalid', `${where} holds files that are not a valid Empire state this app can use (${error instanceof Error ? error.message.slice(0, 160) : 'invalid'}). Use an empty private repository instead, or update this app.`); }
 }
 
 export async function installStateRepository(client: GitHubClient, options: InstallOptions, encryptSecret: EncryptSecret): Promise<InstallResult> {
-  const { repoName, limits, execution, workflow } = checkInstallOptions(options);
+  const { repoName, limits, execution, provision, workflow } = checkInstallOptions(options);
   const onStep: OnStep = options.onStep ?? (() => {});
   const sleep = options.sleep ?? defaultSleep;
   const steps = {} as InstallResult['steps'];
+  const written: string[] = [];
   let step: InstallStep = 'repo';
   const finish = (s: InstallStep, status: 'done' | 'skipped', detail?: string) => { steps[s] = status; onStep(s, status, detail); };
   const begin = (s: InstallStep) => { step = s; onStep(s, 'running'); };
@@ -121,6 +164,7 @@ export async function installStateRepository(client: GitHubClient, options: Inst
       try {
         repo = (await client.request('POST', '/user/repos', { name: repoName, private: true, auto_init: true, description: 'Agent Empire state (written by the coordinator workflow). Keep this repository private.', has_issues: false, has_wiki: false, has_projects: false })).data;
         created = true;
+        written.push(`created the private repository ${owner}/${repoName}`);
       } catch (error) {
         if (error instanceof GitHubError && error.status === 422) repo = await getRepo(client, owner, repoName); // created meanwhile
         else if (error instanceof GitHubError && (error.status === 403 || error.status === 404))
@@ -134,8 +178,22 @@ export async function installStateRepository(client: GitHubClient, options: Inst
     const branch = typeof repo.default_branch === 'string' && repo.default_branch ? repo.default_branch : 'main';
     const ref = validateRepoRef({ owner, repo: repoName, branch, workflowFile: WORKFLOW_FILE });
     const base = `/repos/${owner}/${repoName}`;
-    await ensureBranch(client, base, branch, created, options.branchWaitMs ?? BRANCH_WAIT, sleep);
-    finish('repo', 'done', created ? 'created' : 'already there');
+    // An Empire already in a reused repository is read and checked before anything is written (no secret, no
+    // README): a state this app cannot use stops setup here, with nothing changed.
+    let existing: CloudState | undefined;
+    const empty = !created && !(await branchExists(client, base, branch));
+    if (!created && !empty) {
+      const head = await readHead(client, base, branch);
+      const stateFiles = Object.values(STATE_FILES) as string[];
+      if (stateFiles.some(path => head.entries.has(path))) {
+        const files: Record<string, string> = {};
+        for (const path of stateFiles) { const t = await blobText(client, base, head, path); if (t !== undefined) files[path] = t; }
+        existing = parseExisting('repo', files, options.now, `${owner}/${repoName}`);
+      }
+    }
+    // The Git Data API needs one commit: only an empty repository the user created gets a README.md first commit.
+    if (await ensureBranch(client, base, branch, created, options.branchWaitMs ?? BRANCH_WAIT, sleep)) written.push(`added README.md as the first commit of the empty repository ${owner}/${repoName}`);
+    finish('repo', 'done', created ? 'created' : empty ? 'already there (empty, so README.md was added)' : existing ? 'already there, with your Empire' : 'already there');
 
     // ---- secrets ----------------------------------------------------------------------------------------
     begin('secrets');
@@ -148,10 +206,11 @@ export async function installStateRepository(client: GitHubClient, options: Inst
         let encrypted: string;
         // A key GitHub sent that cannot be used (wrong length or encoding) must not surface as "something went wrong".
         try { encrypted = await encryptSecret(key.key, value.trim()); }
-        catch { throw new InstallError('secrets', 'secret_encryption_failed', 'This app could not encrypt your keys with the repository’s public key from GitHub. Nothing was stored; try again.'); }
+        catch { throw new InstallError('secrets', 'secret_encryption_failed', `This app could not encrypt your ${name} with the repository’s public key from GitHub, so it was not stored. Try again.`); }
         if (typeof encrypted !== 'string' || !encrypted || encrypted === value || encrypted.includes(value.trim())) throw new InstallError('secrets', 'secret_encryption_invalid', 'Secret encryption did not produce ciphertext.');
         await client.request('PUT', `${base}/actions/secrets/${name}`, { encrypted_value: encrypted, key_id: key.key_id });
         uploaded.push(name);
+        written.push(`stored the encrypted Actions secret ${name}`);
       }
       finish('secrets', 'done', uploaded.join(', '));
     } else finish('secrets', 'skipped', 'no keys given');
@@ -160,31 +219,72 @@ export async function installStateRepository(client: GitHubClient, options: Inst
     begin('state');
     const store = new GitHubStateStore(client, ref);
     let alreadyInstalled = false;
+    let current: CloudState | undefined = existing;
+    let wroteInitial = false;
     const stateCommit = await commitIfNeeded(client, store, base, branch, sleep, async (files, text) => {
       alreadyInstalled = files.has(STATE_FILES.meta);
+      wroteInitial = false;
       if (alreadyInstalled) {
-        // An existing Empire is kept, but only if the coordinator can read it: nothing is installed on top of a
-        // state it would refuse (a newer schema, or files that are not an Empire), so no run burns minutes failing.
-        const existing: Record<string, string> = {};
-        for (const path of Object.values(STATE_FILES)) { const t = await text(path); if (t !== undefined) existing[path] = t; }
-        try { parseStateFiles(existing, options.now); }
-        catch (error) { throw new InstallError('state', 'state_invalid', `${owner}/${repoName} holds files that are not a valid Empire state (${error instanceof Error ? error.message.slice(0, 160) : 'invalid'}). Nothing was changed; use an empty private repository instead.`); }
+        // Checked again at commit time (another device may have written meanwhile): nothing is installed on top
+        // of a state the coordinator would refuse, so no run burns minutes failing.
+        const found: Record<string, string> = {};
+        for (const path of Object.values(STATE_FILES)) { const t = await text(path); if (t !== undefined) found[path] = t; }
+        current = parseExisting('state', found, options.now, `${owner}/${repoName}`);
       }
       const changes: FileChange[] = [];
       if ((await text(COORDINATOR_BUNDLE_PATH)) !== options.coordinatorBundle) changes.push({ path: COORDINATOR_BUNDLE_PATH, content: options.coordinatorBundle });
       // Never overwrite an existing Empire: re-running setup updates the coordinator only.
       if (!alreadyInstalled) {
-        const initial = initialCloudState(options.now, { limits, ...(execution ? { execution } : {}), ...(options.workflow?.intervalMinutes ? { intervalMinutes: options.workflow.intervalMinutes } : {}) });
+        const initial = initialCloudState(options.now, { limits, ...(execution ? { execution } : {}), ...(provision ? { provision } : {}), ...(options.workflow?.intervalMinutes ? { intervalMinutes: options.workflow.intervalMinutes } : {}) });
         for (const [path, content] of Object.entries(serializeState(initial))) changes.push({ path, content });
+        current = initial; wroteInitial = true;
       }
       return { changes, message: alreadyInstalled ? 'Agent Empire: update coordinator' : 'Agent Empire: initial state and coordinator' };
     });
+    if (stateCommit.changed) written.push(wroteInitial ? 'committed the starting state and the coordinator' : 'updated the coordinator (your Empire’s state was kept)');
     finish('state', stateCommit.changed || !alreadyInstalled ? 'done' : 'skipped', alreadyInstalled ? 'existing Empire kept' : 'initial state written');
+
+    // ---- execution --------------------------------------------------------------------------------------
+    begin('execution');
+    let executionStep: InstallResult['execution'];
+    if (wroteInitial) {
+      executionStep = execution ? 'already_configured' : provision ? 'requested' : 'no_anthropic_key';
+    } else if (current?.meta.execution) executionStep = 'already_configured';
+    else if (current?.meta.provisioning) executionStep = 'already_requested';
+    else if (!provision) executionStep = 'no_anthropic_key';
+    else {
+      // An existing Empire without execution settings: ask its coordinator through an intent, like any client.
+      let found = false;
+      const intentCommit = await commitIfNeeded(client, store, base, branch, sleep, async (files, text) => {
+        found = false;
+        for (const path of files.keys()) {
+          if (!path.startsWith('intents/')) continue;
+          const t = await text(path);
+          try { if (t && parseIntent(path, t).kind === 'provision') { found = true; return { changes: [], message: '' }; } } catch { /* the coordinator rejects it */ }
+        }
+        const metaText = await text(STATE_FILES.meta);
+        const configRevision = metaText ? Number(JSON.parse(metaText).configRevision) : 0;
+        const id = (options.uuid ?? randomUuid)();
+        const content = `${JSON.stringify({ schemaVersion: 1, id, createdAt: options.now, kind: 'provision', repository: provision, configRevision }, null, 2)}\n`;
+        parseIntent(intentPath(id), content); // never commit an intent the coordinator could not parse
+        return { changes: [{ path: intentPath(id), content }], message: `Agent Empire intent provision ${id}` };
+      });
+      if (intentCommit.changed) written.push('added a request for your coordinator to set up the Anthropic agent and environment');
+      executionStep = found ? 'already_requested' : 'requested';
+    }
+    const executionDetail: Record<InstallResult['execution'], string> = {
+      requested: 'requested: your coordinator creates or reuses them on its first run',
+      already_configured: 'already set up',
+      already_requested: 'already requested',
+      no_anthropic_key: options.secrets.OPENAI_API_KEY?.trim() && !options.secrets.ANTHROPIC_API_KEY?.trim() ? 'OpenAI only: jobs can’t run until the OpenAI adapter exists' : 'no Anthropic key given',
+    };
+    finish('execution', executionStep === 'requested' ? 'done' : 'skipped', executionDetail[executionStep]);
 
     // ---- workflow ---------------------------------------------------------------------------------------
     begin('workflow');
     const workflowCommit = await commitIfNeeded(client, store, base, branch, sleep, async (_files, text) =>
       (await text(WORKFLOW_PATH)) === workflow ? { changes: [], message: '' } : { changes: [{ path: WORKFLOW_PATH, content: workflow }], message: 'Agent Empire: install the coordinator workflow' });
+    if (workflowCommit.changed) written.push('committed the coordinator workflow');
     finish('workflow', workflowCommit.changed ? 'done' : 'skipped', workflowCommit.changed ? undefined : 'already installed');
 
     // ---- verify -----------------------------------------------------------------------------------------
@@ -195,12 +295,27 @@ export async function installStateRepository(client: GitHubClient, options: Inst
     try { parseStateFiles(Object.fromEntries(Object.entries(snapshot.files).filter(([path]) => !path.startsWith('intents/'))), options.now); }
     catch (error) { throw new InstallError('verify', 'state_invalid', `${owner}/${repoName} holds files that are not a valid Empire state (${error instanceof Error ? error.message.slice(0, 160) : 'invalid'}). Use an empty private repository instead.`); }
     finish('verify', 'done');
-    return { owner, repo: repoName, branch, created, secrets: uploaded, commit: snapshot.sha, alreadyInstalled, steps };
+    return { owner, repo: repoName, branch, created, secrets: uploaded, commit: snapshot.sha, alreadyInstalled, execution: executionStep, steps };
   } catch (error) {
-    if (error instanceof InstallError) throw error;
-    if (error instanceof GitHubError) throw new InstallError(step, error.code, error.message, error.status);
-    throw new InstallError(step, 'unexpected', 'Something went wrong while setting up the state repository.');
+    const failure = error instanceof InstallError ? error
+      : error instanceof GitHubError ? new InstallError(step, error.code, error.message, error.status)
+        : new InstallError(step, 'unexpected', 'Something went wrong while setting up the state repository.');
+    failure.written = [...written];
+    throw failure;
   }
+}
+
+async function branchExists(client: GitHubClient, base: string, branch: string): Promise<boolean> {
+  try { await client.request('GET', `${base}/git/ref/heads/${branch}`); return true; }
+  catch (error) { if (error instanceof GitHubError && (error.status === 404 || error.status === 409)) return false; throw error; }
+}
+
+async function blobText(client: GitHubClient, base: string, head: Head, path: string): Promise<string | undefined> {
+  const entry = head.entries.get(path);
+  if (!entry) return undefined;
+  const blob = await client.request('GET', `${base}/git/blobs/${entry.sha}`);
+  if (blob.data?.encoding !== 'base64' || typeof blob.data?.content !== 'string') return undefined;
+  try { return decodeBase64Utf8(blob.data.content); } catch { return undefined; }
 }
 
 async function getRepo(client: GitHubClient, owner: string, name: string): Promise<any | null> {
@@ -213,17 +328,17 @@ async function getRepo(client: GitHubClient, owner: string, name: string): Promi
  * the user created without a README is empty (HTTP 409 "Git Repository is empty"): give it a first commit through the
  * Contents API, which works on empty repositories.
  */
-async function ensureBranch(client: GitHubClient, base: string, branch: string, created: boolean, waits: readonly number[], sleep: (ms: number) => Promise<void>) {
-  const head = async () => {
-    try { await client.request('GET', `${base}/git/ref/heads/${branch}`); return true; }
-    catch (error) { if (error instanceof GitHubError && (error.status === 404 || error.status === 409)) return false; throw error; }
-  };
-  if (await head()) return;
+/** Returns true when it gave an empty repository the user created a README.md first commit. */
+async function ensureBranch(client: GitHubClient, base: string, branch: string, created: boolean, waits: readonly number[], sleep: (ms: number) => Promise<void>): Promise<boolean> {
+  const head = () => branchExists(client, base, branch);
+  if (await head()) return false;
+  let wroteReadme = false;
   if (!created) {
     await client.request('PUT', `${base}/contents/README.md`, { message: 'Agent Empire state repository', content: encodeBase64Utf8(STATE_README), branch });
-    if (await head()) return;
+    wroteReadme = true;
+    if (await head()) return true;
   }
-  for (const ms of waits) { await sleep(ms); if (await head()) return; }
+  for (const ms of waits) { await sleep(ms); if (await head()) return wroteReadme; }
   throw new InstallError('repo', 'repo_not_ready', 'GitHub hasn’t finished creating the repository yet. Try again in a moment.');
 }
 
@@ -248,13 +363,7 @@ async function commitIfNeeded(
 ): Promise<{ changed: boolean; sha: string }> {
   for (let attempt = 1; attempt <= COMMIT_ATTEMPTS; attempt++) {
     const head = await readHead(client, base, branch);
-    const text = async (path: string) => {
-      const entry = head.entries.get(path);
-      if (!entry) return undefined;
-      const blob = await client.request('GET', `${base}/git/blobs/${entry.sha}`);
-      if (blob.data?.encoding !== 'base64' || typeof blob.data?.content !== 'string') return undefined;
-      try { return decodeBase64Utf8(blob.data.content); } catch { return undefined; }
-    };
+    const text = (path: string) => blobText(client, base, head, path);
     const next = await plan(head.entries, text);
     if (!next.changes.length) return { changed: false, sha: head.sha };
     const result = await store.commit(head, next.changes, next.message);

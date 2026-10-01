@@ -3,7 +3,8 @@
  * the seeded state repository from tools/cloud-seed.ts with CORS, and logs every write.
  *
  *   FAKE_GITHUB_PORT=4710 npx tsx tools/fake-github-server.mts
- *   VITE_AGENT_EMPIRE_FAKE_GITHUB_API=http://127.0.0.1:4710 npm run build:client   (a fixture build; rebuild normally after)
+ *   VITE_AGENT_EMPIRE_FAKE_GITHUB_API=http://127.0.0.1:4710 npm run build:client:fixture   (writes dist/public-fixture only)
+ *   AGENT_EMPIRE_ALLOW_FIXTURE_GAME=1 for the Debug iOS build to bundle it (tools/sync-ios-game.sh); packaging refuses it otherwise
  *
  * Any bearer token is accepted; the seeded account is "founder".
  */

@@ -13,7 +13,7 @@
  * starts: no job is queued and no run is triggered. The bundle is loaded and checked before the first GitHub call.
  */
 import { GitHubClient as CloudGitHubClient } from '../../cloud/store';
-import { INSTALL_STEPS, InstallError, installStateRepository, type InstallStep, type SecretName, type StepStatus } from '../../cloud/installer';
+import { INSTALL_STEPS, InstallError, installStateRepository, writtenSummary, type InstallResult, type InstallStep, type SecretName, type StepStatus } from '../../cloud/installer';
 import type { CloudLimits } from '../../cloud/schema';
 import { linkedProviders, parseCents, STATE_REPO_NAME, type Interval, type Limits, type ProviderId, type RepoRef } from './model';
 import { sealForGitHub } from './sealed-box';
@@ -30,6 +30,26 @@ export interface StateRepo {
   created: boolean;
   /** The repository already held an Empire, which was kept as it is. */
   alreadyInstalled?: boolean;
+  /** Whether the coordinator was asked to set up the Anthropic agent and environment (see executionPlan). */
+  execution?: InstallResult['execution'];
+}
+
+/**
+ * Where jobs run and how execution gets set up. With an Anthropic key, the coordinator finds or creates the Anthropic
+ * agent and environment on its first run (src/cloud/provisioning.ts) for the first selected project. The device does
+ * not call Anthropic: api.anthropic.com refuses browser calls to those endpoints, and the key is sealed into an Actions
+ * secret here and never read back. OpenAI-only plans get no execution until the OpenAI adapter exists.
+ */
+export function executionPlan(plan: Pick<CloudPlan, 'projects' | 'providers'>): { repository: { owner: string; name: string; baseBranch: string } | null; note: string } {
+  const project = plan.projects[0];
+  if (!plan.providers.anthropic.trim())
+    return { repository: null, note: 'Jobs need an Anthropic key: OpenAI-only Empires can’t run jobs until the OpenAI adapter exists. Your OpenAI key is stored for then.' };
+  if (!project) return { repository: null, note: 'Choose a project repository for jobs to run on.' };
+  const more = plan.projects.length > 1 ? ` (the first of your ${plan.projects.length} projects; change it later in Cloud Empire → Limits)` : '';
+  return {
+    repository: { owner: project.owner, name: project.name, baseBranch: project.defaultBranch || 'main' },
+    note: `Jobs run on ${project.owner}/${project.name}${more}. Your coordinator’s first run creates (or reuses) an Anthropic agent “Agent Empire worker” and a cloud environment in your Anthropic account. Creating them is not a billed item and starts no session; you pay only for jobs you confirm.`,
+  };
 }
 
 export interface CloudPlan {
@@ -141,6 +161,7 @@ export async function createEmpire(plan: CloudPlan, token: string, deps: CreateD
         repo: STATE_REPO_NAME,
         secrets: planSecrets(plan),
         limits,
+        ...(executionPlan(plan).repository ? { provision: executionPlan(plan).repository! } : {}),
         coordinatorBundle: bundle,
         workflow: { intervalMinutes: plan.interval },
         now: (deps.now ?? Date.now)(),
@@ -149,12 +170,13 @@ export async function createEmpire(plan: CloudPlan, token: string, deps: CreateD
       },
       async (key, value) => seal(key, value),
     );
-    return { owner: result.owner, name: result.repo, created: result.created, alreadyInstalled: result.alreadyInstalled };
+    return { owner: result.owner, name: result.repo, created: result.created, alreadyInstalled: result.alreadyInstalled, execution: result.execution };
   } catch (error) {
     if (error instanceof InstallError) {
       const ours = !['github_http', 'github_unreachable', 'github_timeout', 'github_response_large'].includes(error.code);
       const code = ['state_repository_public', 'repo_conflict', 'repo_create_forbidden', 'state_invalid'].includes(error.code) ? 'repo_conflict' : ['invalid', 'bundle_invalid', 'secret_name_invalid', 'project_token_not_fine_grained'].includes(error.code) ? 'invalid' : 'github';
-      throw new CloudSetupError(ours ? error.message : httpMessage(error.status, error.message, error.step), code, error.step);
+      // Every failure says exactly what this attempt already wrote, so "Try again" is never a guess.
+      throw new CloudSetupError(`${ours ? error.message : httpMessage(error.status, error.message, error.step)} ${writtenSummary(error.written)}`, code, error.step);
     }
     throw new CloudSetupError('Something went wrong while setting up your Empire. Try again.', 'github');
   }

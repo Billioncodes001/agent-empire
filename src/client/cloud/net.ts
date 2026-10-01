@@ -26,6 +26,18 @@ export const POLL_VISIBLE_MS = 60_000;
 export const POLL_FAST_MS = 15_000;
 export const FAST_WINDOW_MS = 3 * 60_000;
 const LOCAL_ID = 'cloud-you';
+
+/**
+ * The toast for an intent that failed to send. A lost connection or a GitHub server error may hide a write that did
+ * land; for a paid job that matters, because assigning it again creates a second paid job under a new id.
+ */
+export function submitFailureMessage(kind: string, label: string, error: unknown): string {
+  const reason = error instanceof Error ? error.message : '';
+  const unsure = error instanceof RepoError && (error.code === 'offline' || error.status >= 500);
+  if (kind === 'new_job' && unsure)
+    return `${label}: may not have been sent (${reason || 'GitHub didn’t answer'}). Check Cloud Empire → Jobs first: it may already be queued, and assigning it again would start a second paid job.`;
+  return `${label}: not sent. ${reason}`.trim();
+}
 const CITY_ACTIONS = new Set(['delegate', 'found', 'build', 'hire', 'buy-land', 'upgrade', 'reinvest', 'office-floor', 'office-workstation']);
 
 /** What each server-only message is, for the explanation shown instead of sending it. */
@@ -254,7 +266,7 @@ export class CloudNet extends Net {
       this.fastUntil = this.now() + FAST_WINDOW_MS;
       return id;
     } catch (error) {
-      this.notify(`${label}: not sent. ${error instanceof Error ? error.message : ''}`.trim(), 'error');
+      this.notify(submitFailureMessage(body.kind, label, error), 'error');
       return null;
     } finally {
       this.info.busy = false;

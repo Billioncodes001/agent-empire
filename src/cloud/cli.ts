@@ -53,7 +53,7 @@ export async function main(argv: string[], env: CliEnv, out: (line: string) => v
       store, provider: providerFromEnv(env, transport), now: Date.now, runId,
       allowSelfDisable: env.AGENT_EMPIRE_SELF_DISABLE === 'true', log: out,
     });
-    out(JSON.stringify({ runId: report.runId, revision: report.revision, intents: report.intents.map(i => ({ id: i.id, kind: i.kind, outcome: i.outcome, reason: i.reason })), observed: report.observed, stopped: report.stopped, commits: report.commits, dispatched: report.dispatched, lifecycle: report.lifecycle, migrated: report.migrated, intentsTruncated: report.intentsTruncated }));
+    out(JSON.stringify({ runId: report.runId, revision: report.revision, intents: report.intents.map(i => ({ id: i.id, kind: i.kind, outcome: i.outcome, reason: i.reason })), observed: report.observed, stopped: report.stopped, commits: report.commits, dispatched: report.dispatched, lifecycle: report.lifecycle, migrated: report.migrated, intentsTruncated: report.intentsTruncated, provisioning: report.provisioning }));
     return 0;
   } catch (error) {
     out(`coordinator failed: ${error instanceof Error ? `${error.name}: ${error.message}` : 'unknown error'}`);

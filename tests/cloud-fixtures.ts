@@ -1,5 +1,5 @@
 /** Shared no-network fixtures for the cloud coordinator tests. */
-import { DispatchFailure, type DispatchRequest, type ProviderAdapter, type ProviderObservation } from '../src/cloud/provider';
+import { DispatchFailure, ProvisionError, type DispatchRequest, type ProviderAdapter, type ProviderObservation } from '../src/cloud/provider';
 import { initialCloudState, serializeState, type CloudExecution, type CloudLimits, type CloudState, type EventCursorState } from '../src/cloud/schema';
 import { MemoryStateStore } from '../src/cloud/store';
 import { intentPath, type CloudIntent } from '../src/cloud/intents';
@@ -25,6 +25,18 @@ export class FakeProvider implements ProviderAdapter {
   wrongBudget = new Set<string>();
   private counter = 0;
 
+  canProvision = true;
+  /** Next provision outcomes: 'retryable' | 'fatal' failures, otherwise success (created once, then reused). */
+  provisionFails: ('retryable' | 'fatal')[] = [];
+  provisioned = false;
+  async provision() {
+    this.calls.push('provision');
+    const fail = this.provisionFails.shift();
+    if (fail) throw new ProvisionError(fail === 'fatal' ? 'Anthropic rejected the key.' : 'The provider response timed out.', fail === 'retryable');
+    const created = !this.provisioned;
+    this.provisioned = true;
+    return { agentId: 'agent_provisioned1', environmentId: 'env_provisioned1', agentCreated: created, environmentCreated: created };
+  }
   sessionFor(jobId: string) { return [...this.sessions.entries()].find(([, s]) => s.jobId === jobId)?.[0]; }
   finish(jobId: string, stopReason: Session['stopReason'] = 'end_turn', cost = 40) {
     const s = this.sessions.get(this.sessionFor(jobId)!)!; s.status = 'idle'; s.stopReason = stopReason; s.cost = cost;

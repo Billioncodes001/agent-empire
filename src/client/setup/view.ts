@@ -12,7 +12,7 @@ import {
 import { PROJECT_TOKEN_GUIDANCE } from '../../cloud/installer';
 import { defaultDeviceName, LoginFailure, parseServerAddress, revokeDevice, signInToServer, type ServerSession } from './server-login';
 import { GitHubClient, GitHubError, type RepoListing } from './github';
-import { CloudSetupError, createEmpire, CREATE_STEPS, type CreateStep, type StateRepo } from './cloud-setup';
+import { CloudSetupError, createEmpire, CREATE_STEPS, executionPlan, type CreateStep, type StateRepo } from './cloud-setup';
 import { GITHUB_NEW_STATE_REPO_URL, GITHUB_SCOPES, GITHUB_TOKEN_URL, PROVIDER_KEY_URLS } from './config';
 import { dismissKeyboard, isTouchDevice, trackKeyboard } from '../keyboard';
 
@@ -792,6 +792,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
             row('Projects', s.repos.map((r) => `${r.owner}/${r.name}`).join(', ')),
             row('AI providers', linkedProviders(s.providers).map((id) => PROVIDER_NAMES[id]).join(' and ') + ' · key encrypted, never shown again'),
             row('Limits', `${s.limits.maxConcurrent} job${s.limits.maxConcurrent === 1 ? '' : 's'} at once · ${per === null ? '?' : dollars(per)} per job · ${day === null ? '?' : dollars(day)} per day${s.limits.approveEachJob ? ' · you approve each job' : ''}`),
+            row('Jobs run', executionPlan({ projects: s.repos, providers: s.providers }).note),
             row('Project token', s.projectToken.trim() ? 'fine-grained token · encrypted, never shown again' : 'not added: jobs can’t reach your projects until you add one (run setup again)'),
             row('App closed', `Your Empire keeps working. Its coordinator runs ${s.interval === 60 ? 'hourly' : `every ${s.interval} minutes`} in GitHub Actions (about ${actionsEstimate(s.interval).minutes.toLocaleString()} Actions minutes a month), sooner when the app wakes it. Only “Shut down Empire” in the game stops it.`),
             row('Costs', 'GitHub Actions minutes are billed to your GitHub account; API usage to your AI provider. Agent Empire charges nothing.'),
@@ -818,7 +819,8 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
       const mark = (step: CreateStep, s: 'running' | 'done' | 'skipped' | 'failed', detail?: string) => {
         const li = items.get(step)!;
         li.className = `su-prog is-${s === 'skipped' ? 'done' : s}`;
-        li.querySelector('.su-prog-state')!.textContent = ` — ${s === 'running' ? 'in progress' : s === 'skipped' ? `already done${detail ? ` (${detail})` : ''}` : s}`;
+        const skipped = detail && !/^already/.test(detail) ? `skipped (${detail})` : `already done${detail ? ` (${detail.replace(/^already /, '')})` : ''}`;
+        li.querySelector('.su-prog-state')!.textContent = ` — ${s === 'running' ? 'in progress' : s === 'skipped' ? skipped : s === 'done' && detail && step === 'execution' ? `done (${detail})` : s}`;
       };
       async function run() {
         if (busy || !state.github.token || !state.github.login) return;
@@ -838,6 +840,13 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
           dispatch({ type: 'forgetSecrets' });
           await Promise.allSettled([deps.native.secureSet('state.repo', `${repo.owner}/${repo.name}`), deps.native.secureSet('mode', 'cloud')]);
           result.replaceChildren(el('p', { class: 'su-success' }, icon(ICONS.check, 'su-inline-ico'), repo.alreadyInstalled ? `Your Empire was already in ${repo.owner}/${repo.name}; it was kept as it is and its coordinator is up to date.` : `Your Empire has a home: ${repo.owner}/${repo.name}. Nothing has been started or charged.`));
+          const executionNote = {
+            requested: 'Your coordinator sets up your Anthropic agent and environment on its first run (within your schedule). Cloud Empire shows when execution is ready; until then new jobs are refused, not charged.',
+            already_requested: 'Execution setup is already waiting for your coordinator’s next run.',
+            already_configured: 'Execution is already set up; jobs run where they did before.',
+            no_anthropic_key: 'No Anthropic key: jobs can’t run yet. OpenAI-only Empires can’t run jobs until the OpenAI adapter exists.',
+          }[repo.execution ?? 'requested'];
+          result.append(el('p', { class: 'su-note', text: executionNote }));
           busy = false;
           setTimeout(() => deps.onCloudCreated(repo, { token, login }), reduced ? 0 : 900);
         } catch (err) {
