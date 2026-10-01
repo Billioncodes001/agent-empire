@@ -149,6 +149,22 @@ async function menuCoverage(page: Page, label: string) {
   check(`${label} no overlay painted near the close button`, bright < 0.02, `${(bright * 100).toFixed(1)}% teal pixels`);
 }
 
+/** Visible dialogs whose surface is light (the old cream theme); dark = background luminance under 0.2. */
+async function lightDialogs(page: Page): Promise<string[]> {
+  return page.evaluate(`(() => {
+    const lum = (c) => { const m = c.match(/rgba?\\(([^)]+)\\)/); if (!m) return null; const [r, g, b, a = 1] = m[1].split(/[ ,\\/]+/).filter(Boolean).map(Number);
+      if (a < 0.5) return null; const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b); };
+    return [...document.querySelectorAll('#modal-root .modal')].filter((m) => m.getClientRects().length).filter((m) => {
+      const cs = getComputedStyle(m); const head = m.querySelector('header');
+      return [cs.backgroundImage, cs.backgroundColor, head && getComputedStyle(head).backgroundColor].filter(Boolean).map(lum).some((v) => v !== null && v > 0.2);
+    }).map((m) => m.getAttribute('aria-label') || m.className);
+  })()`);
+}
+const textFocused = (page: Page) => page.evaluate(() => {
+  const a = document.activeElement as HTMLInputElement | null;
+  return !!a && (a.tagName === 'TEXTAREA' || a.isContentEditable || (a.tagName === 'INPUT' && !['button', 'checkbox', 'radio', 'range', 'submit'].includes(a.type)));
+});
+
 async function landscape(browser: Browser, width: number, height: number, full: boolean) {
   const label = `${width}x${height}`;
   const { context, page, errors, splashAtStart } = await open(browser, { width, height, touch: true });
@@ -241,6 +257,24 @@ async function landscape(browser: Browser, width: number, height: number, full: 
       await page.evaluate(() => (document.activeElement as HTMLElement)?.blur());
       await page.waitForTimeout(50);
       check(`${label} chat panel closes on blur`, !(await rect(page, '#chat')));
+      // Windows of the first minutes use the dark design, and none opens the keyboard by itself on touch.
+      await page.evaluate(() => document.getElementById('btn-settings')?.click());
+      await page.waitForSelector('#modal-root .settings-modal');
+      const lightSettings = await lightDialogs(page);
+      check(`${label} settings window uses the dark design`, !lightSettings.length, lightSettings.join(', '));
+      await page.locator('.settings-modal .btn', { hasText: 'Change your look' }).click();
+      await page.waitForSelector('#modal-root .charsel');
+      await page.waitForTimeout(250);
+      const lightFounder = await lightDialogs(page);
+      check(`${label} founder window uses the dark design`, !lightFounder.length, lightFounder.join(', '));
+      check(`${label} founder window opens no keyboard (no auto-focused text field on touch)`, !(await textFocused(page)));
+      await page.keyboard.press('Escape');
+      await touchTap(page, center(parts.menu!));
+      await page.locator('.game-menu .menu-item', { hasText: 'Controls' }).click();
+      await page.waitForTimeout(200);
+      const lightHelp = await lightDialogs(page);
+      check(`${label} controls help uses the dark design`, !lightHelp.length, lightHelp.join(', '));
+      for (let i = 0; i < 3 && (await page.locator('#modal-root .modal').count()); i++) await page.keyboard.press('Escape');
     }
     check(`${label} no console/page errors`, !errors.length, errors.slice(0, 3).join(' | '));
   } finally {
@@ -294,6 +328,15 @@ try {
     const after = await player(page);
     check('1440x900 arrow keys still move', Math.hypot(after.x - before.x, after.z - before.z) > 0.3);
     await page.screenshot({ animations: 'disabled', path: resolve(out,'desktop-1440x900.png') });
+    // Desktop keeps its autofocus: the founder window starts in the name field.
+    await page.locator('#btn-settings').click();
+    await page.locator('.settings-modal .btn', { hasText: 'Change your look' }).click();
+    await page.waitForSelector('#modal-root .charsel');
+    await page.waitForTimeout(250);
+    check('1440x900 founder window autofocuses the name field on desktop', (await page.evaluate(() => document.activeElement?.getAttribute('aria-label'))) === 'Your name');
+    const lightDesk = await lightDialogs(page);
+    check('1440x900 founder window uses the dark design', !lightDesk.length, lightDesk.join(', '));
+    await page.keyboard.press('Escape');
     check('1440x900 no console/page errors', !errors.length, errors.slice(0, 3).join(' | '));
     await context.close();
   }

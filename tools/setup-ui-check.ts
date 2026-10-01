@@ -58,6 +58,24 @@ async function press(page: Page, touch: boolean, selector: string) {
   await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
 }
 
+/** Visible dialogs whose surface is light (the old cream theme). Dark = background luminance under 0.2. */
+const LIGHT_DIALOGS = `(() => {
+  const lum = (c) => { const m = c.match(/rgba?\\(([^)]+)\\)/); if (!m) return null; const [r, g, b, a = 1] = m[1].split(/[ ,\\/]+/).filter(Boolean).map(Number);
+    if (a < 0.5) return null; const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b); };
+  return [...document.querySelectorAll('#modal-root .modal')].filter((m) => m.getClientRects().length).map((m) => {
+    const cs = getComputedStyle(m); const head = m.querySelector('header'); const hs = head ? getComputedStyle(head) : null;
+    const surfaces = [cs.backgroundImage, cs.backgroundColor, hs && hs.backgroundColor].filter(Boolean).map(lum).filter((v) => v !== null);
+    return { name: m.getAttribute('aria-label') || m.className, light: surfaces.some((v) => v > 0.2) };
+  }).filter((d) => d.light).map((d) => d.name);
+})()`;
+const TEXT_FOCUSED = `(() => { const a = document.activeElement; return !!a && (a.tagName === 'TEXTAREA' || a.isContentEditable || (a.tagName === 'INPUT' && !['button','checkbox','radio','range','submit'].includes(a.type))); })()`;
+/** Body text sizes on the current setup step (px): the lede and every paragraph/hint in the panel body. */
+const SETUP_TEXT = `(() => { const p = document.querySelector('.su-panel:not(.su-leave)'); if (!p) return null;
+  const px = (sel) => [...p.querySelectorAll(sel)].filter((e) => e.getClientRects().length && e.textContent.trim()).map((e) => parseFloat(getComputedStyle(e).fontSize));
+  const html = getComputedStyle(document.documentElement); const su = getComputedStyle(document.querySelector('.su'));
+  return { lede: px('.su-head .su-lede'), body: px('.su-body p, .su-body .su-hint, .su-card-points'),
+    adjust: [html.textSizeAdjust || html.webkitTextSizeAdjust, su.textSizeAdjust || su.webkitTextSizeAdjust] }; })()`;
+
 async function fakeGitHub(page: Page, writes: string[]) {
   await page.route('https://api.github.com/**', async (route) => {
     const req = route.request();
@@ -78,6 +96,7 @@ async function run() {
     // ---- App (fake iOS bridge): the full cloud path and the server path ----
     {
       const context = await browser.newContext({ viewport: { width: size.w, height: size.h }, hasTouch: size.touch, isMobile: size.touch, deviceScaleFactor: size.touch ? 1.5 : 1 });
+      await context.addInitScript({ content: 'window.__name = (f) => f;' });
       await context.addInitScript({ content: FAKE_BRIDGE });
       await context.addInitScript({ content: "window.__touches=0;addEventListener('touchstart',()=>window.__touches++,{capture:true,passive:true});" });
       const page = await context.newPage();
@@ -101,12 +120,14 @@ async function run() {
       if (size.touch) ok(await page.evaluate(() => (window as unknown as { __touches: number }).__touches > 0), `${tag} the setup is driven by real touch events`);
       await page.waitForSelector('.su-card-cloud');
       await shot('02-mode');
+      const textMode = await page.evaluate(SETUP_TEXT);
       // keyboard: Tab reaches the first card with a visible focus ring
       await page.keyboard.press('Tab');
       const focused = await page.evaluate(() => document.activeElement?.className ?? '');
       ok(/su-btn|su-card/.test(focused), `${tag} keyboard focus moves into the choices (${focused})`);
       await press(page, size.touch, '.su-card-cloud');
       await shot('03-github-device');
+      const textGitHub = await page.evaluate(SETUP_TEXT);
       await press(page, size.touch, 'text=Sign in with GitHub');
       await page.waitForSelector('.su-linked');
       await shot('04-github-linked');
@@ -142,6 +163,19 @@ async function run() {
       // Server path: back to the mode choice
       await press(page, size.touch, 'text=Choose another way');
       await press(page, size.touch, '.su-card-server');
+      await page.waitForTimeout(400);
+      const textServer = await page.evaluate(SETUP_TEXT);
+      {
+        type T = { lede: number[]; body: number[]; adjust: string[] } | null;
+        const steps = [['mode', textMode], ['github', textGitHub], ['server', textServer]] as [string, T][];
+        const ledes = new Set(steps.flatMap(([, t]) => t?.lede ?? []));
+        const maxBody = Math.max(...steps.flatMap(([, t]) => t?.body ?? []));
+        const minBody = Math.min(...steps.flatMap(([, t]) => t?.body ?? []));
+        const desc = steps.map(([n, t]) => `${n}: lede ${t?.lede.join('/')} body ${[...new Set(t?.body)].join('/')}`).join('; ');
+        ok(ledes.size === 1, `${tag} setup lede text is one size on every step (${desc})`);
+        ok(maxBody <= (size.touch ? 14 : 15) && minBody >= 11, `${tag} setup body text stays within the compact scale on every step (${minBody}-${maxBody}px)`);
+        ok(steps.every(([, t]) => t?.adjust.every((a) => a === '100%')), `${tag} text inflation is off (text-size-adjust 100%: ${steps.map(([, t]) => t?.adjust.join(',')).join(' ')})`);
+      }
       if (size.touch) await press(page, true, '#su-address');
       await page.fill('#su-address', base.replace(/\/$/, ''));
       await page.fill('#su-password', 'wrong-password');
@@ -151,12 +185,57 @@ async function run() {
       await page.fill('#su-password', 'fixture-office');
       await press(page, size.touch, '.su-panel:not(.su-leave) .su-foot .su-primary');
       await page.waitForFunction(() => ['loading', 'ready', 'forced'].includes(document.documentElement.dataset.boot ?? ''), null, { timeout: 20000 });
+      ok(!(await page.evaluate(TEXT_FOCUSED)), `${tag} the hand-over to the game closes the keyboard (no field focused on the loading screen)`);
       await page.waitForFunction(() => !document.getElementById('setup'), null, { timeout: 10000 });
       const stored = await page.evaluate(() => (window as unknown as { __secureStore: Record<string, string> }).__secureStore);
       ok(stored.mode === 'server' && !!stored['server.token'] && stored['server.host'] === base.replace(/\/$/, ''), `${tag} server path stores mode, host and device token`);
       await page.waitForFunction(() => ['ready', 'forced'].includes(document.documentElement.dataset.boot ?? ''), null, { timeout: 120000 });
       await page.waitForTimeout(1500);
       await page.screenshot({ path: resolve(out, `${tag}-12-game.jpg`), type: 'jpeg', quality: 82 });
+      // ---- First minutes in the game: founder, then the menu's windows. All dark; no keyboard opened by itself on touch.
+      await page.waitForSelector('#modal-root .modal.charsel', { timeout: 20000 });
+      await page.waitForTimeout(400);
+      const nameFocused = await page.evaluate(() => document.activeElement?.getAttribute('aria-label') === 'Your name');
+      if (size.touch) {
+        ok(!(await page.evaluate(TEXT_FOCUSED)), `${tag} founder dialog does not auto-focus a text field on touch (no keyboard)`);
+        ok(await page.evaluate(() => !!document.activeElement?.closest('.charsel')), `${tag} focus still starts inside the founder dialog`);
+      } else ok(nameFocused, `${tag} founder dialog autofocuses the name field on desktop`);
+      const lightFounder: string[] = await page.evaluate(LIGHT_DIALOGS);
+      ok(lightFounder.length === 0, `${tag} founder dialog uses the dark design (${lightFounder.join(', ') || 'dark'})`);
+      await page.screenshot({ path: resolve(out, `${tag}-13-founder.jpg`), type: 'jpeg', quality: 82 });
+      if (size.touch) {
+        await press(page, true, '.charsel input[aria-label="Your name"]');
+        await page.waitForTimeout(200);
+        ok(await page.evaluate(TEXT_FOCUSED), `${tag} tapping the name field focuses it (the keyboard opens on request)`);
+      }
+      await page.fill('.charsel input[aria-label="Your name"]', 'Ada');
+      await press(page, size.touch, '.charsel button[type=submit]');
+      await page.waitForTimeout(600);
+      const seen: string[] = [];
+      for (let i = 0; i < 4 && (await page.locator('#modal-root .modal').count()); i++) {
+        const light: string[] = await page.evaluate(LIGHT_DIALOGS);
+        seen.push(...light);
+        await page.keyboard.press('Escape');
+        await page.waitForTimeout(250);
+      }
+      const windows: [string, string][] = [['Settings', 'Settings'], ['Controls', 'Controls'], ['Management', 'Management']];
+      for (const [item, name] of windows) {
+        await press(page, size.touch, '#btn-menu');
+        await page.waitForSelector('#modal-root .modal.game-menu');
+        seen.push(...(await page.evaluate(LIGHT_DIALOGS)));
+        await press(page, size.touch, `.game-menu .menu-item:has(strong:text-is("${item}"))`);
+        await page.waitForTimeout(500);
+        const light: string[] = await page.evaluate(LIGHT_DIALOGS);
+        seen.push(...light);
+        if (item === 'Settings') await page.screenshot({ path: resolve(out, `${tag}-14-settings.jpg`), type: 'jpeg', quality: 82 });
+        if (item === 'Controls') await page.screenshot({ path: resolve(out, `${tag}-15-controls.jpg`), type: 'jpeg', quality: 82 });
+        ok(light.length === 0, `${tag} ${name} window uses the dark design (${light.join(', ') || 'dark'})`);
+        for (let i = 0; i < 3 && (await page.locator('#modal-root .modal').count()); i++) {
+          await page.keyboard.press('Escape');
+          await page.waitForTimeout(200);
+        }
+      }
+      ok(seen.length === 0, `${tag} no light-theme dialog in the first minutes (${seen.join(', ') || 'none'})`);
       ok(errors.filter((e) => !/404|Failed to load resource/.test(e)).length === 0, `${tag} app flow: no console errors (${errors.join(' | ')})`);
       await context.close();
     }
