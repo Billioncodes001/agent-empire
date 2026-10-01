@@ -11,9 +11,20 @@ set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SRC="$ROOT/dist/public"
 DEST="$ROOT/mobile/ios/AgentEmpire/Game"
+# Simulator checks against tools/fake-github-server.mts: a Debug build may opt in to the fixture client
+# (npm run build:client:fixture writes dist/public-fixture). Any other build refuses a fixture bundle below.
+FIXTURE_OK=0
+if [ "${AGENT_EMPIRE_ALLOW_FIXTURE_GAME:-}" = "1" ] && [ "${CONFIGURATION:-Debug}" = "Debug" ]; then
+  SRC="$ROOT/dist/public-fixture"
+  FIXTURE_OK=1
+fi
 
 if [ ! -f "$SRC/index.html" ]; then
   echo "error: $SRC/index.html not found. Build the web client first: run 'npm run build:client' in $ROOT, then build the iOS app again." >&2
+  exit 1
+fi
+if [ "$FIXTURE_OK" != "1" ] && grep -rqs -e '__AGENT_EMPIRE_FIXTURE_BUILD__' -e 'VITE_AGENT_EMPIRE_FAKE_GITHUB_API' "$SRC"; then
+  echo "error: $SRC is a fixture build that talks to a fake GitHub. Run 'npm run build:client' in $ROOT, then build the iOS app again." >&2
   exit 1
 fi
 

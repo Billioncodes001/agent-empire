@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { assertNoFixtureBuild } from './check-no-fixture.mjs';
 
 // Every shell file the app loads. The Windows stage copies exactly these; tests/desktop-bridge.test.ts checks the list.
 const DESKTOP_FILES = ['package.json', 'main.cjs', 'preload.cjs', 'bridge-policy.cjs', 'app-protocol.cjs', 'secure-store.cjs', 'device-flow.cjs', 'local-host.cjs', 'credential-vault.cjs',
@@ -28,6 +29,8 @@ for (const [from, to] of [['dist/server', 'server'], ['dist/public', 'public']])
   if (!existsSync(source)) throw new Error('Build the complete client and server before packaging desktop.');
   rmSync(path.join(root, to), { recursive: true, force: true }); cpSync(source, path.join(root, to), { recursive: true });
 }
+// A fixture client (fake GitHub API) must never be packaged.
+assertNoFixtureBuild(path.join(root, 'public'));
 copyFileSync(path.join(project, 'dist/server/server/device-sync.js'), path.join(root, 'device-sync.js'));
 // The game window loads this bundle through empire-app://game (desktop/app-protocol.cjs); fail early if it's missing.
 for (const file of ['public/index.html', 'device-sync.js']) if (!existsSync(path.join(root, file))) throw new Error(`Bundled ${file} is missing from ${root}`);
