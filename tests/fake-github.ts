@@ -26,6 +26,8 @@ export class FakeGitHub {
   /** The repository Actions public key (base64). Tests that open sealed secrets set a real X25519 key. */
   publicKey = 'cHVibGljLWtleS1iYXNlNjQ=';
   plan: { name: string } | undefined = { name: 'free' };
+  /** What GET /user/repos lists (the setup's project picker). */
+  listed: unknown[] = [];
   /** HTTP status for POST /user/repos, e.g. 403 for a fine-grained token without Administration permission. */
   createStatus = 201;
   /** Ref reads answering 409 after a create with auto_init. */
@@ -101,6 +103,7 @@ export class FakeGitHub {
     if (failure) { failure.times--; return json({ message: failure.message ?? 'Server Error (fixture)' }, failure.status); }
     if (!req.auth) return json({ message: 'Requires authentication' }, 401);
     if (p === '/user' && method === 'GET') return json({ login: this.login, name: 'Fixture Founder', ...(this.plan ? { plan: this.plan } : {}) });
+    if (p === '/user/repos' && method === 'GET') return json(this.listed);
     if (p === '/user/repos' && method === 'POST') {
       if (this.createStatus !== 201) return json({ message: 'Resource not accessible by personal access token' }, this.createStatus);
       const full = `${this.login}/${body.name}`;

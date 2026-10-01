@@ -97,8 +97,11 @@ export class CloudNet extends Net {
   private emit(msg: ServerMsg) {
     for (const h of this.msgHandlers) h(msg);
   }
+  private statusKnown = false;
   private setUp(up: boolean) {
-    if (this.up === up) return;
+    // The first answer is always reported, so the HUD's connection banner reflects an offline start too.
+    if (this.up === up && this.statusKnown) return;
+    this.statusKnown = true;
     this.up = up;
     this.upHandlers.forEach((h) => h(up));
   }
@@ -343,7 +346,7 @@ export class CloudNet extends Net {
       you: LOCAL_ID,
       peers: [this.localPeer()],
       workers: [],
-      project: { name: this.session.repo.name, dir: `github.com/${repoLabel(this.session.repo)}`, branch: undefined, agentCmd: 'cloud coordinator (GitHub Actions)' },
+      project: { name: 'Cloud Empire', dir: `github.com/${repoLabel(this.session.repo)}`, branch: undefined, agentCmd: 'cloud coordinator (GitHub Actions)' },
       issues: { items: [], fetchedAt: 0, loading: false, error: unavailable },
       pulls: { items: [], fetchedAt: 0, loading: false, error: unavailable },
       ice: [],

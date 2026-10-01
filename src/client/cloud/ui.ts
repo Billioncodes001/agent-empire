@@ -50,7 +50,8 @@ export function mountCloudStrip(host: HTMLElement, net: CloudNet, open: (tab?: T
   const render = () => {
     const view = status(net);
     const snap = net.info.snapshot;
-    label.textContent = view.label;
+    // Phones hide the strip's key and detail line, so the value itself says "cloud" and whether it is a saved copy.
+    label.textContent = `\u2601\uFE0E ${net.info.source === 'saved' ? 'Saved · ' : ''}${view.label}`;
     main.title = view.detail;
     main.setAttribute('aria-label', `Cloud mode: ${view.label}. ${view.detail} Open Cloud Empire.`);
     host.dataset.tone = view.tone;

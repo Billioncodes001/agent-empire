@@ -740,8 +740,10 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
       const paintEstimate = () => {
         const e = actionsEstimate(state.interval, state.github.plan);
         const plan = state.github.plan ? state.github.plan.replace(/^\w/, (c) => c.toUpperCase()) : null;
+        const over = (e.share ?? 0) > 1;
+        estimate.classList.toggle('is-over', over);
         estimate.textContent = `About ${e.minutes.toLocaleString()} GitHub Actions minutes a month for scheduled runs` +
-          (e.included ? `, ${Math.round((e.share ?? 0) * 100)}% of the ${e.included.toLocaleString()} included on GitHub ${plan} for private repositories.` : plan ? ` (your plan: ${plan}; check its included minutes in GitHub billing).` : '. GitHub Free includes 2,000 a month for private repositories, Pro 3,000.') +
+          (e.included ? `, ${Math.round((e.share ?? 0) * 100)}% of the ${e.included.toLocaleString()} included on GitHub ${plan} for private repositories.${over ? ' Minutes beyond that are billed to your GitHub account; choose a longer interval to stay inside it.' : ''}` : plan ? ` (your plan: ${plan}; check its included minutes in GitHub billing).` : '. GitHub Free includes 2,000 a month for private repositories, Pro 3,000.') +
           ' Each run bills at least a minute; waking it from the app adds runs. Figures are estimates.';
       };
       refresh = () => {

@@ -97,7 +97,7 @@ export async function loadCoordinatorBundle(fetchImpl: typeof fetch = (...a) => 
 }
 
 const httpMessage = (status: number, message: string, step: CreateStep): string => {
-  if (status === 0) return 'Can’t reach GitHub. Check your connection and try again; finished steps are kept.';
+  if (status === 0) return 'Can’t reach GitHub. Check your connection and try again.';
   if (status === 401) return 'GitHub didn’t accept this sign-in. It may have expired or been revoked; link GitHub again.';
   if ((status === 403 || status === 429) && /rate limit/i.test(message)) return 'GitHub’s rate limit was reached. Wait a few minutes and try again.';
   if (status === 403 || status === 404)
@@ -106,8 +106,8 @@ const httpMessage = (status: number, message: string, step: CreateStep): string 
       : step === 'workflow'
         ? 'GitHub refused to install the workflow. The token needs Workflows read and write on agent-empire-state.'
         : 'GitHub refused this step. The token needs Contents, Secrets, Workflows and Actions read and write on agent-empire-state.';
-  if (status >= 500) return 'GitHub is having trouble. Try again shortly; finished steps are kept.';
-  return `GitHub answered with an error (${status}). Try again; finished steps are kept.`;
+  if (status >= 500) return 'GitHub is having trouble. Try again shortly.';
+  return `GitHub answered with an error (${status}). Try again.`;
 };
 
 export interface CreateDeps {
@@ -154,6 +154,6 @@ export async function createEmpire(plan: CloudPlan, token: string, deps: CreateD
       const code = ['state_repository_public', 'repo_conflict', 'repo_create_forbidden', 'state_invalid'].includes(error.code) ? 'repo_conflict' : ['invalid', 'bundle_invalid', 'secret_name_invalid', 'project_token_not_fine_grained'].includes(error.code) ? 'invalid' : 'github';
       throw new CloudSetupError(ours ? error.message : httpMessage(error.status, error.message, error.step), code, error.step);
     }
-    throw new CloudSetupError('Something went wrong while setting up your Empire. Try again; finished steps are kept.', 'github');
+    throw new CloudSetupError('Something went wrong while setting up your Empire. Try again.', 'github');
   }
 }

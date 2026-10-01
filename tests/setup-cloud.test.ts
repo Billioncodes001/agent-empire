@@ -179,7 +179,7 @@ test('cloud setup: after a failure, Try again resumes; the repository is reused 
   gh.failures.push({ method: 'PUT', path: /\/actions\/secrets\/ANTHROPIC_API_KEY$/, status: 502, times: 1 });
   const first: string[] = [];
   await assert.rejects(createEmpire(plan(), 't', deps(gh), (s, st) => first.push(`${s}:${st}`)),
-    (e: unknown) => e instanceof CloudSetupError && e.code === 'github' && e.step === 'secrets' && /GitHub is having trouble/.test(e.message) && /finished steps are kept/.test(e.message));
+    (e: unknown) => e instanceof CloudSetupError && e.code === 'github' && e.step === 'secrets' && /GitHub is having trouble/.test(e.message));
   assert.deepEqual(first, ['repo:running', 'repo:done', 'secrets:running']);
   // A ref update failing during the workflow commit (after state was committed).
   let refPatches = 0;
