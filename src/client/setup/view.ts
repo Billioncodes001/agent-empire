@@ -302,8 +302,8 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
     },
 
     mode() {
-      const card = (mode: 'cloud' | 'server', opts: { ico: string; badge: string; title: string; points: string[]; limits: Child; cta: string }) => {
-        const btn = el('button', { type: 'button', class: `su-card su-card-${mode}`, 'aria-describedby': `su-card-${mode}-d`, onclick: () => dispatch({ type: 'chooseMode', mode }) },
+      const card = (mode: 'cloud' | 'server' | 'local', opts: { ico: string; badge: string; title: string; points: string[]; limits: Child; cta: string; onclick?: (btn: HTMLButtonElement) => void }) => {
+        const btn: HTMLButtonElement = el('button', { type: 'button', class: `su-card su-card-${mode}`, 'aria-describedby': `su-card-${mode}-d`, onclick: () => (opts.onclick ? opts.onclick(btn) : mode !== 'local' && dispatch({ type: 'chooseMode', mode })) },
           el('span', { class: 'su-card-top' }, icon(opts.ico, 'su-card-ico'), el('span', { class: 'su-badge', text: opts.badge })),
           el('span', { class: 'su-card-title', text: opts.title }),
           el('span', { class: 'su-card-points', id: `su-card-${mode}-d` }, ...opts.points.map((p) => el('span', { class: 'su-point' }, icon(ICONS.check, 'su-point-ico'), p)), el('span', { class: 'su-card-limits' }, opts.limits)),
@@ -332,11 +332,51 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
         limits: [el('strong', { text: 'Needs: ' }), 'a server you run with Agent Empire installed.'].reduce((f, n) => (f.append(n), f), document.createDocumentFragment()),
         cta: 'Connect a server',
       });
+      // Desktop only: the shell can run the Empire on this computer (bundled server on loopback, app.runLocal).
+      const localErr = el('p', { class: 'su-error', role: 'alert', hidden: true });
+      const local = deps.shell?.platform === 'desktop' && deps.shell.localAvailable
+        ? card('local', {
+            ico: ICONS.server,
+            badge: 'This computer',
+            title: 'Run on this computer',
+            points: ['Full capabilities while the app is open', 'Uses this computer’s CLI agent logins', 'No server or cloud account needed'],
+            limits: [el('strong', { text: 'Limits: ' }), 'local workers stop when you quit the app.'].reduce((f, n) => (f.append(n), f), document.createDocumentFragment()),
+            cta: 'Run here',
+            onclick: (btn) => void runLocal(btn),
+          })
+        : null;
+      async function runLocal(btn: HTMLButtonElement) {
+        if (busy) return;
+        busy = true;
+        btn.setAttribute('aria-busy', 'true');
+        btn.classList.add('is-busy');
+        localErr.hidden = true;
+        live.textContent = 'Waiting for the desktop app to start your Empire on this computer…';
+        try {
+          const session = await deps.native.runLocal();
+          busy = false;
+          live.textContent = 'Your Empire is running on this computer. Opening it.';
+          deps.onServerSession({ host: session.host, token: session.token, deviceId: session.deviceId });
+        } catch (err) {
+          busy = false;
+          btn.removeAttribute('aria-busy');
+          btn.classList.remove('is-busy');
+          const msg = err instanceof Error ? err.message : '';
+          if (/^cancelled:/.test(msg)) {
+            live.textContent = 'Running on this computer was cancelled. Nothing was started.';
+            return; // the player said no in the native dialog: stay here quietly
+          }
+          localErr.hidden = false;
+          localErr.replaceChildren(icon(ICONS.warn, 'su-inline-ico'), msg || 'Your Empire couldn’t start on this computer.');
+        }
+      }
       const { panel, heading } = frame({
         eyebrow: 'Choose one · you can change it later',
         title: STEP_TITLES.mode,
-        lede: 'Either way your Empire keeps working when you close the app, and reopening shows where it is now. Only “Shut down Empire” in the game stops it.',
-        body: [el('div', { class: 'su-cards' }, cloud, server)],
+        lede: local
+          ? 'Cloud and server keep working when you close the app; on this computer it runs while the app is open. Only “Shut down Empire” in the game stops it.'
+          : 'Either way your Empire keeps working when you close the app, and reopening shows where it is now. Only “Shut down Empire” in the game stops it.',
+        body: [localErr, el('div', { class: `su-cards${local ? ' su-cards-3' : ''}` }, cloud, server, local)],
         wide: true,
         backInHead: true,
       });

@@ -34,6 +34,7 @@ export const SIGNED_OUT_NOTICE: Record<SignedOutReason, string> = {
 };
 
 const asMode = (v: string | null | undefined): Mode | undefined => (v === 'cloud' || v === 'server' ? v : undefined);
+const asAppMode = (v: string | null | undefined, desktop: boolean): Mode | 'local' | undefined => (v === 'local' && desktop ? 'local' : asMode(v));
 const safe = async (p: Promise<string | null>) => {
   try {
     return await p;
@@ -44,8 +45,11 @@ const safe = async (p: Promise<string | null>) => {
 
 export async function decideLaunch(env: LaunchEnv): Promise<LaunchDecision> {
   if (env.shell) {
-    const mode = env.shell.mode ?? asMode(await safe(env.get('mode')));
-    if (mode === 'server' && env.hasSession) return { kind: 'game' };
+    const desktop = env.shell.platform === 'desktop';
+    const mode = env.shell.mode ?? asAppMode(await safe(env.get('mode')), desktop);
+    // Desktop "Run on this computer": the shell signs in to its own loopback server, so it is server mode with a session.
+    if ((mode === 'server' || mode === 'local') && env.hasSession) return { kind: 'game' };
+    if (mode === 'local') return { kind: 'setup', step: 'welcome' }; // the local server did not start: choose again
     if (mode === 'server') {
       const address = normaliseHost(await safe(env.get('server.host')));
       const notice = env.shell.signedOut ? SIGNED_OUT_NOTICE[env.shell.signedOut] : undefined;
