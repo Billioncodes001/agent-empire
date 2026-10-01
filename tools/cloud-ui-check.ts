@@ -72,12 +72,30 @@ async function closeModals(page: Page) {
   }
 }
 
+/** The window is inside the safe area, centred in it, and its close button (if any) is on screen, on top, and >= 44px on touch. */
+async function inSafeArea(page: Page, selector: string, size: { w: number; h: number; touch: boolean; insets: { top: number; right: number; bottom: number; left: number } }) {
+  await page.waitForTimeout(250); // past the window's open animation (scale .96 -> 1)
+  const r = await page.evaluate((sel) => {
+    const m = document.querySelector(sel)!.getBoundingClientRect();
+    const c = document.querySelector(sel)!.querySelector('header .close')?.getBoundingClientRect();
+    const top = c && document.elementFromPoint(c.left + c.width / 2, c.top + c.height / 2);
+    return { x: m.left, y: m.top, w: m.width, h: m.height, close: c ? { x: c.left, y: c.top, w: c.width, h: c.height, hit: !!top?.closest('.close') } : null };
+  }, selector);
+  const s = { l: size.insets.left, t: size.insets.top, r: size.w - size.insets.right, b: size.h - size.insets.bottom };
+  const inside = (b: { x: number; y: number; w: number; h: number }) => b.x >= s.l - 0.5 && b.y >= s.t - 0.5 && b.x + b.w <= s.r + 0.5 && b.y + b.h <= s.b + 0.5;
+  const centred = Math.abs(r.x + r.w / 2 - (s.l + s.r) / 2) <= 1.5;
+  const close = !r.close || (inside(r.close) && r.close.hit && (!size.touch || (r.close.w >= 43.5 && r.close.h >= 43.5)));
+  if (!(inside(r) && centred && close)) console.log(`      ${selector}: ${JSON.stringify(r)} safe ${JSON.stringify(s)}`);
+  return inside(r) && centred && close;
+}
+
 async function run() {
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  // Phones run with the Dynamic Island / notch emulated on the left (real env(safe-area-inset-*) through CDP).
   const sizes = [
-    { tag: 'phone-landscape-874x402', w: 874, h: 402, touch: true },
-    { tag: 'phone-375-landscape-812x375', w: 812, h: 375, touch: true },
-    { tag: 'desktop-1440x900', w: 1440, h: 900, touch: false },
+    { tag: 'phone-landscape-874x402', w: 874, h: 402, touch: true, insets: { top: 0, right: 0, bottom: 20, left: 62 } },
+    { tag: 'phone-375-landscape-812x375', w: 812, h: 375, touch: true, insets: { top: 0, right: 44, bottom: 21, left: 0 } },
+    { tag: 'desktop-1440x900', w: 1440, h: 900, touch: false, insets: { top: 0, right: 0, bottom: 0, left: 0 } },
   ];
   for (const size of sizes) {
     const { gh, provider, ids } = await seed();
@@ -89,11 +107,14 @@ async function run() {
     let offline = false;
     await routeGitHub(context, gh, { offline: () => offline });
     const { page, errors } = await newPage(context);
+    await (await context.newCDPSession(page)).send('Emulation.setSafeAreaInsetsOverride' as any, { insets: size.insets });
     await page.goto(base);
     await waitGame(page);
+    const glyph = await page.locator('#status-strip .status-chief .cloud-glyph').boundingBox();
+    ok(!!glyph && glyph.width >= 14 && glyph.height >= 10, `${size.tag} the HUD cloud mark is drawn at a legible size (${glyph ? `${glyph.width.toFixed(0)}x${glyph.height.toFixed(0)}` : 'missing'})`);
     const strip = (await page.locator('#status-strip').innerText()).replace(/\s+/g, ' ');
     const visible = await page.locator('#status-strip .status-chief .status-value').innerText();
-    ok(/^\u2601\uFE0E? Snapshot 1[12] min ago$/.test(visible), `${size.tag} the always-visible HUD value marks cloud and gives the snapshot age (${visible})`);
+    ok(/^Snapshot 1[12] min ago$/.test(visible), `${size.tag} the always-visible HUD value marks cloud and gives the snapshot age (${visible})`);
     ok(!/\blive\b/i.test(strip.replace(/not live/gi, '')), `${size.tag} the HUD never calls the data live`);
     ok(await page.evaluate(() => (window as any).__office.store.evidence().fresh === false), `${size.tag} store evidence is never fresh in cloud mode`);
     ok(await noOverflow(page), `${size.tag} no horizontal overflow (game)`);
@@ -114,6 +135,7 @@ async function run() {
     const statusText = await page.locator('.cloud-modal').innerText();
     ok(/Shut down Empire/.test(statusText) && /billed GitHub Actions minutes/.test(statusText) && /not live/.test(statusText), `${size.tag} status tab: shutdown control, Actions estimate, not-live label`);
     ok(await noOverflow(page), `${size.tag} no horizontal overflow (Cloud Empire)`);
+    ok(await inSafeArea(page, '.cloud-modal', size), `${size.tag} Cloud Empire sits centred in the safe area with a reachable close button`);
     await shot(page, `${size.tag}-03-cloud-status`);
     await page.locator('.cloud-modal .empire-tab', { hasText: 'Jobs' }).click();
     await page.waitForSelector('.cloud-job');
@@ -138,6 +160,7 @@ async function run() {
     ok(/\$5\.00/.test(confirmText) && /Billed by Anthropic/.test(confirmText) && /revision \d+/.test(confirmText), `${size.tag} the job confirmation names the allowance, billing and config revision`);
     ok(await page.locator('.cloud-confirm button', { hasText: 'Start paid job' }).isDisabled(), `${size.tag} the paid job needs the explicit tick`);
     ok(await noOverflow(page), `${size.tag} no horizontal overflow (job confirmation)`);
+    ok(await inSafeArea(page, '.cloud-confirm', size), `${size.tag} the job confirmation sits centred in the safe area`);
     await shot(page, `${size.tag}-05-job-confirm`);
     await page.locator('#cloud-confirm-paid').check();
     const before = gh.requests.length;

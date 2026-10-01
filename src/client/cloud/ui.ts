@@ -38,7 +38,10 @@ const status = (net: CloudNet) => cloudStatus({ snapshot: net.info.snapshot, sou
 
 /** Replaces the server status strip in cloud mode. Built once; later updates only touch text. */
 export function mountCloudStrip(host: HTMLElement, net: CloudNet, open: (tab?: Tab) => void) {
-  const label = h('span.status-value');
+  // The cloud mark is drawn (CSS mask), not the U+2601 text glyph: iOS sets that glyph from a symbol font at a fraction
+  // of the text size, too small to read on a phone HUD.
+  const labelText = document.createTextNode('');
+  const label = h('span.status-value', {}, h('span.cloud-glyph', { 'aria-hidden': 'true' }), labelText);
   const main = h('button.status-row.status-chief', { type: 'button', onclick: () => open('status') }, h('span.status-dot', { 'aria-hidden': 'true' }), h('span.status-key', {}, 'Cloud mode'), label);
   const monitor = h('span.status-monitor');
   const active = h('b'), attention = h('b'), queued = h('b');
@@ -51,7 +54,7 @@ export function mountCloudStrip(host: HTMLElement, net: CloudNet, open: (tab?: T
     const view = status(net);
     const snap = net.info.snapshot;
     // Phones hide the strip's key and detail line, so the value itself says "cloud" and whether it is a saved copy.
-    label.textContent = `\u2601\uFE0E ${net.info.source === 'saved' ? 'Saved · ' : ''}${view.label}`;
+    labelText.data = `${net.info.source === 'saved' ? 'Saved · ' : ''}${view.label}`;
     main.title = view.detail;
     main.setAttribute('aria-label', `Cloud mode: ${view.label}. ${view.detail} Open Cloud Empire.`);
     host.dataset.tone = view.tone;
