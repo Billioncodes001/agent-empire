@@ -10,7 +10,7 @@ import { chromium, type BrowserContext, type Page } from 'playwright-core';
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { FakeGitHub } from '../tests/fake-github';
-import { seed, TOKEN } from './cloud-seed';
+import { seed, seedUnfounded, TOKEN } from './cloud-seed';
 
 const base = process.env.FIXTURE_URL || 'http://127.0.0.1:4708/';
 if (/:4610\b/.test(base)) throw new Error('never 4610');
@@ -204,6 +204,91 @@ async function run() {
     offline = false;
     const unexpected = errors.filter((e) => !/internetdisconnected|ERR_INTERNET_DISCONNECTED|Failed to fetch/i.test(e));
     ok(unexpected.length === 0, `${size.tag} no console errors (${unexpected.join(' | ') || 'none'})`);
+    await context.close();
+  }
+  // Founding in cloud mode (followups-1): GitHub-coordinator copy, the limits from the snapshot, the explicit paid
+  // confirmation, and proper intents through the cloud adapter (one city action plus one paid job per manager).
+  for (const size of sizes) {
+    const { gh, provider, tick } = await seedUnfounded();
+    const context = await browser.newContext({ viewport: { width: size.w, height: size.h }, hasTouch: size.touch, isMobile: size.touch, deviceScaleFactor: size.touch ? 1.5 : 1 });
+    await context.addInitScript({ content: 'window.__name = (f) => f;' });
+    await context.addInitScript({ content: IOS_BRIDGE(TOKEN) });
+    await context.addInitScript(() => localStorage.setItem('agent-office.profile', JSON.stringify({ name: 'Fixture Founder', color: '#32685c', look: { skin: 4, hair: 0, style: 0 } })));
+    await routeGitHub(context, gh);
+    const { page, errors } = await newPage(context);
+    await (await context.newCDPSession(page)).send('Emulation.setSafeAreaInsetsOverride' as any, { insets: size.insets });
+    await page.goto(base);
+    await waitGame(page);
+    await page.waitForSelector('#modal-root .founding-modal[data-mode="cloud"]', { timeout: 20_000 });
+    const tag = `${size.tag} founding`;
+    const text = async () => (await page.locator('.founding-modal').innerText()).replace(/\s+/g, ' ');
+    let copy = await text();
+    ok(/coordinator runs in your own GitHub/.test(copy) && /about every \d+ minutes/.test(copy) && /never live/.test(copy), `${tag}: explains the coordinator runs in the user's GitHub on its schedule`);
+    ok(!/Rule-based server checks/.test(copy) && !/configured account/.test(copy), `${tag}: no server-mode wording`);
+    ok(/1 paid cloud job/.test(copy) && /\$5\.00/.test(copy) && /\$20\.00 daily allowance/.test(copy) && /At most 3 run at once/.test(copy), `${tag}: the chief of staff's job with the per-job and daily allowance from the snapshot`);
+    const submit = page.locator('.founding-modal footer .btn.primary');
+    await page.locator('.founding-modal input[aria-label="Start with Harbour hospital"]').check();
+    copy = await text();
+    ok(/2 paid cloud jobs/.test(copy) && /up to \$10\.00/.test(copy), `${tag}: choosing a site adds its manager's paid job to the plan`);
+    ok(await submit.isDisabled(), `${tag}: founding needs the explicit paid confirmation`);
+    ok(await page.locator('#founding-confirm-paid').isVisible(), `${tag}: the confirmation sits beside the button`);
+    await page.locator('#founding-confirm-paid').check();
+    ok(await submit.isEnabled(), `${tag}: the tick enables founding`);
+    await page.locator('.founding-modal input[aria-label="Start with Common Ground café"]').check();
+    ok(!(await page.locator('#founding-confirm-paid').isChecked()) && (await submit.isDisabled()), `${tag}: a changed plan needs a new confirmation`);
+    await page.locator('#founding-confirm-paid').check();
+    copy = await text();
+    ok(/I confirm 3 paid jobs with an allowance of \$5\.00 each \(up to \$15\.00\)/.test(copy), `${tag}: the confirmation names the job count, allowance and total`);
+    ok(await noOverflow(page), `${tag}: no horizontal overflow`);
+    ok(await inSafeArea(page, '.founding-modal', size), `${tag}: the dialog sits centred in the safe area`);
+    const box = await page.locator('#founding-confirm-paid').evaluate((el) => el.closest('label')!.getBoundingClientRect().height);
+    ok(!size.touch || box >= 43.5, `${tag}: the confirmation row is touch-sized (${box.toFixed(0)}px)`);
+    await shot(page, `${size.tag}-09-founding-confirm`);
+    const mark = gh.requests.length;
+    const rev: number = await page.evaluate(() => (window as any).__office.net.info.snapshot.state.meta.configRevision);
+    await submit.click();
+    await page.waitForSelector('.founding-modal', { state: 'detached', timeout: 15_000 });
+    const writes = gh.requests.slice(mark).filter((r) => r.method !== 'GET');
+    const intentFiles = Object.entries(gh.files(FULL)).filter(([p]) => p.startsWith('intents/')).map(([, t]) => JSON.parse(t));
+    const found = intentFiles.filter((i) => i.kind === 'empire_action');
+    const jobs = intentFiles.filter((i) => i.kind === 'new_job');
+    ok(writes.filter((r) => r.path.includes('/contents/intents/')).length === 4 && writes.filter((r) => r.path.endsWith('/dispatches')).length === 4, `${tag}: four intents and four wake-ups, nothing else (${writes.map((r) => `${r.method} ${r.path.replace(/^\/repos\/founder\/agent-empire-state/, '')}`).join(', ')})`);
+    ok(found.length === 1 && found[0].action.kind === 'found' && JSON.stringify([...found[0].action.sites].sort()) === '["cafe","hospital"]', `${tag}: the founding plan is a city-action intent`);
+    ok(jobs.length === 3 && jobs.every((j) => j.job.confirmPaid === true && j.job.configRevision === rev && /startup brief$/.test(j.job.title) && /^[0-9a-f]{8}-[0-9a-f]{4}-8/.test(j.job.id)) && JSON.stringify(jobs.map((j) => j.job.site).sort()) === '["cafe","hospital","hq"]',
+      `${tag}: one paid new_job per manager (hq, hospital, café) with confirmPaid, configRevision and a stable id`);
+    ok(provider.sessions.size === 0, `${tag}: the app starts no provider session`);
+    // The real coordinator applies the plan on its next run.
+    await tick(Date.now());
+    await page.evaluate(() => (window as any).__office.net.pollNow());
+    await page.waitForFunction(() => (window as any).__office.store.empire.setup.completed === true, null, { timeout: 10_000 });
+    const managers = await page.evaluate(() => (window as any).__office.store.empire.sectors.filter((s: any) => s.manager).map((s: any) => `${s.id}:${s.manager.status}`).sort().join(','));
+    ok(/cafe:(queued|working)/.test(managers) && /hospital:(queued|working)/.test(managers) && /hq:(queued|working)/.test(managers), `${tag}: the coordinator founded the city and linked each manager to its job (${managers})`);
+    const unexpected = errors.filter((e) => !/Failed to fetch/i.test(e));
+    ok(unexpected.length === 0, `${tag}: no console errors (${unexpected.join(' | ') || 'none'})`);
+    await context.close();
+  }
+  // Server mode keeps its founding copy (the fixture's empire is shown unfounded through a WebSocket route).
+  {
+    const context = await browser.newContext({ viewport: { width: 874, height: 402 }, hasTouch: true, isMobile: true });
+    await context.addInitScript({ content: 'window.__name = (f) => f;' });
+    await context.addInitScript(() => localStorage.setItem('agent-office.profile', JSON.stringify({ name: 'Fixture Founder', color: '#32685c', look: { skin: 4, hair: 0, style: 0 } })));
+    const { page } = await newPage(context);
+    await page.routeWebSocket(/\/ws(\?|$)/, (ws) => {
+      const server = ws.connectToServer();
+      ws.onMessage((m) => server.send(m));
+      server.onMessage((m) => {
+        const msg = JSON.parse(String(m));
+        if (msg.t === 'empire') msg.state.setup = { completed: false, selected: [] };
+        ws.send(JSON.stringify(msg));
+      });
+    });
+    await page.goto(base);
+    await page.waitForFunction(() => ['ready', 'forced'].includes(document.documentElement.dataset.boot ?? ''), null, { timeout: 120_000 });
+    await page.waitForSelector('#modal-root .founding-modal', { timeout: 20_000 });
+    const copy = (await page.locator('.founding-modal').innerText()).replace(/\s+/g, ' ');
+    ok(/Rule-based server checks report on every sector/.test(copy) && /Queues real AI work using your configured account\./.test(copy) && /Appointing managers queues \d+ startup briefs\. They respect the existing queue’s concurrency and spending limits\./.test(copy) && /real agent work uses your configured AI account and its usage budget/.test(copy), 'server founding: copy unchanged');
+    ok(!(await page.locator('#founding-confirm-paid').isVisible()) && !/GitHub/.test(copy) && (await page.locator('.founding-modal[data-mode]').count()) === 0, 'server founding: no cloud wording or paid tick');
+    await shot(page, 'server-874x402-11-founding-unchanged');
     await context.close();
   }
   // Reduced motion + Save-Data, web build (no shell): unlock screen, then the game.

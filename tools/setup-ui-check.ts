@@ -243,6 +243,11 @@ async function run() {
       await page.waitForTimeout(800);
       await page.screenshot({ path: resolve(out, `${tag}-10c-cloud-game-first-run.jpg`), type: 'jpeg', quality: 82 });
       ok(true, `${tag} the new Empire opens in cloud mode: "Waiting for first run"`);
+      // Founding in a new cloud Empire (no execution settings yet): GitHub-coordinator wording, the plan only, no paid jobs.
+      const founding = (await page.locator('#modal-root .founding-modal').innerText().catch(() => '')).replace(/\s+/g, ' ');
+      ok(/coordinator runs in your own GitHub/.test(founding) && /records your plan only/.test(founding) && !/Rule-based server checks|configured account/.test(founding),
+        `${tag} cloud founding explains the GitHub coordinator and, without execution settings, queues no paid jobs`);
+      ok(!(await page.locator('#founding-confirm-paid').isVisible()) && /^Found my city$/.test((await page.locator('.founding-modal footer .btn.primary').innerText()).trim()), `${tag} cloud founding without paid jobs asks for no paid confirmation`);
       ok(errors.filter((e) => !/404|Failed to load resource/.test(e)).length === 0, `${tag} cloud create: no console errors (${errors.join(' | ')})`);
       await context.close();
     }

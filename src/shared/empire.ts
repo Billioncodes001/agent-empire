@@ -109,6 +109,14 @@ export const MANAGER_NAMES: Record<SiteId, string> = {
   recreation: 'Leila · Recreation director',
   studio: 'Jordan · Research director',
 };
+/**
+ * The bounded startup brief an appointed manager runs once. The server queues it after founding; in cloud mode the
+ * founding dialog submits it as a paid cloud job. `monitor` names who keeps the simulation running afterwards.
+ */
+export function managerStartupPrompt(siteId: SiteId, managerName: string, monitor: 'server' | 'coordinator' = 'server'): string {
+  const site = SITES.find((s) => s.id === siteId)!;
+  return `Sector: ${site.sector} / ${site.name}\n\nYou are ${managerName}, an appointed manager in Agent Empire. This is a bounded startup task in the user's real project. Inspect the project and write a concise administrative brief to docs/empire/${site.id}-brief.md. Identify useful real AI tasks this sector could perform for this project, dependencies and questions for the founder. ${site.id === 'hq' ? 'As chief of staff, cover coordination, budgets, blockers and reporting across all selected sectors.' : 'Coordinate your sector with the chief of staff.'} Do not invent completed work, actual revenue, medical services or external activity. Do not start background jobs or contact anyone. Finish after producing the brief; ${monitor === 'server' ? 'the server handles' : 'the cloud coordinator in the user’s GitHub handles'} ongoing simulation monitoring.`;
+}
 export type ManagerStatus = 'pending' | 'queued' | 'working' | 'needs_input' | 'ready' | 'offline';
 export interface SectorManager {
   id: string;

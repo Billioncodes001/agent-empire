@@ -14,6 +14,22 @@ import { EXECUTION, FakeProvider } from '../tests/cloud-fixtures';
 export const FULL = 'founder/agent-empire-state';
 export const TOKEN = 'gho_FAKEFIXTURETOKEN000000000000000000';
 
+/** A new Empire whose coordinator has run once and whose city is not founded yet (execution configured). */
+export async function seedUnfounded() {
+  const gh = new FakeGitHub();
+  const now = Date.now();
+  await installStateRepository(new GitHubClient(TOKEN, { fetch: gh.fetch }), {
+    secrets: { ANTHROPIC_API_KEY: 'sk-ant-fixture' }, limits: { maxConcurrent: 3, perTaskBudgetCents: 500, dailyBudgetCents: 2000 },
+    execution: EXECUTION, coordinatorBundle: '// bundle\n', now: now - 20 * 60_000, sleep: async () => {},
+  }, async (k, v) => `sealed(${k}):${Buffer.from(v).toString('base64').split('').reverse().join('')}`);
+  const store = new GitHubStateStore(new GitHubClient('ghs_actions', { fetch: gh.fetch }), { owner: 'founder', repo: 'agent-empire-state', branch: 'main', workflowFile: 'agent-empire.yml' });
+  const provider = new FakeProvider();
+  let run = 0;
+  const tick = (at: number) => runCoordinatorTick({ store, provider, now: () => at, runId: `seed-unfounded-${++run}`, allowSelfDisable: true, retry: { sleep: async () => {} } });
+  await tick(now - 5 * 60_000);
+  return { gh, provider, tick };
+}
+
 /** A state repository as a coordinator leaves it: founded city, jobs in several states, spend, journal. */
 export async function seed() {
   const gh = new FakeGitHub();
