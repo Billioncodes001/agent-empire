@@ -286,7 +286,7 @@ renderer.setAnimationLoop((now) => {
   person.update(dt, time, player.moving && !player.driving, !player.grounded, player.speed);
   traversal.placeDriver();
   person.root.visible = player.view === 'third';
-  canvas.dataset.assets = person.ready && city.car.userData.ready && scene.environment ? 'ready' : 'loading';
+  canvas.dataset.assets = person.materialsReady && city.car.userData.ready && scene.environment ? 'ready' : 'loading';
   canvas.dataset.position = player.pos
     .toArray()
     .map((v) => v.toFixed(2))

@@ -10,12 +10,14 @@ type Kind = 'models' | 'textures' | 'sky' | 'other';
 const KIND_LABEL: Record<Kind, string> = { models: 'models', textures: 'textures', sky: 'sky lighting', other: 'audio & data' };
 const kindOf = (url: string): Kind => {
   const path = url.split('?')[0].toLowerCase();
+  // GLTFLoader decodes a model's embedded images through blob: URLs.
+  if (path.startsWith('blob:')) return 'textures';
   if (/\.(glb|gltf|fbx|bin)$/.test(path)) return 'models';
   if (/\.(hdr|exr)$/.test(path)) return 'sky';
   if (/\.(jpe?g|png|webp|ktx2|avif)$/.test(path)) return 'textures';
   return 'other';
 };
-const shortName = (url: string) => decodeURIComponent(url.split('?')[0].split('/').pop() || url);
+const shortName = (url: string) => (url.startsWith('blob:') ? 'character textures' : decodeURIComponent(url.split('?')[0].split('/').pop() || url));
 
 const splash = document.getElementById('splash');
 const bar = splash?.querySelector<HTMLElement>('.splash-bar i');
@@ -91,15 +93,14 @@ function render() {
         : 'Preparing your character and the district';
   }
   if (detail) detail.textContent = all.total ? `${all.done} of ${all.total} files` : '';
-  // Escape hatches for a real failure or a scene that never reports ready; never a timed fake completion.
+  // Escape hatches for a real failure (a file failed, or every file settled and the scene still lacks something
+  // for 20 s); never a timed fake completion. Failed sky lighting and character textures are retried in the
+  // background, so the splash can still finish on its own while the button is offered.
   const stalled = settled && settledAt && performance.now() - settledAt > 20000;
   if ((failed.length && settled) || stalled) {
     if (actions && !actions.childElementCount) {
       const why = document.createElement('p');
       why.className = 'splash-warn';
-      why.textContent = failed.length
-        ? `Could not load ${failed.map(shortName).slice(0, 3).join(', ')}${failed.length > 3 ? '…' : ''}. The city may look incomplete.`
-        : 'The scene has not reported ready yet. You can wait or enter now.';
       const enter = document.createElement('button');
       enter.type = 'button';
       enter.className = 'splash-enter';
@@ -107,6 +108,12 @@ function render() {
       enter.onclick = () => finish('forced');
       actions.append(why, enter);
     }
+    const why = actions?.querySelector('.splash-warn');
+    const names = [...new Set(failed.map(shortName))];
+    const missing = (document.getElementById('scene') as HTMLCanvasElement | null)?.dataset.pending;
+    if (why) why.textContent = names.length
+      ? `Could not load ${names.slice(0, 3).join(', ')}${names.length > 3 ? '…' : ''}. Retrying where possible; if you enter now the city may look incomplete.`
+      : `Still waiting for ${missing || 'the scene'}. You can wait or enter now.`;
   }
 }
 

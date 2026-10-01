@@ -10,8 +10,80 @@ export type VehiclePose = { phase: 'reach' | 'enter' | 'exit' | 'drive'; progres
  */
 export type HumanActivity = 'none' | 'bike' | 'weights' | 'stretch' | 'coffee' | 'eat';
 function source(url: string) {
-  if (!assets.has(url)) assets.set(url, new GLTFLoader().loadAsync(url));
+  if (!assets.has(url)) assets.set(url, new GLTFLoader().loadAsync(url).then((gltf) => { guardHumanMaterials(gltf.scene); return gltf; }));
   return assets.get(url)!;
+}
+
+/** Map slots a glTF metallic-roughness material can carry; all are copied when a texture repair arrives. */
+const MAP_SLOTS = ['map', 'normalMap', 'metalnessMap', 'roughnessMap', 'aoMap', 'alphaMap', 'emissiveMap'] as const;
+type HumanMaterial = THREE.MeshStandardMaterial;
+function humanMaterials(root: THREE.Object3D): HumanMaterial[] {
+  const out = new Set<HumanMaterial>();
+  root.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (!m.isMesh) return;
+    for (const mat of Array.isArray(m.material) ? m.material : [m.material]) if ((mat as HumanMaterial).isMeshStandardMaterial) out.add(mat as HumanMaterial);
+  });
+  return [...out];
+}
+/**
+ * Every material on both licensed rigs carries a base-colour texture (models.test.ts). One without it, or whose
+ * image never decoded, is a texture that failed: GLTFLoader logs it and builds the material without the map.
+ */
+export function missingHumanTextures(root: THREE.Object3D): string[] {
+  return humanMaterials(root).filter((m) => !m.map || !m.map.image).map((m) => m.name || '(unnamed)');
+}
+/**
+ * glTF's metallicFactor defaults to 1, scaled by the ORM texture's blue channel. When that texture fails to
+ * decode the skin and clothes become pure metal, which reflects only the sky lighting: before (or without) the
+ * environment the player renders as a black silhouette. People are dielectric, so without a metalness map the
+ * material is made non-metal (and, without its colour map, a neutral fabric tone instead of black).
+ */
+export function guardHumanMaterials(root: THREE.Object3D) {
+  for (const m of humanMaterials(root)) {
+    if (!m.metalnessMap && m.metalness > 0) { m.metalness = 0; m.needsUpdate = true; }
+    if (!m.map && !m.userData.fallbackTone) { m.color.set('#9a8f84'); m.userData.fallbackTone = true; m.needsUpdate = true; }
+  }
+}
+/** Copies the decoded textures and factors of a fresh load into the shared materials that every clone uses. */
+export function repairHumanMaterials(target: THREE.Object3D, fresh: THREE.Object3D): number {
+  const byName = new Map(humanMaterials(fresh).map((m) => [m.name, m]));
+  let repaired = 0;
+  for (const m of humanMaterials(target)) {
+    const good = byName.get(m.name);
+    if (!good || !good.map?.image) continue;
+    for (const slot of MAP_SLOTS) (m as unknown as Record<string, THREE.Texture | null>)[slot] = good[slot];
+    m.color.copy(good.color);
+    m.metalness = good.metalness;
+    m.roughness = good.roughness;
+    delete m.userData.fallbackTone;
+    m.needsUpdate = true; // the map defines change the shader program
+    repaired++;
+  }
+  return repaired;
+}
+const repairs = new Map<string, Promise<boolean>>();
+/**
+ * A rig whose embedded textures failed (seen on iOS on first launch) is loaded again, at most twice. Fixed
+ * textures are copied into the shared materials in place, so bodies already in the scene update too.
+ */
+function repairSource(url: string, gltf: GLTF): Promise<boolean> {
+  if (!repairs.has(url)) {
+    repairs.set(url, (async () => {
+      for (const delay of [1500, 5000]) {
+        await new Promise((r) => setTimeout(r, delay));
+        try {
+          const fresh = await new GLTFLoader().loadAsync(url);
+          repairHumanMaterials(gltf.scene, fresh.scene);
+          if (!missingHumanTextures(gltf.scene).length) return true;
+        } catch (error) {
+          console.warn('Human textures could not be reloaded', error);
+        }
+      }
+      return false;
+    })());
+  }
+  return repairs.get(url)!;
 }
 
 /**
@@ -86,11 +158,20 @@ export class Human {
   private activityBlend?: number;
   private detail?: boolean;
   private props?: Map<string, THREE.Object3D>;
+  /** True once the body is loaded with every texture decoded (false while a failed texture is being reloaded). */
+  get materialsReady(): boolean {
+    return this.ready && !!this.model && !missingHumanTextures(this.model).length;
+  }
   constructor(variant = 0) {
     this.root.name = 'Realistic human';
-    void source(variant % 2 ? '/models/chief-of-staff.glb' : '/models/founder.glb')
+    const url = variant % 2 ? '/models/chief-of-staff.glb' : '/models/founder.glb';
+    void source(url)
       .then((gltf) => {
         if (this.disposed) return;
+        if (missingHumanTextures(gltf.scene).length) {
+          this.root.userData.textureError = true;
+          void repairSource(url, gltf).then((ok) => { if (ok) delete this.root.userData.textureError; });
+        }
         const model = clone(gltf.scene);
         this.mixer = prepareHumanModel(model, gltf.animations);
         for (const clip of gltf.animations) this.actions.set(clip.name, this.mixer.clipAction(clip));

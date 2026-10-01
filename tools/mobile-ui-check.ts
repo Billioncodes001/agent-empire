@@ -3,6 +3,7 @@
  *   npm run build:client && FIXTURE_PORT=4701 npx tsx tools/ui-fixture.ts
  *   FIXTURE_URL=http://localhost:4701/ npx tsx tools/mobile-ui-check.ts
  * Writes small screenshots to docs/team/reports/mobile/ and exits non-zero on any failed check.
+ * MOBILE_UI_ONLY=lighting runs only the player-lighting (black silhouette) checks; =windows only the window checks.
  */
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core';
 import { mkdirSync } from 'node:fs';
@@ -444,9 +445,102 @@ async function windowsCheck(browser: Browser, width: number, height: number, ins
   }
 }
 
+/**
+ * The player's torso on screen: mean luminance (0..1) and the share of near-black pixels, sampled from a real
+ * screenshot (the WebGL buffer is not preserved). A black silhouette (ios-04 in cloud-mode) reads ~0.03 / ~100%.
+ */
+async function playerPixels(page: Page) {
+  const box = await page.evaluate(() => {
+    const o = (window as unknown as { __office: { me: { root: { position: { clone(): { y: number; project(c: unknown): { x: number; y: number } } } } }; camera: unknown } }).__office;
+    const at = (dy: number) => { const p = o.me.root.position.clone(); p.y += dy; const s = p.project(o.camera); return { x: (s.x + 1) / 2 * innerWidth, y: (1 - s.y) / 2 * innerHeight }; };
+    const chest = at(1.3), hips = at(0.95);
+    const h = Math.max(6, hips.y - chest.y), w = Math.max(4, h * 0.45);
+    return { x: Math.round(chest.x - w / 2), y: Math.round(chest.y), width: Math.round(w), height: Math.round(h) };
+  });
+  const png = (await page.screenshot({ clip: box, animations: 'disabled' })).toString('base64');
+  const stats = await page.evaluate(async (data) => {
+    const img = new Image();
+    img.src = `data:image/png;base64,${data}`;
+    await img.decode();
+    const c = document.createElement('canvas');
+    c.width = img.width; c.height = img.height;
+    const g = c.getContext('2d')!;
+    g.drawImage(img, 0, 0);
+    const px = g.getImageData(0, 0, c.width, c.height).data;
+    let sum = 0, dark = 0, n = 0;
+    for (let i = 0; i < px.length; i += 4) {
+      const l = (0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2]) / 255;
+      sum += l; n++; if (l < 0.08) dark++;
+    }
+    return { mean: sum / n, dark: dark / n };
+  }, png);
+  return { ...stats, box };
+}
+const litPlayer = (s: { mean: number; dark: number }) => s.mean > 0.15 && s.dark < 0.4;
+const fmt = (s: { mean: number; dark: number }) => `mean luminance ${s.mean.toFixed(2)}, near-black ${(s.dark * 100).toFixed(0)}%`;
+
+/**
+ * Black-silhouette regression (followups-1). Scenarios: a normal load; the character's embedded textures and the
+ * sky lighting failing once and recovering (the splash must wait and hand over "ready", never early); and both
+ * failing for good, where the player has to choose "Enter anyway" and the body must still not be black.
+ */
+async function lightingCheck(browser: Browser, scenario: 'normal' | 'transient' | 'permanent') {
+  const label = `lighting ${scenario}`;
+  const context = await browser.newContext({ viewport: { width: 874, height: 402 }, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
+  await context.addInitScript({ content: 'window.__name = (f) => f;' });
+  await context.addInitScript(() => {
+    localStorage.setItem('agent-office.profile', JSON.stringify({ name: 'Fixture CEO', color: '#32685c', look: { skin: 4, hair: 0, style: 0 } }));
+    localStorage.setItem('agent-empire.execution.offered', '1');
+  });
+  // GLTFLoader decodes embedded images with createImageBitmap; failing it reproduces the iOS texture failure.
+  if (scenario !== 'normal') await context.addInitScript((failures: number) => {
+    const real = window.createImageBitmap.bind(window);
+    let n = 0;
+    (window as unknown as { createImageBitmap: unknown }).createImageBitmap = (...a: Parameters<typeof createImageBitmap>) => (n++ < failures ? Promise.reject(new Error('decode failed (test)')) : real(...a));
+  }, scenario === 'permanent' ? 1e9 : 13);
+  const page = await context.newPage();
+  let skyRequests = 0;
+  if (scenario !== 'normal') await page.route('**/coastal-sky.hdr', (r) => (scenario === 'permanent' || skyRequests++ === 0 ? r.abort() : r.continue()));
+  try {
+    const t0 = Date.now();
+    await page.goto(base);
+    if (scenario === 'permanent') {
+      await page.waitForSelector('.splash-enter', { timeout: 60_000 });
+      const early = await page.evaluate(() => ({ boot: document.documentElement.dataset.boot, splash: !!document.getElementById('splash'), warn: document.querySelector('.splash-warn')?.textContent ?? '' }));
+      check(`${label}: splash stays up on failure and offers Enter anyway`, early.boot === 'loading' && early.splash, early.warn);
+      check(`${label}: failure names the character textures`, /character textures/.test(early.warn), early.warn);
+      await page.screenshot({ animations: 'disabled', path: resolve(lightOut, 'permanent-splash-874x402.png') });
+      await page.locator('.splash-enter').click();
+    }
+    await page.waitForFunction(() => ['ready', 'forced'].includes(document.documentElement.dataset.boot ?? ''), null, { timeout: 120_000 });
+    const boot = await page.evaluate(() => document.documentElement.dataset.boot);
+    const state = () => page.evaluate(() => {
+      const o = (window as unknown as { __office: { me: { materialsReady: boolean }; scene: { environment: unknown } } }).__office;
+      return { materials: o.me.materialsReady, env: !!o.scene.environment, pending: (document.getElementById('scene') as HTMLCanvasElement).dataset.pending ?? '' };
+    });
+    const atHandover = await state();
+    if (scenario === 'permanent') check(`${label}: entered only by the explicit choice`, boot === 'forced');
+    else check(`${label}: splash hands over ready with textured player and sky lighting`, boot === 'ready' && atHandover.materials && atHandover.env, `${boot} ${JSON.stringify(atHandover)} after ${Date.now() - t0} ms`);
+    for (let i = 0; i < 3 && (await page.locator('#modal-root .backdrop').count()); i++) { await page.keyboard.press('Escape'); await page.waitForTimeout(150); }
+    await page.waitForTimeout(800);
+    const px = await playerPixels(page);
+    check(`${label}: player is lit, not a black silhouette`, litPlayer(px), fmt(px));
+    if (scenario === 'transient') check(`${label}: sky was retried after the failure`, skyRequests >= 2, `${skyRequests} requests`);
+    if (scenario === 'permanent') check(`${label}: still reports what is missing`, /character/.test(atHandover.pending) && /sky/.test(atHandover.pending), atHandover.pending);
+    await page.screenshot({ animations: 'disabled', path: resolve(lightOut, `${scenario}-874x402.png`) });
+  } finally {
+    await context.close();
+  }
+}
+const lightOut = resolve(import.meta.dirname, '../docs/team/reports/followups-1');
+mkdirSync(lightOut, { recursive: true });
+
 const browser = await chromium.launch({ channel: 'chrome', headless: true, args: ['--enable-webgl', '--ignore-gpu-blocklist'] });
 try {
-  if (process.env.MOBILE_UI_ONLY !== 'windows') {
+  if (!process.env.MOBILE_UI_ONLY || process.env.MOBILE_UI_ONLY === 'lighting') {
+    for (const scenario of ['normal', 'transient', 'permanent'] as const) await lightingCheck(browser, scenario);
+  }
+  if (!process.env.MOBILE_UI_ONLY) {
   await landscape(browser, 667, 375, true);
   await landscape(browser, 812, 375, false);
   await landscape(browser, 874, 402, true);
@@ -552,6 +646,7 @@ try {
   }
 
   // In-game windows against the notch / Dynamic Island on either side (phone-windows report).
+  if (!process.env.MOBILE_UI_ONLY || process.env.MOBILE_UI_ONLY === 'windows') {
   for (const [w, hgt, inset, bottom] of [[667, 375, 44, 21], [812, 375, 44, 21], [874, 402, 62, 20]] as const) {
     await windowsCheck(browser, w, hgt, { top: 0, right: 0, bottom, left: inset }, 'left');
     await windowsCheck(browser, w, hgt, { top: 0, right: inset, bottom, left: 0 }, 'right');
@@ -559,6 +654,7 @@ try {
   await windowsCheck(browser, 874, 402, { top: 0, right: 62, bottom: 20, left: 62 }, 'both');
   await windowsCheck(browser, 1024, 768, { top: 0, right: 0, bottom: 0, left: 0 }, 'tablet');
   await windowsCheck(browser, 1440, 900, { top: 0, right: 0, bottom: 0, left: 0 }, 'desktop');
+  }
 } finally {
   await browser.close();
 }

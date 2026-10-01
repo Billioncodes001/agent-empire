@@ -10,7 +10,8 @@
  *     server (terminals, desks, tunnels, chat, voice, boards) are refused with an explanation instead of being sent.
  */
 import { SPAWN } from '../../shared/layout';
-import { SITES } from '../../shared/empire';
+import { SITES, type SiteId } from '../../shared/empire';
+import { foundingJobId, type FoundingBrief } from './founding-plan';
 import type { ClientMsg, PeerInfo, ServerMsg } from '../../shared/protocol';
 import { Net } from '../net';
 import { store, type Profile } from '../state';
@@ -238,7 +239,7 @@ export class CloudNet extends Net {
    * Writes one intent and wakes the coordinator. Resolves with the intent id, or null when it was not sent (the
    * reason is shown as a toast).
    */
-  async submit(body: IntentBody, label: string, wake: DispatchType = 'agent-empire-intent'): Promise<string | null> {
+  async submit(body: IntentBody, label: string, wake: DispatchType = 'agent-empire-intent', opts: { quiet?: boolean } = {}): Promise<string | null> {
     if (this.info.busy) {
       this.notify('Still sending the previous action to GitHub…', 'warn');
       return null;
@@ -249,7 +250,7 @@ export class CloudNet extends Net {
       const { id, dispatched } = await this.repo.submit(body, wake, this.now());
       const jobId = 'jobId' in body ? body.jobId : 'job' in body ? body.job.id : undefined;
       this.info.sent.push({ id, kind: body.kind, label, at: this.now(), ...(jobId ? { jobId } : {}) });
-      this.notify(dispatched ? `${label}: sent. Your coordinator applies it on its next run, usually within a few minutes.` : `${label}: saved in your state repository. The coordinator applies it on its next scheduled run.`, 'info');
+      if (!opts.quiet) this.notify(dispatched ? `${label}: sent. Your coordinator applies it on its next run, usually within a few minutes.` : `${label}: saved in your state repository. The coordinator applies it on its next scheduled run.`, 'info');
       this.fastUntil = this.now() + FAST_WINDOW_MS;
       return id;
     } catch (error) {
@@ -279,6 +280,45 @@ export class CloudNet extends Net {
     }
     this.disableTried = false;
     return this.submit({ kind: 'start' }, 'Start Empire', 'agent-empire-start');
+  }
+
+  /**
+   * Founding in cloud mode: the `found` city action, then one paid startup job per appointed manager, each a proper
+   * `new_job` intent carrying `confirmPaid` and the `configRevision` the user saw. Called only after the founding
+   * dialog's explicit paid-work confirmation (`briefs` is empty when execution is not configured: plan only).
+   * Job ids are stable per Empire and site, so a repeated plan cannot queue or pay twice.
+   */
+  async found(sites: SiteId[], briefs: FoundingBrief[], configRevision: number): Promise<{ founded: boolean; queued: number; failed: string[] }> {
+    const state = this.info.snapshot?.state;
+    if (!state) {
+      this.notify('Founding plan: your Empire hasn’t loaded from GitHub yet. Nothing was sent.', 'warn');
+      return { founded: false, queued: 0, failed: briefs.map((b) => b.title) };
+    }
+    const founded = await this.submit({ kind: 'empire_action', action: { kind: 'found', sites } } as IntentBody, cityLabel('found'), 'agent-empire-intent', { quiet: briefs.length > 0 });
+    if (!founded) return { founded: false, queued: 0, failed: briefs.map((b) => b.title) };
+    let queued = 0;
+    const failed: string[] = [];
+    const repo = repoLabel(this.session.repo);
+    for (const brief of briefs) {
+      const id = await foundingJobId(repo, state, brief.site);
+      const sent = await this.submit(
+        { kind: 'new_job', job: { id, title: brief.title.slice(0, 120), prompt: brief.prompt, site: brief.site, configRevision, confirmPaid: true } },
+        brief.title,
+        'agent-empire-intent',
+        { quiet: true },
+      );
+      if (sent) queued++;
+      else failed.push(brief.title);
+    }
+    if (briefs.length) {
+      this.notify(
+        failed.length
+          ? `Founding plan sent with ${queued} of ${briefs.length} startup jobs. ${failed.length} could not be sent; assign them from Management → Sectors.`
+          : `Founding plan and ${queued} startup job${queued === 1 ? '' : 's'} sent. Your coordinator applies them on its next run, usually within a few minutes.`,
+        failed.length ? 'warn' : 'info',
+      );
+    }
+    return { founded: true, queued, failed };
   }
 
   /** A time-ordered id for a new job (the intent gets its own). */

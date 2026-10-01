@@ -1135,6 +1135,11 @@ html.ae-cloud #hud .status-strip.cloud-strip .status-monitor { white-space: nowr
 .cloud-dl dd { margin: 0; }
 .cloud-check { display: flex; gap: 10px; align-items: flex-start; }
 .cloud-check input { width: 20px; height: 20px; margin: 0; flex: none; }
+/* Cloud founding: the paid-work confirmation sits in the footer, next to the button it unlocks, as a 44px touch row. */
+.founding-modal .founding-paid { display: flex; gap: 10px; flex: 1; margin: 0; padding: 8px 12px; min-height: 44px; box-sizing: border-box; align-items: center; border: 1px solid #e6c39a55; background: #e6c39a12; border-radius: 8px; font-size: 12px; line-height: 1.4; color: #f0e6d6; font-weight: 500; cursor: pointer; }
+.founding-modal .founding-paid[hidden], .founding-modal footer span[hidden] { display: none; }
+.founding-modal .founding-paid input { position: static; width: 20px; height: 20px; margin: 0; flex: none; accent-color: #c7d9bd; }
+.founding-modal footer .founding-paid span { font-size: 12px; color: inherit; }
 @media (max-width: 600px) {
   .cloud-dl { grid-template-columns: 1fr; }
   .cloud-dl dd { margin-bottom: 6px; }

@@ -6,6 +6,7 @@ import {
   SITES,
   STARTER_SITES,
   MANAGER_NAMES,
+  managerStartupPrompt,
   hourlyRates,
   upgradeCost,
   officeFloorCost, workstationCost,
@@ -287,8 +288,7 @@ export class Empire {
     for (const sector of this.state.sectors) {
       const m = sector.manager;
       if (!m || m.status !== 'pending' || !this.state.setup.completed) continue;
-      const site = SITES.find((s) => s.id === sector.id)!;
-      const prompt = `Sector: ${site.sector} / ${site.name}\n\nYou are ${m.name}, an appointed manager in Agent Empire. This is a bounded startup task in the user's real project. Inspect the project and write a concise administrative brief to docs/empire/${site.id}-brief.md. Identify useful real AI tasks this sector could perform for this project, dependencies and questions for the founder. ${site.id === 'hq' ? 'As chief of staff, cover coordination, budgets, blockers and reporting across all selected sectors.' : 'Coordinate your sector with the chief of staff.'} Do not invent completed work, actual revenue, medical services or external activity. Do not start background jobs or contact anyone. Finish after producing the brief; the server handles ongoing simulation monitoring.`;
+      const prompt = managerStartupPrompt(sector.id, m.name, 'server');
       const error = queue.add(prompt, founder, `${m.name}: startup brief`, undefined, m.jobKey);
       m.error = error;
       if (!error) {
