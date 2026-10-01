@@ -3,6 +3,7 @@ import { FRAMES, FRAME_BORDER, WALLS, frameRect, wallPose, wallTop, type Decorat
 import { FLOOR, LOFT } from '../../shared/layout';
 import type { Interactable } from './office';
 import { toon } from './toon';
+import { apiFetch } from '../endpoint';
 
 // ---- Pictures -------------------------------------------------------------------------------------
 
@@ -28,7 +29,8 @@ export function imageUrl(url: string): string {
 async function fetchPicture(url: string): Promise<Picture> {
   let res: Response;
   try {
-    res = await fetch(imageUrl(url));
+    // Through the endpoint helper, so the bundled app reaches its server with its device token.
+    res = await apiFetch(imageUrl(url));
   } catch {
     throw new Error("Couldn't reach the office to load that image");
   }

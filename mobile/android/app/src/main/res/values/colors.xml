@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Brand palette shared with the web splash (index.html). -->
+<resources>
+    <color name="brand_ink">#FF0F1B21</color>
+    <color name="brand_panel">#FF15232A</color>
+    <color name="brand_tower">#FFC7D6DB</color>
+    <color name="brand_steel">#FF7F999E</color>
+    <color name="brand_lit">#FF9BD1BA</color>
+    <color name="brand_text">#FFE4E8E7</color>
+    <color name="brand_muted">#FF9FB4B1</color>
+</resources>

@@ -4,6 +4,7 @@ import { randomLook, type Look } from '../../shared/avatar';
 import { AVATAR_COLORS, saveProfile, store, type Profile } from '../state';
 import { Person } from '../world/character';
 import { toonUnique } from '../world/toon';
+import { autoFocus } from '../keyboard';
 import { h, openModal } from './dom';
 
 /** A turntable with your character on it, drawn with its own small renderer. */
@@ -168,7 +169,7 @@ export function openCharacter(first: boolean, onSave: (p: Profile) => void) {
   const close = first ? null : h('button.btn.close', { type: 'button', 'aria-label': 'Close' }, '✕');
 
   const form = h(
-    'form.modal.charsel',
+    'form.modal.charsel.ae-dark',
     { role: 'dialog', 'aria-label': 'Pick your character' },
     h('header', {}, h('h2', {}, first ? 'Choose your founder' : 'Your founder'), close),
     h(
@@ -203,5 +204,6 @@ export function openCharacter(first: boolean, onSave: (p: Profile) => void) {
     modal.close();
     onSave(store.profile);
   });
-  setTimeout(() => input.focus(), 30);
+  // Desktop starts in the name field; on a phone that would open the keyboard over the whole dialog.
+  setTimeout(() => autoFocus(input, form), 30);
 }

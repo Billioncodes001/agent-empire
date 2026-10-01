@@ -1,6 +1,7 @@
 import type { ServerMsg, TeamState } from '../../shared/protocol';
 import type { Net } from '../net';
 import { store } from '../state';
+import { autoFocus } from '../keyboard';
 import { h, openModal } from './dom';
 import { confirmDialog } from './prompt';
 
@@ -146,7 +147,8 @@ export function openTeam(net: Net) {
     }
     if (!t.members.length) list.append(h('li.empty', {}, 'Nobody yet'));
     body.append(h('h4', {}, `Invited `, h('span.count', {}, String(t.members.length))), list);
-    if (typing || !focused) setTimeout(() => input.focus(), 30);
+    if (typing) setTimeout(() => input.focus(), 30);
+    else if (!focused) setTimeout(() => autoFocus(input, el), 30);
     focused = true;
   };
 

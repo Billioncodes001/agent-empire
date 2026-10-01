@@ -1,4 +1,5 @@
 import type { WorkerStatus } from '../../shared/protocol';
+import { autoFocus } from '../keyboard';
 import { h, openModal, STATUS_LABEL } from './dom';
 
 // Send a prompt about an issue or PR to a worker: a new one at a free desk, or one already sitting
@@ -103,7 +104,7 @@ export function openAsk(opts: AskOptions) {
     }
   });
   setTimeout(() => {
-    ta.focus();
-    ta.setSelectionRange(ta.value.length, ta.value.length);
+    autoFocus(ta, form);
+    if (document.activeElement === ta) ta.setSelectionRange(ta.value.length, ta.value.length);
   }, 30);
 }

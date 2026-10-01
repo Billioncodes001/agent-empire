@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { resolve, extname, sep } from 'node:path';
 import { WebSocketServer, WebSocket } from 'ws';
+import { randomBytes } from 'node:crypto';
 import { initialEmpire, MANAGER_NAMES, type SupervisionState } from '../src/shared/empire.js';
 import type { ServerMsg, WorkerInfo, QueueTask } from '../src/shared/protocol.js';
 
@@ -11,7 +12,16 @@ if (!Number.isInteger(port) || port < 1024 || port > 65535 || port === 4610) thr
 const root = resolve(import.meta.dirname, '../dist/public');
 const scenarios = ['working', 'idle', 'needs_input', 'turn_ended', 'interrupted', 'unknown', 'missing', 'stale', 'disconnected'] as const;
 let scenario: typeof scenarios[number] = 'needs_input';
-const sockets = new WebSocketServer({ noServer: true });
+// Like the real server, only ever agree to empire.v1 so a bearer.<token> entry is never echoed back.
+const sockets = new WebSocketServer({ noServer: true, handleProtocols: (offered) => (offered.has('empire.v1') ? 'empire.v1' : false) });
+// Fixture-only device sign-in for the bundled apps: any password works (or only FIXTURE_PASSWORD when set, so the
+// setup's wrong-password path can be shown), tokens live in memory, nothing is saved.
+const APP_ORIGINS = new Set(['empire-app://game', 'https://appassets.androidplatform.net']); // iOS and Android bundled games, as on the real server
+const fixturePassword = process.env.FIXTURE_PASSWORD || '';
+const devices = new Map<string, { id: string; name: string; createdAt: number }>();
+const socketToken = new Map<WebSocket, string>();
+const bearer = (req: import('node:http').IncomingMessage) => /^Bearer ([A-Za-z0-9_-]+)$/.exec(req.headers.authorization ?? '')?.[1];
+const json = (res: import('node:http').ServerResponse, status: number, body: unknown) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
 const send = (ws: WebSocket, msg: ServerMsg) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg)); };
 function snapshot() {
   const now = Date.now();
@@ -59,6 +69,12 @@ const server = createServer(async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   if (url.pathname === '/__fixture') { res.setHeader('Content-Type', 'text/html'); return res.end(controls); }
   if (url.pathname === '/__fixture/state') return res.end(`Scenario: ${scenario}`);
+  if (url.pathname === '/__fixture/revoke-devices' && req.method === 'POST') {
+    if (req.headers.origin && ![`http://localhost:${port}`, `http://127.0.0.1:${port}`].includes(req.headers.origin)) { res.writeHead(403); return res.end(); }
+    const n = devices.size; devices.clear();
+    for (const ws of socketToken.keys()) ws.close(4401, 'Device signed out');
+    return res.end(`Revoked ${n} fixture device(s)`);
+  }
   if (url.pathname.startsWith('/__fixture/scenario/') && req.method === 'POST') {
     if (req.headers.origin && ![`http://localhost:${port}`, `http://127.0.0.1:${port}`].includes(req.headers.origin)) { res.writeHead(403); return res.end(); }
     const next = url.pathname.split('/').at(-1);
@@ -67,7 +83,39 @@ const server = createServer(async (req, res) => {
     for (const ws of sockets.clients) scenario === 'disconnected' ? ws.close() : publish(ws);
     return res.end(`Scenario: ${scenario}`);
   }
-  if (url.pathname === '/api/whoami') { res.setHeader('Content-Type', 'application/json'); return res.end('{"ok":true}'); }
+  const appOrigin = req.headers.origin && APP_ORIGINS.has(req.headers.origin) ? req.headers.origin : undefined;
+  if (appOrigin) {
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, { 'access-control-allow-origin': appOrigin, 'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS', 'access-control-allow-headers': 'Authorization, Content-Type', vary: 'Origin' });
+      return res.end();
+    }
+    if (bearer(req) || url.pathname === '/api/device/login' || url.pathname === '/api/health') { res.setHeader('access-control-allow-origin', appOrigin); res.setHeader('vary', 'Origin'); }
+  }
+  if (url.pathname === '/api/health') return json(res, 200, { ok: true });
+  if (url.pathname === '/api/device/login' && req.method === 'POST') {
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    let body: { password?: unknown; deviceName?: unknown } = {}; try { body = JSON.parse(raw); } catch { return json(res, 400, { error: 'Bad request' }); }
+    if (typeof body.password !== 'string' || !body.password || (fixturePassword && body.password !== fixturePassword)) return json(res, 401, { error: 'Wrong password' });
+    const token = randomBytes(32).toString('base64url'), id = randomBytes(6).toString('base64url');
+    devices.set(token, { id, name: typeof body.deviceName === 'string' ? body.deviceName.slice(0, 64) : 'Device', createdAt: Date.now() });
+    console.log(`fixture device signed in: ${id}`);
+    return json(res, 200, { token, deviceId: id });
+  }
+  const auth = bearer(req);
+  const device = auth ? devices.get(auth) : undefined;
+  if (auth && !device && url.pathname.startsWith('/api/')) return json(res, 401, { error: 'Signed out' });
+  if (url.pathname === '/api/whoami') return json(res, 200, device ? { ok: true, deviceId: device.id } : { ok: true });
+  if (url.pathname === '/api/devices' && req.method === 'GET' && device)
+    return json(res, 200, { devices: [...devices.values()].map((d) => ({ ...d, lastUsedAt: Date.now(), current: d === device })) });
+  if (url.pathname.startsWith('/api/devices/') && req.method === 'DELETE' && device) {
+    const id = decodeURIComponent(url.pathname.slice('/api/devices/'.length));
+    const entry = [...devices].find(([, d]) => d.id === id);
+    if (!entry) return json(res, 404, { error: 'Not found' });
+    devices.delete(entry[0]);
+    console.log(`fixture device revoked by DELETE: ${id}`);
+    for (const [ws, token] of socketToken) if (token === entry[0]) ws.close(4401, 'Device signed out');
+    return json(res, 200, { ok: true });
+  }
   if (req.method !== 'GET') { res.writeHead(405); return res.end(); }
   try {
     const file = resolve(root, '.' + decodeURIComponent(url.pathname === '/' ? '/index.html' : url.pathname));
@@ -77,7 +125,17 @@ const server = createServer(async (req, res) => {
 });
 server.on('upgrade', (req, socket, head) => {
   if (scenario === 'disconnected' || new URL(req.url || '/', `http://localhost:${port}`).pathname !== '/ws') { socket.destroy(); return; }
-  sockets.handleUpgrade(req, socket, head, ws => sockets.emit('connection', ws));
+  // App sockets: empire.v1 plus exactly one bearer.<token>, from no origin, this fixture, or an app origin (iOS, Android).
+  const offered = String(req.headers['sec-websocket-protocol'] ?? '').split(',').map((v) => v.trim()).filter(Boolean);
+  const tokens = offered.filter((v) => v.startsWith('bearer.'));
+  let token: string | undefined;
+  if (tokens.length || APP_ORIGINS.has(req.headers.origin ?? '')) {
+    token = tokens.length === 1 ? tokens[0].slice('bearer.'.length) : undefined;
+    const origin = req.headers.origin;
+    const originOk = !origin || APP_ORIGINS.has(origin) || [`http://localhost:${port}`, `http://127.0.0.1:${port}`].includes(origin);
+    if (!originOk || !offered.includes('empire.v1') || !token || !devices.has(token)) { socket.end('HTTP/1.1 401 Unauthorized\r\n\r\n'); return; }
+  }
+  sockets.handleUpgrade(req, socket, head, ws => { if (token) socketToken.set(ws, token); ws.on('close', () => socketToken.delete(ws)); sockets.emit('connection', ws); });
 });
 sockets.on('connection', ws => {
   const {worker, task} = snapshot();

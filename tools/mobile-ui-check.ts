@@ -149,6 +149,22 @@ async function menuCoverage(page: Page, label: string) {
   check(`${label} no overlay painted near the close button`, bright < 0.02, `${(bright * 100).toFixed(1)}% teal pixels`);
 }
 
+/** Visible dialogs whose surface is light (the old cream theme); dark = background luminance under 0.2. */
+async function lightDialogs(page: Page): Promise<string[]> {
+  return page.evaluate(`(() => {
+    const lum = (c) => { const m = c.match(/rgba?\\(([^)]+)\\)/); if (!m) return null; const [r, g, b, a = 1] = m[1].split(/[ ,\\/]+/).filter(Boolean).map(Number);
+      if (a < 0.5) return null; const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b); };
+    return [...document.querySelectorAll('#modal-root .modal')].filter((m) => m.getClientRects().length).filter((m) => {
+      const cs = getComputedStyle(m); const head = m.querySelector('header');
+      return [cs.backgroundImage, cs.backgroundColor, head && getComputedStyle(head).backgroundColor].filter(Boolean).map(lum).some((v) => v !== null && v > 0.2);
+    }).map((m) => m.getAttribute('aria-label') || m.className);
+  })()`);
+}
+const textFocused = (page: Page) => page.evaluate(() => {
+  const a = document.activeElement as HTMLInputElement | null;
+  return !!a && (a.tagName === 'TEXTAREA' || a.isContentEditable || (a.tagName === 'INPUT' && !['button', 'checkbox', 'radio', 'range', 'submit'].includes(a.type)));
+});
+
 async function landscape(browser: Browser, width: number, height: number, full: boolean) {
   const label = `${width}x${height}`;
   const { context, page, errors, splashAtStart } = await open(browser, { width, height, touch: true });
@@ -241,6 +257,24 @@ async function landscape(browser: Browser, width: number, height: number, full: 
       await page.evaluate(() => (document.activeElement as HTMLElement)?.blur());
       await page.waitForTimeout(50);
       check(`${label} chat panel closes on blur`, !(await rect(page, '#chat')));
+      // Windows of the first minutes use the dark design, and none opens the keyboard by itself on touch.
+      await page.evaluate(() => document.getElementById('btn-settings')?.click());
+      await page.waitForSelector('#modal-root .settings-modal');
+      const lightSettings = await lightDialogs(page);
+      check(`${label} settings window uses the dark design`, !lightSettings.length, lightSettings.join(', '));
+      await page.locator('.settings-modal .btn', { hasText: 'Change your look' }).click();
+      await page.waitForSelector('#modal-root .charsel');
+      await page.waitForTimeout(250);
+      const lightFounder = await lightDialogs(page);
+      check(`${label} founder window uses the dark design`, !lightFounder.length, lightFounder.join(', '));
+      check(`${label} founder window opens no keyboard (no auto-focused text field on touch)`, !(await textFocused(page)));
+      await page.keyboard.press('Escape');
+      await touchTap(page, center(parts.menu!));
+      await page.locator('.game-menu .menu-item', { hasText: 'Controls' }).click();
+      await page.waitForTimeout(200);
+      const lightHelp = await lightDialogs(page);
+      check(`${label} controls help uses the dark design`, !lightHelp.length, lightHelp.join(', '));
+      for (let i = 0; i < 3 && (await page.locator('#modal-root .modal').count()); i++) await page.keyboard.press('Escape');
     }
     check(`${label} no console/page errors`, !errors.length, errors.slice(0, 3).join(' | '));
   } finally {
@@ -294,7 +328,49 @@ try {
     const after = await player(page);
     check('1440x900 arrow keys still move', Math.hypot(after.x - before.x, after.z - before.z) > 0.3);
     await page.screenshot({ animations: 'disabled', path: resolve(out,'desktop-1440x900.png') });
+    // Desktop keeps its autofocus: the founder window starts in the name field.
+    await page.locator('#btn-settings').click();
+    await page.locator('.settings-modal .btn', { hasText: 'Change your look' }).click();
+    await page.waitForSelector('#modal-root .charsel');
+    await page.waitForTimeout(250);
+    check('1440x900 founder window autofocuses the name field on desktop', (await page.evaluate(() => document.activeElement?.getAttribute('aria-label'))) === 'Your name');
+    const lightDesk = await lightDialogs(page);
+    check('1440x900 founder window uses the dark design', !lightDesk.length, lightDesk.join(', '));
+    await page.keyboard.press('Escape');
     check('1440x900 no console/page errors', !errors.length, errors.slice(0, 3).join(' | '));
+    await context.close();
+  }
+
+  // First-launch setup, as a static copy of the game with no server behind it shows it (whoami answers 404):
+  // fits every landscape phone, keeps touch-sized targets, no horizontal overflow, honours reduced motion.
+  for (const [w, hgt] of [[667, 375], [874, 402], [932, 430]] as const) {
+    const context = await browser.newContext({ viewport: { width: w, height: hgt }, deviceScaleFactor: 1, isMobile: true, hasTouch: true, reducedMotion: w === 667 ? 'reduce' : 'no-preference' });
+    const page = await context.newPage();
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    await page.route('**/api/whoami', (r) => r.fulfill({ status: 404, body: 'static copy' }));
+    await page.goto(base);
+    await page.waitForSelector('.su-hero-title', { timeout: 20_000 });
+    const tag = `${w}x${hgt} setup`;
+    const start = await rect(page, '.su-hero .su-primary');
+    check(`${tag}: start button on screen and touch-sized`, !!start && inside(start, w, hgt) && start.h >= 44);
+    check(`${tag}: game bundle not loaded before a choice`, !(await page.evaluate(() => performance.getEntriesByType('resource').some((e) => /three\.module/.test(e.name)))));
+    if (w === 667) check(`${tag}: reduced motion stops the title animation`, (await page.evaluate(() => getComputedStyle(document.querySelector('.su-letter')!).animationName)) === 'none');
+    await page.tap('.su-hero .su-primary');
+    await page.waitForTimeout(400);
+    const cards = [await rect(page, '.su-card-cloud', 'cloud card'), await rect(page, '.su-card-server', 'server card')];
+    // Fully visible means inside the panel's scroll area (not hidden under its footer), not merely inside the viewport.
+    const area = await rect(page, '.su-panel:not(.su-leave) .su-body', 'body');
+    check(`${tag}: both mode cards fully visible without scrolling`, !!area && cards.every((c) => !!c && inside(c, w, hgt) && c.y >= area.y - 0.5 && c.y + c.h <= area.y + area.h + 0.5),
+      cards.map((c) => c && `${c.name} bottom ${(c.y + c.h).toFixed(0)}`).join(', ') + (area ? `, visible to ${(area.y + area.h).toFixed(0)}` : ''));
+    const back = await rect(page, '.su-panel:not(.su-leave) .su-back', 'back');
+    check(`${tag}: Back reachable and touch-sized`, !!back && inside(back, w, hgt) && back.h >= 44);
+    await page.tap('.su-card-server');
+    await page.waitForTimeout(400);
+    const next = await rect(page, '.su-panel:not(.su-leave) .su-foot .su-primary', 'continue');
+    check(`${tag}: server address and Continue on screen`, !!(await rect(page, '#su-address')) && !!next && inside(next, w, hgt));
+    check(`${tag}: no horizontal overflow`, (await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)) <= 0);
+    check(`${tag}: no page errors`, !errors.length, errors.slice(0, 3).join(' | '));
     await context.close();
   }
 

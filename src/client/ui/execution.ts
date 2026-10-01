@@ -1,5 +1,6 @@
 import type { ExecutionConfig, ExecutionMode, ExecutionSetup, ExecutionSubmit, ExecutionTask, ExecutionTaskList, ExecutionTaskStatus } from '../../shared/execution';
 import { store } from '../state';
+import { apiFetch } from '../endpoint';
 import { h, openModal, timeAgo, toast, type Modal } from './dom';
 import type { StatusView } from './status';
 
@@ -143,7 +144,7 @@ export function provenPreDispatch(err: unknown): boolean {
 async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(path, {
+    res = await apiFetch(path, {
       ...init,
       cache: 'no-store',
       credentials: 'same-origin',

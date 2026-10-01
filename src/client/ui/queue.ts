@@ -1,6 +1,7 @@
 import type { QueueTask } from '../../shared/protocol';
 import type { Net } from '../net';
 import { store } from '../state';
+import { autoFocus } from '../keyboard';
 import { h, openModal, timeAgo, STATUS_LABEL } from './dom';
 import { confirmDialog } from './prompt';
 
@@ -186,5 +187,5 @@ export function openQueue(net: Net, actions: QueueActions) {
   });
   close.addEventListener('click', () => modal.close());
   render();
-  setTimeout(() => ta.focus(), 30);
+  setTimeout(() => autoFocus(ta, el), 30);
 }

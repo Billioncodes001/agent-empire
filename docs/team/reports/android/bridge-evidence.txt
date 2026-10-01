@@ -1,0 +1,113 @@
+# Bridge calls made from the page over the debug build's DevTools socket (scratchpad cdp.mjs). Tokens masked.
+## bridge-test.js; then persistence across a force-stop and relaunch; then app.openExternal right after a real tap
+{
+ "bridgeKeys": [
+  "constructor",
+  "postMessage"
+ ],
+ "set": {
+  "ok": true
+ },
+ "get": {
+  "ok": "ada/agent-empire-state"
+ },
+ "getMissing": {
+  "ok": null
+ },
+ "badKey": {
+  "err": "Key not allowed"
+ },
+ "badMethod": {
+  "err": "Unknown method"
+ },
+ "nonString": {
+  "err": "Value must be a string of at most 8192 characters"
+ },
+ "tooLong": {
+  "err": "Value must be a string of at most 8192 characters"
+ },
+ "openNoGesture": {
+  "err": "Opening a link needs a tap first"
+ },
+ "openHttp": {
+  "err": "Only https links can be opened"
+ },
+ "flowBadClient": {
+  "err": "invalid_request: clientId or scopes are malformed"
+ },
+ "numericId": {
+  "id": 7,
+  "type": "number",
+  "v": "server"
+ },
+ "foreignFrame": {
+  "blocked": "frame-src",
+  "uri": "https://example.com"
+ },
+ "navigationBlocked": true
+}
+{
+ "afterRestart": {
+  "ok": "ada/agent-empire-state"
+ },
+ "del": {
+  "ok": true
+ },
+ "afterDelete": {
+  "ok": null
+ },
+ "appHost": "http://10.0.2.2:4706"
+}
+{
+ "ok": true
+}
+## flow-flow-fake-ok
+{
+ "ok": {
+  "login": "fake-user",
+  "token": "<38 chars, gho_…>"
+ }
+}
+## flow-flow-fake-denied
+{
+ "err": "access_denied: Sign-in was denied on GitHub."
+}
+## flow-flow-fake-expired
+{
+ "err": "expired_token: The GitHub code expired. Start sign-in again."
+}
+## flow-cancel
+{
+ "err": "cancelled: GitHub sign-in was cancelled."
+}
+## flow-real
+{
+ "err": "cancelled: GitHub sign-in was cancelled."
+}
+## fake GitHub request log (debug build, http://10.0.2.2:4717)
+fake GitHub on 127.0.0.1:4717
+2026-09-30T08:08:21.316Z POST /login/device/code application/json client_id,scope fake-ok repo workflow 
+2026-09-30T08:08:22.818Z POST /login/oauth/access_token application/json client_id,device_code,grant_type fake-ok  urn:ietf:params:oauth:grant-type:device_code
+2026-09-30T08:08:23.825Z POST /login/oauth/access_token application/json client_id,device_code,grant_type fake-ok  urn:ietf:params:oauth:grant-type:device_code
+2026-09-30T08:08:24.829Z POST /login/oauth/access_token application/json client_id,device_code,grant_type fake-ok  urn:ietf:params:oauth:grant-type:device_code
+2026-09-30T08:08:27.847Z POST /login/oauth/access_token application/json client_id,device_code,grant_type fake-ok  urn:ietf:params:oauth:grant-type:device_code
+2026-09-30T08:08:30.864Z POST /login/oauth/access_token application/json client_id,device_code,grant_type fake-ok  urn:ietf:params:oauth:grant-type:device_code
+2026-09-30T08:08:30.866Z GET /user application/vnd.github+json    
+2026-09-30T08:09:30.341Z POST /login/device/code application/json client_id,scope fake-ok repo workflow 
+2026-09-30T08:09:31.844Z POST /login/oauth/access_token application/json client_id,device_code,grant_type fake-ok  urn:ietf:params:oauth:grant-type:device_code
+2026-09-30T08:09:32.848Z POST /login/oauth/access_token application/json client_id,device_code,grant_type fake-ok  urn:ietf:params:oauth:grant-type:device_code
+2026-09-30T08:09:33.852Z POST /login/oauth/access_token application/json client_id,device_code,grant_type fake-ok  urn:ietf:params:oauth:grant-type:device_code
+2026-09-30T08:09:36.856Z POST /login/oauth/access_token application/json client_id,device_code,grant_type fake-ok  urn:ietf:params:oauth:grant-type:device_code
+2026-09-30T08:09:39.860Z POST /login/oauth/access_token application/json client_id,device_code,grant_type fake-ok  urn:ietf:params:oauth:grant-type:device_code
+2026-09-30T08:09:39.862Z GET /user application/vnd.github+json    
+2026-09-30T08:09:55.851Z POST /login/device/code application/json client_id,scope fake-denied repo 
+2026-09-30T08:09:57.368Z POST /login/oauth/access_token application/json client_id,device_code,grant_type fake-denied  urn:ietf:params:oauth:grant-type:device_code
+2026-09-30T08:09:58.383Z POST /login/oauth/access_token application/json client_id,device_code,grant_type fake-denied  urn:ietf:params:oauth:grant-type:device_code
+2026-09-30T08:10:01.952Z POST /login/device/code application/json client_id fake-expired  
+2026-09-30T08:10:02.956Z POST /login/oauth/access_token application/json client_id,device_code,grant_type fake-expired  urn:ietf:params:oauth:grant-type:device_code
+2026-09-30T08:10:03.960Z POST /login/oauth/access_token application/json client_id,device_code,grant_type fake-expired  urn:ietf:params:oauth:grant-type:device_code
+2026-09-30T08:10:24.359Z POST /login/device/code application/json client_id,scope fake-ok repo 
+2026-09-30T08:10:25.863Z POST /login/oauth/access_token application/json client_id,device_code,grant_type fake-ok  urn:ietf:params:oauth:grant-type:device_code
+2026-09-30T08:10:26.866Z POST /login/oauth/access_token application/json client_id,device_code,grant_type fake-ok  urn:ietf:params:oauth:grant-type:device_code
+2026-09-30T08:10:27.871Z POST /login/oauth/access_token application/json client_id,device_code,grant_type fake-ok  urn:ietf:params:oauth:grant-type:device_code
+2026-09-30T08:10:30.877Z POST /login/oauth/access_token application/json client_id,device_code,grant_type fake-ok  urn:ietf:params:oauth:grant-type:device_code

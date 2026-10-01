@@ -5,6 +5,7 @@ import { entranceAccess, entrance, worldPosition, mapPoint, mapWorld } from '../
 import { store } from '../state';
 import type { Net } from '../net';
 import type { PlayerController } from '../player';
+import { autoFocus } from '../keyboard';
 import { h, openModal, toast } from './dom';
 import { openManagement } from './management';
 import { mountTouchControls } from './touch';
@@ -269,7 +270,7 @@ export function mountEmpire(
       });
       modal.close();
     };
-    input.focus();
+    autoFocus(input, modal.el);
   }
   function interact() {
     if (player.pos.z < 30) return false;

@@ -1,3 +1,5 @@
+import { apiFetch } from './endpoint';
+
 const form = document.getElementById('form') as HTMLFormElement;
 const input = document.getElementById('password') as HTMLInputElement;
 const error = document.getElementById('error') as HTMLParagraphElement;
@@ -8,7 +10,7 @@ form.addEventListener('submit', async (e) => {
   error.textContent = '';
   submit.disabled = true;
   try {
-    const res = await fetch('/api/login', {
+    const res = await apiFetch('/api/login', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ password: input.value }),
