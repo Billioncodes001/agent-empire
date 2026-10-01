@@ -1,0 +1,30 @@
+/* Native shell windows (GitHub code, provider keys). Same palette as the in-game setup (src/client/setup/setup.css). */
+:root{color-scheme:dark;--ink:#e6ecea;--muted:#a3b7b3;--faint:#7e9894;--accent:#9bd1ba;--accent-2:#c7e8d8;--warm:#f4d9a8;--line:rgba(199,232,216,.18);--focus:#c3e7d7;
+  font:15px/1.5 Inter,"SF Pro Text",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;color:var(--ink);background:#0c161b}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px 16px;
+  background:radial-gradient(120% 90% at 50% 120%,#1d3a44 0,#13232a 48%,#0b1519 100%)}
+main{width:min(460px,100%);padding:28px 26px;border-radius:20px;background:rgba(19,37,44,.86);border:1px solid var(--line);
+  box-shadow:0 30px 80px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.05);animation:rise .45s cubic-bezier(.2,.8,.2,1) both}
+@keyframes rise{from{opacity:0;transform:translateY(10px) scale(.985)}}
+.eyebrow{margin:0;font-size:11px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:var(--accent)}
+h1{margin:6px 0 8px;font-size:24px;letter-spacing:-.02em;line-height:1.2}
+p{margin:0 0 12px;color:var(--muted)}
+.code{margin:18px 0 6px;padding:16px 10px;border-radius:14px;text-align:center;font:600 34px/1.1 "SF Mono",ui-monospace,Menlo,Consolas,monospace;letter-spacing:.16em;
+  color:#eaf5f0;background:#0f1d23;border:1px solid rgba(155,209,186,.35);text-shadow:0 8px 30px rgba(155,209,186,.35);user-select:all}
+.row{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}
+button{flex:1 1 auto;min-height:44px;padding:10px 18px;border-radius:12px;border:1px solid var(--line);background:transparent;color:var(--ink);font:inherit;font-weight:600;cursor:pointer;transition:background .2s,transform .12s}
+button:hover{background:rgba(199,232,216,.08)}
+button:active{transform:translateY(1px)}
+button.primary{color:#0f2019;background:linear-gradient(135deg,#d6efe2,var(--accent));border-color:var(--accent-2)}
+button:disabled{opacity:.55;cursor:wait}
+button:focus-visible,input:focus-visible{outline:2px solid var(--focus);outline-offset:3px}
+label{display:block;margin:14px 0 6px;font-weight:600;font-size:14px}
+input{width:100%;min-height:44px;padding:10px 12px;border-radius:11px;border:1px solid var(--line);background:#0f1d23;color:var(--ink);font:16px "SF Mono",ui-monospace,Menlo,Consolas,monospace}
+.note{font-size:13px;color:var(--faint)}
+.status{min-height:1.5em;margin:12px 0 0;font-size:13px;color:var(--warm)}
+.status:empty{display:none}
+.wait{display:inline-flex;gap:8px;align-items:center;font-size:13px;color:var(--muted)}
+.wait::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--accent);animation:pulse 1.4s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.25;transform:scale(.7)}}
+@media (prefers-reduced-motion:reduce){main,.wait::before{animation:none}button{transition:none}}
