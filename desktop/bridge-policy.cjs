@@ -8,7 +8,9 @@ const APP_HOST = 'game';
 /** The bundled game's origin. The server already allows it (src/server/server.ts APP_ORIGINS, shared with iOS). */
 const APP_ORIGIN = `${APP_SCHEME}://${APP_HOST}`;
 
-const METHODS = Object.freeze(['secure.get', 'secure.set', 'secure.delete', 'github.deviceFlow', 'app.signedOut', 'app.openExternal']);
+const METHODS = Object.freeze(['secure.get', 'secure.set', 'secure.delete', 'github.deviceFlow', 'app.signedOut', 'app.openExternal', 'app.runLocal']);
+/** Stored modes. 'local' is desktop-only: the bundled server on this computer ("Run on this computer"). */
+const MODES = Object.freeze(['cloud', 'server', 'local']);
 /** Fixed key allowlist for secure.get/set/delete. Provider API keys are never among them. */
 const KEYS = Object.freeze(['mode', 'server.host', 'server.token', 'server.deviceId', 'github.token', 'github.login', 'state.repo']);
 /** Cleared by app.signedOut: every credential and the identity bound to it. Preferences (mode, host, repo) stay. */
@@ -56,7 +58,7 @@ function invalidValue(key, value) {
   if (typeof value !== 'string' || !value || value.length > MAX_VALUE_LENGTH) return 'That value can’t be stored.';
   switch (key) {
     case 'mode':
-      return value === 'cloud' || value === 'server' ? null : 'Unknown mode.';
+      return MODES.includes(value) ? null : 'Unknown mode.';
     case 'server.host':
       return serverOrigin(value) === value ? null : 'That server address isn’t allowed in this app.';
     case 'server.token':
@@ -149,6 +151,8 @@ function parseRequest(raw) {
     }
     case 'app.signedOut':
       return { id, method: raw.method, params: { reason: SIGN_OUT_REASONS.includes(p.reason) ? p.reason : 'unauthorized' } };
+    case 'app.runLocal':
+      return { id, method: raw.method, params: {} };
     case 'app.openExternal': {
       const url = externalUrl(p.url);
       return url ? { id, method: raw.method, params: { url } } : fail('Only https links can be opened.');
@@ -161,24 +165,26 @@ function parseRequest(raw) {
  * window.AGENT_EMPIRE_APP for the page: platform, device name, the stored mode, a server session only in server
  * mode when host and token are valid, and a one-shot sign-out reason. Same rules as Android configFields.
  */
-function configFor({ deviceName, mode, host, token, deviceId, signedOut, local }) {
+function configFor({ deviceName, mode, host, token, deviceId, signedOut, local, localAvailable }) {
   const out = { platform: 'desktop' };
   const name = typeof deviceName === 'string' ? deviceName.replace(/[\u0000-\u001f\u007f‪-‮⁦-⁩]/g, '').trim() : '';
   out.deviceName = name ? name.slice(0, 64) : 'Desktop app';
-  if (mode === 'cloud' || mode === 'server') out.mode = mode;
+  if (MODES.includes(mode)) out.mode = mode;
   const origin = serverOrigin(host);
-  if (mode === 'server' && origin && origin === host && isDeviceToken(token)) {
+  // A session only for a server: a remote one (server), or the bundled one on loopback http (local).
+  if ((mode === 'server' || (mode === 'local' && origin && origin.startsWith('http://'))) && origin && origin === host && isDeviceToken(token)) {
     out.host = origin;
     out.token = token;
     if (typeof deviceId === 'string' && DEVICE_ID.test(deviceId)) out.deviceId = deviceId;
   }
   if (SIGN_OUT_REASONS.includes(signedOut)) out.signedOut = signedOut;
   if (local === true && out.host) out.local = true;
+  if (localAvailable === true) out.localAvailable = true;
   return out;
 }
 
 module.exports = {
-  APP_SCHEME, APP_HOST, APP_ORIGIN, METHODS, KEYS, SESSION_KEYS, GITHUB_SCOPES, SIGN_OUT_REASONS, MAX_VALUE_LENGTH, GESTURE_WINDOW_MS,
+  APP_SCHEME, APP_HOST, APP_ORIGIN, METHODS, MODES, KEYS, SESSION_KEYS, GITHUB_SCOPES, SIGN_OUT_REASONS, MAX_VALUE_LENGTH, GESTURE_WINDOW_MS,
   isKey, isMethod, isDeviceToken, isClientId, serverOrigin, invalidValue, scopes, externalUrl, isVerificationUrl, gestureAllows, isAppUrl,
   parseRequest, configFor,
 };

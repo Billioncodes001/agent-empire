@@ -94,12 +94,13 @@ function pageConfig() {
   const s = localSession;
   const cfg = policy.configFor({
     deviceName: deviceName(),
-    mode: s ? 'server' : snap.mode,
+    mode: s ? 'local' : snap.mode,
     host: s ? s.host : snap['server.host'],
     token: s ? s.token : snap['server.token'],
     deviceId: s ? s.deviceId : snap['server.deviceId'],
     signedOut: pendingSignedOut,
     local: !!s,
+    localAvailable: true,
   });
   pendingSignedOut = undefined;
   return cfg;
@@ -114,8 +115,9 @@ async function handleBridge(request) {
       if (localSession && request.params.key === 'server.deviceId') return localSession.deviceId;
       return store.get(request.params.key);
     case 'secure.set':
-      // Signing in to another server from the setup leaves "This computer".
+      // Signing in to another server, or choosing another mode, leaves "This computer".
       if (localSession && request.params.key === 'server.host' && request.params.value !== localSession.host) leaveLocal();
+      if (localSession && request.params.key === 'mode' && request.params.value !== 'local') leaveLocal();
       store.set(request.params.key, request.params.value);
       return true;
     case 'secure.delete':
@@ -128,6 +130,13 @@ async function handleBridge(request) {
       return true;
     case 'app.openExternal':
       return openExternal(request.params.url);
+    case 'app.runLocal': {
+      const outcome = await confirmAndStartLocal();
+      if (outcome === 'cancelled') throw new Error('cancelled: Running on this computer was cancelled. Nothing was started.');
+      menu();
+      // The page adopts this session without a reload (like the server path); the config carries it on relaunch.
+      return { mode: 'local', host: localSession.host, token: localSession.token, deviceId: localSession.deviceId };
+    }
   }
   throw new Error('Unknown method.');
 }
@@ -217,46 +226,69 @@ async function startLocal(project) {
     });
   localSession = await localDeviceSession(localHost, deviceName(), (url, init) => net.fetch(url, init));
   store.set('server.host', localSession.host);
-  store.set('mode', 'server');
+  store.set('mode', 'local');
   for (const key of ['server.token', 'server.deviceId']) store.delete(key); // a remote sign-in is replaced
   saveConfig({ ...readConfig(), runMode: 'local', localProject: project, localPort: localHost.port });
 }
 
-async function runOnThisComputer() {
-  if (busy) return;
-  const c = readConfig();
-  const project = c.localProject || path.join(app.getPath('userData'), 'city-project');
-  const choice = await dialog.showMessageBox(win, {
-    type: 'question',
-    buttons: ['Cancel', 'Choose project folder…', 'Run on this computer'],
-    defaultId: 2,
-    cancelId: 0,
-    message: 'Run your Empire on this computer?',
-    detail:
-      'The Empire runs inside this app, with full capabilities: live terminals, service tunnels and local agents.\n\n' +
-      'It runs only while the app is open. When you quit, local workers stop and nothing happens until you open the app again. For an Empire that keeps working while this computer is off, use the cloud or your own server instead.\n\n' +
-      'Workers stay paused until you choose where they run inside the game.\n\n' +
-      `Project: ${project}`,
-  });
-  if (choice.response === 0) return;
-  let chosen = project;
-  if (choice.response === 1) {
-    const picked = await dialog.showOpenDialog(win, { title: 'Choose a Git project or an empty folder for your city', properties: ['openDirectory', 'createDirectory'] });
-    if (picked.canceled) return;
-    chosen = picked.filePaths[0];
-  }
+let localStarting = false;
+/**
+ * The one "Run on this computer" flow, for the menu and for the page's app.runLocal: the confirmation dialog that
+ * says it runs only while the app is open, then the bundled server and a native sign-in. Returns 'started' (also
+ * when it is already running) or 'cancelled'; throws with a plain message when the server can't start.
+ */
+async function confirmAndStartLocal() {
+  if (localSession) return 'started';
+  if (localStarting || busy) throw new Error('The app is busy. Try again in a moment.');
+  localStarting = true;
   try {
-    await startLocal(chosen);
+    const c = readConfig();
+    const project = c.localProject || path.join(app.getPath('userData'), 'city-project');
+    const choice = await dialog.showMessageBox(win, {
+      type: 'question',
+      buttons: ['Cancel', 'Choose project folder…', 'Run on this computer'],
+      defaultId: 2,
+      cancelId: 0,
+      message: 'Run your Empire on this computer?',
+      detail:
+        'The Empire runs inside this app, with full capabilities: live terminals, service tunnels and local agents.\n\n' +
+        'It runs only while the app is open. When you quit, local workers stop and nothing happens until you open the app again. For an Empire that keeps working while this computer is off, use the cloud or your own server instead.\n\n' +
+        'Workers stay paused until you choose where they run inside the game.\n\n' +
+        `Project: ${project}`,
+    });
+    if (choice.response === 0) return 'cancelled';
+    let chosen = project;
+    if (choice.response === 1) {
+      const picked = await dialog.showOpenDialog(win, { title: 'Choose a Git project or an empty folder for your city', properties: ['openDirectory', 'createDirectory'] });
+      if (picked.canceled) return 'cancelled';
+      chosen = picked.filePaths[0];
+    }
+    try {
+      await startLocal(chosen);
+    } catch (error) {
+      localSession = undefined;
+      throw new Error(`The Empire couldn’t start on this computer: ${error.message}`);
+    }
+    return 'started';
+  } finally {
+    localStarting = false;
+  }
+}
+
+async function runOnThisComputer() {
+  let outcome;
+  try {
+    outcome = await confirmAndStartLocal();
   } catch (error) {
     await dialog.showMessageBox(win, { type: 'warning', message: 'The Empire couldn’t start on this computer', detail: error.message });
     return;
   }
-  await reloadGame();
+  if (outcome === 'started') await reloadGame();
 }
 
 async function resumeLocal() {
   const c = readConfig();
-  if (c.runMode !== 'local' || !c.localProject) return;
+  if ((c.runMode !== 'local' && storeGet('mode') !== 'local') || !c.localProject) return;
   try {
     await startLocal(c.localProject);
   } catch (error) {
@@ -427,7 +459,7 @@ function menu() {
 
 /* ---------- the game window ---------- */
 async function reloadGame() {
-  if (!localSession && readConfig().runMode === 'local') await resumeLocal();
+  if (!localSession && (readConfig().runMode === 'local' || storeGet('mode') === 'local')) await resumeLocal();
   menu();
   if (win && !win.isDestroyed()) await win.loadURL(GAME_URL).catch(() => {});
 }
