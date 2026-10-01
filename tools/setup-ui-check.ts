@@ -144,6 +144,17 @@ async function run() {
       ok(await page.locator('.su-panel:not(.su-leave) .su-foot .su-primary').isDisabled(), `${tag} a malformed key blocks advancing`);
       await page.fill('#su-key-openai', '');
       await press(page, size.touch, '.su-panel:not(.su-leave) .su-foot .su-primary');
+      // Back to the keys step: it is re-rendered from the setup state with the typed key in the field.
+      await page.waitForSelector('#su-daily');
+      await press(page, size.touch, '.su-panel:not(.su-leave) .su-foot .su-back');
+      await page.waitForSelector('.su-panel:not(.su-leave) #su-key-anthropic');
+      const keyLeak = await page.evaluate(() => ({
+        inMarkup: document.documentElement.outerHTML.includes('sk-ant-FAKE'),
+        attr: document.querySelector('#su-key-anthropic')?.getAttribute('value') ?? null,
+        kept: (document.querySelector('#su-key-anthropic') as HTMLInputElement | null)?.value === 'sk-ant-FAKE-fixture-only-000000000000',
+      }));
+      ok(!keyLeak.inMarkup && keyLeak.attr === null && keyLeak.kept, `${tag} a typed API key is kept in the field but never written into the page markup (value attribute ${keyLeak.attr === null ? 'absent' : 'present'})`);
+      await press(page, size.touch, '.su-panel:not(.su-leave) .su-foot .su-primary');
       await page.fill('#su-daily', '2');
       await shot('07-limits-error');
       await page.fill('#su-daily', '20.00');

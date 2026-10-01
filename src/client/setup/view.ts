@@ -12,7 +12,7 @@ import {
 import { defaultDeviceName, LoginFailure, parseServerAddress, revokeDevice, signInToServer, type ServerSession } from './server-login';
 import { GitHubClient, GitHubError, type RepoListing } from './github';
 import { CloudSetupError, createEmpire, CREATE_STEPS, githubCloudSetup, pendingWorkflow, readiness, sodiumSealer, type CreateStep, type StateRepo, type WorkflowSource } from './cloud-setup';
-import { GITHUB_SCOPES, GITHUB_TOKEN_URL, PROVIDER_KEY_URLS } from './config';
+import { GITHUB_NEW_STATE_REPO_URL, GITHUB_SCOPES, GITHUB_TOKEN_URL, PROVIDER_KEY_URLS } from './config';
 import { dismissKeyboard, isTouchDevice, trackKeyboard } from '../keyboard';
 
 // ---- Tiny DOM helper --------------------------------------------------------------------------------
@@ -25,6 +25,9 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Record<string,
     if (k === 'class') node.className = String(v);
     else if (k === 'text') node.textContent = String(v);
     else if (k === 'html') node.innerHTML = String(v); // static, trusted markup only (icons)
+    // Field values are set as the live property, never as an attribute: a typed API key must not appear in the DOM
+    // markup (outerHTML, serialisers, attribute selectors).
+    else if (k === 'value' && (node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement)) node.value = String(v);
     else if (k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2), v as EventListener);
     else if (k in node && typeof v !== 'string') (node as unknown as Record<string, unknown>)[k] = v;
     else node.setAttribute(k, v === true ? '' : String(v));
@@ -518,8 +521,9 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
           },
         },
           el('ol', { class: 'su-howto' },
-            el('li', {}, external('Create a fine-grained token on GitHub', GITHUB_TOKEN_URL), '. Repository access: All repositories.'),
-            el('li', { text: 'Repository permissions, Read and write: Administration (creates your private state repository), Contents, Secrets, Workflows, Actions and Pull requests. Metadata: Read.' }),
+            el('li', {}, external('Create a private repository named agent-empire-state', GITHUB_NEW_STATE_REPO_URL), ' in your account (your Empire’s home). Creating it yourself means the token needs no Administration permission.'),
+            el('li', {}, external('Create a fine-grained token', GITHUB_TOKEN_URL), '. Expiration: 30 days or less (link again when it expires). Repository access: Only select repositories, that is agent-empire-state and the projects you want to use.'),
+            el('li', { text: 'Repository permissions, Read and write: Contents, Secrets, Workflows, Actions and Pull requests. Metadata: Read. Nothing else.' }),
             el('li', { text: 'Paste it here.' }),
           ),
           el('div', { class: 'su-row' }, field('GitHub token', input), check),

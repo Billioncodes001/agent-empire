@@ -165,6 +165,8 @@ test('cloud setup: an existing private state repo of the same account is reused 
   const repo = await createEmpire(plan(), githubCloudSetup(new GitHubClient('t', reuse.fetchImpl), sodiumSealer, workflow), []);
   assert.equal(repo.created, false);
   assert.ok(reuse.secrets.has('ANTHROPIC_API_KEY'));
+  // Looked up before any create: a token without Administration (repository pre-created by the user) is enough.
+  assert.equal(reuse.calls.filter((c) => c.method === 'POST' && c.path === '/user/repos').length, 0, 'no create call for an existing repository');
   for (const existing of [{ private: false }, { private: true, owner: 'someone-else' }]) {
     const gh = fakeGitHub({ existing });
     await assert.rejects(createEmpire(plan(), githubCloudSetup(new GitHubClient('t', gh.fetchImpl), sodiumSealer, workflow), []),
