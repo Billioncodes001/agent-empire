@@ -5,6 +5,7 @@
  * Agent Empire server served (cookie session) is already "my own server"; a static copy of the game with no
  * server behind it runs the setup like an app, remembering only non-secret choices in localStorage.
  */
+import { normaliseHost } from '../endpoint';
 import type { ShellInfo, SignedOutReason } from '../native';
 import type { Mode } from './model';
 
@@ -46,7 +47,7 @@ export async function decideLaunch(env: LaunchEnv): Promise<LaunchDecision> {
     const mode = env.shell.mode ?? asMode(await safe(env.get('mode')));
     if (mode === 'server' && env.hasSession) return { kind: 'game' };
     if (mode === 'server') {
-      const address = (await safe(env.get('server.host'))) ?? undefined;
+      const address = normaliseHost(await safe(env.get('server.host')));
       const notice = env.shell.signedOut ? SIGNED_OUT_NOTICE[env.shell.signedOut] : undefined;
       return { kind: 'setup', step: 'server', mode, notice, address };
     }
@@ -59,7 +60,9 @@ export async function decideLaunch(env: LaunchEnv): Promise<LaunchDecision> {
   if (probe === 'signed-out') return { kind: 'redirect', url: '/login' };
   const mode = asMode(await safe(env.get('mode')));
   if (mode === 'cloud') return { kind: 'cloud', repo: (await safe(env.get('state.repo'))) ?? undefined };
-  const host = await safe(env.get('server.host'));
+  // Stored by this page, but localStorage is writable by anything on the origin: only a bare http(s) origin
+  // (no path, credentials or javascript: URL) is ever navigated to.
+  const host = normaliseHost(await safe(env.get('server.host')));
   if (mode === 'server' && host && host !== env.origin) return { kind: 'redirect', url: `${host}/` };
   return { kind: 'setup', step: 'welcome' };
 }

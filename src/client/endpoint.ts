@@ -108,16 +108,22 @@ export function hostUrl(path: string): string {
 /** URL for an API path. Relative (unchanged) on the web; absolute on the office host in the app. */
 export function apiUrl(path: string): string {
   const app = appConfig();
-  return app ? new URL(path, app.host).href : path;
+  if (!app) return path;
+  const url = new URL(path, app.host);
+  // The bearer belongs to the signed-in server only: an absolute URL to anywhere else is a programming error.
+  if (url.origin !== app.host) throw new Error('API requests go only to the signed-in server.');
+  return url.href;
 }
 
 /**
  * The request init for an API call. On the web it is returned untouched. In the app it drops cookies (the server
  * never allows credentialed CORS) and adds the bearer token, keeping any other headers the caller set.
  */
-export function apiInit(init: RequestInit = {}): RequestInit {
+export function apiInit(init: RequestInit = {}, path?: string): RequestInit {
   const app = appConfig();
   if (!app) return init;
+  // The device token is attached only to a request whose target resolves to the signed-in server.
+  if (path === undefined || new URL(path, app.host).origin !== app.host) throw new Error('The device token is only sent to the signed-in server.');
   const headers = new Headers(init.headers);
   headers.set('Authorization', `Bearer ${app.token}`);
   return { ...init, headers, credentials: 'omit', mode: 'cors' };
@@ -129,7 +135,7 @@ export function apiInit(init: RequestInit = {}): RequestInit {
  */
 export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
   if (!isAppMode()) return fetch(path, init);
-  const res = await fetch(apiUrl(path), apiInit(init));
+  const res = await fetch(apiUrl(path), apiInit(init, path));
   if (res.status === 401) notifySignedOut('unauthorized');
   return res;
 }

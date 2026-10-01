@@ -93,13 +93,26 @@ test('app: API calls go to the office host with the bearer token and no cookies,
   resetEndpointForTests(app());
   assert.equal(apiUrl('/api/devices/dev_1'), 'https://city.example.com/api/devices/dev_1');
   assert.equal(apiUrl('/api/gh/pull?number=3'), 'https://city.example.com/api/gh/pull?number=3');
-  const init = apiInit({ method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: '{}' });
+  const init = apiInit({ method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: '{}' }, '/api/devices/dev_1');
   const headers = new Headers(init.headers);
   assert.equal(headers.get('authorization'), `Bearer ${TOKEN}`);
   assert.equal(headers.get('content-type'), 'application/json');
   assert.equal(init.credentials, 'omit');
   assert.equal(init.method, 'PUT');
   assert.equal(init.body, '{}');
+});
+
+test('app: the bearer token never goes to another origin (apiUrl/apiInit/apiFetch refuse it)', async () => {
+  resetEndpointForTests(app());
+  assert.equal(apiUrl('https://city.example.com/api/x'), 'https://city.example.com/api/x', 'an absolute URL on the server itself is fine');
+  for (const target of ['https://evil.example/api/x', '//evil.example/api/x', 'http://city.example.com/api/x', 'https://city.example.com:8443/api/x', 'https://city.example.com.evil.example/x'])
+    assert.throws(() => apiUrl(target), /signed-in server/, target);
+  for (const target of ['https://evil.example/api/x', '//evil.example/x', undefined])
+    assert.throws(() => apiInit({}, target), /signed-in server/, String(target));
+  const calls: unknown[] = [];
+  globalThis.fetch = (async (url: unknown) => { calls.push(url); return new Response('{}'); }) as typeof fetch;
+  await assert.rejects(apiFetch('https://evil.example/api/steal'), /signed-in server/);
+  assert.equal(calls.length, 0, 'nothing was sent');
 });
 
 test('app: the socket goes to the office host, token only in the subprotocol list, never in the URL', () => {

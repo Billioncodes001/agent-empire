@@ -41,7 +41,8 @@ export class BridgeError extends Error {
 export type SignedOutReason = 'user' | 'revoked' | 'unauthorized';
 export interface DeviceFlowResult {
   token: string;
-  login: string;
+  /** Informational: a shell may answer null when GitHub's /user call failed; the page reads the login itself. */
+  login: string | null;
 }
 
 /** The typed API the setup flow and the game use. */
@@ -189,9 +190,9 @@ export class NativeBridge implements Native {
   async githubDeviceFlow(opts: { clientId: string; scopes: string[] }) {
     const { clientId, scopes } = checkDeviceFlow(opts);
     const r = await this.call<{ token?: unknown; login?: unknown }>('github.deviceFlow', { clientId, scopes }, TIMEOUTS.deviceFlow);
-    if (!r || typeof r.token !== 'string' || !r.token || typeof r.login !== 'string' || !r.login)
+    if (!r || typeof r.token !== 'string' || !r.token || (r.login != null && typeof r.login !== 'string'))
       throw new BridgeError('GitHub sign-in returned an unexpected answer.', 'invalid');
-    return { token: r.token, login: r.login };
+    return { token: r.token, login: typeof r.login === 'string' && r.login ? r.login : null };
   }
   async signedOut(reason: SignedOutReason) {
     await this.call('app.signedOut', { reason });
