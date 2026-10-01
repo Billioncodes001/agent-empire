@@ -129,6 +129,29 @@ Stopped at the end: the fixture on 4714, every app instance and its local server
 - The same applies to the menu path: it now stores `mode=local` too. `mac-10` and `mac-11` were captured before round 2, when local mode stored `mode=server`. Until the page side accepts `local`, a local Empire opens at Welcome on this branch.
 - Founding setup was not completed, and no paid work was queued. The app and its local server were stopped.
 
+## Security fix: the page can't select local mode (`claude/desktop-local-fix`)
+
+The review finding (80) was that the page could start the bundled server without the confirmation. The policy accepted `mode=local` from the page, and launch and reload resumed local mode whenever the secure store said `local`. So a page script could call `secure.set('mode','local')` and then `app.signedOut` to start the local server without the "Run on this computer" confirmation, and it would also start on every launch.
+
+**Fix:**
+- **Page requests can't store `local`.** `bridge-policy.cjs` has `PAGE_MODES = cloud, server`. `invalidValue(key, value, {trusted})` accepts `local` only with `trusted`, so `parseRequest` refuses `mode=local` with "Running on this computer starts only from the app’s own confirmation."
+- **Default writes are untrusted.** `secure-store.cjs` `set()` is untrusted unless told otherwise.
+- **One trusted write.** The only trusted write is in `startLocal`, which runs after the confirmed dialog, or for a local city migrated from the old launcher.
+- **Resume reads only `connection.json`.** `shouldResumeLocal(connection)` checks for `runMode: 'local'` and a project. The page can't write that file. `main.cjs` no longer reads the secure store's mode to decide whether to start the server.
+
+**Tests:** a new test in `tests/desktop-bridge.test.ts` covers:
+- the policy and the store refuse an untrusted `local`, and accept it when trusted;
+- `shouldResumeLocal` ignores everything except `connection.json`'s `runMode` and project;
+- `main.cjs` has no resume path that reads the page-writable mode, and has exactly one trusted write.
+
+**Checks:**
+- `npm test` passes **382/382** on top of `f6283d2`.
+- Typecheck passes.
+- `npm run desktop:package` succeeds.
+- `npm run package:windows --prefix desktop` succeeds; SHA256 `61f83442f5c6934c091a9bd075bc17f11264064012e3bd642b505fb3da7c8d4c`.
+
+**Packaged-app probe** (fresh isolated profile): the page sent `secure.set('mode','local')`, which was refused, then `app.signedOut`. After the reload the config had no mode and no session. No `city-project` was created, `connection.json` stayed `{"shell":2}`, and no local server was started.
+
 ## Not done / not verified
 
 - **Windows runtime.** Only the package and its checks were run; there is no Windows host. Not run on Windows:
