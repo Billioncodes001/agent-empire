@@ -62,9 +62,9 @@ private final class DebugLog: NSObject, WKScriptMessageHandler {
 /// Records when the player last touched the game, without taking part in any gesture. Used to tell a link the
 /// player tapped from one a script opened on its own.
 private final class TouchRecorder: UIGestureRecognizer {
-    var lastTouch = Date.distantPast
+    var gate = BridgeProtocol.GestureGate()
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
-        lastTouch = Date()
+        gate.touched()
         state = .failed
     }
 }
@@ -251,8 +251,8 @@ final class GameViewController: UIViewController, WKNavigationDelegate, WKUIDele
             switch BridgeProtocol.externalURL(request.params) {
             case .failure(let f): reject(id, f.message)
             case .success(let url):
-                // Straight to Safari right after a tap; anything else asks first.
-                if Date().timeIntervalSince(touches.lastTouch) < 5 {
+                // Straight to Safari right after a tap (one page per tap); anything else asks first.
+                if touches.gate.consume() {
                     UIApplication.shared.open(url)
                     resolve(id, true)
                 } else {
@@ -262,11 +262,10 @@ final class GameViewController: UIViewController, WKNavigationDelegate, WKUIDele
         }
     }
 
-    /// The session ended: forget the device token (keep the chosen mode and the server address for the sign-in
-    /// step), then reload so the setup's sign-in step shows why.
+    /// The session ended: forget every credential (server device token and id, GitHub token and login; the chosen
+    /// mode, server address and state repository stay for the sign-in step), then reload so the setup shows why.
     private func signOut(reason: String) {
-        SecureStore.delete(.serverToken)
-        SecureStore.delete(.serverDeviceId)
+        for key in BridgeProtocol.sessionKeys { SecureStore.delete(key) }
         signedOutReason = reason
         refreshConfig()
         DispatchQueue.main.async { self.webView?.load(URLRequest(url: GameSchemeHandler.startURL)) }

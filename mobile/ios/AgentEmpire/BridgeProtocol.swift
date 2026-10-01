@@ -26,6 +26,32 @@ enum BridgeProtocol {
         case stateRepo = "state.repo"
     }
 
+    /// Cleared by app.signedOut: every credential and the identity bound to it. Preferences (mode, server.host,
+    /// state.repo) stay. The same set as Android's BridgePolicy.SESSION_KEYS.
+    static let sessionKeys: [Key] = [.serverToken, .serverDeviceId, .githubToken, .githubLogin]
+
+    /// How long after a real touch app.openExternal may open Safari directly, and only once per touch.
+    static let gestureWindow: TimeInterval = 5
+
+    /// One external open per touch: a touch within the window allows one open, which uses it up.
+    struct GestureGate {
+        private(set) var lastTouch: Date = .distantPast
+        mutating func touched(at now: Date = Date()) { lastTouch = now }
+        /// True (and the touch is used up) when a touch happened within the window before `now`.
+        mutating func consume(at now: Date = Date()) -> Bool {
+            let age = now.timeIntervalSince(lastTouch)
+            guard age >= 0, age < BridgeProtocol.gestureWindow else { return false }
+            lastTouch = .distantPast
+            return true
+        }
+    }
+
+    /// GitHub's device-flow verification page must be on github.com itself (or a subdomain), over https.
+    static func isGitHubVerificationURL(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "https", let host = url.host?.lowercased(), url.user == nil, url.password == nil else { return false }
+        return host == "github.com" || host.hasSuffix(".github.com")
+    }
+
     struct Request {
         let id: String
         let method: Method
