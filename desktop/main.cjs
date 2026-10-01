@@ -226,7 +226,7 @@ async function startLocal(project) {
     });
   localSession = await localDeviceSession(localHost, deviceName(), (url, init) => net.fetch(url, init));
   store.set('server.host', localSession.host);
-  store.set('mode', 'local');
+  store.set('mode', 'local', { trusted: true }); // only after the player confirmed (confirmAndStartLocal / migration)
   for (const key of ['server.token', 'server.deviceId']) store.delete(key); // a remote sign-in is replaced
   saveConfig({ ...readConfig(), runMode: 'local', localProject: project, localPort: localHost.port });
 }
@@ -288,7 +288,7 @@ async function runOnThisComputer() {
 
 async function resumeLocal() {
   const c = readConfig();
-  if ((c.runMode !== 'local' && storeGet('mode') !== 'local') || !c.localProject) return;
+  if (!policy.shouldResumeLocal(c)) return; // connection.json only: the page can't write it
   try {
     await startLocal(c.localProject);
   } catch (error) {
@@ -459,7 +459,7 @@ function menu() {
 
 /* ---------- the game window ---------- */
 async function reloadGame() {
-  if (!localSession && (readConfig().runMode === 'local' || storeGet('mode') === 'local')) await resumeLocal();
+  if (!localSession && policy.shouldResumeLocal(readConfig())) await resumeLocal();
   menu();
   if (win && !win.isDestroyed()) await win.loadURL(GAME_URL).catch(() => {});
 }

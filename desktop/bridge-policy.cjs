@@ -11,6 +11,11 @@ const APP_ORIGIN = `${APP_SCHEME}://${APP_HOST}`;
 const METHODS = Object.freeze(['secure.get', 'secure.set', 'secure.delete', 'github.deviceFlow', 'app.signedOut', 'app.openExternal', 'app.runLocal']);
 /** Stored modes. 'local' is desktop-only: the bundled server on this computer ("Run on this computer"). */
 const MODES = Object.freeze(['cloud', 'server', 'local']);
+/**
+ * Modes the page may store. 'local' is written only by the main process after the player confirms the native
+ * "Run on this computer" dialog (app.runLocal or the menu); a page script must never be able to select it.
+ */
+const PAGE_MODES = Object.freeze(['cloud', 'server']);
 /** Fixed key allowlist for secure.get/set/delete. Provider API keys are never among them. */
 const KEYS = Object.freeze(['mode', 'server.host', 'server.token', 'server.deviceId', 'github.token', 'github.login', 'state.repo']);
 /** Cleared by app.signedOut: every credential and the identity bound to it. Preferences (mode, host, repo) stay. */
@@ -52,12 +57,16 @@ function serverOrigin(input) {
   return null;
 }
 
-/** What may be stored under each key. Returns null when acceptable, else the message for the page. */
-function invalidValue(key, value) {
+/**
+ * What may be stored under each key. Returns null when acceptable, else the message for the page.
+ * `trusted` is set only by the main process itself (never for a page request): it alone may store mode=local.
+ */
+function invalidValue(key, value, { trusted = false } = {}) {
   if (!isKey(key)) return 'Key not allowed.';
   if (typeof value !== 'string' || !value || value.length > MAX_VALUE_LENGTH) return 'That value can’t be stored.';
   switch (key) {
     case 'mode':
+      if (value === 'local' && !trusted) return 'Running on this computer starts only from the app’s own confirmation.';
       return MODES.includes(value) ? null : 'Unknown mode.';
     case 'server.host':
       return serverOrigin(value) === value ? null : 'That server address isn’t allowed in this app.';
@@ -126,6 +135,14 @@ function isAppUrl(url) {
 }
 
 /**
+ * Whether the app resumes "This computer" at launch or reload. Decided only from connection.json (main-process
+ * settings the page can't write), never from the page-writable secure store, so a page can't start the local
+ * server without the confirmation.
+ */
+const shouldResumeLocal = (connection) =>
+  !!connection && connection.runMode === 'local' && typeof connection.localProject === 'string' && connection.localProject.length > 0;
+
+/**
  * Validates a page request {id, method, params}. Returns {id, method, params} with checked params, or throws an
  * Error whose message goes back to the page. A request without a usable id can't be answered and is dropped (null).
  */
@@ -184,7 +201,7 @@ function configFor({ deviceName, mode, host, token, deviceId, signedOut, local, 
 }
 
 module.exports = {
-  APP_SCHEME, APP_HOST, APP_ORIGIN, METHODS, MODES, KEYS, SESSION_KEYS, GITHUB_SCOPES, SIGN_OUT_REASONS, MAX_VALUE_LENGTH, GESTURE_WINDOW_MS,
+  APP_SCHEME, APP_HOST, APP_ORIGIN, METHODS, MODES, PAGE_MODES, KEYS, SESSION_KEYS, GITHUB_SCOPES, SIGN_OUT_REASONS, MAX_VALUE_LENGTH, GESTURE_WINDOW_MS,
   isKey, isMethod, isDeviceToken, isClientId, serverOrigin, invalidValue, scopes, externalUrl, isVerificationUrl, gestureAllows, isAppUrl,
-  parseRequest, configFor,
+  parseRequest, configFor, shouldResumeLocal,
 };

@@ -23,14 +23,14 @@ test('bridge policy: method and key allowlists, session keys and per-key values'
   for (const key of ['anthropic.key', 'openai.key', 'password', '__proto__', '']) assert.equal(policy.isKey(key), false, key);
 
   const ok: [string, string][] = [
-    ['mode', 'cloud'], ['mode', 'server'], ['mode', 'local'],
+    ['mode', 'cloud'], ['mode', 'server'],
     ['server.host', 'https://city.example.com'], ['server.host', 'http://127.0.0.1:4714'], ['server.host', 'http://localhost:4600'], ['server.host', 'https://city.example.com:8443'],
     ['server.token', 'A'.repeat(43)], ['server.deviceId', 'abc_DEF-1'],
     ['github.token', 'gho_abcdefghijklmnop'], ['github.login', 'octo-cat'], ['state.repo', 'octo-cat/agent-empire-state'],
   ];
   for (const [k, v] of ok) assert.equal(policy.invalidValue(k, v), null, `${k}=${v}`);
   const bad: [string, unknown][] = [
-    ['mode', 'desktop'], ['mode', ''],
+    ['mode', 'desktop'], ['mode', ''], ['mode', 'local'],
     ['server.host', 'http://city.example.com'], ['server.host', 'https://city.example.com/path'], ['server.host', 'https://user:pw@city.example.com'],
     ['server.host', 'https://city.example.com/?token=x'], ['server.host', 'javascript:alert(1)'], ['server.host', 'http://192.168.1.4:4600'], ['server.host', 'https://city.example.com/'],
     ['server.token', 'short'], ['server.token', 'A'.repeat(20) + ' x'], ['server.deviceId', 'a/b'],
@@ -290,4 +290,34 @@ test('desktop package lists every shell file it loads, and none of the old launc
   }
   assert.equal(list.some((n: string) => n.startsWith('launch')), false);
   assert.match(main, /sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true/);
+});
+
+test('mode=local: the page can never select it; only the confirmed main-process flow stores it, and resume ignores the page-writable store', () => {
+  // The page side of the bridge: refused before any handler or storage runs.
+  assert.deepEqual([...policy.PAGE_MODES], ['cloud', 'server']);
+  assert.match(policy.parseRequest({ id: 'a1', method: 'secure.set', params: { key: 'mode', value: 'local' } }).error, /confirmation/);
+  assert.notEqual(policy.invalidValue('mode', 'local'), null);
+  assert.equal(policy.invalidValue('mode', 'local', { trusted: true }), null, 'the main process stores it after the confirmation');
+  assert.notEqual(policy.invalidValue('mode', 'bogus', { trusted: true }), null);
+
+  const dir = mkdtempSync(path.join(tmpdir(), 'empire-local-mode-'));
+  try {
+    const store = createSecureStore(path.join(dir, 'app-session.enc'), fakeCrypto);
+    assert.throws(() => store.set('mode', 'local'), /confirmation/, 'an untrusted write (what a page request becomes) is refused');
+    assert.equal(store.get('mode'), null);
+    store.set('mode', 'local', { trusted: true });
+    assert.equal(store.get('mode'), 'local', 'a trusted local mode stays readable');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  // Resume is decided from connection.json only (written by the main process after the confirmation).
+  assert.equal(policy.shouldResumeLocal({ runMode: 'local', localProject: '/projects/city' }), true);
+  for (const c of [{}, null, { runMode: 'server', localProject: '/projects/city' }, { runMode: 'local' }, { runMode: 'local', localProject: '' }, { mode: 'local', localProject: '/p' }])
+    assert.equal(policy.shouldResumeLocal(c), false, JSON.stringify(c));
+  const main = readFileSync(path.join(ROOT, 'desktop/main.cjs'), 'utf8');
+  assert.doesNotMatch(main, /storeGet\('mode'\) === 'local'/, 'no resume path reads the page-writable store');
+  assert.equal((main.match(/store\.set\('mode', 'local', \{ trusted: true \}\)/g) ?? []).length, 1, 'exactly one trusted write, in startLocal');
+  assert.match(main, /policy\.shouldResumeLocal\(c\)/);
+  assert.match(main, /policy\.shouldResumeLocal\(readConfig\(\)\)/);
 });
