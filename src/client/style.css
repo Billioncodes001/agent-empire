@@ -1067,9 +1067,13 @@ html.ae-touch .lift-status { top: calc(96px + env(safe-area-inset-top)); }
 
 /* On-screen keyboard open (touch; html.ae-kb from keyboard.ts): dialogs fit the area above the keyboard. The dialog body
    scrolls the focused field into view; header and footer (the primary action) stay visible. */
-html.ae-kb .backdrop { inset: auto 0; top: var(--ae-vvt, 0px); height: var(--ae-vvh, 100%); padding-top: 6px; padding-bottom: 6px; }
-html.ae-kb .backdrop > .modal { max-height: calc(var(--ae-vvh, 100vh) - 12px); }
-html.ae-kb .modal header { padding-top: 8px; padding-bottom: 8px; }
-html.ae-kb .modal footer { padding-top: 6px; padding-bottom: 6px; }
+html.ae-kb .backdrop { inset: auto 0; top: var(--ae-vvt, 0px); height: var(--ae-vvh, 100%); padding-top: 4px; padding-bottom: 4px; }
+html.ae-kb .backdrop > .modal { max-height: calc(var(--ae-vvh, 100vh) - 8px); }
+html.ae-kb .modal header { padding-top: 4px; padding-bottom: 4px; }
+html.ae-kb .modal header h2 { font-size: 16px; }
+html.ae-kb .modal .body { padding-top: 6px; padding-bottom: 6px; }
+html.ae-kb .modal footer { padding-top: 4px; padding-bottom: 4px; }
+html.ae-kb .modal footer .btn { min-height: 38px; }
+html.ae-kb .modal .btn.close { width: 36px; min-height: 36px; height: 36px; }
 html.ae-kb .charsel .charsel-stage { display: none; }
 html.ae-kb .charsel .body { grid-template-columns: 1fr; }
