@@ -7,7 +7,7 @@
  * real provider money.
  */
 import { SITES, type SiteId } from '../../shared/empire';
-import { CANCELLABLE, cloudStatus, dollars, JOB_LABEL, JOB_TONE, jobCounts, shortAge, snapshotTime, todaySpend } from './map';
+import { CANCELLABLE, cloudStatus, dollars, executionStatus, JOB_LABEL, JOB_TONE, jobCounts, shortAge, snapshotTime, todaySpend } from './map';
 import { repoLabel } from './repo';
 import type { CloudNet, NewJobRequest } from './net';
 import { store } from '../state';
@@ -179,7 +179,7 @@ function statusTab(net: CloudNet, state: CloudState): HTMLElement[] {
       : lifecycle === 'shutdown'
         ? button('start', 'Start Empire', () => confirmStart(net), { class: 'btn primary', disabled: net.info.busy || waiting.some((s) => s.kind === 'start') })
         : null;
-  const execution = meta.execution;
+  const exec = executionStatus(state);
   return [
     h(
       'section.empire-section',
@@ -196,12 +196,7 @@ function statusTab(net: CloudNet, state: CloudState): HTMLElement[] {
           net.info.sent.length ? `Sent from this device: ${net.info.sent.map((s) => `${s.label} (${shortAge(Date.now() - s.at)} ago)`).join(', ')}. Applied on the coordinator’s next run.` : 'Nothing sent from this device is waiting.',
           button('wake', 'Check GitHub now', () => net.reconnectNow()),
         ),
-        card(
-          'Agent execution',
-          execution ? 'idle' : 'attention',
-          execution ? `${execution.repository.owner}/${execution.repository.name}` : 'Not configured',
-          execution ? `Anthropic Managed Agents on ${execution.repository.baseBranch}. Work arrives as branches and pull requests.` : 'Jobs wait until execution is configured under Limits.',
-        ),
+        card('Agent execution', exec.tone, exec.label, exec.detail),
       ),
       h(
         'div.empire-metrics',
@@ -301,38 +296,42 @@ export function openCloudJobDialog(net: CloudNet, request: NewJobRequest) {
   if (state.meta.lifecycle.status !== 'running') return toast('Your Empire is shut down. Start it from the menu before adding jobs.', 'warn');
   const spend = todaySpend(state, Date.now());
   const { at } = snapshotTime(state);
-  const tick = h('input', { type: 'checkbox', id: 'cloud-confirm-paid' }) as HTMLInputElement;
+  // The coordinator refuses a job without execution settings: say so here instead of sending one to be rejected.
+  const exec = executionStatus(state);
+  const tick = h('input', { type: 'checkbox', id: 'cloud-confirm-paid', disabled: !exec.canSubmit }) as HTMLInputElement;
   const go = h('button.btn.primary', { type: 'button', disabled: true }, 'Start paid job');
   const cancel = h('button.btn', { type: 'button' }, 'Never mind');
-  tick.addEventListener('change', () => (go.disabled = !tick.checked));
+  tick.addEventListener('change', () => (go.disabled = !tick.checked || !exec.canSubmit));
   const site = request.site && SITES.some((s) => s.id === request.site) ? (request.site as SiteId) : undefined;
   const rows: [string, string][] = [
     ['Job', request.title],
     ['Allowance', `Up to ${dollars(spend.perJobCents)} is reserved for this job; the provider stops it at that budget (it can overshoot slightly between requests).`],
     ['Today (UTC)', `${dollars(spend.reservedCents)} reserved and ${dollars(spend.observedCents)} used of ${dollars(spend.dailyCents)} a day. If today is full, the job waits.`],
     ['Billing', 'Billed by Anthropic to your API account, plus GitHub Actions minutes. City credits are not involved.'],
-    ['Where', state.meta.execution ? `${state.meta.execution.repository.owner}/${state.meta.execution.repository.name}, on a new branch` : 'Execution is not configured: the job will wait until it is (Limits tab).'],
+    ['Where', exec.canSubmit && state.meta.execution ? `${state.meta.execution.repository.owner}/${state.meta.execution.repository.name}, on a new branch` : `Can’t start yet. ${exec.detail}`],
     ['Checked against', `Your limits as of the snapshot ${shortAge(Date.now() - at)} ago (revision ${state.meta.configRevision}). If they changed since, the coordinator refuses the job and nothing is charged.`],
   ];
+  // Blocked: lead with why, so the reason is the first thing read (and visible without scrolling on a phone).
+  if (!exec.canSubmit) rows.unshift(...rows.splice(rows.findIndex(([k]) => k === 'Where'), 1));
   const modal = openModal(
     h(
       'div.modal.ae-dark.cloud-confirm',
       { role: 'alertdialog', 'aria-labelledby': 'cloud-confirm-title' },
-      h('header', {}, h('h2', { id: 'cloud-confirm-title' }, 'Start a paid job?')),
-      h('div.body', {}, h('dl.cloud-dl', {}, ...rows.flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, v)])), h('label.cloud-check', { for: 'cloud-confirm-paid' }, tick, h('span', {}, `I confirm this paid job with an allowance of ${dollars(spend.perJobCents)}.`))),
+      h('header', {}, h('h2', { id: 'cloud-confirm-title' }, exec.canSubmit ? 'Start a paid job?' : 'Jobs can’t start yet')),
+      h('div.body', {}, h('dl.cloud-dl', {}, ...rows.flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, v)])), h('label.cloud-check', { for: 'cloud-confirm-paid' }, tick, h('span', {}, exec.canSubmit ? `I confirm this paid job with an allowance of ${dollars(spend.perJobCents)}.` : 'Jobs can start once execution is ready (Cloud Empire → Status). Nothing has been sent.'))),
       h('footer', {}, cancel, go),
     ),
   );
   cancel.onclick = () => modal.close();
   go.onclick = () => {
-    if (!tick.checked) return;
+    if (!tick.checked || !exec.canSubmit) return;
     modal.close();
     void net.submit(
       { kind: 'new_job', job: { id: net.newJobId(), title: request.title.slice(0, 120), prompt: request.prompt, ...(site ? { site } : {}), configRevision: state.meta.configRevision, confirmPaid: true } },
       `New job “${request.title.slice(0, 40)}”`,
     );
   };
-  setTimeout(() => tick.focus(), 30);
+  setTimeout(() => (exec.canSubmit ? tick : cancel).focus(), 30);
 }
 
 function limitsTab(net: CloudNet, state: CloudState): HTMLElement[] {
@@ -361,6 +360,32 @@ function limitsTab(net: CloudNet, state: CloudState): HTMLElement[] {
     h('div.sector-actions', {}, h('button.btn.primary', { type: 'submit', disabled: net.info.busy }, 'Save limits')),
   );
   const ex = state.meta.execution;
+  const exec = executionStatus(state);
+  const target = state.meta.provisioning?.repository ?? ex?.repository;
+  const autoOwner = h('input', { type: 'text', value: target?.owner ?? '', placeholder: 'owner', 'aria-label': 'Project owner for automatic setup' }) as HTMLInputElement;
+  const autoName = h('input', { type: 'text', value: target?.name ?? '', placeholder: 'repository', 'aria-label': 'Project repository for automatic setup' }) as HTMLInputElement;
+  const autoBase = h('input', { type: 'text', value: target?.baseBranch ?? 'main', 'aria-label': 'Base branch for automatic setup' }) as HTMLInputElement;
+  const autoErr = h('p.setting-note.cloud-error', { role: 'alert' });
+  const autoForm = h(
+    'form.cloud-form',
+    {
+      onsubmit: (e: Event) => {
+        e.preventDefault();
+        const repository = { owner: autoOwner.value.trim(), name: autoName.value.trim(), baseBranch: autoBase.value.trim() };
+        if (!repository.owner || !repository.name || !repository.baseBranch) {
+          autoErr.textContent = 'Enter the project’s owner, repository and base branch.';
+          return;
+        }
+        autoErr.textContent = '';
+        void net.submit({ kind: 'provision', repository, configRevision: state.meta.configRevision }, 'Set up execution').then((id) => {
+          if (!id) autoErr.textContent = 'Not sent. Check the repository fields.';
+        });
+      },
+    },
+    h('div.cloud-row', {}, field('Owner', autoOwner), field('Repository', autoName), field('Base branch', autoBase)),
+    autoErr,
+    h('div.sector-actions', {}, h('button.btn.primary', { type: 'submit', disabled: net.info.busy || exec.kind === 'setting_up' }, exec.kind === 'failed' ? 'Try setup again' : 'Set up automatically')),
+  );
   const owner = h('input', { type: 'text', value: ex?.repository.owner ?? '', placeholder: 'owner', 'aria-label': 'Project owner' }) as HTMLInputElement;
   const name = h('input', { type: 'text', value: ex?.repository.name ?? '', placeholder: 'repository', 'aria-label': 'Project repository' }) as HTMLInputElement;
   const base = h('input', { type: 'text', value: ex?.repository.baseBranch ?? 'main', 'aria-label': 'Base branch' }) as HTMLInputElement;
@@ -386,7 +411,15 @@ function limitsTab(net: CloudNet, state: CloudState): HTMLElement[] {
   );
   return [
     h('section.empire-section', {}, h('h3', {}, 'Spending limits ', h('span.empire-tag.real', {}, 'real')), h('p.setting-note', {}, `Revision ${state.meta.configRevision}. Changing limits makes jobs confirmed under older limits wait for a new confirmation.`), limitsForm),
-    h('section.empire-section', {}, h('h3', {}, 'Agent execution'), h('p.setting-note', {}, 'References only: the Anthropic agent and environment, and the project repository jobs run on. Keys stay in your GitHub Actions secrets.'), execForm),
+    h(
+      'section.empire-section',
+      {},
+      h('h3', {}, 'Agent execution'),
+      h('p.setting-note', {}, `${exec.label}. ${exec.detail}`),
+      h('p.setting-note', {}, 'Automatic: your coordinator uses the Anthropic key in your Actions secrets to find or create an agent “Agent Empire worker” and a cloud environment, then records their IDs. Creating them is not a billed item and starts no session; jobs are charged only when you confirm them.'),
+      autoForm,
+    ),
+    h('section.empire-section', {}, h('h3', {}, 'Use existing IDs'), h('p.setting-note', {}, 'Advanced. References only: an Anthropic agent and environment you already created, and the project repository jobs run on. Keys stay in your GitHub Actions secrets.'), execForm),
   ];
 }
 

@@ -57,6 +57,15 @@ export class AnthropicManaged {
     finally { clearTimeout(timer); }
   }
 
+  /**
+   * One Managed Agents control-plane request (agents/environments lookup and creation for cloud setup,
+   * src/cloud/provisioning.ts). Same transport rules as everything else here: no retries, bounded
+   * response, user-safe errors. Never used for sessions.
+   */
+  async controlPlane(route: `/v1/agents${string}` | `/v1/environments${string}`, apiKey: string, method: 'GET' | 'POST' = 'GET', body?: unknown): Promise<Record<string, unknown>> {
+    return this.request('https://api.anthropic.com', route, apiKey, method, body);
+  }
+
   async check(config: ExecutionConfig, credentials: ProviderCredentials): Promise<{ agentVersion: number; sourceCommit: string }> {
     const agent = await this.request('https://api.anthropic.com', `/v1/agents/${config.anthropic.agentId}`, credentials.apiKey);
     if (agent.id !== config.anthropic.agentId || agent.type !== 'agent' || agent.archived_at !== null || !Number.isSafeInteger(agent.version) || Number(agent.version) < 1) throw new ExecutionError(400, 'agent_unavailable', 'The configured agent is unavailable, archived, or returned an unsupported definition.');

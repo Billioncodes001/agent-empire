@@ -139,6 +139,8 @@ async function run() {
       const errors: string[] = [];
       page.on('pageerror', (e) => errors.push(e.message));
       page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
+      const anthropicCalls: string[] = [];
+      page.on('request', (r) => { if (/anthropic\.com/.test(new URL(r.url()).hostname)) anthropicCalls.push(r.url()); });
       const gh = newGitHub();
       await fakeGitHub(page, gh);
       await page.goto(base);
@@ -207,6 +209,7 @@ async function run() {
       ok(await page.locator('.su-panel:not(.su-leave) .su-foot .su-primary').isDisabled(), `${tag} create needs the cost confirmation`);
       const estimate = await page.locator('.su-panel:not(.su-leave) .su-review').innerText();
       ok(/every 15 minutes/.test(estimate) && /2,880 Actions minutes a month/.test(estimate), `${tag} review shows the chosen schedule and its Actions minutes`);
+      ok(/Jobs run[\s\S]*first run creates \(or reuses\) an Anthropic agent[\s\S]*not a billed item and starts no session/.test(estimate), `${tag} review says where jobs run and that execution setup is free and starts nothing`);
       await press(page, size.touch, 'label[for="su-accept"]');
       // The first attempt fails at the secrets step (a GitHub 502); "Try again" must resume, not start over.
       gh.failures.push({ method: 'PUT', path: /\/actions\/secrets\/ANTHROPIC_API_KEY$/, status: 502, times: 1 });
@@ -219,7 +222,10 @@ async function run() {
       await press(page, size.touch, '.su-panel:not(.su-leave) .su-foot .su-primary');
       await page.waitForSelector('.su-result .su-success', { timeout: 20000 });
       await shot('10b-create-done');
-      ok(await page.locator('.su-prog.is-done').count() === 5, `${tag} all five steps done after resuming`);
+      ok(await page.locator('.su-prog.is-done').count() === 6, `${tag} all six steps done after resuming`);
+      const execStep = await page.locator('.su-prog').nth(3).innerText();
+      ok(/Request your Anthropic agent and environment/.test(execStep) && /requested/.test(execStep), `${tag} the execution step reports the request (${execStep.replace(/\s+/g, ' ').slice(0, 120)})`);
+      ok(/sets up your Anthropic agent and environment on its first run/.test(await page.locator('.su-result').innerText()), `${tag} the result explains when execution becomes ready`);
       const writes = gh.writes;
       ok(writes.filter((w) => w === 'POST /user/repos').length === 1, `${tag} the repository is created once across both attempts`);
       ok(gh.repos.get('octo-founder/agent-empire-state')?.private === true, `${tag} the state repository is private`);
@@ -227,6 +233,7 @@ async function run() {
       ok(!!files['state/meta.json'] && !!files['.github/workflows/agent-empire.yml'] && (files['coordinator/agent-empire-coordinator.mjs'] ?? '').includes('runCoordinatorTick'), `${tag} state, workflow and the shipped coordinator bundle are committed`);
       ok(/cron: '\*\/15 \* \* \* \*'/.test(files['.github/workflows/agent-empire.yml'] ?? ''), `${tag} the workflow uses the chosen 15-minute schedule`);
       ok(!writes.some((w) => /dispatches|actions\/workflows/.test(w)) && !Object.keys(files).some((f) => f.startsWith('intents/')) && JSON.parse(files['state/jobs.json']).jobs.length === 0, `${tag} setup starts nothing: no run, no intent, no job`);
+      ok(JSON.parse(files['state/meta.json']).provisioning?.status === 'pending' && anthropicCalls.length === 0, `${tag} execution setup is requested in the starting state; the device never calls Anthropic`);
       const secrets = [...gh.repos.get('octo-founder/agent-empire-state')!.secrets.values()];
       ok(secrets.length === 1 && !JSON.stringify(gh.requests.map((r) => r.body ?? null)).includes('sk-ant-FAKE'), `${tag} the key went only as a sealed box`);
       const log = await page.evaluate(() => (window as unknown as { __bridgeLog: { method: string; key?: string }[] }).__bridgeLog);

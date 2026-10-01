@@ -10,7 +10,7 @@ import { chromium, type BrowserContext, type Page } from 'playwright-core';
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { FakeGitHub } from '../tests/fake-github';
-import { seed, seedUnfounded, TOKEN } from './cloud-seed';
+import { seed, seedProvisioning, seedUnfounded, TOKEN } from './cloud-seed';
 
 const base = process.env.FIXTURE_URL || 'http://127.0.0.1:4708/';
 if (/:4610\b/.test(base)) throw new Error('never 4610');
@@ -289,6 +289,91 @@ async function run() {
     ok(/Rule-based server checks report on every sector/.test(copy) && /Queues real AI work using your configured account\./.test(copy) && /Appointing managers queues \d+ startup briefs\. They respect the existing queue’s concurrency and spending limits\./.test(copy) && /real agent work uses your configured AI account and its usage budget/.test(copy), 'server founding: copy unchanged');
     ok(!(await page.locator('#founding-confirm-paid').isVisible()) && !/GitHub/.test(copy) && (await page.locator('.founding-modal[data-mode]').count()) === 0, 'server founding: no cloud wording or paid tick');
     await shot(page, 'server-874x402-11-founding-unchanged');
+    await context.close();
+  }
+  // Execution setup (claude/cloud-exec-setup): a fresh Empire whose coordinator has not set up the Anthropic agent and
+  // environment yet. The app shows the real state, refuses to send a paid job, then accepts one once execution is ready;
+  // an Empire without execution asks its coordinator from Limits.
+  for (const size of [sizes[1], sizes[2]]) {
+    const tag = `${size.tag} execution`;
+    const { gh, provider, tick } = await seedProvisioning();
+    const context = await browser.newContext({ viewport: { width: size.w, height: size.h }, hasTouch: size.touch, isMobile: size.touch, deviceScaleFactor: size.touch ? 1.5 : 1 });
+    await context.addInitScript({ content: 'window.__name = (f) => f;' });
+    await context.addInitScript({ content: IOS_BRIDGE(TOKEN) });
+    await context.addInitScript(() => localStorage.setItem('agent-office.profile', JSON.stringify({ name: 'Fixture Founder', color: '#32685c', look: { skin: 4, hair: 0, style: 0 } })));
+    await routeGitHub(context, gh);
+    const anthropic: string[] = [];
+    const { page, errors } = await newPage(context);
+    page.on('request', (r) => { if (/anthropic\.com$/.test(new URL(r.url()).hostname)) anthropic.push(r.url()); });
+    await (await context.newCDPSession(page)).send('Emulation.setSafeAreaInsetsOverride' as any, { insets: size.insets });
+    await page.goto(base);
+    await waitGame(page);
+    await page.waitForSelector('#modal-root .founding-modal[data-mode="cloud"]', { timeout: 20_000 });
+    const founding = (await page.locator('.founding-modal').innerText()).replace(/\s+/g, ' ');
+    ok(/still being set up by your coordinator/.test(founding) && /queues no paid jobs/.test(founding), `${tag}: founding says execution is being set up and queues no paid jobs`);
+    await closeModals(page);
+    await page.evaluate(() => (document.querySelector('#status-strip .status-chief') as HTMLButtonElement).click());
+    await page.waitForSelector('.cloud-modal');
+    const status = (await page.locator('.cloud-modal').innerText()).replace(/\s+/g, ' ');
+    ok(/Being set up/.test(status) && /not a billed item and starts no session/.test(status) && /refused, not charged/.test(status) && !/will wait|Jobs wait/.test(status), `${tag}: status shows execution being set up, honestly`);
+    await shot(page, `${size.tag}-12-execution-setting-up`);
+    await page.locator('.cloud-modal .empire-tab', { hasText: 'New job' }).click();
+    await page.fill('.cloud-modal textarea', 'Fixture only; nothing runs.');
+    await page.locator('.cloud-modal button', { hasText: 'Review cost' }).click();
+    await page.waitForSelector('.cloud-confirm');
+    const confirm = (await page.locator('.cloud-confirm').innerText()).replace(/\s+/g, ' ');
+    ok(/Can’t start yet/.test(confirm) && !/will wait/.test(confirm) && (await page.locator('#cloud-confirm-paid').isDisabled()) && (await page.locator('.cloud-confirm button', { hasText: 'Start paid job' }).isDisabled()), `${tag}: the paid-job dialog shows the real state and cannot send`);
+    ok(await inSafeArea(page, '.cloud-confirm', size), `${tag}: the dialog sits in the safe area`);
+    await shot(page, `${size.tag}-13-job-blocked`);
+    await page.locator('.cloud-confirm button', { hasText: 'Never mind' }).click();
+    ok(!gh.requests.some((r) => r.method === 'PUT' && r.path.includes('/contents/intents/')), `${tag}: nothing was sent`);
+    // The coordinator's first run sets up execution (fake provider); the app reads it back.
+    await tick(Date.now());
+    ok(provider.calls.join() === 'provision', `${tag}: the coordinator made one setup call and no dispatch (${provider.calls.join()})`);
+    await page.locator('.cloud-modal .empire-tab', { hasText: 'Status' }).click();
+    await page.locator('.cloud-modal button', { hasText: 'Check GitHub now' }).click();
+    await page.waitForFunction(() => /agent_fixture1|agent_provisioned1/.test(document.querySelector('.cloud-modal')?.textContent ?? ''), null, { timeout: 15_000 });
+    ok(/Anthropic Managed Agents \(agent agent_provisioned1, environment env_provisioned1\)/.test(await page.locator('.cloud-modal').innerText()), `${tag}: status shows execution ready with the recorded IDs`);
+    await shot(page, `${size.tag}-14-execution-ready`);
+    await page.locator('.cloud-modal .empire-tab', { hasText: 'New job' }).click();
+    await page.fill('.cloud-modal textarea', 'Fixture only; nothing runs.');
+    await page.locator('.cloud-modal button', { hasText: 'Review cost' }).click();
+    await page.waitForSelector('.cloud-confirm');
+    ok(/fixture\/repo, on a new branch/.test(await page.locator('.cloud-confirm').innerText()) && (await page.locator('#cloud-confirm-paid').isEnabled()), `${tag}: once ready, the dialog names the project and allows the explicit tick`);
+    await page.locator('.cloud-confirm button', { hasText: 'Never mind' }).click();
+    ok(anthropic.length === 0, `${tag}: the app never called Anthropic (${anthropic.length})`);
+    const unexpected = errors.filter((e) => !/internetdisconnected|ERR_INTERNET_DISCONNECTED|Failed to fetch/i.test(e));
+    ok(unexpected.length === 0, `${tag}: no console errors (${unexpected.join(' | ') || 'none'})`);
+    await context.close();
+  }
+  {
+    // No execution at all (e.g. set up OpenAI-only, then an Anthropic key added): Limits → Set up automatically.
+    const { gh } = await seedProvisioning({ provision: false });
+    const size = sizes[2];
+    const context = await browser.newContext({ viewport: { width: size.w, height: size.h } });
+    await context.addInitScript({ content: 'window.__name = (f) => f;' });
+    await context.addInitScript({ content: IOS_BRIDGE(TOKEN) });
+    await context.addInitScript(() => localStorage.setItem('agent-office.profile', JSON.stringify({ name: 'Fixture Founder', color: '#32685c', look: { skin: 4, hair: 0, style: 0 } })));
+    await routeGitHub(context, gh);
+    const { page, errors } = await newPage(context);
+    await page.goto(base);
+    await waitGame(page);
+    await closeModals(page);
+    await page.evaluate(() => (document.querySelector('#status-strip .status-chief') as HTMLButtonElement).click());
+    await page.waitForSelector('.cloud-modal');
+    ok(/Not set up/.test(await page.locator('.cloud-modal').innerText()) && /OpenAI-only Empires can’t run jobs until the OpenAI adapter exists/.test(await page.locator('.cloud-modal').innerText()), 'no execution: status says jobs are refused and why');
+    await page.locator('.cloud-modal .empire-tab', { hasText: 'Limits' }).click();
+    await page.fill('.cloud-modal input[aria-label="Project owner for automatic setup"]', 'fixture');
+    await page.fill('.cloud-modal input[aria-label="Project repository for automatic setup"]', 'repo');
+    await shot(page, 'desktop-1440x900-15-limits-set-up-automatically');
+    const mark = gh.requests.length;
+    await page.locator('.cloud-modal button', { hasText: 'Set up automatically' }).click();
+    await page.waitForFunction(() => document.querySelector('#toasts')?.textContent?.includes('Set up execution'), null, { timeout: 10_000 });
+    const writes = gh.requests.slice(mark).filter((r) => r.method !== 'GET');
+    const file = Object.entries(gh.files(FULL)).find(([p, t]) => p.startsWith('intents/') && t.includes('"provision"'));
+    const body = file ? JSON.parse(file[1]) : null;
+    ok(writes.length === 2 && !!body && body.repository.owner === 'fixture' && body.repository.name === 'repo' && body.repository.baseBranch === 'main' && Number.isInteger(body.configRevision), `no execution: Set up automatically writes one provision intent and one wake-up (${writes.map((r) => `${r.method} ${r.path.replace(/^\/repos\/founder\/agent-empire-state/, '')}`).join(', ')})`);
+    ok(errors.length === 0, `no execution: no console errors (${errors.join(' | ') || 'none'})`);
     await context.close();
   }
   // Reduced motion + Save-Data, web build (no shell): unlock screen, then the game.

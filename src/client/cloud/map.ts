@@ -165,5 +165,38 @@ export function intentOutcome(state: CloudState, id: string): { outcome: 'applie
   return { outcome: done.outcome, ...(entry ? { message: entry.message } : {}) };
 }
 
+/**
+ * Where jobs stand, from the snapshot: `ready` (execution settings recorded), `setting_up` (the coordinator was asked to
+ * find or create the Anthropic agent and environment), `failed` (it tried and recorded why), or `none`. Only `ready`
+ * lets a paid job be submitted: the coordinator refuses `new_job` without execution settings, so offering it otherwise
+ * would only produce a rejection.
+ */
+export interface ExecutionStatus { kind: 'ready' | 'setting_up' | 'failed' | 'none'; tone: Tone; label: string; detail: string; canSubmit: boolean }
+export function executionStatus(state: CloudState): ExecutionStatus {
+  const ex = state.meta.execution;
+  const p = state.meta.provisioning;
+  if (p) {
+    const repo = `${p.repository.owner}/${p.repository.name}`;
+    if (p.status === 'failed')
+      return {
+        kind: 'failed', tone: 'attention', label: 'Setup needs you', canSubmit: false,
+        detail: `Setting up the Anthropic agent and environment for ${repo} did not finish: ${p.message ?? 'no reason recorded'}${p.retryable ? ' The coordinator tries again within the hour.' : ' Fix it, then choose “Set up automatically” under Limits.'} New jobs are refused, not charged, until it is ready.`,
+      };
+    return {
+      kind: 'setting_up', tone: 'active', label: 'Being set up', canSubmit: false,
+      detail: `Your coordinator creates (or reuses) the Anthropic agent “Agent Empire worker” and a cloud environment for ${repo} on its next run. That is not a billed item and starts no session. New jobs are refused, not charged, until it is ready.${ex ? ` Until then the previous settings (${ex.repository.owner}/${ex.repository.name}) stay recorded.` : ''}`,
+    };
+  }
+  if (ex)
+    return {
+      kind: 'ready', tone: 'idle', label: `${ex.repository.owner}/${ex.repository.name}`, canSubmit: true,
+      detail: `Anthropic Managed Agents (agent ${ex.anthropic.agentId}, environment ${ex.anthropic.environmentId}) on ${ex.repository.baseBranch}. Work arrives as branches and pull requests.`,
+    };
+  return {
+    kind: 'none', tone: 'attention', label: 'Not set up', canSubmit: false,
+    detail: 'No execution settings, so the coordinator refuses new jobs (nothing is charged). With an Anthropic key in your secrets, choose “Set up automatically” under Limits. OpenAI-only Empires can’t run jobs until the OpenAI adapter exists.',
+  };
+}
+
 export const isReviewable = (job: CloudJob) => job.status === 'awaiting_review';
 export const isReviewed = (job: CloudJob) => REVIEW_STATUSES.includes(job.status) && job.status !== 'awaiting_review';
