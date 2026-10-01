@@ -360,7 +360,8 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
       if (!app) form.append(el('p', { class: 'su-note', text: 'Your server’s own sign-in page opens next. This browser page doesn’t see your password.' }));
       async function submit() {
         if (busy) return;
-        const parsed = parseServerAddress(address.value);
+        const androidEmulator = deps.shell?.platform === 'android';
+        const parsed = parseServerAddress(address.value, { androidEmulator });
         if (!parsed.ok) {
           showError(errors, new LoginFailure(parsed.error).message);
           focusField(address);
@@ -383,7 +384,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
         setBusy(action, true, 'Checking the server…');
         let session: ServerSession;
         try {
-          session = await signInToServer({ host: parsed.host, password: password.value, deviceName: deps.shell?.deviceName ?? defaultDeviceName(deps.shell?.platform ?? null, navigator.userAgent) }, fetchImpl);
+          session = await signInToServer({ host: parsed.host, password: password.value, deviceName: deps.shell?.deviceName ?? defaultDeviceName(deps.shell?.platform ?? null, navigator.userAgent), androidEmulator }, fetchImpl);
         } catch (err) {
           setBusy(action, false, 'Sign in');
           showError(errors, err instanceof LoginFailure ? err.message : 'Couldn’t sign in. Try again.');

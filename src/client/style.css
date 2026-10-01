@@ -22,7 +22,7 @@
 
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
-html, body { margin: 0; height: 100%; overflow: hidden; background: #bfe3ff; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: #0f1b21; } /* the splash ink: no light flash while the setup hands over or the scene loads */
 body { font-family: var(--font); color: var(--ink); -webkit-font-smoothing: antialiased; }
 button { font-family: inherit; }
 .hidden { display: none !important; }

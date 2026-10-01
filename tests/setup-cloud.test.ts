@@ -227,6 +227,9 @@ test('server address: bare hosts mean https, http only for loopback, no paths or
   assert.deepEqual(parseServerAddress('http://127.0.0.1:4707'), { ok: true, host: 'http://127.0.0.1:4707' });
   assert.deepEqual(parseServerAddress('http://localhost:4707'), { ok: true, host: 'http://localhost:4707' });
   assert.deepEqual(parseServerAddress('http://city.example.com'), { ok: false, error: 'https_required' });
+  assert.deepEqual(parseServerAddress('http://10.0.2.2:4713'), { ok: false, error: 'https_required' }, 'the emulator alias only in the Android app');
+  assert.deepEqual(parseServerAddress('http://10.0.2.2:4713', { androidEmulator: true }), { ok: true, host: 'http://10.0.2.2:4713' });
+  assert.deepEqual(parseServerAddress('http://10.0.2.3:4713', { androidEmulator: true }), { ok: false, error: 'https_required' });
   assert.deepEqual(parseServerAddress('http://localhost.evil.com'), { ok: false, error: 'https_required' });
   assert.deepEqual(parseServerAddress('https://city.example.com/office'), { ok: false, error: 'has_path' });
   assert.deepEqual(parseServerAddress('https://u:p@city.example.com'), { ok: false, error: 'has_path' });
