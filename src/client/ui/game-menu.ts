@@ -42,7 +42,7 @@ export function openTouchHelp(onKeyboard: () => void) {
   const keyboard = h('button.btn', { type: 'button' }, 'Keyboard controls');
   const modal = openModal(
     h(
-      'div.modal.game-help',
+      'div.modal.game-help.ae-dark',
       { role: 'dialog', 'aria-label': 'Touch controls' },
       h('header', {}, h('h2', {}, 'Touch controls'), close),
       h('div.body', {}, h('div.help-grid', {}, ...rows.flatMap(([k, v]) => [h('span.key', {}, k), h('span', {}, v)]))),
@@ -149,7 +149,7 @@ export function mountGameMenu(opts: { player: PlayerController; openMap: () => v
     );
     menu = openModal(
       h(
-        'div.modal.game-menu',
+        'div.modal.game-menu.ae-dark',
         { role: 'dialog', 'aria-label': 'Game menu' },
         h('header', {}, h('div.menu-title', {}, h('small', {}, 'AGENT EMPIRE'), h('h2', {}, 'Menu')), close),
         body,

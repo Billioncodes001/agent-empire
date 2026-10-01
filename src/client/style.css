@@ -21,6 +21,7 @@
 }
 
 * { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 html, body { margin: 0; height: 100%; overflow: hidden; background: #bfe3ff; }
 body { font-family: var(--font); color: var(--ink); -webkit-font-smoothing: antialiased; }
 button { font-family: inherit; }
@@ -1011,3 +1012,64 @@ html.ae-touch .share-thumb { width: 150px; }
 html.ae-touch .lift-status { top: calc(96px + env(safe-area-inset-top)); }
 @media (max-width: 700px) { html.ae-touch #hud .project { max-width: 150px; } html.ae-touch .status-chief { max-width: 120px; } }
 @media (prefers-reduced-motion: reduce) { .rotate-icon { animation: none; transform: rotate(-90deg); } .touch-btn, .touch-stick-base { transition: none; } }
+
+/* ---------- Dark dialogs: the Agent Empire design of the splash, setup and game menu ----------
+   .ae-dark re-skins the older light "paper" dialogs (founder, settings, prompts) with the setup's tokens
+   (setup/setup.css .su): teal glass, Inter/SF type, 44px controls, mint primary, the same focus ring.
+   The paper variables are redefined inside, so inline styles that use var(--muted) etc. follow. */
+.modal.ae-dark {
+  --ink: #e6ecea; --muted: #a3b7b3; --faint: #7e9894; --paper: #13252c; --paper-2: rgba(255, 255, 255, .04);
+  --accent: #9bd1ba; --accent-2: #c7e8d8; --accent-ink: #0f2019; --line: rgba(155, 209, 186, .2); --line-2: rgba(199, 232, 216, .34); --focus: #c3e7d7;
+  color: var(--ink); background: linear-gradient(160deg, rgba(22, 42, 50, .98), rgba(14, 28, 34, .98)); border: 1px solid var(--line); border-radius: 16px;
+  box-shadow: 0 30px 80px -30px rgba(0, 0, 0, .75), inset 0 1px 0 rgba(255, 255, 255, .06);
+  font: 15px/1.45 Inter, 'SF Pro Text', system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+.modal.ae-dark header, .modal.ae-dark footer { background: transparent; color: inherit; border-color: rgba(155, 209, 186, .12); border-width: 0; }
+.modal.ae-dark header { border-bottom-width: 1px; padding: 14px 18px 12px; }
+.modal.ae-dark footer { border-top-width: 1px; padding: 10px 18px 12px; }
+.modal.ae-dark header h2 { font-size: 20px; font-weight: 680; letter-spacing: -.01em; }
+.modal.ae-dark .body { padding: 14px 18px; }
+.modal.ae-dark label { font-size: 13px; font-weight: 600; color: var(--ink); }
+.modal.ae-dark .body > label:not(:first-child) { margin-top: 16px; }
+.modal.ae-dark .setting-note, .modal.ae-dark footer .grow { color: var(--muted); font-weight: 400; }
+.modal.ae-dark .btn { min-height: 44px; padding: 0 16px; border-radius: 12px; border: 1px solid var(--line); background: rgba(255, 255, 255, .03); color: var(--ink); box-shadow: none; font-weight: 600; font-size: 14px; justify-content: center; transition: transform .15s ease, background .2s, border-color .2s, box-shadow .2s; }
+.modal.ae-dark .btn:hover:not(:disabled) { border-color: var(--line-2); background: rgba(255, 255, 255, .07); }
+.modal.ae-dark .btn:active:not(:disabled) { transform: translateY(1px) scale(.99); box-shadow: none; }
+.modal.ae-dark .btn.primary { color: var(--accent-ink); background: linear-gradient(135deg, #d6efe2, var(--accent)); border-color: var(--accent-2); box-shadow: 0 10px 30px -12px rgba(155, 209, 186, .8), inset 0 1px 0 rgba(255, 255, 255, .6); }
+.modal.ae-dark .btn.primary:hover:not(:disabled) { background: linear-gradient(135deg, #e2f5ea, #a8dbc5); }
+.modal.ae-dark .btn.danger { color: #ffe3d6; background: rgba(160, 70, 40, .32); border-color: rgba(242, 196, 173, .5); }
+.modal.ae-dark .btn.on, .modal.ae-dark .btn[aria-checked=true] { color: var(--accent-2); background: rgba(155, 209, 186, .16); border-color: var(--accent); }
+.modal.ae-dark .btn.close { width: 44px; padding: 0; border-radius: 50%; font-size: 16px; }
+.modal.ae-dark textarea, .modal.ae-dark input[type=text] { min-height: 46px; font: inherit; font-size: 16px; color: var(--ink); background: rgba(6, 14, 18, .6); border: 1px solid var(--line); border-radius: 11px; padding: 10px 14px; transition: border-color .2s, box-shadow .2s; }
+.modal.ae-dark textarea::placeholder, .modal.ae-dark input[type=text]::placeholder { color: #6f8783; }
+.modal.ae-dark textarea:focus, .modal.ae-dark input[type=text]:focus { border-color: var(--accent); box-shadow: 0 0 0 4px rgba(155, 209, 186, .16); }
+.modal.ae-dark :focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.modal.ae-dark textarea:focus-visible, .modal.ae-dark input[type=text]:focus-visible { outline: none; }
+.modal.ae-dark .swatch { width: 36px; height: 36px; border: 2px solid rgba(255, 255, 255, .28); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .25); }
+.modal.ae-dark .swatch.sel { outline: 2px solid var(--accent-2); outline-offset: 3px; border-color: #0f2019; }
+/* Founder */
+.charsel.ae-dark .charsel-stage { border: 1px solid var(--line); border-radius: 14px; background: radial-gradient(circle at 50% 28%, #3a5f62 0, #1d363d 52%, #0f2027 100%); }
+.charsel.ae-dark .charsel-stage .tip { color: var(--muted); font-weight: 600; }
+.charsel.ae-dark .seg .btn { min-height: 40px; padding: 0 12px; font-size: 13px; }
+/* Settings */
+.settings-modal.ae-dark .volume input[type=range]::-webkit-slider-runnable-track { height: 8px; border: 1px solid var(--line); background: linear-gradient(to right, var(--accent) var(--fill), rgba(255, 255, 255, .1) var(--fill)); }
+.settings-modal.ae-dark .volume input[type=range]::-moz-range-track { height: 8px; border: 1px solid var(--line); background: rgba(255, 255, 255, .1); }
+.settings-modal.ae-dark .volume input[type=range]::-webkit-slider-thumb { width: 22px; height: 22px; margin-top: -8px; border: 2px solid var(--accent-2); background: #d7e2df; box-shadow: 0 2px 8px #0008; }
+.settings-modal.ae-dark .volume input[type=range]::-moz-range-thumb { border: 2px solid var(--accent-2); background: #d7e2df; box-shadow: 0 2px 8px #0008; }
+.settings-modal.ae-dark .vol-pct { font-weight: 600; }
+.settings-modal.ae-dark .key-row { font-size: 13px; }
+.settings-modal.ae-dark .key-row .btn { min-height: 36px; font-size: 12px; }
+/* The dark game windows share the setup's typeface. */
+.modal.game-menu, .modal.game-help, .modal.empire-modal, .modal.exec-modal, .modal.founding-modal { font-family: Inter, 'SF Pro Text', system-ui, -apple-system, 'Segoe UI', sans-serif; }
+
+/* Touch: text fields at 16px or more, so iOS doesn't zoom the page when one is focused. */
+@media (pointer: coarse) { .modal textarea, .modal input[type=text], .modal input[type=url], .modal input:not([type]) { font-size: 16px; } }
+
+/* On-screen keyboard open (touch; html.ae-kb from keyboard.ts): dialogs fit the area above the keyboard. The dialog body
+   scrolls the focused field into view; header and footer (the primary action) stay visible. */
+html.ae-kb .backdrop { inset: auto 0; top: var(--ae-vvt, 0px); height: var(--ae-vvh, 100%); padding-top: 6px; padding-bottom: 6px; }
+html.ae-kb .backdrop > .modal { max-height: calc(var(--ae-vvh, 100vh) - 12px); }
+html.ae-kb .modal header { padding-top: 8px; padding-bottom: 8px; }
+html.ae-kb .modal footer { padding-top: 6px; padding-bottom: 6px; }
+html.ae-kb .charsel .charsel-stage { display: none; }
+html.ae-kb .charsel .body { grid-template-columns: 1fr; }

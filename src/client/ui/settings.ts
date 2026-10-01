@@ -107,7 +107,7 @@ export function openSettings(
   const character = h('button.btn', { type: 'button' }, '🧍 Change your look & name');
   const close = h('button.btn.close', { 'aria-label': 'Close' }, '✕');
   const el = h(
-    'div.modal',
+    'div.modal.settings-modal.ae-dark',
     { role: 'dialog', 'aria-label': 'Settings' },
     h('header', {}, h('h2', {}, '⚙️ Settings'), close),
     h(
