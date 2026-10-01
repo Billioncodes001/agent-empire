@@ -16,9 +16,16 @@ export function parseContinuity(value: unknown): ContinuityStatus | null {
 export interface ConnectionInput {
   online: boolean;
   connected: boolean;
+  /** Cloud mode: "connected" means GitHub answered the last check. */
+  cloud?: boolean;
 }
 
-export function connectionView({ online, connected }: ConnectionInput): StatusView {
+export function connectionView({ online, connected, cloud }: ConnectionInput): StatusView {
+  if (cloud) {
+    if (!online) return { tone: 'attention', label: 'This device is offline', detail: 'Showing the last saved snapshot. Your Empire keeps running in your GitHub; actions can’t be sent until this device is back online.' };
+    if (!connected) return { tone: 'unknown', label: 'Can’t reach GitHub', detail: 'Showing the last snapshot read. Your Empire keeps running in your GitHub; the app retries shortly.' };
+    return { tone: 'idle', label: 'Reading from GitHub', detail: 'This device reads your Empire’s committed snapshots from your GitHub state repository. They are never live.' };
+  }
   if (!online) return { tone: 'attention', label: 'This device is offline', detail: 'Reconnect this device to reach the office host. Nothing is sent or queued from here while offline.' };
   if (!connected) return { tone: 'unknown', label: 'Reconnecting to the office host', detail: 'The host may be restarting, asleep or unreachable. Work continues there only while it stays running.' };
   return { tone: 'active', label: 'Connected to the office host', detail: 'This device has an open connection to the office host. Check its latest persistence report below.' };

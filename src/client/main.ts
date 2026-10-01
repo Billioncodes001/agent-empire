@@ -52,6 +52,10 @@ import { appPanel } from './ui/app-panel';
 import { connectionView } from './ui/continuity';
 import { setupPwa } from './ui/pwa';
 import { maybeOfferExecutionSetup, openCloudTasks, openExecutionSetup } from './ui/execution';
+import { cloudSession, forgetSavedSnapshots } from './cloud/session';
+import { CloudNet } from './cloud/net';
+import { installCloudChrome, mountCloudStrip, openCloudPanel } from './cloud/ui';
+import { native } from './native';
 import { hiringPaused, renderUsage, usageLabel, usageTitle } from './ui/usage';
 
 // ---- Renderer & scene ---------------------------------------------------------------------------
@@ -196,7 +200,10 @@ tvMat.map = tvIdle;
 tvMat.toneMapped = false;
 
 // ---- Networking & state -------------------------------------------------------------------------
-const net = new Net(() => store.profile);
+// Cloud mode (CLOUD-04): the Empire lives in the user's GitHub; the same store is fed from its committed snapshots.
+const cloud = cloudSession();
+const cloudNet = cloud ? new CloudNet(cloud, () => store.profile) : null;
+const net: Net = cloudNet ?? new Net(() => store.profile);
 const voice = new Voice(net);
 
 const me = new Person(store.profile.name, store.profile.color, store.profile.look);
@@ -213,7 +220,17 @@ player.bindings = settings.keys;
 const sound = new OfficeSound();
 sound.setVolume(settings.volume, settings.muted);
 const empireUI = mountEmpire(net,player,()=>showQueue(),()=>{if(!traversal.interactCar()&&!empireUI.interact())use(target,'E');},()=>changeView(),(id)=>openWorkerTerminal(id));
-mountStatusStrip($('status-strip'), { openManagement: () => empireUI.openOperations(), openWorkers: () => openWorkersDialog(openWorkerTerminal) });
+if (cloudNet) {
+  mountCloudStrip($('status-strip'), cloudNet, (tab) => openCloudPanel(cloudNet, tab));
+  installCloudChrome(cloudNet, {
+    forgetDevice: () => {
+      cloudNet.stop();
+      forgetSavedSnapshots();
+      const bridge = native();
+      void Promise.allSettled(['github.token', 'github.login', 'mode', 'state.repo'].map((k) => bridge.secureDelete(k as 'mode'))).then(() => location.reload());
+    },
+  });
+} else mountStatusStrip($('status-strip'), { openManagement: () => empireUI.openOperations(), openWorkers: () => openWorkersDialog(openWorkerTerminal) });
 const traversal = new Traversal(player,me,office,city,()=>{
   if(!store.empire.delegated)net.send({t:'empire.action',action:{kind:'delegate',enabled:true}});
 }, (cue, at) => sound.carCue(cue, at));
@@ -285,14 +302,14 @@ net.onStatus((up) => {
   store.setConnected(up);
   renderConnection();
   // The host may not offer continuity yet; the socket can also push it.
-  if (up)
+  if (up && !cloudNet)
     apiFetch('/api/continuity/status', { cache: 'no-store', credentials: 'same-origin' })
       .then((res) => (res.ok ? res.json() : null))
       .then((body) => store.setContinuity(body))
       .catch(() => {});
 });
 function renderConnection() {
-  const view = connectionView({ online: store.online, connected: store.connected });
+  const view = connectionView({ online: store.online, connected: store.connected, cloud: !!cloudNet });
   const down = !store.online || !store.connected;
   $('conn').classList.toggle('hidden', !down);
   $('conn').classList.toggle('offline', !store.online);
@@ -312,7 +329,7 @@ setupPwa();
 let executionOfferChecked = false;
 function offerExecutionWhenFree() {
   // Waits for character and founding to finish; retried whenever the last dialog closes.
-  if (executionOfferChecked || !store.empire.setup.completed || modalOpen()) return;
+  if (cloudNet || executionOfferChecked || !store.empire.setup.completed || modalOpen()) return;
   executionOfferChecked = true;
   const openSetup = (): void => void openExecutionSetup({ openTasks: () => openCloudTasks({ openSetup }) });
   void maybeOfferExecutionSetup(openSetup);
@@ -666,6 +683,7 @@ function openWorkerChanges(id: string) {
 }
 
 function showQueue() {
+  if (cloudNet) return openCloudPanel(cloudNet, 'jobs');
   openQueue(net, { openTerminal: openWorkerTerminal });
 }
 
