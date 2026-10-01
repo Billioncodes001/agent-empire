@@ -47,6 +47,9 @@ If local workers are still running when you quit, the app asks before stopping t
 | `github.deviceFlow` | The client id comes from the page and is validated; scopes are checked against the policy. Only one flow runs at a time. Closing the code window or pressing Escape cancels it ("GitHub sign-in was cancelled.") |
 | `app.signedOut` | Clears the session keys and reloads with a one-shot `signedOut` reason. The setup then shows the server step with the address prefilled and the notice.<ul><li>In local mode, `user` leaves "This computer" and returns to Welcome.</li><li>Any other reason makes the app sign in natively again.</li></ul> |
 | `app.openExternal` | https only and no credentials. It opens directly within 5 s of a real mouse or key input (`webContents` `input-event`), and one gesture opens one page. Otherwise the app asks "Open this page in your browser?" |
+| `app.runLocal` (desktop only) | Takes no parameters from the page: the project and the confirmation belong to the shell. It runs the same flow as the menu item (`confirmAndStartLocal`): the native confirmation dialog ("It runs only while the app is open…"), then the bundled server, then the native sign-in. It stores `mode=local` and resolves `{mode:'local', host, token, deviceId}` so the page can adopt the session without a reload. Outcomes:<ul><li>Cancel rejects with `cancelled: Running on this computer was cancelled. Nothing was started.`</li><li>A failure rejects with `The Empire couldn’t start on this computer: …`</li><li>Calling it while the Empire already runs here resolves at once, with no dialog.</li></ul>The page waits for the player in this dialog, so it should call with a long timeout rather than the default 15 s |
+
+**Round 2 (coordinator request).** `AGENT_EMPIRE_APP.localAvailable: true` is always injected on desktop so the setup can show a "Run on this computer" card. `mode` accepts `local` on desktop (`MODES = cloud, server, local`). The page config carries a session in local mode only for the bundled loopback (http) server, never a remote one. Calling `secure.set('mode', 'cloud'|'server')`, or setting another `server.host`, leaves local mode. The menu item **Empire → Run on this computer…** is kept, and it shares the dialog and start-up code with `app.runLocal`.
 
 ### Local mode ("This computer")
 
@@ -75,7 +78,7 @@ This runs once, marked by `connection.json.shell = 2`:
 | `npm run typecheck` | pass |
 | `tests/desktop-bridge.test.ts` | Covers:<ul><li>**policy:** allowlists, 11 accepted and 21 refused values, scopes, client id, external links, verification URL, app origin (including Node's opaque origin for custom schemes), gesture window, request parsing, page config;</li><li>**protocol:** MIME, encoded traversal, symlink escape, excluded pages, dotfiles, maps, foreign hosts, CSP, 405;</li><li>**secure store:** encryption, allowlist, M1 sign-out set, `basic_text` refused, tampered entries filtered, corrupt file fails closed;</li><li>**device flow:** pending, `slow_down`, success with login, the scope sent, cancel, denied, expired, foreign verification URL, offline;</li><li>**preload:** exposed nothing for 4 foreign origins or in a subframe; exactly two globals for the app; malformed ids dropped; resolve/reject scripts;</li><li>**package:** the file list matches what `main.cjs` and the HTML load, and the old launcher is gone.</li></ul> |
 | `npm run desktop:package` | pass: `release/Agent Empire-darwin-arm64` (asar) |
-| `npm run package:windows --prefix desktop` | pass. PE x64 and Node-API PTY checks, and `unzip -t`. SHA256 `9b08d6eadd9a9cf56ed171ee0c6d088436eda430eeb1b5565f93358e67558e44`. `prepare-desktop.mjs` now copies an explicit `DESKTOP_FILES` list and fails if `runtime/public/index.html` is missing |
+| `npm run package:windows --prefix desktop` | pass. PE x64 and Node-API PTY checks, and `unzip -t`. SHA256 `e6fecef4da991b671dfbf3c66ddaaf21936ca89892898463434e28ecab4a79b5` (round 2 rebuild; first build `9b08d6ea…`). `prepare-desktop.mjs` now copies an explicit `DESKTOP_FILES` list and fails if `runtime/public/index.html` is missing |
 
 **Packaged macOS app, driven through `--remote-debugging-port` and playwright-core `connectOverCDP`:**
 - Each run used an isolated `--user-data-dir` under the scratchpad and `--use-mock-keychain`, so it neither prompted the real Keychain nor touched `~/Library/Application Support/Agent Empire`.
@@ -116,6 +119,16 @@ The page had no console errors except the deliberate wrong-password 401.
 
 Stopped at the end: the fixture on 4714, every app instance and its local servers. Port 4610, `.agent-office` and the real app profile were not touched. No paid work was queued.
 
+**Round 2 walk: the page calls `app.runLocal`.** This ran on the repackaged macOS app with a fresh isolated profile `ud-pkg-runlocal`. The page called `window.empireDesktop.postMessage({method:'app.runLocal'})` and was answered through its own `__empireNative` receiver. The native dialog was answered the same way as before: `--inspect` on the packaged main process replaced `dialog.showMessageBox`. The test answered Cancel first, then "Run on this computer". Both times the dialog was "Run your Empire on this computer?" with the buttons Cancel / Choose project folder… / Run on this computer.
+- Config before the call: `{platform:'desktop', deviceName, localAvailable:true}`.
+- After Cancel: the call rejected with `cancelled: Running on this computer was cancelled. Nothing was started.`
+- After "Run on this computer": the call resolved `{mode:'local', host:'http://127.0.0.1:52971', token:(43 chars), deviceId}`. The menu then read "Running on this computer", and `connection.json` recorded `runMode: 'local'`. Screenshot: `mac-14`.
+- **Relaunch (`mac-15`).**
+  - The shell side works: the server restarted on the same port 52971, and the config had `mode:'local'`, host, token, `local:true` and `localAvailable:true`. `GET /api/whoami` with that token returned 200.
+  - **The current client (`2da4548`) still shows Welcome**, because its `decideLaunch` doesn't know `mode:'local'`. This is waiting on the setup author's page change.
+- The same applies to the menu path: it now stores `mode=local` too. `mac-10` and `mac-11` were captured before round 2, when local mode stored `mode=server`. Until the page side accepts `local`, a local Empire opens at Welcome on this branch.
+- Founding setup was not completed, and no paid work was queued. The app and its local server were stopped.
+
 ## Not done / not verified
 
 - **Windows runtime.** Only the package and its checks were run; there is no Windows host. Not run on Windows:
@@ -131,7 +144,14 @@ Stopped at the end: the fixture on 4714, every app instance and its local server
 
 ## Follow-ups for other lanes
 
-1. **Setup (src/client).** A discoverable "This computer" option needs a small hook in `src/client/setup/view.ts`. One option is to add `localAvailable: true` to `AGENT_EMPIRE_APP` on desktop, which would show a third card or a "Use this computer" button on the server step. That would also need a bridge method such as `app.runLocal`. The contract (`CLOUD_MODE_PLAN.md`) would have to add it, and the desktop side would then call the existing `runOnThisComputer()`. Until then it is in the menu only.
+1. **Setup (src/client).** The desktop side is done: `localAvailable` and `app.runLocal`. The page side still needs to:
+   - show the card when `localAvailable` is set;
+   - call `app.runLocal` with a long timeout;
+   - on resolve, adopt the session (`setSessionConfig` with `platform:'desktop'`) and start the game;
+   - treat a `cancelled:` rejection quietly;
+   - accept `mode:'local'` in `parseShellInfo` and `decideLaunch`, treating it like `server` with a session.
+
+   `CLOUD_MODE_PLAN.md` should list `app.runLocal` and `mode=local` as desktop-only.
 2. **Docs.**
    - `docs/PLATFORMS.md` still describes the old desktop launcher ("open the launcher", "Provider credentials"). It should say that the setup runs first and that "Run on this computer" is in the menu.
    - `CLOUD_MODE_PLAN.md`'s contract section should name `window.empireDesktop` and the `empire-app://game` desktop origin.
