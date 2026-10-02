@@ -5,7 +5,7 @@
  * The toast appears only when promptGate allows (no modal, no typing, not mid-jump, the splash done); otherwise it
  * waits. "Later" hides it for this version until the next launch; the menu entry stays.
  */
-import { h, modalOpen, openModal, timeAgo, toast, type Modal } from '../ui/dom';
+import { h, modalOpen, onModalChange, openModal, timeAgo, toast, type Modal } from '../ui/dom';
 import { setMenuUpdateEntry } from '../ui/game-menu';
 import { promptGate, isTextEntry } from './gate';
 import type { UpdateService, UpdateState } from './service';
@@ -123,6 +123,11 @@ export function mountUpdateUi(service: UpdateService, opts: UpdateUiOptions = {}
   service.on(() => {
     consider();
     dialog?.render();
+  });
+  // A dialog opening over the prompt hides it (not dismissed); it comes back at the next calm moment.
+  onModalChange((open) => {
+    if (open && toastEl && !dialog) hideToast();
+    else if (!open) consider();
   });
   setMenuUpdateEntry(() => {
     const summary = offerSummary(service.state);
