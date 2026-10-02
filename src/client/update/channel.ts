@@ -1,16 +1,15 @@
 /**
- * The update channel file (docs/team/RELEASE_PLAN.md, "Update channel contract"): `channel-<stable|beta>.json`,
- * signed with Ed25519 (`channel-<channel>.json.sig`). Parsed strictly: anything unexpected makes the whole file
- * untrusted. Every download URL must be a release asset of the pinned repository, and the game zip must come from
- * the release tagged with the channel's own version.
+ * The update channel file (docs/team/RELEASE_PLAN.md, "Update channel contract" and its "As implemented" notes):
+ * `channel-<stable|beta>.json`, signed with Ed25519 (`channel-<channel>.json.sig`), built by tools/release/channel.mjs.
  *
- * Extensions this lane needs from the release pipeline (optional fields; see docs/team/reports/in-app-updates.md):
- *   shell.android.sha256   sha256 of the APK, required before a sideloaded app installs it
- *   shell.macos.feed       the Squirrel.Mac feed URL for Electron's autoUpdater (also windows.feed)
+ * Every field this app uses is validated strictly, and one bad value makes the whole file untrusted. Fields it does
+ * not use are ignored (the contract adds fields: tag, releasePage, game.manifest, shell.*.downloads…). A platform
+ * without a build is null. Every download must be a release asset of the pinned repository, and the game zip and the
+ * coordinator must come from the release tagged with the channel's own version.
  */
 import { isSemver } from './semver';
 
-/** The GitHub repository releases come from (`git remote origin`). Shells pin the same value. */
+/** The GitHub repository releases come from (tools/release/config.json `repository`). Shells pin the same value. */
 export const RELEASE_REPO = 'Billioncodes001/agent-empire';
 export const CHANNELS = ['stable', 'beta'] as const;
 export type Channel = (typeof CHANNELS)[number];
@@ -24,16 +23,21 @@ export interface GameEntry {
   sha256: string;
   minShell: string;
 }
+export type DesktopArch = 'arm64' | 'x64';
 export interface DesktopShell {
   version: string;
+  /** The release page (or a release asset): where the player downloads the app. */
   url: string;
+  /** True only when every build is signed (macOS: and notarized), so the app may update itself. */
   auto: boolean;
-  feed?: string;
+  /** Squirrel.Mac static feeds per architecture (Electron autoUpdater, serverType 'json'). */
+  feed?: Partial<Record<DesktopArch, string>>;
 }
 export interface AndroidShell {
   version: string;
   versionCode: number;
   url?: string;
+  /** sha256 of the APK; a sideloaded app checks it before opening the installer. */
   sha256?: string;
   play?: string;
 }
@@ -70,12 +74,11 @@ export class ChannelError extends Error {
 export const ASSET_REDIRECT_HOSTS = ['objects.githubusercontent.com', 'release-assets.githubusercontent.com'] as const;
 
 const [OWNER, REPO] = RELEASE_REPO.split('/');
+const SEGMENT = /^[A-Za-z0-9._+-]{1,128}$/;
+const okSegment = (s: string | undefined) => !!s && SEGMENT.test(s) && s !== '.' && s !== '..';
 
-/**
- * A release asset of the pinned repository: https://github.com/<owner>/<repo>/releases/download/<tag>/<file>
- * (or .../releases/latest/download/<file>). Returns {tag, file} or null. `tag` is null for "latest".
- */
-export function releaseAsset(url: unknown): { tag: string | null; file: string } | null {
+/** The path parts of a plain https://github.com/<repo>/releases/... URL, or null. */
+function releasePath(url: unknown): string[] | null {
   if (typeof url !== 'string' || url.length > 512) return null;
   let u: URL;
   try {
@@ -85,12 +88,26 @@ export function releaseAsset(url: unknown): { tag: string | null; file: string }
   }
   if (u.protocol !== 'https:' || u.hostname !== 'github.com' || u.port || u.username || u.password || u.search || u.hash) return null;
   const parts = u.pathname.split('/');
-  // ['', owner, repo, 'releases', 'download', tag, file] or ['', owner, repo, 'releases', 'latest', 'download', file]
   if (parts[1]?.toLowerCase() !== OWNER.toLowerCase() || parts[2]?.toLowerCase() !== REPO.toLowerCase() || parts[3] !== 'releases') return null;
-  const ok = (s: string | undefined) => !!s && /^[A-Za-z0-9._+-]{1,128}$/.test(s) && s !== '.' && s !== '..';
-  if (parts.length === 7 && parts[4] === 'download' && ok(parts[5]) && ok(parts[6])) return { tag: parts[5], file: parts[6] };
-  if (parts.length === 7 && parts[4] === 'latest' && parts[5] === 'download' && ok(parts[6])) return { tag: null, file: parts[6] };
+  return parts;
+}
+
+/**
+ * A release asset of the pinned repository: https://github.com/<owner>/<repo>/releases/download/<tag>/<file>
+ * (or .../releases/latest/download/<file>). Returns {tag, file} or null. `tag` is null for "latest".
+ */
+export function releaseAsset(url: unknown): { tag: string | null; file: string } | null {
+  const parts = releasePath(url);
+  if (!parts || parts.length !== 7) return null;
+  if (parts[4] === 'download' && okSegment(parts[5]) && okSegment(parts[6])) return { tag: parts[5], file: parts[6] };
+  if (parts[4] === 'latest' && parts[5] === 'download' && okSegment(parts[6])) return { tag: null, file: parts[6] };
   return null;
+}
+
+/** The release page https://github.com/<repo>/releases/tag/<tag>; returns the tag or null. */
+export function releasePage(url: unknown): string | null {
+  const parts = releasePath(url);
+  return parts && parts.length === 6 && parts[4] === 'tag' && okSegment(parts[5]) ? parts[5] : null;
 }
 
 const httpsOn = (hosts: string[]) => (url: unknown): url is string => {
@@ -117,10 +134,10 @@ export const RELEASES_API = `https://api.github.com/repos/${RELEASE_REPO}/releas
 
 type Rec = Record<string, unknown>;
 const isRec = (v: unknown): v is Rec => !!v && typeof v === 'object' && !Array.isArray(v);
-function only(where: string, v: unknown, required: string[], optional: string[] = []): Rec {
+const absent = (v: unknown) => v === undefined || v === null;
+function obj(where: string, v: unknown, required: string[]): Rec {
   if (!isRec(v)) throw new ChannelError(`${where} must be an object`);
-  for (const k of required) if (!(k in v)) throw new ChannelError(`${where}.${k} is missing`);
-  for (const k of Object.keys(v)) if (!required.includes(k) && !optional.includes(k)) throw new ChannelError(`${where}.${k} is not expected`);
+  for (const k of required) if (absent(v[k])) throw new ChannelError(`${where}.${k} is missing`);
   return v;
 }
 const version = (where: string, v: unknown) => {
@@ -139,10 +156,16 @@ const asset = (where: string, v: unknown, tag?: string) => {
 };
 
 function desktop(where: string, v: unknown): DesktopShell {
-  const r = only(where, v, ['version', 'url'], ['auto', 'feed']);
-  const out: DesktopShell = { version: version(`${where}.version`, r.version), url: asset(`${where}.url`, r.url), auto: r.auto === true };
-  if (r.auto !== undefined && typeof r.auto !== 'boolean') throw new ChannelError(`${where}.auto must be true or false`);
-  if (r.feed !== undefined) out.feed = asset(`${where}.feed`, r.feed);
+  const r = obj(where, v, ['version', 'url']);
+  if (!releaseAsset(r.url) && !releasePage(r.url)) throw new ChannelError(`${where}.url is not a ${RELEASE_REPO} release`);
+  if (!absent(r.auto) && typeof r.auto !== 'boolean') throw new ChannelError(`${where}.auto must be true or false`);
+  const out: DesktopShell = { version: version(`${where}.version`, r.version), url: r.url as string, auto: r.auto === true };
+  if (!absent(r.feed)) {
+    if (!isRec(r.feed)) throw new ChannelError(`${where}.feed must name a feed per architecture`);
+    const feed: Partial<Record<DesktopArch, string>> = {};
+    for (const arch of ['arm64', 'x64'] as const) if (!absent(r.feed[arch])) feed[arch] = asset(`${where}.feed.${arch}`, r.feed[arch]);
+    out.feed = feed;
+  }
   return out;
 }
 
@@ -151,52 +174,54 @@ function desktop(where: string, v: unknown): DesktopShell {
  * says beta (or the reverse), so a signed file can't be replayed onto the other channel.
  */
 export function parseChannel(text: string, expected: Channel): ChannelFile {
-  if (typeof text !== 'string' || text.length > 64 * 1024) throw new ChannelError('The channel file is too large');
+  if (typeof text !== 'string' || text.length > 256 * 1024) throw new ChannelError('The channel file is too large');
   let raw: unknown;
   try {
     raw = JSON.parse(text);
   } catch {
     throw new ChannelError('The channel file is not JSON');
   }
-  const r = only('channel', raw, ['schema', 'channel', 'version', 'publishedAt', 'notes', 'game', 'shell', 'mandatory'], ['coordinator']);
+  const r = obj('channel', raw, ['schema', 'channel', 'version', 'publishedAt', 'game', 'mandatory']);
   if (r.schema !== 1) throw new ChannelError('Unsupported channel schema');
   if (r.channel !== expected) throw new ChannelError(`The file is for the ${String(r.channel)} channel, not ${expected}`);
   const v = version('channel.version', r.version);
   if (typeof r.publishedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T/.test(r.publishedAt) || Number.isNaN(Date.parse(r.publishedAt))) throw new ChannelError('channel.publishedAt is not a date');
-  if (typeof r.notes !== 'string' || r.notes.length > MAX_NOTES) throw new ChannelError('channel.notes must be text');
+  const notes = absent(r.notes) ? '' : r.notes;
+  if (typeof notes !== 'string' || notes.length > MAX_NOTES) throw new ChannelError('channel.notes must be text');
   if (typeof r.mandatory !== 'boolean') throw new ChannelError('channel.mandatory must be true or false');
   const tag = `v${v}`;
-  const g = only('game', r.game, ['url', 'sha256', 'minShell']);
+  if (!absent(r.tag) && r.tag !== tag) throw new ChannelError('channel.tag does not match its version');
+  const g = obj('game', r.game, ['url', 'sha256', 'minShell']);
   const game: GameEntry = { url: asset('game.url', g.url, tag), sha256: sha('game.sha256', g.sha256), minShell: version('game.minShell', g.minShell) };
-  const s = only('shell', r.shell, [], ['macos', 'windows', 'android', 'ios']);
+  const s = absent(r.shell) ? {} : obj('shell', r.shell, []);
   const shell: ChannelFile['shell'] = {};
-  if (s.macos !== undefined) shell.macos = desktop('shell.macos', s.macos);
-  if (s.windows !== undefined) shell.windows = desktop('shell.windows', s.windows);
-  if (s.android !== undefined) {
-    const a = only('shell.android', s.android, ['version', 'versionCode'], ['url', 'sha256', 'play']);
+  if (!absent(s.macos)) shell.macos = desktop('shell.macos', s.macos);
+  if (!absent(s.windows)) shell.windows = desktop('shell.windows', s.windows);
+  if (!absent(s.android)) {
+    const a = obj('shell.android', s.android, ['version', 'versionCode']);
     if (!Number.isSafeInteger(a.versionCode) || (a.versionCode as number) < 1 || (a.versionCode as number) > 2_100_000_000) throw new ChannelError('shell.android.versionCode is invalid');
     const android: AndroidShell = { version: version('shell.android.version', a.version), versionCode: a.versionCode as number };
-    if (a.url !== undefined) android.url = asset('shell.android.url', a.url);
-    if (a.sha256 !== undefined) android.sha256 = sha('shell.android.sha256', a.sha256);
-    if (a.play !== undefined) {
+    if (!absent(a.url)) android.url = asset('shell.android.url', a.url);
+    if (!absent(a.sha256)) android.sha256 = sha('shell.android.sha256', a.sha256);
+    if (!absent(a.play)) {
       if (!isPlayUrl(a.play)) throw new ChannelError('shell.android.play is not a Play link');
       android.play = a.play;
     }
     shell.android = android;
   }
-  if (s.ios !== undefined) {
-    const i = only('shell.ios', s.ios, ['version'], ['testflight', 'appStore']);
+  if (!absent(s.ios)) {
+    const i = obj('shell.ios', s.ios, ['version']);
     const ios: IosShell = { version: version('shell.ios.version', i.version) };
     for (const k of ['testflight', 'appStore'] as const)
-      if (i[k] !== undefined) {
+      if (!absent(i[k])) {
         if (!isAppleUrl(i[k])) throw new ChannelError(`shell.ios.${k} is not an Apple link`);
         ios[k] = i[k] as string;
       }
     shell.ios = ios;
   }
-  const out: ChannelFile = { schema: 1, channel: expected, version: v, publishedAt: r.publishedAt, notes: r.notes, game, shell, mandatory: r.mandatory };
-  if (r.coordinator !== undefined) {
-    const c = only('coordinator', r.coordinator, ['url', 'sha256', 'schema']);
+  const out: ChannelFile = { schema: 1, channel: expected, version: v, publishedAt: r.publishedAt, notes, game, shell, mandatory: r.mandatory };
+  if (!absent(r.coordinator)) {
+    const c = obj('coordinator', r.coordinator, ['url', 'sha256', 'schema']);
     if (!Number.isSafeInteger(c.schema) || (c.schema as number) < 1) throw new ChannelError('coordinator.schema is invalid');
     out.coordinator = { url: asset('coordinator.url', c.url, tag), sha256: sha('coordinator.sha256', c.sha256), schema: c.schema as number };
   }

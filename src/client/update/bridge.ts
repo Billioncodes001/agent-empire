@@ -12,7 +12,7 @@
  *   update.openNative({...})                   → {action}              the platform's native update path
  */
 import { BridgeError, NativeBridge, TIMEOUTS, native, type AppPlatform, type Native } from '../native';
-import { isAppleUrl, isPlayUrl, releaseAsset, RELEASES_API } from './channel';
+import { isAppleUrl, isPlayUrl, releaseAsset, releasePage, RELEASES_API, type DesktopArch } from './channel';
 import { isSemver } from './semver';
 
 export type DesktopOs = 'macos' | 'windows' | 'linux';
@@ -22,6 +22,8 @@ export interface NativeInfo {
   shellVersion: string;
   /** desktop only */
   os?: DesktopOs;
+  /** desktop only: picks the Squirrel.Mac feed */
+  arch?: DesktopArch;
   /** The game version running now (an installed bundle, or the one built into the app). */
   installedGame: string | null;
   /** The game version built into the app (the final fallback). */
@@ -84,6 +86,7 @@ export function parseNativeInfo(raw: unknown, platform: AppPlatform): NativeInfo
     canAutoUpdate: r.canAutoUpdate === true,
   };
   if (platform === 'desktop' && (r.os === 'macos' || r.os === 'windows' || r.os === 'linux')) info.os = r.os;
+  if (platform === 'desktop' && (r.arch === 'arm64' || r.arch === 'x64')) info.arch = r.arch;
   const source = str(r.installSource, 32);
   if (source && /^[a-z-]+$/.test(source)) info.installSource = source;
   if (isSemver(r.rolledBack)) info.rolledBack = r.rolledBack;
@@ -122,7 +125,7 @@ export function updateBridge(n: Native = native()): UpdateBridge | null {
     async openNative(p) {
       if (!isSemver(p.version)) throw new BridgeError('That update is not valid.', 'invalid');
       const params: Record<string, string> = { version: p.version };
-      if (p.url && releaseAsset(p.url)) params.url = p.url;
+      if (p.url && (releaseAsset(p.url) || releasePage(p.url))) params.url = p.url;
       if (p.feed && releaseAsset(p.feed)) params.feed = p.feed;
       if (p.sha256 && SHA.test(p.sha256)) params.sha256 = p.sha256;
       if (p.play && isPlayUrl(p.play)) params.play = p.play;

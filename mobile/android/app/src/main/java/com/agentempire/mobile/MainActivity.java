@@ -91,6 +91,9 @@ public final class MainActivity extends Activity implements NativeBridge.Host {
     private SecureStore store;
     private NativeBridge bridge;
     private GameAssets gameAssets;
+    /** In-app game updates (REL-04): the bundle store, its 20 s rollback timer and the APK installer. */
+    private GameUpdater updater;
+    private final Runnable trialCheck = this::checkTrial;
     private OnBackInvokedCallback backCallback;
     /** Debug builds only: a local fake GitHub for device-flow tests (see handleDebugIntent). */
     private volatile String debugGithubBase;
@@ -102,7 +105,10 @@ public final class MainActivity extends Activity implements NativeBridge.Host {
         super.onCreate(state);
         debuggable = (getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
         store = new SecureStore(this);
-        gameAssets = new GameAssets(getAssets(), this::configScript);
+        updater = new GameUpdater(this, debuggable);
+        // A pending bundle switches in now (a trial until the page reports booting); an unfinished trial rolls back.
+        updater.launch(System.currentTimeMillis());
+        gameAssets = new GameAssets(getAssets(), this::configScript, () -> updater.activeRoot());
         Window window = getWindow();
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         if (Build.VERSION.SDK_INT >= 28) {
@@ -141,6 +147,7 @@ public final class MainActivity extends Activity implements NativeBridge.Host {
             backCallback = this::onGameBack;
             getOnBackInvokedDispatcher().registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT, backCallback);
         }
+        handleInstallStatus(getIntent());
         if (debuggable && handleDebugIntent(getIntent())) return; // it loads the game when done
         loadGame();
     }
@@ -197,6 +204,7 @@ public final class MainActivity extends Activity implements NativeBridge.Host {
     }
 
     private void loadGame() {
+        armTrial();
         if (web != null) web.loadUrl(AssetPolicy.START_URL);
         // If the page never reports a first paint (for example a broken bundle), do not keep the overlay forever.
         main.postDelayed(this::reveal, 12000);
@@ -279,6 +287,55 @@ public final class MainActivity extends Activity implements NativeBridge.Host {
         }
         return "window.AGENT_EMPIRE_APP=Object.freeze(" + config + ");\n";
     }
+
+    // ---- In-app updates (REL-04) -----------------------------------------------------------------------------------
+
+    /** While a new bundle is on trial, rolls back if the page hasn't reported booting 20 s after it started. */
+    private void armTrial() {
+        main.removeCallbacks(trialCheck);
+        long remaining = updater.trialRemaining(System.currentTimeMillis());
+        if (remaining >= 0) main.postDelayed(trialCheck, remaining + 50);
+    }
+
+    private void checkTrial() {
+        if (updater.checkTrial(System.currentTimeMillis())) {
+            Log.w(TAG, "The updated game did not report booting within 20 s; rolled back");
+            if (web != null) web.loadUrl(AssetPolicy.START_URL);
+        }
+    }
+
+    @Override public GameUpdater updater() { return updater; }
+
+    @Override
+    public void restartGame() {
+        armTrial();
+        if (web != null) web.loadUrl(AssetPolicy.START_URL);
+    }
+
+    @Override public void bootReported() { main.removeCallbacks(trialCheck); }
+
+    /** The system installer's answer for an app update (GameUpdater.installApk): show its confirmation. */
+    private boolean handleInstallStatus(Intent intent) {
+        if (intent == null || !GameUpdater.INSTALL_ACTION.equals(intent.getAction())) return false;
+        int status = intent.getIntExtra(android.content.pm.PackageInstaller.EXTRA_STATUS, Integer.MIN_VALUE);
+        if (status == android.content.pm.PackageInstaller.STATUS_PENDING_USER_ACTION) {
+            Intent confirm = Build.VERSION.SDK_INT >= 33 ? intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent.class) : legacyIntentExtra(intent);
+            if (confirm != null) {
+                confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                try {
+                    startActivity(confirm);
+                } catch (ActivityNotFoundException none) {
+                    Log.w(TAG, "No installer to confirm the app update");
+                }
+            }
+        } else if (status != android.content.pm.PackageInstaller.STATUS_SUCCESS) {
+            Log.w(TAG, "App update not installed: " + intent.getStringExtra(android.content.pm.PackageInstaller.EXTRA_STATUS_MESSAGE));
+        }
+        return true;
+    }
+
+    @SuppressWarnings("deprecation")
+    private static Intent legacyIntentExtra(Intent intent) { return intent.getParcelableExtra(Intent.EXTRA_INTENT); }
 
     // ---- Launch overlay ------------------------------------------------------------------------------------------
 
@@ -440,6 +497,7 @@ public final class MainActivity extends Activity implements NativeBridge.Host {
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
+        if (handleInstallStatus(intent)) return;
         setIntent(intent);
         if (debuggable) handleDebugIntent(intent);
     }
@@ -454,6 +512,12 @@ public final class MainActivity extends Activity implements NativeBridge.Host {
      */
     private boolean handleDebugIntent(Intent intent) {
         if (!debuggable || intent == null) return false;
+        String updates = intent.getStringExtra("ae.debug.updates");
+        if (updates != null) {
+            // A loopback stand-in for GitHub releases; GameUpdater honours it only while the development key is pinned.
+            updater.fixtureOrigin = ServerPolicy.isValid(updates, true) ? ServerPolicy.normalise(updates, true) : null;
+            Log.i(TAG, "debug: update downloads from " + (updater.fixtureOrigin == null ? "GitHub" : updater.fixtureOrigin));
+        }
         String github = intent.getStringExtra("ae.debug.github");
         if (github != null) {
             debugGithubBase = ServerPolicy.isValid(github, true) ? ServerPolicy.normalise(github, true) : null;
@@ -526,6 +590,7 @@ public final class MainActivity extends Activity implements NativeBridge.Host {
 
     @Override
     protected void onDestroy() {
+        main.removeCallbacks(trialCheck);
         if (Build.VERSION.SDK_INT >= 33 && backCallback != null) getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(backCallback);
         if (bridge != null) bridge.destroy();
         io.shutdown();

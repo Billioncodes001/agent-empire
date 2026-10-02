@@ -19,7 +19,7 @@ import { CloudRepo } from '../src/client/cloud/repo';
 import { COORDINATOR_BUNDLE_PATH } from '../src/cloud/workflow';
 import { FakeGitHub } from './fake-github';
 import { asset, channelJson, OTHER_KEYPAIR, sha256, sign, signedChannel } from './update-fixtures';
-import { DEV_RELEASE_PUBLIC_KEY, isDevKey, releasePublicKey } from '../src/shared/release-key';
+import { DEV_RELEASE_PUBLIC_KEY, RELEASE_KEY_IS_DEVELOPMENT, RELEASE_PUBLIC_KEY } from '../src/shared/release-key';
 
 const info = (over: Partial<NativeInfo> = {}): NativeInfo => ({
   platform: 'android', shellVersion: '1.0.0-beta.1', installedGame: '1.0.0-beta.1', builtinGame: '1.0.0-beta.1', pendingGame: null, canInstallGame: true, canAutoUpdate: false, installSource: 'sideload', ...over,
@@ -45,15 +45,24 @@ test('channel: a valid file parses; the release key is the dev key in this tree'
   assert.equal(c.game.url, asset('1.0.0-beta.2', 'agent-empire-game-1.0.0-beta.2.zip'));
   assert.equal(c.shell.android?.sha256, 'b'.repeat(64));
   assert.equal(c.coordinator?.schema, 1);
-  assert.equal(isDevKey, true);
-  assert.deepEqual(releasePublicKey(), { base64: DEV_RELEASE_PUBLIC_KEY, isDevKey: true });
+  assert.equal(RELEASE_KEY_IS_DEVELOPMENT, true);
+  assert.equal(RELEASE_PUBLIC_KEY, DEV_RELEASE_PUBLIC_KEY);
+  assert.deepEqual(c.shell.macos?.feed, { arm64: asset('1.0.0-beta.2', 'desktop-update-darwin-arm64.json'), x64: asset('1.0.0-beta.2', 'desktop-update-darwin-x64.json') });
+  // Fields this app doesn't use are ignored; a platform without a build is null.
+  const extra = { ...channelJson({ version: '1.0.0-beta.2' }), future: { x: 1 }, shell: { ...channelJson({ version: '1.0.0-beta.2' }).shell, windows: null, ios: { version: '1.0.0-beta.2', testflight: null, appStore: null } } };
+  const parsed = parseChannel(JSON.stringify(extra), 'stable');
+  assert.equal(parsed.shell.windows, undefined);
+  assert.deepEqual(parsed.shell.ios, { version: '1.0.0-beta.2' });
 });
 
 test('channel: anything unexpected makes the whole file untrusted', () => {
   const base = () => channelJson({ version: '1.0.0-beta.2' });
   const cases: [string, (c: any) => void][] = [
     ['other channel', (c) => (c.channel = 'beta')],
-    ['extra field', (c) => (c.extra = 1)],
+    ['tag for another version', (c) => (c.tag = 'v9.9.9')],
+    ['desktop url elsewhere', (c) => (c.shell.macos.url = 'https://evil.test/download')],
+    ['feed elsewhere', (c) => (c.shell.macos.feed = { arm64: 'https://evil.test/feed.json' })],
+    ['feed as a bare string', (c) => (c.shell.macos.feed = asset('1.0.0-beta.2', 'feed.json'))],
     ['schema 2', (c) => (c.schema = 2)],
     ['bad version', (c) => (c.version = 'latest')],
     ['game from another repository', (c) => (c.game.url = 'https://github.com/evil/agent-empire/releases/download/v1.0.0-beta.2/x.zip')],
@@ -214,9 +223,12 @@ test('offer: native paths per platform', () => {
   assert.equal(nativeOffer(noSha, info())?.how, 'store', 'no APK hash in the signed channel: Play instead of installing');
   assert.equal(nativeOffer(c, info({ platform: 'ios', installSource: 'testflight' }))?.params.testflight, c.shell.ios!.testflight);
   assert.equal(nativeOffer(c, info({ platform: 'ios', installSource: 'appstore' }))?.params.appStore, c.shell.ios!.appStore);
-  const mac = info({ platform: 'desktop', os: 'macos' });
-  assert.equal(nativeOffer(c, mac)?.how, 'download', 'unsigned or feed-less: open the download');
-  assert.equal(nativeOffer(c, { ...mac, canAutoUpdate: true })?.how, 'download', 'no feed in the channel');
+  const mac = info({ platform: 'desktop', os: 'macos', arch: 'arm64' });
+  assert.equal(nativeOffer(c, mac)?.how, 'download', 'an unsigned app opens the release page');
+  assert.equal(nativeOffer(c, mac)?.params.url, `https://github.com/${RELEASE_REPO}/releases/tag/v1.0.0-beta.2`);
+  assert.deepEqual(nativeOffer(c, { ...mac, canAutoUpdate: true })?.params.feed, asset('1.0.0-beta.2', 'desktop-update-darwin-arm64.json'));
+  assert.equal(nativeOffer(c, { ...mac, canAutoUpdate: true })?.how, 'auto');
+  assert.equal(nativeOffer(c, info({ platform: 'desktop', os: 'windows', arch: 'x64', canAutoUpdate: true }))?.how, 'download', 'Windows has no in-place updater yet');
   assert.equal(nativeOffer(c, info({ shellVersion: '1.0.0-beta.2' })), null);
   assert.equal(nativeOffer(c, info({ platform: 'desktop', os: 'linux' })), null);
 });

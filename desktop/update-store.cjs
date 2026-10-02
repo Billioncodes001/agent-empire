@@ -22,6 +22,15 @@ const zlib = require('node:zlib');
 const crypto = require('node:crypto');
 const { compareSemver, isSemver, isSha256, releaseAsset, isUpdateFetchUrl, isAssetRedirect } = require('./bridge-policy.cjs');
 
+/**
+ * The pinned release key (src/shared/release-key.ts; listed in tools/release/config.json pinnedKeyFiles, so the release
+ * gate checks this copy). The shell uses it to know whether it is a development build: only then does it honour the
+ * loopback update fixture. The page verifies channel signatures against the same key.
+ */
+const DEV_RELEASE_PUBLIC_KEY = 'q7m8HRpNA8EClSZsC3KSzzInRy3LxrjPIXNU41+WLYU=';
+const RELEASE_PUBLIC_KEY = 'q7m8HRpNA8EClSZsC3KSzzInRy3LxrjPIXNU41+WLYU=';
+const RELEASE_KEY_IS_DEVELOPMENT = RELEASE_PUBLIC_KEY === DEV_RELEASE_PUBLIC_KEY;
+
 const BOOT_TIMEOUT_MS = 20_000;
 const MAX_ZIP_BYTES = 512 * 1024 * 1024;
 const MAX_TEXT_BYTES = 6 * 1024 * 1024;
@@ -339,4 +348,4 @@ function createBundleStore({ root, builtinRoot, now = Date.now }) {
   }
 }
 
-module.exports = { BOOT_TIMEOUT_MS, MAX_TEXT_BYTES, safeEntryName, zipEntries, extractZip, download, fixtureMapper, createBundleStore, bundleVersion };
+module.exports = { RELEASE_PUBLIC_KEY, DEV_RELEASE_PUBLIC_KEY, RELEASE_KEY_IS_DEVELOPMENT, BOOT_TIMEOUT_MS, MAX_TEXT_BYTES, safeEntryName, zipEntries, extractZip, download, fixtureMapper, createBundleStore, bundleVersion };

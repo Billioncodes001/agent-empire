@@ -42,8 +42,9 @@ export function nativeOffer(channel: ChannelFile, info: NativeInfo): NativeOffer
   if (info.platform === 'desktop') {
     const entry = info.os === 'macos' ? s.macos : info.os === 'windows' ? s.windows : undefined;
     if (!entry || !isNewer(entry.version, info.shellVersion)) return null;
-    const auto = entry.auto && !!entry.feed && info.canAutoUpdate;
-    return { version: entry.version, params: { version: entry.version, url: entry.url, ...(auto ? { feed: entry.feed } : {}) }, how: auto ? 'auto' : 'download' };
+    const feed = info.arch ? entry.feed?.[info.arch] : undefined;
+    const auto = entry.auto && !!feed && info.canAutoUpdate;
+    return { version: entry.version, params: { version: entry.version, url: entry.url, ...(auto ? { feed } : {}) }, how: auto ? 'auto' : 'download' };
   }
   if (info.platform === 'android') {
     const a = s.android;

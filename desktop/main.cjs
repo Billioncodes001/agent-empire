@@ -163,6 +163,7 @@ async function handleBridge(request) {
         platform: 'desktop',
         shellVersion: app.getVersion(),
         os: process.platform === 'darwin' ? 'macos' : process.platform === 'win32' ? 'windows' : 'linux',
+        arch: process.arch === 'arm64' ? 'arm64' : 'x64',
         installedGame: bundles.installedGame(),
         builtinGame: bundles.builtinVersion,
         pendingGame: bundles.state.pending,
@@ -214,7 +215,7 @@ async function openExternal(url) {
 /**
  * The bundle store, the 20 s rollback timer and the optional development fixture. The fixture
  * (--empire-update-fixture=http://127.0.0.1:<port>) is honoured only while the pinned release key is the public dev key
- * (src/shared/release-key.ts isDevKey), so a release build never downloads from anywhere but GitHub.
+ * (update-store.cjs RELEASE_KEY_IS_DEVELOPMENT), so a release build never downloads from anywhere but GitHub.
  */
 async function setUpUpdates() {
   bundles = updates.createBundleStore({ root: path.join(app.getPath('userData'), 'game-bundles'), builtinRoot: path.join(__dirname, 'runtime', 'public') });
@@ -222,11 +223,7 @@ async function setUpUpdates() {
   if (launched) console.warn(`Game update ${launched.rolledBack} rolled back: ${launched.reason}`);
   const fixture = app.commandLine.getSwitchValue('empire-update-fixture');
   if (fixture) {
-    let devKey = false;
-    try {
-      devKey = (await import(pathToFileURL(path.join(__dirname, 'runtime', 'server', 'shared', 'release-key.js')).href)).isDevKey === true;
-    } catch {}
-    if (devKey) {
+    if (updates.RELEASE_KEY_IS_DEVELOPMENT) {
       updateFixture = updates.fixtureMapper(fixture);
       console.warn(`Update fixture: release downloads come from ${updateFixture.origin} (development key only).`);
     } else console.warn('Ignoring --empire-update-fixture: this build pins a release key.');
@@ -274,7 +271,8 @@ You can download version ${version} instead.` });
         const choice = await dialog.showMessageBox(win, { type: 'info', buttons: ['Later', 'Restart now'], defaultId: 1, cancelId: 0, message: `Agent Empire ${version} is ready`, detail: 'Restart the app to finish updating. Your Empire is not changed.' });
         if (choice.response === 1) autoUpdater.quitAndInstall();
       });
-      autoUpdater.setFeedURL({ url: feed });
+      // A Squirrel.Mac static feed (tools/release/channel.mjs squirrelFeed).
+      autoUpdater.setFeedURL({ url: feed, serverType: 'json' });
       autoUpdater.checkForUpdates();
     }
     return { action: 'auto-update' };

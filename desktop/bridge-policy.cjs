@@ -94,6 +94,21 @@ function releaseAsset(input) {
   return null;
 }
 
+/** The release page https://github.com/<repo>/releases/tag/<tag> (where desktop players download the app). */
+function releasePage(input) {
+  if (typeof input !== 'string' || input.length > 512) return false;
+  let u;
+  try {
+    u = new URL(input);
+  } catch {
+    return false;
+  }
+  if (u.protocol !== 'https:' || u.hostname !== 'github.com' || u.port || u.username || u.password || u.search || u.hash) return false;
+  const parts = u.pathname.split('/');
+  const [owner, repo] = RELEASE_REPO.toLowerCase().split('/');
+  return parts.length === 6 && parts[1]?.toLowerCase() === owner && parts[2]?.toLowerCase() === repo && parts[3] === 'releases' && parts[4] === 'tag' && !!parts[5] && SEGMENT.test(parts[5]) && parts[5] !== '..';
+}
+
 /** update.fetch: a release asset, or the releases listing used to find the newest pre-release. */
 const isUpdateFetchUrl = (url) => url === RELEASES_API || releaseAsset(url) !== null;
 
@@ -266,7 +281,7 @@ function parseRequest(raw) {
       const out = { version: p.version };
       if (p.url !== undefined) {
         const a = releaseAsset(p.url);
-        if (!a || a.tag === null) return fail('That download is not an Agent Empire release.');
+        if (!releasePage(p.url) && (!a || a.tag === null)) return fail('That download is not an Agent Empire release.');
         out.url = p.url;
       }
       if (p.feed !== undefined) {
@@ -307,5 +322,5 @@ module.exports = {
   APP_SCHEME, APP_HOST, APP_ORIGIN, METHODS, MODES, PAGE_MODES, KEYS, SESSION_KEYS, GITHUB_SCOPES, SIGN_OUT_REASONS, MAX_VALUE_LENGTH, GESTURE_WINDOW_MS,
   isKey, isMethod, isDeviceToken, isClientId, serverOrigin, invalidValue, scopes, externalUrl, isVerificationUrl, gestureAllows, isAppUrl,
   parseRequest, configFor, shouldResumeLocal,
-  RELEASE_REPO, RELEASES_API, ASSET_REDIRECT_HOSTS, isSemver, isSha256, compareSemver, releaseAsset, isUpdateFetchUrl, isAssetRedirect,
+  RELEASE_REPO, RELEASES_API, ASSET_REDIRECT_HOSTS, isSemver, isSha256, compareSemver, releaseAsset, releasePage, isUpdateFetchUrl, isAssetRedirect,
 };

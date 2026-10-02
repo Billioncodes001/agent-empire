@@ -1,14 +1,17 @@
 /**
- * Signed update-channel fixtures for tests and tools/update-fixture.ts. Signs with the DEV release key, whose seed is
- * public (src/shared/release-key.ts): anything signed here proves nothing outside development builds.
+ * Signed update-channel fixtures for tests and tools/update-fixture.ts, shaped like tools/release/channel.mjs output.
+ * Signs with the DEV release key, whose seed is public (tools/release/sign.mjs DEV_KEY_SEED_TEXT): anything signed
+ * here proves nothing outside development builds.
  */
 import { createHash } from 'node:crypto';
 import { crc32, deflateRawSync } from 'node:zlib';
 import nacl from 'tweetnacl';
-import { DEV_RELEASE_KEY_SEED_TEXT, DEV_RELEASE_PUBLIC_KEY } from '../src/shared/release-key';
+import { DEV_RELEASE_PUBLIC_KEY } from '../src/shared/release-key';
 import { RELEASE_REPO } from '../src/client/update/channel';
 
-export const DEV_KEYPAIR = nacl.sign.keyPair.fromSeed(createHash('sha256').update(DEV_RELEASE_KEY_SEED_TEXT).digest());
+/** Same text as tools/release/sign.mjs DEV_KEY_SEED_TEXT (the release lane's dev key). */
+export const DEV_KEY_SEED_TEXT = 'agent-empire/dev-release-key/v1: public test key, never trusted by a release build';
+export const DEV_KEYPAIR = nacl.sign.keyPair.fromSeed(createHash('sha256').update(DEV_KEY_SEED_TEXT).digest());
 if (Buffer.from(DEV_KEYPAIR.publicKey).toString('base64') !== DEV_RELEASE_PUBLIC_KEY) throw new Error('dev key seed and pinned dev key differ');
 
 /** Another key, for "signed by the wrong key" cases. */
@@ -20,17 +23,21 @@ export const asset = (version: string, file: string) => `https://github.com/${RE
 
 export function channelJson(opts: { channel?: 'stable' | 'beta'; version: string; gameSha?: string; minShell?: string; coordinatorSha?: string; schema?: number; notes?: string; android?: Record<string, unknown> }) {
   const v = opts.version;
+  const page = `https://github.com/${RELEASE_REPO}/releases/tag/v${v}`;
+  const zip = (name: string) => ({ name, url: asset(v, name), sha256: 'e'.repeat(64) });
   return {
     schema: 1,
     channel: opts.channel ?? 'stable',
     version: v,
+    tag: `v${v}`,
     publishedAt: '2026-10-03T12:00:00Z',
     notes: opts.notes ?? `Release ${v}: faster city loading.`,
-    game: { url: asset(v, `agent-empire-game-${v}.zip`), sha256: opts.gameSha ?? 'a'.repeat(64), minShell: opts.minShell ?? '0.1.0' },
+    releasePage: page,
+    game: { url: asset(v, `agent-empire-game-${v}.zip`), sha256: opts.gameSha ?? 'a'.repeat(64), bytes: 1234, minShell: opts.minShell ?? '0.1.0', manifest: asset(v, 'game-manifest.json'), manifestSig: asset(v, 'game-manifest.json.sig') },
     shell: {
-      macos: { version: v, url: asset(v, `Agent-Empire-${v}-mac-arm64.zip`), auto: true },
-      windows: { version: v, url: asset(v, `Agent-Empire-${v}-win-x64.zip`), auto: true },
-      android: { version: v, versionCode: 10000002, url: asset(v, `Agent-Empire-${v}.apk`), sha256: 'b'.repeat(64), play: 'https://play.google.com/store/apps/details?id=com.agentempire.mobile', ...opts.android },
+      macos: { version: v, url: page, auto: true, downloads: { arm64: { zip: zip(`Agent-Empire-${v}-macos-arm64.zip`), signed: true } }, feed: { arm64: asset(v, 'desktop-update-darwin-arm64.json'), x64: asset(v, 'desktop-update-darwin-x64.json') } },
+      windows: { version: v, url: page, auto: false, downloads: { x64: { zip: zip(`Agent-Empire-${v}-windows-x64.zip`), signed: false } } },
+      android: { version: v, versionCode: 10000302, name: `Agent-Empire-${v}-android.apk`, url: asset(v, `Agent-Empire-${v}-android.apk`), sha256: 'b'.repeat(64), signed: true, play: 'https://play.google.com/store/apps/details?id=com.agentempire.mobile', ...opts.android },
       ios: { version: v, testflight: 'https://testflight.apple.com/join/AbCdEf12', appStore: 'https://apps.apple.com/app/id0000000000' },
     },
     ...(opts.coordinatorSha ? { coordinator: { url: asset(v, 'agent-empire-coordinator.mjs'), sha256: opts.coordinatorSha, schema: opts.schema ?? 1 } } : {}),
