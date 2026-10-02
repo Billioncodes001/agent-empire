@@ -43,7 +43,13 @@ export function parseManifest(text: string | null): InstalledCoordinator | null 
 }
 
 /** Pure: what the channel's coordinator means for a repository running `installed`. */
-export function coordinatorDecision(channel: ChannelFile, installed: InstalledCoordinator, clientSchema = CLOUD_SCHEMA_VERSION): CoordinatorStatus {
+/**
+ * `own` is this app's bundled coordinator ({version: the game version, sha256}). A repository without a manifest whose
+ * bundle is that file runs this app's version: a newer app (say beta) that set the repository up must never be offered
+ * an older coordinator after a switch to stable.
+ */
+export function coordinatorDecision(channel: ChannelFile, given: InstalledCoordinator, clientSchema = CLOUD_SCHEMA_VERSION, own?: InstalledCoordinator | null): CoordinatorStatus {
+  const installed = !given.version && own?.version && own.sha256 && given.sha256 === own.sha256 ? { version: own.version, sha256: given.sha256 } : given;
   const c = channel.coordinator;
   if (!c) return { kind: 'current', installed };
   if (installed.sha256 === c.sha256) return { kind: 'current', installed: { version: installed.version ?? channel.version, sha256: installed.sha256 } };
