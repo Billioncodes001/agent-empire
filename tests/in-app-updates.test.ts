@@ -74,7 +74,8 @@ test('channel: anything unexpected makes the whole file untrusted', () => {
     ['tag for another version', (c) => (c.tag = 'v9.9.9')],
     ['desktop url elsewhere', (c) => (c.shell.macos.url = 'https://evil.test/download')],
     ['feed elsewhere', (c) => (c.shell.macos.feed = { arm64: 'https://evil.test/feed.json' })],
-    ['feed as a bare string', (c) => (c.shell.macos.feed = asset('1.0.0-beta.2', 'feed.json'))],
+    ['feed elsewhere, as one string', (c) => (c.shell.macos.feed = 'https://evil.test/feed.json')],
+    ['feed folder of another repository', (c) => (c.shell.windows.feed = 'https://github.com/evil/agent-empire/releases/download/v1.0.0-beta.2')],
     ['schema 2', (c) => (c.schema = 2)],
     ['bad version', (c) => (c.version = 'latest')],
     ['game from another repository', (c) => (c.game.url = 'https://github.com/evil/agent-empire/releases/download/v1.0.0-beta.2/x.zip')],
@@ -241,6 +242,10 @@ test('offer: native paths per platform', () => {
   assert.deepEqual(nativeOffer(c, { ...mac, canAutoUpdate: true })?.params.feed, asset('1.0.0-beta.2', 'desktop-update-darwin-arm64.json'));
   assert.equal(nativeOffer(c, { ...mac, canAutoUpdate: true })?.how, 'auto');
   assert.equal(nativeOffer(c, info({ platform: 'desktop', os: 'windows', arch: 'x64', canAutoUpdate: true }))?.how, 'download', 'Windows has no in-place updater yet');
+  const squirrel = parseChannel(JSON.stringify({ ...channelJson({ version: '1.0.0-beta.2' }), shell: { windows: { version: '1.0.0-beta.2', url: `https://github.com/${RELEASE_REPO}/releases/tag/v1.0.0-beta.2`, auto: true, feed: `https://github.com/${RELEASE_REPO}/releases/download/v1.0.0-beta.2` } } }), 'stable');
+  const win = info({ platform: 'desktop', os: 'windows', arch: 'x64', canAutoUpdate: true });
+  assert.deepEqual(nativeOffer(squirrel, win), { version: '1.0.0-beta.2', params: { version: '1.0.0-beta.2', url: `https://github.com/${RELEASE_REPO}/releases/tag/v1.0.0-beta.2`, feed: `https://github.com/${RELEASE_REPO}/releases/download/v1.0.0-beta.2` }, how: 'auto' }, 'a Squirrel.Windows install updates itself');
+  assert.equal(nativeOffer(squirrel, { ...win, canAutoUpdate: false })?.how, 'download', 'not a Squirrel install: the release page');
   assert.equal(nativeOffer(c, info({ shellVersion: '1.0.0-beta.2' })), null);
   assert.equal(nativeOffer(c, info({ platform: 'desktop', os: 'linux' })), null);
 });

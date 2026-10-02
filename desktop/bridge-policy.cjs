@@ -109,6 +109,21 @@ function releasePage(input) {
   return parts.length === 6 && parts[1]?.toLowerCase() === owner && parts[2]?.toLowerCase() === repo && parts[3] === 'releases' && parts[4] === 'tag' && !!parts[5] && SEGMENT.test(parts[5]) && parts[5] !== '..';
 }
 
+/** A release's download folder https://github.com/<repo>/releases/download/<tag> (a Squirrel.Windows feed). */
+function releaseFolder(input) {
+  if (typeof input !== 'string' || input.length > 512) return false;
+  let u;
+  try {
+    u = new URL(input);
+  } catch {
+    return false;
+  }
+  if (u.protocol !== 'https:' || u.hostname !== 'github.com' || u.port || u.username || u.password || u.search || u.hash) return false;
+  const parts = u.pathname.split('/');
+  const [owner, repo] = RELEASE_REPO.toLowerCase().split('/');
+  return parts.length === 6 && parts[1]?.toLowerCase() === owner && parts[2]?.toLowerCase() === repo && parts[3] === 'releases' && parts[4] === 'download' && !!parts[5] && SEGMENT.test(parts[5]) && parts[5] !== '..';
+}
+
 /** update.fetch: a release asset, or the releases listing used to find the newest pre-release. */
 const isUpdateFetchUrl = (url) => url === RELEASES_API || releaseAsset(url) !== null;
 
@@ -286,7 +301,7 @@ function parseRequest(raw) {
       }
       if (p.feed !== undefined) {
         const a = releaseAsset(p.feed);
-        if (!a || a.tag === null) return fail('That update feed is not an Agent Empire release.');
+        if (!releaseFolder(p.feed) && (!a || a.tag === null)) return fail('That update feed is not an Agent Empire release.');
         out.feed = p.feed;
       }
       if (!out.url && !out.feed) return fail('Nothing to open.');
@@ -322,5 +337,5 @@ module.exports = {
   APP_SCHEME, APP_HOST, APP_ORIGIN, METHODS, MODES, PAGE_MODES, KEYS, SESSION_KEYS, GITHUB_SCOPES, SIGN_OUT_REASONS, MAX_VALUE_LENGTH, GESTURE_WINDOW_MS,
   isKey, isMethod, isDeviceToken, isClientId, serverOrigin, invalidValue, scopes, externalUrl, isVerificationUrl, gestureAllows, isAppUrl,
   parseRequest, configFor, shouldResumeLocal,
-  RELEASE_REPO, RELEASES_API, ASSET_REDIRECT_HOSTS, isSemver, isSha256, compareSemver, releaseAsset, releasePage, isUpdateFetchUrl, isAssetRedirect,
+  RELEASE_REPO, RELEASES_API, ASSET_REDIRECT_HOSTS, isSemver, isSha256, compareSemver, releaseAsset, releasePage, releaseFolder, isUpdateFetchUrl, isAssetRedirect,
 };

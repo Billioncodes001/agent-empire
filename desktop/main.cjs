@@ -243,39 +243,53 @@ function armTrial() {
 }
 
 let autoUpdateCapable;
-/** Squirrel.Mac needs a Developer ID-signed, packaged app; Windows builds have no Squirrel installer yet. */
+/**
+ * Electron's built-in autoUpdater works only for a signed app: macOS (Squirrel.Mac) needs a packaged app signed with
+ * Developer ID; Windows (Squirrel.Windows, electron-winstaller) needs the app to run from its Squirrel install, where
+ * Update.exe sits next to the app folder.
+ */
 function canAutoUpdate() {
   if (autoUpdateCapable !== undefined) return Promise.resolve(autoUpdateCapable);
-  if (process.platform !== 'darwin' || !app.isPackaged) return Promise.resolve((autoUpdateCapable = false));
+  if (!app.isPackaged) return Promise.resolve((autoUpdateCapable = false));
+  if (process.platform === 'win32') return Promise.resolve((autoUpdateCapable = existsSync(updates.squirrelUpdateExe(process.execPath))));
+  if (process.platform !== 'darwin') return Promise.resolve((autoUpdateCapable = false));
   const bundle = path.resolve(process.execPath, '..', '..', '..');
   return new Promise((resolve) =>
     execFile('codesign', ['-dv', '--verbose=2', bundle], { timeout: 10_000 }, (_error, _out, err) => resolve((autoUpdateCapable = /Authority=Developer ID Application/.test(String(err))))),
   );
 }
 
-let autoUpdating = false;
+/** 'idle' | 'downloading' | 'ready' (downloaded; the next openNative restarts into it). */
+let nativeUpdate = 'idle';
+/**
+ * update.openNative on desktop. A signed app updates itself with Electron's autoUpdater from the channel's feed: the
+ * call answers 'auto-update' once the update is downloaded, and the page then offers "Restart to update", which calls
+ * again ('restart'). Anything else (unsigned, no feed, an updater error) opens the release page in the browser.
+ */
 async function openNativeUpdate({ version, url, feed }) {
+  if (nativeUpdate === 'ready') {
+    setTimeout(() => autoUpdater.quitAndInstall(), 100);
+    return { action: 'restart' };
+  }
   if (feed && (await canAutoUpdate())) {
-    if (!autoUpdating) {
-      autoUpdating = true;
-      autoUpdater.removeAllListeners();
-      autoUpdater.on('error', async (error) => {
-        autoUpdating = false;
-        const choice = await dialog.showMessageBox(win, { type: 'warning', buttons: ['Cancel', 'Open download'], defaultId: 1, cancelId: 0, message: 'The app couldn’t update itself', detail: `${error.message}
-
-You can download version ${version} instead.` });
-        if (choice.response === 1 && url) await shell.openExternal(url);
+    if (nativeUpdate === 'downloading') throw new Error('The app update is already downloading.');
+    nativeUpdate = 'downloading';
+    try {
+      await new Promise((resolve, reject) => {
+        autoUpdater.removeAllListeners();
+        autoUpdater.once('error', reject);
+        autoUpdater.once('update-not-available', () => reject(new Error(`The update feed has no newer app than ${app.getVersion()}.`)));
+        autoUpdater.once('update-downloaded', resolve);
+        autoUpdater.setFeedURL(updates.autoUpdateFeed(process.platform, feed));
+        autoUpdater.checkForUpdates();
       });
-      autoUpdater.on('update-downloaded', async () => {
-        autoUpdating = false;
-        const choice = await dialog.showMessageBox(win, { type: 'info', buttons: ['Later', 'Restart now'], defaultId: 1, cancelId: 0, message: `Agent Empire ${version} is ready`, detail: 'Restart the app to finish updating. Your Empire is not changed.' });
-        if (choice.response === 1) autoUpdater.quitAndInstall();
-      });
-      // A Squirrel.Mac static feed (tools/release/channel.mjs squirrelFeed).
-      autoUpdater.setFeedURL({ url: feed, serverType: 'json' });
-      autoUpdater.checkForUpdates();
+      nativeUpdate = 'ready';
+      return { action: 'auto-update' };
+    } catch (error) {
+      nativeUpdate = 'idle';
+      console.warn(`The app could not update itself to ${version}: ${error.message}`);
+      // Fall through to the release page.
     }
-    return { action: 'auto-update' };
   }
   if (!url) throw new Error('This update has no download for this computer.');
   await openExternal(url);
@@ -618,9 +632,24 @@ function createGameWindow() {
 }
 
 app.setName('Agent Empire');
-const ownsInstance = app.requestSingleInstanceLock();
-if (!ownsInstance) app.quit();
-else
+// Squirrel.Windows runs the app with --squirrel-* once per install, update and uninstall: maintain the shortcuts with
+// its Update.exe and quit at once (the standard electron-squirrel-startup handling, without the dependency).
+const squirrelEvent = process.platform === 'win32' ? updates.squirrelEvent(process.argv) : null;
+if (squirrelEvent && squirrelEvent !== 'firstrun') {
+  const exe = path.basename(process.execPath);
+  const args = squirrelEvent === 'install' || squirrelEvent === 'updated' ? [`--createShortcut=${exe}`] : squirrelEvent === 'uninstall' ? [`--removeShortcut=${exe}`] : null;
+  if (args)
+    try {
+      require('node:child_process').spawn(updates.squirrelUpdateExe(process.execPath), args, { detached: true, stdio: 'ignore' }).unref();
+    } catch (error) {
+      console.warn('Squirrel shortcut update failed:', error.message);
+    }
+  setTimeout(() => app.quit(), 1000);
+}
+const ownsInstance = !squirrelEvent || squirrelEvent === 'firstrun' ? app.requestSingleInstanceLock() : false;
+if (!ownsInstance) {
+  if (!squirrelEvent || squirrelEvent === 'firstrun') app.quit();
+} else
   app.whenReady().then(async () => {
     syncEngine = await import('./runtime/device-sync.js');
     await setUpUpdates();

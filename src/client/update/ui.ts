@@ -193,9 +193,23 @@ export function openUpdateDialog(service: UpdateService, opts: { check?: boolean
     }
     if (o?.native) {
       const how = o.native.how;
-      const label = how === 'auto' ? 'Update the app' : how === 'installer' ? 'Download and install' : how === 'store' ? (s.info?.platform === 'ios' ? 'Open TestFlight / App Store' : 'Open Google Play') : 'Open download';
-      const btn = h('button.btn', { type: 'button', onclick: () => void service.openNative().then((r) => r.action === 'permission' && toast('Allow Agent Empire to install apps, then choose the update again.', 'info'), (e) => toast(e instanceof Error ? e.message : 'The app update could not start.', 'error')) }, label);
-      nodes.push(card('App', 'attention', `App version ${o.native.version} is available`, how === 'auto' ? 'The app downloads the signed update and restarts.' : how === 'installer' ? 'Downloads the app, checks it against the signed release, and opens Android’s installer.' : how === 'store' ? 'Opens the store page for the app update.' : 'Opens the download page in your browser. Install it over this app; your Empire is not changed.', btn));
+      const ready = s.nativeUpdate === 'ready', working = s.nativeUpdate === 'working';
+      const label = ready ? 'Restart to update' : working ? 'Downloading…' : how === 'auto' ? 'Update the app' : how === 'installer' ? 'Download and install' : how === 'store' ? (s.info?.platform === 'ios' ? 'Open TestFlight / App Store' : 'Open Google Play') : 'Open download page';
+      const after = (r: { action: string }) => {
+        if (r.action === 'permission') toast('Allow Agent Empire to install apps, then choose the update again.', 'info');
+        if (r.action === 'auto-update') toast(`App version ${o.native!.version} is ready. Restart to update.`, 'info');
+      };
+      const btn = h(ready ? 'button.btn.primary' : 'button.btn', { type: 'button', disabled: working, onclick: () => void service.openNative().then(after, (e) => toast(e instanceof Error ? e.message : 'The app update could not start.', 'error')) }, label);
+      const detail = ready
+        ? 'The update is downloaded and checked. Restarting takes a moment; your Empire is not changed.'
+        : how === 'auto'
+          ? 'The app downloads the signed update in the background, then asks you to restart.'
+          : how === 'installer'
+            ? 'Downloads the app, checks it against the signed release, and opens Android’s installer.'
+            : how === 'store'
+              ? 'Opens the store page for the app update.'
+              : 'Opens the release page in your browser. Install it over this app; your Empire is not changed.';
+      nodes.push(card('App', ready ? 'ready' : 'attention', ready ? `App version ${o.native.version} is ready` : `App version ${o.native.version} is available`, detail, btn));
     }
     if (o?.server) nodes.push(card('Server', 'attention', `Your server runs ${o.server.running}; ${o.server.available} is available`, 'The app does not change your server. Update it from the office’s Upgrade button (servers deployed from git) or redeploy it.'));
     const c = s.coordinator;

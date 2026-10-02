@@ -9,10 +9,11 @@
  *   update.activate()                          → true, then the shell restarts the game into the pending bundle
  *   update.bootOk()                            → true                  this bundle booted; the shell marks it known-good
  *   update.nativeInfo()                        → NativeInfo
- *   update.openNative({...})                   → {action}              the platform's native update path
+ *   update.openNative({...})                   → {action}              the platform's native update path (desktop:
+ *                                                                       'auto-update' when downloaded, then 'restart')
  */
 import { BridgeError, NativeBridge, TIMEOUTS, native, type AppPlatform, type Native } from '../native';
-import { isAppleUrl, isPlayUrl, releaseAsset, releasePage, RELEASES_API, type DesktopArch } from './channel';
+import { isAppleUrl, isPlayUrl, releaseAsset, releaseFolder, releasePage, RELEASES_API, type DesktopArch } from './channel';
 import { isSemver } from './semver';
 
 export type DesktopOs = 'macos' | 'windows' | 'linux';
@@ -46,7 +47,11 @@ export interface FetchResult {
   etag: string | null;
 }
 
-export type NativeAction = 'auto-update' | 'opened' | 'installer' | 'permission' | 'store';
+/**
+ * What update.openNative did. Desktop with a signed app: the first call downloads through Electron's autoUpdater and
+ * answers 'auto-update' once the update is ready; calling again then answers 'restart' and the app restarts into it.
+ */
+export type NativeAction = 'auto-update' | 'restart' | 'opened' | 'installer' | 'permission' | 'store';
 
 export interface OpenNativeParams {
   version: string;
@@ -126,14 +131,14 @@ export function updateBridge(n: Native = native()): UpdateBridge | null {
       if (!isSemver(p.version)) throw new BridgeError('That update is not valid.', 'invalid');
       const params: Record<string, string> = { version: p.version };
       if (p.url && (releaseAsset(p.url) || releasePage(p.url))) params.url = p.url;
-      if (p.feed && releaseAsset(p.feed)) params.feed = p.feed;
+      if (p.feed && (releaseAsset(p.feed) || releaseFolder(p.feed))) params.feed = p.feed;
       if (p.sha256 && SHA.test(p.sha256)) params.sha256 = p.sha256;
       if (p.play && isPlayUrl(p.play)) params.play = p.play;
       if (p.testflight && isAppleUrl(p.testflight)) params.testflight = p.testflight;
       if (p.appStore && isAppleUrl(p.appStore)) params.appStore = p.appStore;
       const r = await n.call<Record<string, unknown>>('update.openNative', params, TIMEOUTS.update);
       const action = r?.action;
-      if (!['auto-update', 'opened', 'installer', 'permission', 'store'].includes(action as string)) throw new BridgeError('The app returned an unexpected answer.', 'invalid');
+      if (!['auto-update', 'restart', 'opened', 'installer', 'permission', 'store'].includes(action as string)) throw new BridgeError('The app returned an unexpected answer.', 'invalid');
       return { action: action as NativeAction };
     },
   };

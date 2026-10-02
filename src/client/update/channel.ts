@@ -104,6 +104,15 @@ export function releaseAsset(url: unknown): { tag: string | null; file: string }
   return null;
 }
 
+/**
+ * A release's download folder https://github.com/<repo>/releases/download/<tag> (a Squirrel.Windows feed: the updater
+ * reads <folder>/RELEASES and the .nupkg files next to it). Returns the tag or null.
+ */
+export function releaseFolder(url: unknown): string | null {
+  const parts = releasePath(url);
+  return parts && parts.length === 6 && parts[4] === 'download' && okSegment(parts[5]) ? parts[5] : null;
+}
+
 /** The release page https://github.com/<repo>/releases/tag/<tag>; returns the tag or null. */
 export function releasePage(url: unknown): string | null {
   const parts = releasePath(url);
@@ -161,9 +170,16 @@ function desktop(where: string, v: unknown): DesktopShell {
   if (!absent(r.auto) && typeof r.auto !== 'boolean') throw new ChannelError(`${where}.auto must be true or false`);
   const out: DesktopShell = { version: version(`${where}.version`, r.version), url: r.url as string, auto: r.auto === true };
   if (!absent(r.feed)) {
-    if (!isRec(r.feed)) throw new ChannelError(`${where}.feed must name a feed per architecture`);
+    // Per architecture ({arm64, x64}) or one feed for every architecture. Squirrel.Mac: a JSON feed asset.
+    // Squirrel.Windows: the release's download folder (or its RELEASES file).
+    const raw = typeof r.feed === 'string' ? { arm64: r.feed, x64: r.feed } : r.feed;
+    if (!isRec(raw)) throw new ChannelError(`${where}.feed must name a feed per architecture`);
     const feed: Partial<Record<DesktopArch, string>> = {};
-    for (const arch of ['arm64', 'x64'] as const) if (!absent(r.feed[arch])) feed[arch] = asset(`${where}.feed.${arch}`, r.feed[arch]);
+    for (const arch of ['arm64', 'x64'] as const) {
+      if (absent(raw[arch])) continue;
+      if (releaseFolder(raw[arch])) feed[arch] = raw[arch] as string;
+      else feed[arch] = asset(`${where}.feed.${arch}`, raw[arch]);
+    }
     out.feed = feed;
   }
   return out;

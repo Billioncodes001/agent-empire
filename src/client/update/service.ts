@@ -43,6 +43,8 @@ export interface UpdateState {
   serverVersion: string | null;
   coordinator: CoordinatorStatus | null;
   coordinatorBusy: boolean;
+  /** Native app update: 'working' while the shell downloads it, 'ready' when it can restart into it. */
+  nativeUpdate: 'idle' | 'working' | 'ready';
 }
 
 export interface ServiceDeps {
@@ -71,7 +73,7 @@ export class UpdateService {
       const saved = deps.storage?.get(CHANNEL_KEY);
       if (isChannel(saved)) channel = saved;
     } catch {}
-    this.state = { phase: 'idle', channel, info: null, game: builtGameVersion(), checkedAt: null, channelFile: null, offer: null, error: null, installed: null, serverVersion: null, coordinator: null, coordinatorBusy: false };
+    this.state = { phase: 'idle', channel, info: null, game: builtGameVersion(), checkedAt: null, channelFile: null, offer: null, error: null, installed: null, serverVersion: null, coordinator: null, coordinatorBusy: false, nativeUpdate: 'idle' };
   }
 
   /** True when this app can check at all (a shell, or an injected fetcher in tests and checks). */
@@ -193,11 +195,23 @@ export class UpdateService {
     await this.deps.bridge.activate();
   }
 
-  /** The native app update, through the platform's own path. */
+  /**
+   * The native app update, through the platform's own path. A self-updating desktop app answers 'auto-update' once
+   * the update is downloaded; the next call restarts into it ('restart').
+   */
   async openNative() {
     const n = this.state.offer?.native;
     if (!this.deps.bridge || !n) throw new Error('There is no app update.');
-    return this.deps.bridge.openNative(n.params);
+    if (this.state.nativeUpdate === 'working') throw new Error('The app update is still downloading.');
+    if (n.how === 'auto' && this.state.nativeUpdate !== 'ready') this.set({ nativeUpdate: 'working' });
+    try {
+      const r = await this.deps.bridge.openNative(n.params);
+      this.set({ nativeUpdate: r.action === 'auto-update' ? 'ready' : 'idle' });
+      return r;
+    } catch (error) {
+      this.set({ nativeUpdate: 'idle' });
+      throw error;
+    }
   }
 
   /** REL-05: the player confirmed. Commits the new coordinator to the state repository. */

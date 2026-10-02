@@ -49,6 +49,22 @@ test('desktop bridge: update.* parameters are validated before any handler runs'
   assert.ok(policy.compareSemver('1.0.0-beta.10', '1.0.0-beta.2') > 0 && policy.compareSemver('1.0.0', '1.0.0-rc.1') > 0);
 });
 
+test('desktop native updates: Squirrel events, Update.exe and feed options', () => {
+  assert.equal(updates.squirrelEvent(['app.exe', '--squirrel-install', '1.0.0']), 'install');
+  assert.equal(updates.squirrelEvent(['app.exe', '--squirrel-updated']), 'updated');
+  assert.equal(updates.squirrelEvent(['app.exe', '--squirrel-uninstall']), 'uninstall');
+  assert.equal(updates.squirrelEvent(['app.exe', '--squirrel-obsolete']), 'obsolete');
+  assert.equal(updates.squirrelEvent(['app.exe', '--squirrel-firstrun']), 'firstrun');
+  assert.equal(updates.squirrelEvent(['app.exe', '--squirrel-evil']), null);
+  assert.equal(updates.squirrelEvent(['app.exe']), null);
+  assert.equal(updates.squirrelUpdateExe(path.join(path.sep, 'Users', 'u', 'AppData', 'Local', 'AgentEmpire', 'app-1.0.0', 'Agent Empire.exe')), path.join(path.sep, 'Users', 'u', 'AppData', 'Local', 'AgentEmpire', 'Update.exe'));
+  const folder = `https://github.com/${policy.RELEASE_REPO}/releases/download/v1.0.1`;
+  assert.deepEqual(updates.autoUpdateFeed('win32', `${folder}/RELEASES`), { url: folder });
+  assert.deepEqual(updates.autoUpdateFeed('darwin', asset('1.0.1', 'desktop-update-darwin-arm64.json')), { url: asset('1.0.1', 'desktop-update-darwin-arm64.json'), serverType: 'json' });
+  assert.deepEqual(policy.parseRequest({ id: 'n1', method: 'update.openNative', params: { version: '1.0.1', url: `https://github.com/${policy.RELEASE_REPO}/releases/tag/v1.0.1`, feed: folder } }).params, { version: '1.0.1', url: `https://github.com/${policy.RELEASE_REPO}/releases/tag/v1.0.1`, feed: folder });
+  assert.ok(policy.parseRequest({ id: 'n2', method: 'update.openNative', params: { version: '1.0.1', url: 'https://github.com/evil/x/releases/tag/v1.0.1' } }).error);
+});
+
 test('zip: hostile archives are refused before anything is written (zip-slip)', () => {
   const hostile: [string, Buffer][] = [
     ['dot-dot', makeZip([{ name: 'index.html', data: 'x' }, { name: '../evil.txt', data: 'x' }])],

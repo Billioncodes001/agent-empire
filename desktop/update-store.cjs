@@ -348,4 +348,25 @@ function createBundleStore({ root, builtinRoot, now = Date.now }) {
   }
 }
 
-module.exports = { RELEASE_PUBLIC_KEY, DEV_RELEASE_PUBLIC_KEY, RELEASE_KEY_IS_DEVELOPMENT, BOOT_TIMEOUT_MS, MAX_TEXT_BYTES, safeEntryName, zipEntries, extractZip, download, fixtureMapper, createBundleStore, bundleVersion };
+/* ---------- native app updates (Electron autoUpdater) ---------- */
+
+/** Squirrel.Windows' Update.exe for an app installed with electron-winstaller: <install>/Update.exe, next to app-<v>/. */
+const squirrelUpdateExe = (execPath) => path.resolve(path.dirname(execPath), '..', 'Update.exe');
+
+/** The --squirrel-* event Squirrel.Windows started the app for, or null. */
+function squirrelEvent(argv) {
+  const flag = (Array.isArray(argv) ? argv : []).find((a) => typeof a === 'string' && a.startsWith('--squirrel-'));
+  const name = flag?.slice('--squirrel-'.length).split('=')[0];
+  return ['install', 'updated', 'uninstall', 'obsolete', 'firstrun'].includes(name) ? name : null;
+}
+
+/**
+ * autoUpdater.setFeedURL options for a channel feed: Squirrel.Mac reads a static JSON feed (serverType 'json');
+ * Squirrel.Windows reads <folder>/RELEASES, so a RELEASES file URL is given as its folder.
+ */
+function autoUpdateFeed(platform, feed) {
+  if (platform === 'darwin') return { url: feed, serverType: 'json' };
+  return { url: String(feed).replace(/\/RELEASES$/, '') };
+}
+
+module.exports = { squirrelUpdateExe, squirrelEvent, autoUpdateFeed, RELEASE_PUBLIC_KEY, DEV_RELEASE_PUBLIC_KEY, RELEASE_KEY_IS_DEVELOPMENT, BOOT_TIMEOUT_MS, MAX_TEXT_BYTES, safeEntryName, zipEntries, extractZip, download, fixtureMapper, createBundleStore, bundleVersion };
