@@ -6,7 +6,7 @@
  * removed) the task is HELD: it ends as `failed` with `error: 'dependency <id> did not finish'` and waits for the CEO to
  * retry or remove it. It is never run automatically.
  */
-import type { QueueTask } from './protocol.js';
+import type { QueueTask, WorkerInfo, WorkerTask } from './protocol.js';
 
 export const MAX_DEPENDENCIES = 8;
 const HELD = /^dependency (\S+) did not finish$/;
@@ -85,6 +85,17 @@ export function findCycle(graph: ReadonlyMap<string, readonly string[]>): string
     }
   }
   return undefined;
+}
+
+/**
+ * The task line on a worker's card. A worker whose worktree started from a dependency's branch says it
+ * continues “<dependency title>”; nothing is claimed for a worker that started from HEAD.
+ */
+export function workerTaskLine(w: Pick<WorkerInfo, 'task' | 'worktree'>): WorkerTask | undefined {
+  const title = w.worktree?.continues?.title;
+  if (!title) return w.task;
+  const line = `continues “${short(title)}”`;
+  return w.task ? { ...w.task, summary: `${line} · ${w.task.summary}` } : { name: short(title), summary: line };
 }
 
 const short = (title: string) => (title.length > 60 ? `${title.slice(0, 59)}…` : title);

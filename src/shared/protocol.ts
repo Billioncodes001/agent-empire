@@ -42,7 +42,11 @@ export interface WorkerInfo {
    * Set when the worker runs in its own git worktree (path relative to the office dir). `from` is
    * the branch the office was on when the worktree was cut, which its pull request targets.
    */
-  worktree?: { path: string; branch: string; base: string; from?: string };
+  worktree?: {
+    path: string; branch: string; base: string; from?: string;
+    /** LIFE-04: this worktree started from a finished dependency's branch, to continue that task. */
+    continues?: { branch: string; title: string };
+  };
   /** The pull request opened from this desk for the worktree branch (see 'worker.pr'). */
   pr?: { number: number; url: string };
   /** True while the branch is being pushed and its pull request opened. */

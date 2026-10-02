@@ -12,8 +12,15 @@ export interface QueueWorkers {
   list(): WorkerInfo[];
   workstationCapacity?(): number;
   deskOccupied(deskId: string): boolean;
-  /** `persona` keeps the same person on a project: the name and look of the worker that finished the dependency. */
-  spawn(deskId: string, by: string, prompt: string, worktree: boolean, kind?: 'agent', queueOwned?: boolean, outfit?: Outfit, persona?: Persona): WorkerInfo | string;
+  /**
+   * `continues` starts the worktree from the dependency's branch; only then does `persona` (the name and look of the
+   * worker that finished it) apply, because only then does the new worker really pick up that work.
+   */
+  spawn(deskId: string, by: string, prompt: string, worktree: boolean, kind?: 'agent', queueOwned?: boolean, outfit?: Outfit, persona?: Persona, continues?: { branch: string; title: string }): WorkerInfo | string;
+  /** True while the worker is publishing, opening a PR or stopping: it must not be sent home. */
+  workerBusy?(id: string): boolean;
+  /** Whether a local branch exists, to start a continuing worktree from it. */
+  branchExists?(branch: string): boolean;
   claimQueueWorker?(id: string): void;
   /** Resolves with a line about what became of the worker's worktree. */
   kill(id: string): Promise<{ note?: string; error?: string }>;
@@ -42,9 +49,10 @@ export interface Persona {
 interface Reservation {
   desk: string;
   workerId: string;
-  persona?: Persona;
-  outfit?: Outfit;
 }
+
+/** After a failed send-home, that worker is left alone this long (the pump timer retries; no toast storm). */
+export const SEND_HOME_BACKOFF_MS = 60_000;
 
 export const DEFAULT_MAX_WORKERS = 3;
 const MAX_TASKS = 100;
@@ -76,6 +84,8 @@ export class TaskQueue {
   private recycling = new Set<string>();
   /** Task id → the desk it continues at, kept while the desk's finished worker is sent home. In memory only. */
   private reserved = new Map<string, Reservation>();
+  /** Worker id → when its last send-home failed (in memory; see SEND_HOME_BACKOFF_MS). */
+  private sendHomeFailedAt = new Map<string, number>();
   private storageError?: string;
 
   constructor(
@@ -352,33 +362,48 @@ export class TaskQueue {
     return Number.isInteger(n) && n >= 1 && n <= this.capacity();
   }
 
-  /** A worker the queue hired whose task is finished and whom nobody is watching: safe to send home for its desk. */
+  /**
+   * A worker the queue hired whose task is finished and whom nobody is watching: safe to send home for its desk. Never
+   * one that is publishing, opening a PR or already stopping, nor one whose last send-home failed recently.
+   */
   private recyclable(w: WorkerInfo): boolean {
+    const failedAt = this.sendHomeFailedAt.get(w.id);
+    if (failedAt !== undefined && Date.now() - failedAt < SEND_HOME_BACKOFF_MS) return false;
     return FINISHED.has(w.status) && w.viewers.length === 0 && (w.processState === 'running' || w.processState === 'stopped') && !this.recycling.has(w.id)
-      && this.tasks.some((t) => t.status === 'done' && t.workerId === w.id);
-  }
-
-  /** Starts sending a finished queue worker home. Its desk frees once the process is confirmed stopped. */
-  private sendHome(w: WorkerInfo, onFailed?: () => void) {
-    this.recycling.add(w.id);
-    void this.workers.kill(w.id).then(({ note, error }) => {
-      this.recycling.delete(w.id);
-      if (note) this.events.toast(note, 'info');
-      if (error) {
-        this.events.toast(error, 'warn');
-        onFailed?.();
-      }
-    });
+      && !this.workers.workerBusy?.(w.id) && this.tasks.some((t) => t.status === 'done' && t.workerId === w.id);
   }
 
   /**
-   * LIFE-04 continuity: a task that unblocks continues at the desk of the worker that finished its dependency, as the
-   * same person (name, colour and attire), if that desk is free. When the desk is still held by that finished worker,
-   * the worker is sent home first and the desk is kept for this task ('wait'). Returns undefined to use any desk.
+   * Starts sending a finished queue worker home. Its desk frees once the process is confirmed stopped. A failure (an
+   * error result or a rejection) backs that worker off for SEND_HOME_BACKOFF_MS. Nothing here pumps: the pump timer
+   * retries, so a kill that fails without awaiting can never spin the event loop.
+   */
+  private sendHome(w: WorkerInfo, onFailed?: () => void) {
+    this.recycling.add(w.id);
+    let killing: Promise<{ note?: string; error?: string }>;
+    try { killing = this.workers.kill(w.id); } catch (error) { killing = Promise.reject(error); }
+    void killing
+      .then((r) => r ?? {}, (error: unknown) => ({ error: `Couldn't send ${w.name} home: ${(error as Error)?.message ?? String(error)}` } as { note?: string; error?: string }))
+      .then(({ note, error }) => {
+        this.recycling.delete(w.id);
+        if (note) this.events.toast(note, 'info');
+        if (!error) { this.sendHomeFailedAt.delete(w.id); return; }
+        this.sendHomeFailedAt.set(w.id, Date.now());
+        this.events.toast(error, 'warn');
+        onFailed?.();
+      });
+  }
+
+  /**
+   * LIFE-04 continuity: prefer the desk of the worker that finished the dependency, if that desk is free. When it isn't,
+   * any free funded desk is taken at once. Only when NO desk is free may that worker be sent home for its desk, and only
+   * if it is 'done' (never offline: that is a resumable session) and recyclable; the desk is then kept for this task
+   * ('wait'). Returns undefined to use any desk.
    */
   private continuity(t: QueueTask): Reservation | 'wait' | undefined {
     const kept = this.reserved.get(t.id);
     if (kept) {
+      if (!this.fundedDesk(kept.desk)) { this.reserved.delete(t.id); return undefined; }
       if (!this.workers.deskOccupied(kept.desk)) return kept;
       if (this.recycling.has(kept.workerId)) return 'wait';
       // The send-home failed or someone else sat down there: never hold a runnable task for it.
@@ -387,25 +412,54 @@ export class TaskQueue {
     }
     if (!t.dependsOn?.length) return undefined;
     const byId = new Map(this.workers.list().map((w) => [w.id, w]));
+    const candidates: { desk: string; w?: WorkerInfo }[] = [];
     for (const depId of t.dependsOn) {
       const dep = this.tasks.find((x) => x.id === depId);
       if (!dep || dep.status !== 'done' || dep.outcome !== 'done') continue;
       const w = dep.workerId ? byId.get(dep.workerId) : undefined;
       const desk = w?.deskId ?? dep.deskId;
       if (!desk || !this.fundedDesk(desk) || this.reservedForOther(desk, t.id)) continue;
-      const persona = w ? { name: w.name, color: w.color } : dep.workerName ? { name: dep.workerName } : undefined;
-      const plan: Reservation = { desk, workerId: w?.id ?? '', persona, outfit: w?.outfit };
-      if (!this.workers.deskOccupied(desk)) return plan;
-      if (w && w.deskId === desk && this.recyclable(w)) {
-        this.reserved.set(t.id, plan);
-        this.sendHome(w, () => {
-          this.reserved.delete(t.id);
-          this.pump();
-        });
-        return 'wait';
-      }
+      if (!this.workers.deskOccupied(desk)) return { desk, workerId: w?.id ?? '' };
+      candidates.push({ desk, w });
+    }
+    if (this.freeDesk(t.id)) return undefined;
+    for (const { desk, w } of candidates) {
+      if (!w || w.deskId !== desk || w.status !== 'done' || !this.recyclable(w)) continue;
+      this.reserved.set(t.id, { desk, workerId: w.id });
+      this.sendHome(w, () => this.reserved.delete(t.id));
+      return 'wait';
     }
     return undefined;
+  }
+
+  /** Drops reservations whose send-home has finished, so a paused or full queue never keeps a desk to itself. */
+  private releaseSettledReservations() {
+    for (const [id, r] of this.reserved) if (!this.recycling.has(r.workerId)) this.reserved.delete(id);
+  }
+
+  /**
+   * What the task continues: its finished dependencies. When the queue uses worktrees and a dependency's branch still
+   * exists, the new worktree starts from that branch, and only then is the predecessor's name and colour reused.
+   * The prompt gets one factual line either way.
+   */
+  private continuation(t: QueueTask): { note: string; base?: { branch: string; title: string }; persona?: Persona; outfit?: Outfit } | undefined {
+    const deps = (t.dependsOn ?? []).map((id) => this.tasks.find((x) => x.id === id)).filter((d): d is QueueTask => !!d && d.outcome === 'done');
+    if (!deps.length) return undefined;
+    const describe = (d: QueueTask) => `“${d.title}”${d.branch ? ` (branch ${d.branch}${d.pr ? `, PR ${d.pr.url}` : ''})` : d.pr ? ` (PR ${d.pr.url})` : ''}`;
+    const from = this.useWorktree ? deps.find((d) => d.branch && this.workers.branchExists?.(d.branch)) : undefined;
+    if (!from) {
+      const missing = this.useWorktree && deps.some((d) => d.branch) ? ' Its branch is no longer available, so your worktree starts from the project’s current HEAD.' : '';
+      return { note: `\n\nThis task follows ${deps.map(describe).join(', ')}.${missing}` };
+    }
+    const others = deps.filter((d) => d !== from);
+    const w = this.workers.list().find((x) => x.id === from.workerId);
+    const persona = w ? { name: w.name, color: w.color } : from.workerName ? { name: from.workerName } : undefined;
+    return {
+      note: `\n\nThis task continues ${describe(from)}: your worktree starts from that branch.${others.length ? ` It also follows ${others.map(describe).join(', ')}.` : ''}`,
+      base: { branch: from.branch!, title: from.title },
+      persona,
+      outfit: w?.outfit,
+    };
   }
 
   /**
@@ -477,24 +531,23 @@ export class TaskQueue {
       }
       // An unfinished dependency keeps the task queued; it never takes a desk or a worker slot. Later tasks still run.
       if (t.blockedBy?.length || dependencyState(t, this.tasks).kind !== 'ready') continue;
-      if (this.busy() >= this.maxWorkers) break;
+      if (this.busy() >= this.maxWorkers) { this.releaseSettledReservations(); break; }
       // A spent budget holds the queue instead of failing every task; the pump seats them once hiring resumes.
-      if (this.events.hiringPaused()) break;
+      if (this.events.hiringPaused()) { this.releaseSettledReservations(); break; }
       const next = this.continuity(t);
       if (next === 'wait') continue;
       const desk = next?.desk ?? this.freeDesk(t.id) ?? this.recycleDesk(t.id);
       if (!desk) break;
-      const persona = next?.desk === desk ? next.persona : undefined;
-      const outfit = next?.desk === desk ? next.outfit : undefined;
       this.reserved.delete(t.id);
+      const cont = this.continuation(t);
       // Journal the launch before entering WorkerManager. An interrupted unlinked launch is
       // unknown, never automatically queued again, even if the second file was never written.
       t.status = 'running';
       t.startedAt = Date.now();
       if (!this.changed()) break;
-      const prompt = t.prompt + (this.useWorktree ? WORKTREE_NOTE : '');
-      const r = persona
-        ? this.workers.spawn(desk, `${t.addedBy} (queue)`, prompt, this.useWorktree, 'agent', true, outfit, persona)
+      const prompt = t.prompt + (cont?.note ?? '') + (this.useWorktree ? WORKTREE_NOTE : '');
+      const r = cont?.base
+        ? this.workers.spawn(desk, `${t.addedBy} (queue)`, prompt, this.useWorktree, 'agent', true, cont.outfit, cont.persona, cont.base)
         : this.workers.spawn(desk, `${t.addedBy} (queue)`, prompt, this.useWorktree, 'agent', true);
       changed = true;
       if (typeof r === 'string') {
