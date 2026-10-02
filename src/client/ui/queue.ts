@@ -1,6 +1,7 @@
 import type { QueueTask } from '../../shared/protocol';
 import type { Net } from '../net';
 import { store } from '../state';
+import { autoFocus } from '../keyboard';
 import { h, openModal, timeAgo, STATUS_LABEL } from './dom';
 import { confirmDialog } from './prompt';
 
@@ -10,6 +11,7 @@ export interface QueueActions {
 
 /** The 📋 Queue button in the top bar: shows how many tasks are waiting or running. */
 export function mountQueueButton(btn: HTMLElement, onOpen: () => void) {
+  btn.setAttribute('aria-label', 'Task queue');
   const count = h('span.svc-count');
   btn.replaceChildren('📋 ', h('span', {}, 'Queue'), count);
   const render = () => {
@@ -85,6 +87,22 @@ export function openQueue(net: Net, actions: QueueActions) {
     }
   });
 
+  const noteLimit = h('b');
+  const list = h('div.queue-lists');
+  body.replaceChildren(
+    form,
+    h(
+      'p.note',
+      {},
+      'Or open the 📌 Issues board and click ',
+      h('b', {}, 'Add to queue'),
+      ' on an issue. Whenever a desk is free and fewer than ',
+      noteLimit,
+      ' workers are busy, the next task gets a fresh worker in its own git worktree. Issues are assigned on GitHub when they start, and the pull request is linked when it shows up.',
+    ),
+    list,
+  );
+
   const section = (title: string, tasks: QueueTask[], extra?: HTMLElement) => {
     if (!tasks.length) return null;
     return h('div', {}, h('h4', {}, title, h('span.count', {}, String(tasks.length)), extra ?? null), h('ul.queue-list', {}, ...tasks.map(row)));
@@ -142,31 +160,26 @@ export function openQueue(net: Net, actions: QueueActions) {
     const q = store.queue;
     limitValue.textContent = q.maxWorkers === 0 ? 'Paused' : String(q.maxWorkers);
     minus.toggleAttribute('disabled', q.maxWorkers <= 0);
+    plus.toggleAttribute('disabled', q.maxWorkers >= store.empire.office.workstations);
+    limit.title = `${store.empire.office.workstations} furnished workstations. Expand headquarters to employ more workers. 0 pauses the queue.`;
     const running = q.tasks.filter((t) => t.status === 'running');
     const queued = q.tasks.filter((t) => t.status === 'queued');
     const done = q.tasks.filter((t) => t.status === 'done').slice().reverse();
+    noteLimit.textContent = String(q.maxWorkers);
     const parts: (HTMLElement | null)[] = [
-      form,
-      h(
-        'p.note',
-        {},
-        'Or open the 📌 Issues board and click ',
-        h('b', {}, 'Add to queue'),
-        ' on an issue. Whenever a desk is free and fewer than ',
-        h('b', {}, q.maxWorkers === 0 ? '0' : String(q.maxWorkers)),
-        ' workers are busy, the next task gets a fresh worker in its own git worktree. Issues are assigned on GitHub when they start, and the pull request is linked when it shows up.',
-      ),
       section('🤖 Working on it', running),
       section('⏳ Up next', queued),
       section('✅ Finished', done, h('button.btn', { type: 'button', onclick: () => net.send({ t: 'queue.clear' }) }, 'Clear')),
       running.length + queued.length + done.length ? null : h('div.queue-empty', {}, 'Nothing on the queue yet.'),
     ];
-    body.replaceChildren(...parts.filter((n): n is HTMLElement => n !== null));
+    // Only the list is rebuilt, so the task box keeps its focus and text while events stream in.
+    list.replaceChildren(...parts.filter((n): n is HTMLElement => n !== null));
   };
 
-  const unsubs = [store.on('queue', render), store.on('workers', render), store.on('issues', render)];
+  const unsubs = [store.on('empire', render), store.on('queue', render), store.on('workers', render), store.on('issues', render)];
   const tick = setInterval(render, 30_000);
   const modal = openModal(el, {
+    dirty: () => ta.value.trim() !== '',
     onClose: () => {
       unsubs.forEach((u) => u());
       clearInterval(tick);
@@ -174,5 +187,5 @@ export function openQueue(net: Net, actions: QueueActions) {
   });
   close.addEventListener('click', () => modal.close());
   render();
-  setTimeout(() => ta.focus(), 30);
+  setTimeout(() => autoFocus(ta, el), 30);
 }

@@ -1,3 +1,6 @@
+import { Drivetrain, vehicleOverlaps } from './vehicle';
+import { DEFAULT_KEYS, type KeyBindings, type Action } from './controls';
+import { CITY } from '../shared/empire';
 import * as THREE from 'three';
 import { FLOOR } from '../shared/layout';
 import type { ViewMode } from './state';
@@ -8,12 +11,12 @@ const RADIUS = 0.32;
 const HEIGHT = 1.7;
 /** The tallest ledge you walk up (or down) without jumping, like a stair. */
 const STEP = 0.3;
-const WALK = 4.6;
-const RUN = 7.5;
+const WALK = 1.65;
+const RUN = 4.3;
 const JUMP_V = 6.4;
 const GRAVITY = 18;
 /** Camera height above your feet in first person (the Person's eyes). */
-export const EYE_HEIGHT = 1.4;
+export const EYE_HEIGHT = 1.66;
 const LOOK_SPEED = 0.0022; // radians per pixel of mouse movement while the pointer is locked
 const DRAG_LOOK_SPEED = 0.005;
 const CENTER = new THREE.Vector2(0, 0);
@@ -23,13 +26,15 @@ export class PlayerController {
   vy = 0;
   facing = Math.PI;
   moving = false;
+  speed = 0;
+  scripted = false;
   grounded = true;
   /** Heading of the camera. You look along (-sin, -cos) of it on the XZ plane. */
   camYaw = Math.PI * 0.15;
-  camPitch = 0.42;
-  camDist = 7.5;
+  camPitch = 0.16;
+  camDist = 4.6;
   /** First-person look up (+) / down (-). */
-  lookPitch = -0.08;
+  lookPitch = -0.02;
   view: ViewMode = 'first';
   /** Walk cycle phase, shared by the camera bob and the first-person hands. */
   walkPhase = 0;
@@ -42,12 +47,24 @@ export class PlayerController {
    */
   onClick: ((ndc: THREE.Vector2) => void) | null = null;
   private keys = new Set<string>();
-  private drag: { x: number; y: number; moved: number } | null = null;
+  private drag: { x: number; y: number; moved: number; id?: number } | null = null;
   /** Set when this browser won't lock the pointer; first person falls back to drag-to-look. */
   private lockFailed = false;
   private lockPending = false;
   private everLocked = false;
   enabled = true;
+  bindings: KeyBindings = { ...DEFAULT_KEYS };
+  driving = false;
+  readonly vehicle = new Drivetrain();
+  private walkVelocity = new THREE.Vector2();
+  // Hold the input basis through automatic camera recentering. Otherwise a held
+  // sideways arrow continuously steers itself into a circle as the camera turns.
+  private moveYaw = 0;
+  private moveChord = '';
+  /** Keep finishing a deliberate turn even when a brief key press has ended. */
+  private turnTarget: number | null = null;
+  private orbitGrace = 0;
+  private followPending = false;
 
   constructor(
     private camera: THREE.PerspectiveCamera,
@@ -56,12 +73,12 @@ export class PlayerController {
   ) {
     camera.rotation.order = 'YXZ';
     window.addEventListener('keydown', (e) => {
-      if (!this.enabled || isTyping(e)) return;
+      if (!this.enabled || isTyping(e) || e.metaKey || e.ctrlKey || e.altKey) return;
       this.keys.add(e.code);
-      if (e.code === 'Space') e.preventDefault();
+      if (Object.values(this.bindings).includes(e.code)) e.preventDefault();
     });
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
-    window.addEventListener('blur', () => this.keys.clear());
+    window.addEventListener('blur', () => this.clearKeys());
 
     dom.addEventListener('pointerdown', (e) => {
       if (!this.enabled) return;
@@ -73,10 +90,12 @@ export class PlayerController {
         this.lock();
       }
       // Drag to orbit (third person) or to look around (first person without pointer lock).
-      this.drag = { x: e.clientX, y: e.clientY, moved: 0 };
+      // Track one pointer: a second finger (e.g. on the touch joystick) must not steer the camera.
+      this.drag = { x: e.clientX, y: e.clientY, moved: 0, id: e.pointerId };
     });
     window.addEventListener('pointerup', (e) => {
       const d = this.drag;
+      if (d && d.id !== e.pointerId) return;
       this.drag = null;
       // A click that captured the mouse is not also a click on the world.
       if (!d || d.moved > 5 || !this.enabled || this.locked || this.lockPending || e.target !== dom) return;
@@ -87,13 +106,14 @@ export class PlayerController {
       }
     });
     window.addEventListener('pointermove', (e) => {
+      if (!this.enabled) return;
       if (this.locked) {
         // Some platforms report a bogus huge jump right after locking.
         const clamp = (v: number) => THREE.MathUtils.clamp(v, -250, 250);
         this.look(clamp(e.movementX) * LOOK_SPEED, clamp(e.movementY) * LOOK_SPEED);
         return;
       }
-      if (!this.drag) return;
+      if (!this.drag || this.drag.id !== e.pointerId) return;
       const dx = e.clientX - this.drag.x;
       const dy = e.clientY - this.drag.y;
       this.drag.x = e.clientX;
@@ -101,7 +121,11 @@ export class PlayerController {
       this.drag.moved += Math.abs(dx) + Math.abs(dy);
       if (this.view === 'first') this.look(dx * DRAG_LOOK_SPEED, dy * DRAG_LOOK_SPEED);
       else {
-        this.camYaw -= dx * 0.006;
+        const turn = -dx * 0.006;
+        this.camYaw += turn;
+        this.moveYaw += turn;
+        this.orbitGrace = 1.2;
+        this.followPending = false;
         this.camPitch = THREE.MathUtils.clamp(this.camPitch + dy * 0.004, 0.05, 1.3);
       }
     });
@@ -125,7 +149,7 @@ export class PlayerController {
     dom.addEventListener(
       'wheel',
       (e) => {
-        if (this.view === 'third') this.camDist = THREE.MathUtils.clamp(this.camDist + e.deltaY * 0.01, 2.5, 16);
+        if (this.enabled && this.view === 'third') this.camDist = THREE.MathUtils.clamp(this.camDist + e.deltaY * 0.01, 2.5, 125);
         e.preventDefault();
       },
       { passive: false },
@@ -144,14 +168,16 @@ export class PlayerController {
   setView(view: ViewMode) {
     if (view === this.view) return;
     if (view === 'first') {
-      this.lookPitch = -0.08;
-      this.facing = this.camYaw + Math.PI;
+      this.lookPitch = -0.02;
+      // Enter eye/cockpit view facing forward; changing view never steers a car.
+      this.camYaw = this.facing - Math.PI;
     } else {
       // Start the orbit camera behind where you were looking.
       this.camYaw = this.facing - Math.PI;
       this.unlock();
     }
     this.view = view;
+    this.orbitGrace = 0;
     this.updateCamera(true);
   }
 
@@ -159,8 +185,20 @@ export class PlayerController {
     if (this.locked) document.exitPointerLock();
   }
 
+  setAction(action: Action, pressed: boolean) {
+    if (pressed && this.enabled) this.keys.add(this.bindings[action]);
+    else this.keys.delete(this.bindings[action]);
+  }
+
+  get drivingSpeed() { return this.vehicle.speed; }
+
   clearKeys() {
     this.keys.clear();
+    this.walkVelocity.set(0, 0);
+    this.moveChord = '';
+    this.turnTarget = null;
+    this.followPending = false;
+    this.drag = null;
   }
 
   /** Captures the mouse for looking around, as the first click on the scene does. */
@@ -186,44 +224,100 @@ export class PlayerController {
 
   private look(dx: number, dy: number) {
     this.camYaw -= dx;
+    // Only deliberate mouse input changes the held movement basis. Automatic
+    // following must not turn a held left/right key into an endless circle.
+    this.moveYaw -= dx;
+    if (!this.driving) {
+      if (this.moveChord && this.turnTarget !== null) {
+        this.turnTarget -= dx;
+        this.facing -= dx;
+      } else {
+        this.turnTarget = null;
+        this.facing = this.camYaw + Math.PI;
+      }
+    }
     this.lookPitch = THREE.MathUtils.clamp(this.lookPitch - dy, -1.45, 1.45);
   }
 
   update(dt: number) {
     dt = Math.min(dt, 0.05);
+    if (dt <= 0) { this.updateCamera(false, 0); return; }
+    this.orbitGrace = Math.max(0, this.orbitGrace - dt);
+    if (this.scripted) { this.updateCamera(false, dt); return; }
+    const before = this.pos.clone();
     const k = this.keys;
     let ix = 0;
     let iz = 0;
     if (this.enabled) {
-      if (k.has('KeyW') || k.has('ArrowUp')) iz -= 1;
-      if (k.has('KeyS') || k.has('ArrowDown')) iz += 1;
-      if (k.has('KeyA') || k.has('ArrowLeft')) ix -= 1;
-      if (k.has('KeyD') || k.has('ArrowRight')) ix += 1;
+      if (k.has(this.bindings.forward)) iz -= 1;
+      if (k.has(this.bindings.backward)) iz += 1;
+      if (k.has(this.bindings.left)) ix -= 1;
+      if (k.has(this.bindings.right)) ix += 1;
     }
     this.moving = ix !== 0 || iz !== 0;
-    if (this.view === 'first') this.facing = Math.atan2(Math.sin(this.camYaw + Math.PI), Math.cos(this.camYaw + Math.PI));
-    if (this.moving) {
-      const len = Math.hypot(ix, iz);
-      ix /= len;
-      iz /= len;
-      // Camera-relative: "forward" is where the camera looks.
-      const sin = Math.sin(this.camYaw);
-      const cos = Math.cos(this.camYaw);
-      const dx = ix * cos + iz * sin;
-      const dz = -ix * sin + iz * cos;
-      const speed = k.has('ShiftLeft') || k.has('ShiftRight') ? RUN : WALK;
-      this.tryMove(this.pos.x + dx * speed * dt, this.pos.z);
-      this.tryMove(this.pos.x, this.pos.z + dz * speed * dt);
-      if (this.view === 'third') {
-        const want = Math.atan2(dx, dz);
-        let diff = want - this.facing;
-        diff = Math.atan2(Math.sin(diff), Math.cos(diff));
-        this.facing += diff * Math.min(1, dt * 14);
+    if (this.driving) {
+      const turn = this.vehicle.update(dt, -iz, ix, k.has(this.bindings.run), this.enabled);
+      this.facing += turn;
+      const blockedTurn = !!this.blocker(this.pos.x, this.pos.z, this.pos.y);
+      if (blockedTurn) this.facing -= turn;
+      if (this.view === 'first' && !blockedTurn) this.camYaw += turn;
+      const oldX=this.pos.x, oldZ=this.pos.z;
+      this.tryMove(oldX + Math.sin(this.facing)*this.vehicle.speed*dt, oldZ);
+      this.tryMove(this.pos.x, oldZ + Math.cos(this.facing)*this.vehicle.speed*dt);
+      const distance = Math.hypot(this.pos.x-oldX,this.pos.z-oldZ);
+      if (distance < .000001) this.vehicle.speed = 0;
+      else this.vehicle.speed = Math.sign(this.vehicle.speed) * Math.min(Math.abs(this.vehicle.speed), distance / Math.max(dt, .001));
+      this.moving = Math.abs(this.vehicle.speed)>.1;
+      const desired = this.facing - Math.PI;
+      if(this.view==='third' && !this.drag && this.orbitGrace === 0 && this.camDist < 20) this.followHeading(desired, dt);
+    } else this.vehicle.stop();
+    if (!this.driving) {
+      const input = this.moving;
+      const chord = `${ix},${iz}`;
+      if (!input) this.moveChord = '';
+      else if (chord !== this.moveChord) {
+        this.moveYaw = this.camYaw;
+        this.moveChord = chord;
+      }
+      const len = Math.hypot(ix, iz) || 1;
+      ix /= len; iz /= len;
+      const yaw = this.moveYaw;
+      const sin = Math.sin(yaw), cos = Math.cos(yaw);
+      const dx = ix * cos + iz * sin, dz = -ix * sin + iz * cos;
+      if (input) this.turnTarget = Math.atan2(dx, dz);
+      let alignment = 1;
+      if (this.turnTarget !== null && this.enabled) {
+        const diff = Math.atan2(Math.sin(this.turnTarget - this.facing), Math.cos(this.turnTarget - this.facing));
+        this.facing += diff * (1 - Math.exp(-dt * 14));
+        // Lead the step with the body turn instead of sliding sideways while
+        // the model still faces forward. This also softens a running reversal.
+        alignment = Math.max(0, Math.cos(this.turnTarget - this.facing));
+        this.followPending = true;
+        if (!input && Math.abs(diff) < .001) {
+          this.facing = this.turnTarget;
+          this.turnTarget = null;
+        }
+      }
+      const speed = k.has(this.bindings.run) ? RUN : WALK;
+      // Acceleration, braking and turns preserve stride continuity instead of snapping to full speed.
+      const response = input ? 7 : 12;
+      this.walkVelocity.x = THREE.MathUtils.damp(this.walkVelocity.x, dx * speed * alignment, response, dt);
+      this.walkVelocity.y = THREE.MathUtils.damp(this.walkVelocity.y, dz * speed * alignment, response, dt);
+      if (!this.enabled || this.walkVelocity.lengthSq() < .0004) this.walkVelocity.set(0, 0);
+      this.tryMove(this.pos.x + this.walkVelocity.x * dt, this.pos.z);
+      this.tryMove(this.pos.x, this.pos.z + this.walkVelocity.y * dt);
+      if (this.view === 'first' && this.followPending) {
+        this.camYaw = this.facing - Math.PI;
+        this.followPending = false;
+      } else if (this.view === 'third') {
+        if (this.followPending && !this.drag && this.orbitGrace === 0 && this.camDist < 20) {
+          this.followHeading(this.facing - Math.PI, dt);
+        }
       }
     }
 
     const ground = groundAt(this.colliders, this.pos.x, this.pos.z, this.pos.y);
-    const jump = this.enabled && k.has('Space') && this.grounded;
+    const jump = this.enabled && k.has(this.bindings.jump) && !this.driving && this.grounded;
     if (jump) {
       this.vy = JUMP_V;
       this.grounded = false;
@@ -247,35 +341,63 @@ export class PlayerController {
       this.vy = Math.min(this.vy, 0);
     }
     this.stepOffset *= Math.exp(-dt * 16);
-    const walking = this.moving && this.grounded;
-    this.walkPhase += dt * (walking ? (k.has('ShiftLeft') || k.has('ShiftRight') ? 14 : 11) : 0);
+    this.speed = Math.hypot(this.pos.x-before.x,this.pos.z-before.z)/Math.max(dt,.001);
+    this.moving = this.speed > .04;
+    const walking = this.moving && this.grounded && !this.driving;
+    this.walkPhase += walking ? dt*this.speed*Math.PI*2/(this.speed>2.5?2.9:1.55) : 0;
     const bob = walking ? Math.abs(Math.sin(this.walkPhase)) * 0.035 : 0;
     this.bob += (bob - this.bob) * Math.min(1, dt * 18);
-    this.updateCamera();
+    this.updateCamera(false, dt);
   }
 
-  updateCamera(snap = false) {
+  private followHeading(yaw: number, dt: number) {
+    const delta = Math.atan2(Math.sin(yaw - this.camYaw), Math.cos(yaw - this.camYaw));
+    this.camYaw += delta * (1 - Math.exp(-dt * 3));
+    this.followPending = Math.abs(delta) > .001;
+  }
+
+  updateCamera(snap = false, dt = 1 / 60) {
     if (this.view === 'first') {
-      this.camera.position.set(this.pos.x, this.pos.y + EYE_HEIGHT + this.bob + this.stepOffset, this.pos.z);
+      const eye=this.driving?new THREE.Vector3(-.43,1.24,.05).applyAxisAngle(new THREE.Vector3(0,1,0),this.facing):new THREE.Vector3(0,EYE_HEIGHT+this.bob+this.stepOffset,0);
+      this.camera.position.copy(this.pos).add(eye);
       this.camera.rotation.set(this.lookPitch, this.camYaw, 0);
       return;
     }
     const target = new THREE.Vector3(this.pos.x, this.pos.y + this.stepOffset + 1.3, this.pos.z);
+    const pitch = Math.max(this.camPitch, THREE.MathUtils.smoothstep(this.camDist,14,60)*.88);
     const off = new THREE.Vector3(
-      Math.sin(this.camYaw) * Math.cos(this.camPitch),
-      Math.sin(this.camPitch),
-      Math.cos(this.camYaw) * Math.cos(this.camPitch),
+      Math.sin(this.camYaw) * Math.cos(pitch),
+      Math.sin(pitch),
+      Math.cos(this.camYaw) * Math.cos(pitch),
     ).multiplyScalar(this.camDist);
     const cam = target.clone().add(off);
     // Keep the camera inside the room so walls never block the view, and under the loft or its roof.
     const m = 0.4;
-    cam.x = THREE.MathUtils.clamp(cam.x, FLOOR.minX + m, FLOOR.maxX - m);
-    cam.z = THREE.MathUtils.clamp(cam.z, FLOOR.minZ + m, FLOOR.maxZ - m);
+    const bounds = this.pos.z >= CITY.minZ ? CITY : FLOOR;
+    cam.x = THREE.MathUtils.clamp(cam.x, bounds.minX + m - (bounds === CITY ? 35 : 0), bounds.maxX - m + (bounds === CITY ? 35 : 0));
+    cam.z = THREE.MathUtils.clamp(cam.z, bounds.minZ + m - (bounds === CITY ? 35 : 0), bounds.maxZ - m + (bounds === CITY ? 35 : 0));
     const floorY = groundAt(this.colliders, this.pos.x, this.pos.z, this.pos.y);
     const roof = ceilingAt(this.colliders, cam.x, cam.z, floorY) - 0.3;
-    cam.y = THREE.MathUtils.clamp(cam.y, floorY + 0.6, Math.max(floorY + 0.6, Math.min(floorY + 3.5, roof)));
-    if (snap) this.camera.position.copy(cam);
-    else this.camera.position.lerp(cam, 0.25);
+    cam.y = THREE.MathUtils.clamp(cam.y, floorY + 0.6, Math.max(floorY + 0.6, Math.min(floorY + (this.pos.z >= CITY.minZ ? 110 : 3.5), roof)));
+    // Ease first, then resolve occlusion on the actual rendered position. Easing
+    // an already-clipped target can otherwise leave the camera behind a wall.
+    if (!snap) cam.lerpVectors(this.camera.position, cam, 1 - Math.exp(-dt * 17.26));
+    // Pull the shoulder camera forward before it crosses any solid building/furniture face.
+    // An explicit district overview (>20m) is intentionally free of street-level occlusion.
+    if (this.camDist < 20) {
+      const direction = cam.clone().sub(target).normalize();
+      const ray = new THREE.Ray(target, direction);
+      let distance = cam.distanceTo(target);
+      for (const c of this.colliders) {
+        if (c.top <= (c.bottom ?? 0)) continue;
+        const bounds = new THREE.Box3(new THREE.Vector3(c.minX-.12,c.bottom??0,c.minZ-.12),new THREE.Vector3(c.maxX+.12,c.top,c.maxZ+.12));
+        if (bounds.containsPoint(target)) continue;
+        const hit=ray.intersectBox(bounds,new THREE.Vector3());
+        if(hit)distance=Math.min(distance,Math.max(.35,hit.distanceTo(target)-.18));
+      }
+      cam.copy(target).addScaledVector(direction,distance);
+    }
+    this.camera.position.copy(cam);
     this.camera.lookAt(target);
   }
 
@@ -290,13 +412,18 @@ export class PlayerController {
     for (const c of this.colliders) {
       // Stood on top of it, or passing beneath it.
       if (y >= c.top - 0.05 || y + HEIGHT <= (c.bottom ?? 0)) continue;
-      if (!touches(c, x, z, RADIUS)) continue;
+      if (!(this.driving ? vehicleOverlaps(x, z, this.facing, c) : touches(c, x, z, RADIUS))) continue;
       if (!hit || c.top > hit.top) hit = c;
     }
     return hit;
   }
 
   private tryMove(x: number, z: number) {
+    const bounds = this.pos.z >= CITY.minZ ? CITY : FLOOR;
+    const halfX = this.driving ? Math.abs(Math.cos(this.facing)) * 1.07 + Math.abs(Math.sin(this.facing)) * 2.36 : RADIUS;
+    const halfZ = this.driving ? Math.abs(Math.sin(this.facing)) * 1.07 + Math.abs(Math.cos(this.facing)) * 2.36 : RADIUS;
+    x = THREE.MathUtils.clamp(x, bounds.minX + halfX, bounds.maxX - halfX);
+    z = THREE.MathUtils.clamp(z, bounds.minZ + halfZ, bounds.maxZ - halfZ);
     const hit = this.blocker(x, z, this.pos.y);
     if (!hit) {
       this.pos.x = x;
@@ -304,6 +431,7 @@ export class PlayerController {
       return;
     }
     // A stair: step up onto it if there's room there.
+    if (this.driving) return;
     const up = hit.top - this.pos.y;
     if (!this.grounded || up > STEP || this.blocker(x, z, hit.top) || this.pos.y + HEIGHT + up > ceilingAt(this.colliders, x, z, this.pos.y)) return;
     this.pos.set(x, hit.top, z);
@@ -343,5 +471,5 @@ export function isTyping(e?: Event): boolean {
   const el = (e?.target as HTMLElement | null) ?? (document.activeElement as HTMLElement | null);
   if (!el) return false;
   const tag = el.tagName;
-  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable || !!el.closest?.('.xterm');
+  return tag === 'BUTTON' || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable || !!el.closest?.('.xterm');
 }

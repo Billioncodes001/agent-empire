@@ -1,9 +1,15 @@
+import { DEFAULT_KEYS, sanitizeKeys, type KeyBindings } from './controls';
+import { initialEmpire } from '../shared/empire';
+import { cloudEvidence, evidence } from './ui/status';
+import type { CloudInfo } from './cloud/types';
+import { parseContinuity } from './ui/continuity';
+import type { ContinuityStatus } from '../shared/continuity';
 import type { ChatLine, GhIssue, GhPull, GhState, PeerInfo, ProjectInfo, QueueState, QueueTask, ServerMsg, ServicesState, TeamState, UpgradeState, Usage, UsageState, WorkerInfo } from '../shared/protocol';
 import type { ScreenState } from './world/laptop';
 import { randomLook, sanitizeLook, type Look } from '../shared/avatar';
 import type { Decoration } from '../shared/decor';
 
-type Topic = 'peers' | 'workers' | 'issues' | 'pulls' | 'chat' | 'project' | 'screens' | 'team' | 'upgrade' | 'services' | 'decor' | 'usage' | 'queue';
+type Topic = 'cloud' | 'empire' | 'peers' | 'workers' | 'issues' | 'pulls' | 'chat' | 'project' | 'screens' | 'team' | 'upgrade' | 'services' | 'decor' | 'usage' | 'queue' | 'connection' | 'freshness' | 'continuity';
 
 const zeroUsage = (): Usage => ({ input: 0, output: 0, cacheWrite: 0, cacheRead: 0, cost: 0, calls: 0 });
 
@@ -37,9 +43,13 @@ export function saveProfile(p: Profile) {
   }
 }
 
+import { sanitizeQuality, type GraphicsQuality } from './graphics';
+
 export type ViewMode = 'first' | 'third';
 
 export interface Settings {
+  quality: GraphicsQuality;
+  keys: KeyBindings;
   view: ViewMode;
   /** Office sounds, 0–1. */
   volume: number;
@@ -49,9 +59,11 @@ export interface Settings {
 const SETTINGS_KEY = 'agent-office.settings';
 
 export function loadSettings(): Settings {
-  const s: Settings = { view: 'first', volume: 0.7, muted: false };
+  const s: Settings = { quality: 'medium', view: 'third', volume: 0.7, muted: false, keys: { ...DEFAULT_KEYS } };
   try {
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? 'null');
+    s.keys = sanitizeKeys(saved?.keys);
+    s.quality = sanitizeQuality(saved?.quality);
     if (saved?.view === 'first' || saved?.view === 'third') s.view = saved.view;
     if (typeof saved?.volume === 'number' && Number.isFinite(saved.volume)) s.volume = Math.max(0, Math.min(1, saved.volume));
     if (typeof saved?.muted === 'boolean') s.muted = saved.muted;
@@ -76,6 +88,17 @@ export function workerForPull(workers: Iterable<WorkerInfo>, pr: { number: numbe
 }
 
 class Store {
+  empire = initialEmpire();
+  /** performance.now() when the last empire message arrived; 0 before the first. */
+  empireReceivedAt = 0;
+  connected = false;
+  /** navigator.onLine: false means this device has no network, not that the host is down. */
+  online = typeof navigator === 'undefined' ? true : navigator.onLine;
+  continuity: ContinuityStatus | null = null;
+  /** performance.now() when the last continuity status arrived; 0 before the first. */
+  continuityReceivedAt = 0;
+  /** performance.now() when the current socket opened; earlier reports belong to a previous connection. */
+  connectedAt = 0;
   you = '';
   profile: Profile = { name: 'Guest', color: AVATAR_COLORS[1], look: randomLook() };
   peers = new Map<string, PeerInfo>();
@@ -95,6 +118,8 @@ class Store {
   decor: Decoration[] = [];
   usage: UsageState = { total: zeroUsage(), today: zeroUsage(), day: '', pauseHiring: false };
   queue: QueueState = { tasks: [], maxWorkers: 0 };
+  /** Cloud mode only: the state-repository snapshot this game is showing, with its age. Null in server mode. */
+  cloud: CloudInfo | null = null;
   private subs = new Map<Topic, Set<() => void>>();
 
   on(topic: Topic, fn: () => void) {
@@ -106,6 +131,52 @@ class Store {
 
   emit(topic: Topic) {
     this.subs.get(topic)?.forEach((fn) => fn());
+  }
+
+  setConnected(up: boolean) {
+    if (this.connected === up) return;
+    this.connected = up;
+    if (up) this.connectedAt = performance.now();
+    // A new socket must receive its own snapshot before cached evidence becomes live again.
+    if (!up) this.empireReceivedAt = 0;
+    this.emit('connection');
+    this.checkFreshness();
+  }
+
+  setCloud(info: CloudInfo) {
+    this.cloud = info;
+    this.emit('cloud');
+    this.checkFreshness();
+  }
+
+  evidence(now = performance.now()) {
+    // Cloud mode: everything comes from a committed snapshot, so nothing is ever "fresh" (live).
+    if (this.cloud) return cloudEvidence(this.cloud.snapshot?.state.heartbeat.lastRunAt ?? this.cloud.snapshot?.state.meta.createdAt, Date.now());
+    return evidence(this.empire.supervision, this.connected, this.empireReceivedAt, now, this.connectedAt > 0);
+  }
+
+  setOnline(online: boolean) {
+    if (this.online === online) return;
+    this.online = online;
+    this.emit('connection');
+  }
+
+  /** Takes a status from the socket or /api/continuity/status; malformed input is ignored. */
+  setContinuity(value: unknown) {
+    const status = parseContinuity(value);
+    if (!status) return;
+    this.continuity = status;
+    this.continuityReceivedAt = performance.now();
+    this.emit('continuity');
+  }
+
+  private wasFresh = false;
+  /** Emits 'freshness' when evidence becomes fresh or goes stale; call periodically, since staleness arrives without a message. */
+  checkFreshness() {
+    const fresh = this.evidence().fresh;
+    if (fresh === this.wasFresh) return;
+    this.wasFresh = fresh;
+    this.emit('freshness');
   }
 
   workerAtDesk(deskId: string): WorkerInfo | undefined {
@@ -121,6 +192,15 @@ class Store {
 
   apply(msg: ServerMsg) {
     switch (msg.t) {
+      case 'continuity.status':
+        this.setContinuity(msg.status);
+        break;
+      case 'empire':
+        this.empire = msg.state;
+        this.empireReceivedAt = performance.now();
+        this.emit('empire');
+        this.checkFreshness();
+        break;
       case 'welcome':
         this.you = msg.you;
         this.peers = new Map(msg.peers.map((p) => [p.id, p]));

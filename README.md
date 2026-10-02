@@ -1,302 +1,65 @@
-# 🏢 Agent Office
+# Agent Empire
 
-A cartoon 3D office your team walks around in together. Sit a Claude Code worker at any empty desk, watch its terminal on the laptop in front of it, and jump into that terminal with everyone else. Issues and pull requests hang on cork boards on the wall. You can talk over voice and put your screen on the lounge TV.
+An agent-powered office inside a growing simulated city. The CEO can visit home, drive around the founding district, develop service buildings, and delegate monitoring to a chief of staff while actual coding agents work in the original office.
 
-Everything is scoped to **one directory on the machine that runs it**: every worker, terminal and board works in that project.
+This is the **first playable web prototype**, derived from [Agent Office](https://github.com/AgentSystemLabs/agent-office). It preserves its terminals, agent hooks, Git worktrees, task queue, GitHub boards, voice, and usage tracking. The unmodified upstream source is preserved on `main` before the first development branch.
 
-```
-cd ~/code/my-project
-agent-office
-```
+## Run locally
 
-## What's inside
+Requires Node 20+, git, and Chrome/Safari/Firefox with WebGL. Actual agents require Claude Code (or the configured agent command) installed and authenticated. GitHub features require `gh auth login`.
 
-- **Walk around.** Use WASD, Space to jump, and drag the mouse to orbit the camera. Everyone in the office sees everyone else move in real time.
-- **Boss office.** Stairs along the back wall climb to a glass-walled office on the loft in the corner. From up there you can look down over every desk and watch your workers go.
-- **Pick your character.** The first time you join, a character select screen lets you choose your skin tone, hair style, hair color and shirt, with a spinning preview. Change it any time from **⚙️** or by clicking your name under *In the office*.
-- **Hire workers.** Walk up to an empty desk and press **E** to seat a fresh Claude Code session, or press **P** to write a task first. A little worker sits down, a laptop opens, and Claude's live screen appears on it.
-- **Shared shells.** Press **B** at an empty desk to open a plain login shell for dev servers, git or tests. It's shared the same way as a Claude terminal.
-- **Isolated branches.** When you hire with a task, you can tick *own git worktree*. The worker then gets its own `office/<name>` branch under `.agent-office/worktrees/`, so parallel workers never share a checkout. When you send that worker home you choose whether to keep the worktree and branch, delete the worktree, or delete both, and the office warns you first about uncommitted changes or commits no remote has. `agent-office prune` clears out whatever was kept, once it is safe.
-- **One-click PRs.** When a worktree worker is done, press **O** at its desk. The office pushes the branch and opens a pull request with a title and body drafted from the task (work handed over from the issues board gets a `Closes #n`). The PR shows up on the PR board right away, tagged with the worker's desk, and **Go to desk** takes you there. Press **O** again to see the PR.
-- **Shared terminals.** Press **E** at an occupied desk to open the real terminal (a PTY, over WebSockets). Several people can type into the same session at once, and anyone who joins late gets the full scrollback.
-- **Changes at the desk.** Press **C** at an occupied desk (or click **🌿 Changes** in its terminal) to see what the worker changed: the changed files and their diff against the branch the office was opened on, refreshed every couple of seconds while it works. From there you can commit, discard, or push the branch and open a pull request.
-- **Live status.** Claude Code hooks drive each worker's status: *working*, *needs input* or *done*. When a worker needs a human or has finished, it jumps up and down and you hear a ding. Its antenna bulb shows the status from across the room.
-- **Task cards.** A card over each worker's head names what it's on ("Fix Login Redirect") and says in one line what it's doing right now. Claude Haiku writes it from the worker's prompts and latest tool calls through the `claude` CLI, a fraction of a cent each time. Without that, the card shows the prompt itself.
-- **Survives restarts.** Workers are saved to disk. After a server restart they come back asleep, and **R** resumes the exact Claude session.
-- **Cost per worker.** Every worker shows what its Claude session has cost and how many tokens it used, on the desk hint, in the sidebar and in its terminal header. The sidebar adds up today's and all-time spend for the whole office. All of it survives restarts. Start the office with `--budget 20` and everyone gets a warning when the day's spend passes $20; add `--budget-pause` and no new workers can be hired until the next day.
-- **Issues board.** A tack board shows GitHub issues in *Open*, *In progress* and *Closed*. Click an issue to read it and its comments, then choose **Hand to a worker** to seat a worker with a ready-made prompt, or **Add to queue**.
-- **PR board.** A second tack board shows pull requests in *Draft*, *In review*, *Approved*, *Merged* and *Closed*, with CI status and diff size. Click a PR to read its description, comments, reviews and checks. **Files changed** shows the diff, with the files listed on the left as a folder tree or a flat list, and review comments under the lines they're on. Tick a file **Reviewed** (or press **V**; **J**/**K** step through files) and it folds away. Your ticks are kept in your browser, and a file you ticked that changes again is flagged. **Merge…** squashes, merges or rebases it, and can have GitHub merge it once its checks pass. **Review** and **Fix comments & merge** hand the PR to a worker; the second one addresses the review comments, gets the checks green and merges. When the PR conflicts with its base, that button becomes **Fix conflicts & merge**: a new worker is picked by default, merges the base in, resolves the conflicts and merges.
-- **Ask a worker about anything on a board.** Every issue and PR has **✍️ Ask a worker…**: type your own prompt, and the worker gets it along with which issue or PR it's about. Send it to a new worker at a free desk, or to one already sitting at a desk.
-- **Task queue.** A whiteboard in the corner by the services board, and the **📋 Queue** button in the top bar. Click **Add to queue** on any issue, or type a free-text task, and walk away. Whenever a desk is free and fewer than *workers at once* are busy (3 by default; 0 pauses the queue), the next task gets a fresh worker in its own git worktree. The issue is assigned on GitHub, so it moves to *In progress* on the issues board, and the pull request is linked on the whiteboard as soon as it shows up. Finished workers stay at their desks so you can read their terminals, until the queue needs the desk for the next task. The queue survives restarts.
-- **Services board.** When a worker starts a web server (`npm run dev`, a preview build, `python -m http.server`), it appears within a few seconds on the **🌐 Services** board, which hangs on the wall by the lounge and is also a button in the top bar. Each entry shows the worker, its branch and the page's title. Click a row to copy one command that opens that server on your own computer. Hire a worker with its own worktree, ask it to run the dev server, and your designer can review the branch in their own browser.
-- **Pictures on the walls.** Press **F** (or **🖼️** in the top bar) and paste a link to any image online: a team photo, a diagram, a meme. Pick one of six frames, then aim at a wall and click to hang it. Scroll to size it first. Where it can't go, over a window or a board, the preview turns red. Everyone sees it right away, and it stays up across restarts. Look at a picture and press **E** for a closer look, or to move, edit or take it down.
-- **Voice.** Browser-to-browser WebRTC voice. Volume depends on how close you stand, but people are never fully silent.
-- **Office sounds.** Busy workers clatter away at their keyboards, footsteps pad past, the fridge hums, birds chirp outside the windows and the coffee machine grinds and gurgles. It's all synthesized in the browser and placed where it happens, so it gets louder as you walk closer. Turn it down or mute it under **⚙️**, which also covers the worker dings but not voice chat.
-- **Screen sharing.** Your screen appears on the lounge TV for everyone, and there's a full-screen viewer.
-- **Password protected.** The session cookie is signed, and login attempts are rate limited.
-
-## Requirements
-
-On the machine that runs the office (your laptop or a VPS):
-
-- **Node.js 20+**. Prebuilt PTY binaries ship for Linux and macOS, x64 and arm64, so no compiler is needed.
-- **Claude Code** (`claude`), installed and logged in as the user that runs the office.
-- **git**, plus the **GitHub CLI** (`gh`) logged in (`gh auth login`) if you want the issue and PR boards.
-- `curl` is optional. The status hooks use it when it's there and fall back to Node when it isn't.
-
-## Install & run
-
-Install once from a clone:
-
-```bash
-git clone <this repo> agent-office && cd agent-office
-npm install          # also builds the client and server
-npm install -g .     # puts `agent-office` on your PATH
+```sh
+npm ci
+npm start -- --host 127.0.0.1 --port 4610 --password your-local-password
 ```
 
-Then run it from any project:
+Open http://localhost:4610. Choose your character, complete the one-time founding plan and walk through the headquarters’ glass exit to the street. Click the minimap (or press **G**) to set a waypoint; walk or drive there. **Management** opens sector construction and reports. `npm run dev` also provides the Vite development server on port 5173 with its development password `dev`.
 
-```bash
-cd ~/code/my-project
-agent-office --password 'correct horse battery staple'
-```
+## Playable now
 
-It prints the URLs your teammates can open. If you leave out `--password`, it generates one, saves it in `.agent-office/config.json` and prints it.
+- **First launch:** choose two to seven starting buildings. Headquarters, home and the chief of staff are included; optionally add the hospital, academy, café, energy campus and recreation centre. Selected businesses get a manager assignment, a real queued startup brief and one service employee. Existing saves retain their district and treasury.
+- **City economy:** service revenue, individual employee earnings, founder dividends and completed AI-task rewards fund land, construction, hiring and upgrades. Management shows the reconciled ledger, manager status and founder wallet. Credits are fictional; provider charges are separate. See [economy rules](docs/ECONOMY.md).
 
-```
-agent-office [dir] [options]
+- **Arrow-key movement** by default. Settings remaps movement and office actions, swaps conflicts, and saves mappings in the browser. Third-person camera follows the character’s turns at shoulder height, finishing the turn after you release movement. Drag to look around and scroll to zoom. The visible **First person / Third person** button or **N** switches views immediately; Settings also lets you choose a view. The first-person camera is 1.66 m above the ground. Scrolling out raises the camera into a district overview. **G** expands the live minimap; both shortcuts can be remapped.
+- **Founding district:** waterfront, roads, pedestrian paths, trees, skyline, headquarters, and an accessible residence. Hospital, school, café, energy campus and recreation centre can be built from Management. The Innovation studio requires purchasing its land first. Entry requires completed construction and an actual assigned worker or a manager whose startup has completed. Home and headquarters remain accessible.
+- **Car:** walk to the driver’s door near headquarters and press **E**. The character opens the door and sits down; stop the car and press E to exit. Up accelerates, Down brakes before selecting reverse, Left/Right steer, Shift allows a higher cruising speed. Controls follow your saved mappings.
+- **Home:** walk through the residence’s sliding doors and press the interact key (E by default) inside. Eat, rest, or use the research computer to open the actual worker queue.
+- **City operations:** build sites, hire simulated service staff, track coverage and treasury, inspect sector reports, and assign real AI tasks by sector.
+- **Chief of staff:** delegates monitoring, periodically reports sector status, and escalates real workers needing input. Walking out through the headquarters doorway enables delegation. It never approves agent permission prompts automatically.
+- **Persistence:** the server saves district state atomically in `.agent-office/empire.json`. Existing workers and queue retain upstream persistence. All connected browsers receive district updates every five seconds.
+- **Headquarters:** a skyscraper shell with paid operational floors and a physical elevator. New cities start with four furnished desks; existing saves keep their sixteen desks. Buy computer workstations and additional floors from **HQ**, then walk to the elevator to travel. Each floor has room for sixteen desks. Purchased workstations replace the fixed worker ceiling, while queue concurrency and provider budgets remain separate controls.
+- **World audio:** recorded surface footsteps, door latches, ignition, engine load and road noise; cabin filtering in first person, smooth RPM changes and no footsteps while driving. Sound volume and mute apply to these recordings.
+- **Graphics settings:** Low, Medium and High apply immediately and persist on this device. Medium is the default laptop profile; High adds contact shading and ocean reflections.
+- **Graphics:** HDR environment lighting and reflections, photographic PBR surfaces, ambient occlusion, reflective water, articulated glass façades, leaf-level vegetation, enclosed office lighting, and a modeled executive sedan. CEO, office workers, chief of staff and pedestrians all use animated human rigs sourced from Tidewater/Rocketbox. Static geometry is batched and leaves are instanced.
+- **Character selection:** two human models and a profile accent. The accent identifies a profile in the UI; clothing and skin textures remain part of each model.
+- **Compact HUD:** a circular minimap with an expanded waypoint map and translucent work controls keep the scene visible; there is no location selector.
+- **Touch movement** for coarse-pointer browsers. Native mobile packaging is not implemented.
+- **Installable web app:** over HTTPS or localhost, browsers that support it can install the office from **Settings › App & connection** (or the browser menu; iPhone/iPad use Share › Add to Home Screen). The installed app is the same web client and still needs a live connection to the office host. Its service worker only shows a public “can’t reach your office host” page when a page load fails; it never stores app pages, API responses, terminal output, snapshots or credentials, so nothing from the office is available offline. Settings also shows device-offline versus host-unreachable state, a **Reconnect now** control and, when the host reports it, host persistence status (single host, saved revision, receipt age on this device).
 
-  -p, --port <n>          Port (default 4600, env PORT)
-  -H, --host <addr>       Bind address (default 0.0.0.0)
-      --password <pw>     Office password (env AGENT_OFFICE_PASSWORD)
-      --agent <cmd>       Command each worker runs (default "claude")
-      --agent-args <str>  Extra args for every worker, e.g. "--model opus"
-      --tls-cert <file>   Serve HTTPS with this cert…
-      --tls-key <file>    …and key
-      --self-signed       Serve HTTPS with a generated self-signed cert
-      --trust-proxy       Trust X-Forwarded-* (behind Caddy/nginx)
-      --turn <url>        Add a TURN server for voice, e.g. turn:user:pass@host:3478
-      --budget <usd>      Daily budget for all workers; everyone is warned when it's passed
-      --budget-pause      ...and nobody can hire a new worker until the next day
+Simulation service staff and credits are fictional. Actual coding agents and their monetary usage are shown separately. New users share the existing office authentication model; dedicated CEO/manager roles are not implemented yet.
 
-agent-office prune [dir] [-n|--dry-run] [-f|--force]
+## Desktop and provider execution
 
-  Removes leftover worker worktrees under .agent-office/worktrees/ and their
-  office/* branches. Anything with uncommitted changes or unpushed commits is
-  kept unless --force is given.
-```
+`npm ci --prefix desktop` and `npm run desktop:package` build the development desktop app with bundled world assets and a local city runtime. Its launcher offers a local Git project, protected provider credentials, or connection to an existing host. Local setup starts with the work queue paused. Git is required. Windows ZIP packaging, an Android HTTPS-host companion and the iOS source project are described in [platform builds](docs/PLATFORMS.md); the mobile companions do not yet bundle the offline city.
 
-## Controls
+Settings → App & connection offers execution setup and cloud tasks. The first adapter supports Anthropic Managed Agents with pre-created agent/environment references, repository selection, connection checks, budget reservations and explicit paid submission. Accepted sessions run independently of the closed app. OpenAI and GitHub workflow adapters remain disabled. Provider output import and cross-device city saves are still pending. See [setup and exact limits](docs/EXECUTION_SETUP.md).
 
-| Key | Action |
-| --- | --- |
-| W A S D / arrows | Walk (hold Shift to run) |
-| Space | Jump (you can land on desks and couches) |
-| Mouse drag / wheel | Orbit / zoom the camera |
-| E | Interact: hire a worker, open its terminal, read a board, watch the TV |
-| P | Prompt: give a task to a new worker, or to the one at this desk |
-| C | Changes: the files the worker at this desk changed and their diff; commit, discard or open a PR |
-| B | Open a shared shell at an empty desk |
-| R | Resume a sleeping worker (or restart a shell) |
-| X | Send a worker home (frees the desk; a worker with its own worktree asks what to do with it) |
-| O | Open a pull request for a worker on its own branch, or see the one it has |
-| F | Hang a picture from the web on a wall (scroll to size it, click to hang it) |
-| T / Enter | Chat |
-| V / M | Join voice / mute |
-| Esc | Close any window (a terminal too) and get back to looking around |
-| Ctrl + [ | Send Esc to a terminal (e.g. to interrupt Claude) |
+## Runtime limits
 
-You can also click a nearby desk to interact with it, or click a worker in the sidebar to open its terminal.
+For local/VPS execution, the server must remain running for its workers and the simulation to continue. Closing only the browser is fine. Shutting down a laptop running the server stops work. GitHub authentication alone does not provide always-on compute. The first single-owner continuity and synchronization milestone is implemented: a durable host journal, authenticated committed-work artifacts, an isolated laptop importer, a development Electron desktop app, and a mobile/web PWA. A Docker deployment recipe is included; no production Agent Empire host has been deployed yet. Account provisioning, native mobile store packages and distributed city state remain future work. See [continuity and device setup](docs/CONTINUITY.md).
 
-## One command on AWS
+The city is an initial fixed district with instant construction, staffing coverage, and reports. Residents are ambient pedestrians; there is no full citizen economy, traffic routing, hospital scheduling, or emergent life simulation yet. The chief of staff has a real AI startup brief and deterministic ongoing monitoring; it is not a continuously reasoning autonomous executive. Home needs are browser-local and illustrative. Car state is local to a browser. The economy has defined simulation rates and a finite set of parcels; it is not a full market economy. There are two human presets with retargeted Rocketbox walk, run, sit-down, seated and stand-up clips. Businesses have furnished ground floors; sector-specific equipment, full citizen routines, traffic, dynamic weather/daylight, automatic performance adaptation and advanced appearance customization remain future work. Headquarters uses a short doorway fade between its interior and street scene; the home and business ground floors are in the street scene. Car entry uses a hinged door and recorded seated motion; dedicated vehicle motion capture and foot contact IK remain future improvements. The background city is scenery beyond the current playable district.
 
-If you have the AWS CLI logged in, one command gives you your own office on EC2. No Terraform needed:
+See [graphics implementation and verification](docs/GRAPHICS.md), [architecture and next milestones](docs/ARCHITECTURE.md), [design research](docs/RESEARCH.md), [asset attribution](THIRD_PARTY_NOTICES.md), and the [original office documentation](docs/UPSTREAM_README.md).
 
-```bash
-git clone https://github.com/AgentSystemLabs/agent-office && cd agent-office
-deploy/aws.sh up
-```
+## Verify
 
-After that, the whole lifecycle is four more commands:
-
-```bash
-deploy/aws.sh open      # tunnel to the office and open it in your browser
-deploy/aws.sh pause     # stop the machine to save money (asks first); only the disk and IP are billed
-deploy/aws.sh resume    # start it again: same address, same files, then open it
-deploy/aws.sh destroy   # delete the machine, disk, IP, security group and key pair (asks first)
-```
-
-What `up` does, in about 2 minutes:
-
-1. Creates an SSH key pair (kept in `~/.config/agent-office/aws/<name>/`).
-2. Creates a security group that opens **only SSH (port 22), and only to your current IP**. The office itself is never on the internet.
-3. Gives the machine a fixed Elastic IP and launches a **t3.xlarge** (4 vCPU, 16 GiB) Ubuntu 24.04 instance with a 50 GiB disk.
-4. Installs Node 22, git, the GitHub CLI and **Claude Code**. It clones the latest agent-office from GitHub, runs `npm i`, and clones your project.
-5. Runs the office under systemd with `Restart=always`, so it comes back after a crash or a reboot. It listens on `127.0.0.1:4600` on the machine, so the only way in is an SSH tunnel.
-6. Opens an SSH tunnel and your browser at `http://localhost:4600`. **The first page shows the office password once. Write it down.** The server then keeps only a hash, so nobody can display the password again.
-
-Everything goes through SSH, so there are no certificate warnings, and `localhost` counts as a secure origin: voice and screen sharing just work. Keep the terminal open while you use the office; Ctrl-C closes the tunnel. Next time, run `deploy/aws.sh open`. If port 4600 is taken on your machine, it picks the next free one.
-
-**Inviting your team.** Teammates don't need AWS access or this repo, just `ssh`. In the office, click **👥 Invite** and type their GitHub username. That installs the SSH keys from `github.com/<username>.keys`. The panel then gives you one command to send them, for macOS, Linux or Windows. It opens the tunnel and, once it's up, the office in their browser:
-
-```
-ssh -o ExitOnForwardFailure=yes -o PermitLocalCommand=yes -o LocalCommand="open http://localhost:4600" -L 4600:localhost:4600 office@<your-office-ip>
-```
-
-**Copy invite message** copies the command, plus the server fingerprint to check on first connect. The panel also lists who's invited and can remove them. The same works from your terminal:
-
-```bash
-deploy/aws.sh invite octocat        # uses the SSH keys on github.com/octocat
-deploy/aws.sh allow 203.0.113.7     # their IP (SSH answers only allowed IPs)
-```
-
-They leave that command running and sign in with the office password. Their keys log in as a separate `office` user that can **only** forward to the office port. It has no shell, no other ports, no `-R`, and no agent forwarding. So a leaked teammate key still doesn't get past the office password.
-
-**Reviewing what workers build.** Every web server a worker runs is listed on the **🌐 Services** board. Clicking a row copies a command like this one:
-
-```
-ssh -N -o ExitOnForwardFailure=yes -o PermitLocalCommand=yes -o LocalCommand="open http://localhost:5173" -L 5173:localhost:4600 office@<your-office-ip>
-```
-
-It opens http://localhost:5173 on their computer. The tunnel ends at the office's own port, and the office relays it to the worker's server on 5173. So the same invited keys work, nothing new is opened on the machine, and every page still asks for the office password (anyone signed in to the office already is). Keep one terminal per service open while you look. You set the office up yourself? Run `deploy/aws.sh service 5173` instead.
-
-If chasing teammates' IPs gets old, `deploy/aws.sh allow anywhere` opens SSH to every IP. That's a reasonable trade: SSH only accepts your key and invited keys, and the office stays behind the tunnel.
-
-```bash
-deploy/aws.sh open                 # tunnel + open the office in your browser
-deploy/aws.sh service 5173         # open a worker's web server from the 🌐 Services board
-deploy/aws.sh invite <gh-user>     # let a teammate tunnel in (or: invite <name> <key.pub>)
-deploy/aws.sh uninvite <name>      # remove their keys and drop open tunnels
-deploy/aws.sh team                 # who's invited
-deploy/aws.sh allow 203.0.113.7    # let an IP reach SSH (CIDR ok; "me", "anywhere")
-deploy/aws.sh revoke 203.0.113.7   # …and take it back
-deploy/aws.sh status               # instance, address, office up?, team, allowed IPs
-deploy/aws.sh resize t3.2xlarge    # bigger or smaller machine; same address, ~1-2 min of downtime
-deploy/aws.sh update               # install the latest agent-office and restart
-deploy/aws.sh reset-password       # new password, shown once; signs everyone out
-deploy/aws.sh ssh | logs           # get on the box / follow the office logs
-```
-
-**Upgrading from the office.** The **⬆️** button in the top bar checks GitHub for new commits on the branch the office was installed from. It lights up as **⬆️ Update** when there are any, and lists them. **Upgrade now** builds the new version next to the running one. Meanwhile the office keeps working and everyone sees a banner. A failed build changes nothing. Once the build succeeds, the office swaps it in and restarts, and everyone gets a *"🛠️ Upgrading the office"* dialog. A few seconds later their page reloads on the new version. Workers that were awake wake back up at their desks by themselves. Anything they were in the middle of gets interrupted, and the panel names those workers before you click.
-
-An office created before the SSH tunnel served HTTPS on port 443 with a self-signed certificate. Run `deploy/aws.sh up` once to move it over: 443 closes and the office moves behind the tunnel. Offices created before the **👥 Invite** and **⬆️** buttons also need one `deploy/aws.sh up` before those buttons appear. `update` alone isn't enough, because `up` installs the key helper and turns on self-upgrade in the systemd unit.
-
-Useful options for `up`:
-
-- `--project owner/repo` chooses which GitHub repo the office works on. The default is the GitHub origin of the directory you run it from.
-- `--instance-type`, `--disk` and `--region` set the machine size, disk size and region.
-- `--allow <ip>` lets more IPs reach SSH from the start.
-- `--name <name>` runs several offices side by side.
-
-**Claude sign-in.** Workers run Claude Code on the machine, so it has to be signed in there. You can do this either way:
-
-- Pass `--claude-token "$(claude setup-token)"`, which uses your Claude subscription, or `--anthropic-api-key <key>`.
-- Do nothing, and the first worker jumps with *"Claude isn't signed in — type /login"*. Open its terminal and run `/login`.
-
-**GitHub.** By default, your local `gh auth token` is used to sign in the GitHub CLI on the machine. It's needed for private repos, the issue and PR boards, and for workers to push branches and open PRs. Anyone who can use the office can use that token, so pass `--github-token <fine-grained token>` or `--no-github-token` if that's too much.
-
-## Running it on a VPS for your team
-
-The simplest private setup needs no certificates at all. Run `agent-office --host 127.0.0.1` and have everyone connect with `ssh -L 4600:localhost:4600 you@server`, then open http://localhost:4600. Browsers treat `localhost` as secure, so voice and screen sharing work.
-
-To serve it on a real domain instead, put the office behind HTTPS. Voice and screen sharing need a secure context. The simplest setup is Caddy, which gets certificates automatically:
-
-```caddy
-# /etc/caddy/Caddyfile
-office.example.com {
-    reverse_proxy 127.0.0.1:4600
-}
-```
-
-```bash
-cd /srv/my-project
-agent-office --host 127.0.0.1 --trust-proxy --password "$(openssl rand -base64 18)"
-```
-
-Caddy proxies WebSockets out of the box. With nginx, forward the Host and Upgrade headers:
-
-```nginx
-location / {
-    proxy_pass http://127.0.0.1:4600;
-    proxy_http_version 1.1;
-    proxy_set_header Host $host;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection "upgrade";
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_read_timeout 1d;
-}
-```
-
-To keep the office running, use a systemd unit:
-
-```ini
-# /etc/systemd/system/agent-office.service
-[Unit]
-Description=Agent Office
-After=network.target
-
-[Service]
-User=dev
-WorkingDirectory=/srv/my-project
-# generate with: openssl rand -base64 24
-Environment=AGENT_OFFICE_PASSWORD=<a long random password>
-ExecStart=/usr/bin/env agent-office --host 127.0.0.1 --trust-proxy
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-```
-
-If you don't have a domain, `--self-signed` serves HTTPS directly. Browsers will warn once per person.
-
-**Voice across strict NATs.** Peers connect directly using public STUN. If some teammates can't hear each other (common on corporate networks), run a TURN server such as coturn and pass `--turn turn:user:pass@turn.example.com:3478`.
-
-## How it works
-
-```
-browser ──HTTPS/WSS──▶ agent-office (Node)
-                         ├─ node-pty ─▶ claude  (one PTY per worker, cwd = project dir)
-                         │    └─ headless xterm mirror ─▶ laptop screen frames + late-join snapshots
-                         ├─ loopback-only hook server ◀── curl from Claude Code hooks (per-worker token)
-                         ├─ gh issue/pr list (cached, refreshed every 90s)
-                         ├─ port scan every 4s ─▶ 🌐 Services board; relay for service tunnels
-                         ├─ /api/image ─▶ fetches pictures for the walls (cached)
-                         └─ WebRTC signaling relay (voice + screen share are peer-to-peer)
-```
-
-- **Status.** Each worker starts as `claude --settings .agent-office/claude-hooks.json`. That file adds hooks (`UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Notification`, `Stop`, `SessionStart`) which `curl` a server bound to `127.0.0.1`. The hooks merge with your own Claude settings; they don't replace them. OSC 9;4 progress sequences in the terminal also count, which catches an Esc-cancel.
-- **Shared shells.** Press **B** at an empty desk to open a plain login shell for dev servers, git or tests. It's shared the same way as a Claude terminal.
-- **Isolated branches.** When you hire with a task, you can tick *own git worktree*. The worker then gets its own `office/<name>` branch under `.agent-office/worktrees/`, so parallel workers never share a checkout. When you send that worker home you choose whether to keep the worktree and branch, delete the worktree, or delete both, and the office warns you first about uncommitted changes or commits no remote has. `agent-office prune` clears out whatever was kept, once it is safe.
-- **Pull requests.** **O** at a worktree worker's desk runs `git push -u origin office/<name>` in its worktree, then `gh pr create` with the task as the body and the commits listed. The base is the branch the office was on when the worktree was cut, if that branch is on the remote. The PR number is saved with the worker, so the board can point back at the desk.
-- **Changes.** While someone has a desk's Changes window open, the office runs `git status` and `git diff` in that worker's checkout every two seconds and pushes the file list when it differs. The diff is against the merge base with the branch the office was opened on, so it covers the worker's commits and its uncommitted edits. Commit is `git add -A && git commit`, discard is `git restore` / `git clean` (or `reset --hard` for everything), and Open PR pushes the branch and runs `gh pr create`.
-- **Shared terminals.** The server keeps one PTY per worker and mirrors it in a headless xterm. People who open the terminal get a serialized snapshot, then the live stream. Laptops get compact per-row diffs a few times a second. The PTY takes the size of whoever is typing.
-- **Cost.** Hooks carry no usage, but each one names the session's transcript (`~/.claude/projects/<dir>/<session>.jsonl`). The office reads what gets appended to it, and to the subagent transcripts next to it: every assistant message records the API's token usage and the model, which the office prices from its own table (cache writes and reads included). When a session ends, Claude Code appends its own tally (`cost-state`), and the worker's numbers snap to that, which also covers calls that never reach the transcript. Per-worker totals are saved with the worker, and `.agent-office/usage.json` keeps the office's all-time and per-day spend, so nothing is lost on a restart or when a worker is sent home. On an office deployed with `deploy/aws.sh`, put `AGENT_OFFICE_BUDGET=20` (and `AGENT_OFFICE_BUDGET_PAUSE=1`) in `/etc/agent-office/env` and restart the service.
-- **Services.** Every 4 seconds the office lists the TCP ports its user's processes listen on (`ss`, or `lsof` on macOS). It credits each port to the worker whose terminal started it. It goes by the process tree first. For a server that detached from it, it uses the `AGENT_OFFICE_WORKER_ID` the process inherited (Linux), then whether it runs inside that worker's worktree. Ports that answer HTTP are shown. A request for `localhost:<port>` that reaches the office's own port (that's what a service tunnel does) is relayed to that server, WebSockets included, so hot reload works.
-- **Pictures.** WebGL can only draw an image from another site if that site sends CORS headers, and most don't. So the office fetches each picture itself (`/api/image`, images up to 15 MB) and serves it from its own origin. Any image link works, and a picture on a worker's dev server does too. Browsers shrink each one to 1024 px before it goes on the wall.
-- **Task queue.** `queue.json` holds the tasks in order. A task is seated when a desk is free and fewer than the limit are busy (a worker that is starting, ready, working or waiting for input). It finishes when its worker ends its turn (the `Stop` hook), stops, or is sent home. The PR is matched by GitHub's closing-issue references (`closes #12`) or by the worker's branch.
-- **State.** `.agent-office/` in the project holds the password, the signing secret, the hook settings, the saved workers, the task queue and the pictures on the walls (`decor.json`). It is added to `.git/info/exclude` automatically, so it never shows up in `git status`.
-
-## Security notes
-
-Anyone with the password can drive Claude Code in that directory, and through it run commands as the user that runs the office. Treat the password like SSH access:
-
-- Use a strong password and HTTPS. With `--trust-proxy`, cookies are `Secure` once the proxy says the request came over https.
-- Changing the password signs everyone out, because sessions are signed with a key derived from it. Login attempts are limited to 10 per 5 minutes per client.
-- Only enable `--trust-proxy` behind a proxy that appends `X-Forwarded-For` (Caddy and nginx both do). The office uses the rightmost hop.
-- Run the office as a dedicated, unprivileged user, in the project you mean to share.
-- The WebSocket checks the session cookie and the `Origin` header. The hook endpoint only listens on loopback and needs a random per-worker token.
-- Service tunnels are relayed only to web servers a worker started, and only with an office session. The office's own cookies are stripped before a request reaches that server. A server you started yourself outside the office is never listed or relayed.
-- Workers don't inherit the office password or any parent agent-session variables.
-- The picture fetcher (`/api/image`) needs an office session. It fetches any http(s) link it's given, from the office's machine. That gives nobody new reach: anyone signed in can already run `curl` from a shell worker. Pictures are served with a sandboxing `Content-Security-Policy`, so an SVG can't run script on the office's origin.
-
-## Development
-
-```bash
-npm install
-npm run build        # vite (client) + tsc (server)
+```sh
 npm run typecheck
-node bin/agent-office.js /path/to/project --password dev
+npm test
+npm run build
+# With the local preview on port 4610, password empire-local-preview, and Chrome installed:
+npm run test:browser
 ```
 
-`npm run dev` runs Vite with hot reload on :5173 and proxies to the server on :4600.
+The browser test writes screenshots into ignored `artifacts/`. It verifies automatic doorway traversal, map waypoints without teleporting, animated vehicle entry/exit, driving, camera switching, Management, key remapping and reload persistence. It does not start paid agents or deploy services.

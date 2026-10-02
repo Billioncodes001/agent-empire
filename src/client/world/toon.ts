@@ -1,25 +1,12 @@
 import * as THREE from 'three';
 
-let gradient: THREE.DataTexture | null = null;
+const cache = new Map<string, THREE.MeshStandardMaterial>();
 
-/** Three-step ramp that gives MeshToonMaterial its flat cartoon banding. */
-function gradientMap(): THREE.DataTexture {
-  if (gradient) return gradient;
-  const data = new Uint8Array([90, 90, 90, 255, 185, 185, 185, 255, 255, 255, 255, 255]);
-  gradient = new THREE.DataTexture(data, 3, 1, THREE.RGBAFormat);
-  gradient.minFilter = THREE.NearestFilter;
-  gradient.magFilter = THREE.NearestFilter;
-  gradient.needsUpdate = true;
-  return gradient;
-}
-
-const cache = new Map<string, THREE.MeshToonMaterial>();
-
-export function toon(color: THREE.ColorRepresentation, opts: { emissive?: THREE.ColorRepresentation; transparent?: boolean; opacity?: number } = {}): THREE.MeshToonMaterial {
+export function toon(color: THREE.ColorRepresentation, opts: { emissive?: THREE.ColorRepresentation; transparent?: boolean; opacity?: number } = {}): THREE.MeshStandardMaterial {
   const key = `${new THREE.Color(color).getHexString()}|${opts.emissive ?? ''}|${opts.opacity ?? 1}`;
   const hit = cache.get(key);
   if (hit) return hit;
-  const m = new THREE.MeshToonMaterial({ color, gradientMap: gradientMap() });
+  const m = new THREE.MeshStandardMaterial({ color, roughness: 0.72 });
   if (opts.emissive !== undefined) m.emissive = new THREE.Color(opts.emissive);
   if (opts.transparent || (opts.opacity ?? 1) < 1) {
     m.transparent = true;
@@ -29,9 +16,9 @@ export function toon(color: THREE.ColorRepresentation, opts: { emissive?: THREE.
   return m;
 }
 
-/** A fresh (uncached) toon material, for things whose color animates. */
-export function toonUnique(color: THREE.ColorRepresentation): THREE.MeshToonMaterial {
-  return new THREE.MeshToonMaterial({ color, gradientMap: gradientMap() });
+/** A fresh (uncached) physically based material, for things whose color animates. */
+export function toonUnique(color: THREE.ColorRepresentation): THREE.MeshStandardMaterial {
+  return new THREE.MeshStandardMaterial({ color, roughness: 0.72 });
 }
 
 export function mesh(geo: THREE.BufferGeometry, mat: THREE.Material, x = 0, y = 0, z = 0, shadow = true): THREE.Mesh {
@@ -72,7 +59,7 @@ function textTexture(text: string, opts: TextOpts) {
   const size = opts.size ?? 48;
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d')!;
-  const font = `800 ${size}px Nunito, ui-rounded, system-ui, sans-serif`;
+  const font = `600 ${size}px Inter, system-ui, sans-serif`;
   ctx.font = font;
   const w = Math.ceil(ctx.measureText(text).width) + size;
   const h = Math.ceil(size * 1.6);

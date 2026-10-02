@@ -1,3 +1,5 @@
+import type { EmpireAction, EmpireState } from './empire.js';
+import type { ContinuityStatus } from './continuity.js';
 // Wire protocol between browser and server. Every WebSocket frame is one JSON object.
 
 import type { Look } from './avatar.js';
@@ -28,6 +30,8 @@ export interface WorkerInfo {
   name: string;
   color: string;
   status: WorkerStatus;
+  /** Observed process state; absent legacy values must not be treated as running. */
+  processState?: 'running' | 'stopped' | 'unknown';
   /** True once someone opened the terminal after the last done / needs_input. */
   acked: boolean;
   createdBy: string;
@@ -166,6 +170,8 @@ export type TaskStatus = 'queued' | 'running' | 'done';
 
 /** A task on the 📋 queue whiteboard: a GitHub issue or free text, seated to a worker by itself. */
 export interface QueueTask {
+  /** Stable key for an automatically appointed sector manager's bounded startup task. */
+  jobKey?: string;
   id: string;
   /** The GitHub issue it came from, when it did. */
   issue?: number;
@@ -174,6 +180,9 @@ export interface QueueTask {
   addedBy: string;
   addedAt: number;
   status: TaskStatus;
+  /** Logical task ID stays stable; each explicit retry increments this counter. */
+  attempt?: number;
+  interruption?: { reason: 'server_restart'; at: number };
   /** The worker seated for it (it may have gone home since). */
   workerId?: string;
   workerName?: string;
@@ -402,6 +411,7 @@ export interface ChatLine {
 }
 
 export type ClientMsg =
+  | { t: 'empire.action'; action: EmpireAction }
   | { t: 'move'; x: number; y: number; z: number; rotY: number; moving: boolean }
   /** You reached out to use something; everyone else sees your character's arm do it. */
   | { t: 'act' }
@@ -454,6 +464,8 @@ export type ClientMsg =
   | { t: 'ping'; at: number };
 
 export type ServerMsg =
+  | { t: 'continuity.status'; status: ContinuityStatus }
+  | { t: 'empire'; state: EmpireState }
   | {
       t: 'welcome';
       you: string;

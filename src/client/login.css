@@ -1,26 +1,58 @@
-:root { --bg: #ffe8cc; --ink: #2b2d42; --card: #fffaf3; --accent: #ff8a5b; --muted: #7a6f65; --border: #2b2d42; }
-* { box-sizing: border-box; }
-html, body { margin: 0; height: 100%; }
-body {
-  background: radial-gradient(circle at 20% 20%, #ffd6a5 0, transparent 40%), radial-gradient(circle at 80% 70%, #caffbf 0, transparent 45%), var(--bg);
-  font-family: 'Nunito', ui-rounded, 'SF Pro Rounded', system-ui, sans-serif;
-  color: var(--ink); display: grid; place-items: center; padding: 16px;
+/* Agent Empire sign-in and claim pages: the same dark, restrained surface as the in-game HUD. */
+:root {
+  --bg: #0f1b21; --surface: rgba(19, 29, 34, .92); --line: #ffffff21; --ink: #e4e8e7; --muted: #a9b8b6;
+  --accent: #9bd1ba; --primary: #c7d9bd; --primary-ink: #1c3025; --bad: #f2a488;
 }
-.card { width: min(380px, 100%); background: var(--card); border: 3px solid var(--border); border-radius: 22px; padding: 28px; box-shadow: 0 8px 0 var(--border); text-align: center; }
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; }
+body {
+  min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; color: var(--ink);
+  padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  background: radial-gradient(120% 90% at 50% 115%, #1d3a44 0, #15232a 45%, #0c161b 100%) fixed, var(--bg);
+  font-family: Inter, 'SF Pro Display', system-ui, -apple-system, sans-serif; -webkit-font-smoothing: antialiased;
+}
+body::before { content: ''; position: fixed; left: 0; right: 0; bottom: 20%; height: 1px; background: linear-gradient(90deg, transparent, #9bd1ba55, transparent); pointer-events: none; }
+.card {
+  position: relative; width: min(380px, 100%); padding: 28px 28px 24px; text-align: center;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
+  box-shadow: 0 20px 60px #0007; backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+}
 .logo { display: grid; place-items: center; }
-h1 { margin: 8px 0 4px; font-size: 28px; }
-.sub { margin: 0 0 20px; color: var(--muted); }
-label { display: block; text-align: left; font-weight: 700; font-size: 14px; }
-input { width: 100%; margin-top: 6px; padding: 12px 14px; font-size: 16px; border: 3px solid var(--border); border-radius: 12px; background: #fff; color: var(--ink); outline: none; }
-input:focus { border-color: var(--accent); }
-button { margin-top: 16px; width: 100%; padding: 12px; font-size: 16px; font-weight: 800; border: 3px solid var(--border); border-radius: 12px; background: var(--accent); color: #fff; cursor: pointer; box-shadow: 0 4px 0 var(--border); }
-button:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--border); }
-button:disabled { opacity: .6; cursor: default; }
-.error { min-height: 1.2em; color: #c3423f; font-weight: 700; margin: 12px 0 0; }
-.warn { text-align: left; background: #fff3c4; border: 3px solid var(--border); border-radius: 12px; padding: 10px 12px; margin: 0 0 14px; font-size: 14px; }
-.secret { display: flex; gap: 8px; align-items: center; justify-content: center; background: #fff; border: 3px dashed var(--border); border-radius: 12px; padding: 14px; }
-.secret code { font: 800 26px ui-monospace, Menlo, Consolas, monospace; letter-spacing: .04em; word-break: break-all; }
-button.mini { width: auto; margin: 0; padding: 6px 10px; font-size: 13px; box-shadow: 0 2px 0 var(--border); }
-.check { display: flex; gap: 8px; align-items: center; justify-content: center; margin-top: 14px; font-weight: 800; }
-.check input { width: auto; margin: 0; }
-a { color: var(--ink); font-weight: 800; }
+.logo svg { width: 64px; height: auto; filter: drop-shadow(0 8px 20px #0008); }
+h1 { margin: 12px 0 4px; font-size: 20px; font-weight: 600; letter-spacing: .28em; text-indent: .28em; text-transform: uppercase; }
+h1#title { font-size: 20px; letter-spacing: -.01em; text-indent: 0; text-transform: none; }
+.sub { margin: 0 0 22px; font-size: 13px; color: var(--muted); }
+label { display: block; text-align: left; font-size: 12px; font-weight: 600; letter-spacing: .04em; color: #c9d6d2; }
+input {
+  width: 100%; margin-top: 6px; padding: 12px 14px; min-height: 46px; font: inherit; font-size: 16px; color: var(--ink);
+  background: #0b1519; border: 1px solid #ffffff2e; border-radius: 8px; outline: none;
+}
+input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px #9bd1ba2e; }
+button {
+  margin-top: 16px; width: 100%; min-height: 46px; padding: 12px; font: inherit; font-size: 15px; font-weight: 600;
+  color: var(--primary-ink); background: var(--primary); border: 1px solid var(--primary); border-radius: 8px; cursor: pointer;
+  transition: background .15s, transform .08s;
+}
+button:hover:not(:disabled) { background: #d5e5cc; }
+button:active:not(:disabled) { transform: translateY(1px); }
+button:focus-visible { outline: 2px solid #c3e7d7; outline-offset: 3px; }
+button:disabled { opacity: .55; cursor: default; }
+.error { min-height: 1.2em; margin: 12px 0 0; font-size: 13px; font-weight: 600; color: var(--bad); }
+.warn { margin: 0 0 14px; padding: 10px 12px; text-align: left; font-size: 13px; line-height: 1.5; color: #f0d9a6; background: #f0d9a612; border: 1px solid #f0d9a655; border-radius: 8px; }
+.secret { display: flex; gap: 8px; align-items: center; justify-content: center; padding: 14px; background: #0b1519; border: 1px dashed #9bd1ba77; border-radius: 8px; }
+.secret code { font: 600 22px ui-monospace, Menlo, Consolas, monospace; letter-spacing: .04em; word-break: break-all; color: #eef3f1; }
+button.mini { width: auto; min-height: 36px; margin: 0; padding: 6px 12px; font-size: 13px; background: #ffffff10; color: var(--ink); border-color: #ffffff2e; }
+.check { display: flex; gap: 8px; align-items: center; justify-content: center; margin-top: 14px; font-size: 13px; }
+.check input { width: auto; min-height: 0; margin: 0; accent-color: var(--accent); }
+.check input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+a { color: var(--accent); font-weight: 600; }
+/* Landscape phones: compact so the form fits without scrolling past the keyboard. */
+@media (max-height: 460px) {
+  .card { padding: 16px 22px; }
+  .logo svg { width: 40px; }
+  h1 { margin-top: 6px; font-size: 16px; }
+  .sub { margin-bottom: 12px; }
+  input, button { min-height: 42px; padding-top: 9px; padding-bottom: 9px; }
+  button { margin-top: 12px; }
+}
+@media (prefers-reduced-motion: reduce) { button { transition: none; } }

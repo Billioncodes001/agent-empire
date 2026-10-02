@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Game theme: dark from the very first frame (no white flash), no action bar, full screen. -->
+    <style name="Base.GameTheme" parent="android:style/Theme.Material.NoActionBar.Fullscreen">
+        <item name="android:windowBackground">@drawable/launch_background</item>
+        <item name="android:colorBackground">@color/brand_ink</item>
+        <item name="android:colorPrimary">@color/brand_panel</item>
+        <item name="android:colorPrimaryDark">@color/brand_ink</item>
+        <item name="android:colorAccent">@color/brand_lit</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+    </style>
+    <style name="GameTheme" parent="Base.GameTheme"/>
+
+    <!-- Native dialogs (the GitHub device code): dark Material dialog with the brand accent. -->
+    <style name="DialogTheme" parent="android:style/Theme.Material.Dialog.Alert">
+        <item name="android:colorAccent">@color/brand_lit</item>
+        <item name="android:colorBackground">@color/brand_panel</item>
+    </style>
+</resources>

@@ -1,0 +1,20 @@
+services:
+  empire:
+    build:
+      context: ../..
+      dockerfile: deploy/cloud/Dockerfile
+    restart: unless-stopped
+    init: false
+    ports:
+      - "127.0.0.1:4600:4600"
+    environment:
+      AGENT_OFFICE_PASSWORD: ${AGENT_OFFICE_PASSWORD:?Set a strong office password}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AGENT_OFFICE_BUDGET: ${AGENT_OFFICE_BUDGET:-10}
+      AGENT_OFFICE_BUDGET_PAUSE: "1"
+    volumes:
+      - ${EMPIRE_PROJECT_DIR:?Set the absolute project directory}:/workspace
+      - agent-home:/home/node
+    stop_grace_period: 30s
+volumes:
+  agent-home:

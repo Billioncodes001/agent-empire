@@ -1,9 +1,10 @@
+import { Human, type HumanActivity, type VehiclePose } from './human';
 import * as THREE from 'three';
-import { HAIR_COLORS, HAIR_STYLES, SKIN_TONES, type Look } from '../../shared/avatar';
+import { SKIN_TONES, type Look } from '../../shared/avatar';
 import type { WorkerTask } from '../../shared/protocol';
-import { cardSprite, disposeSprite, mesh, textSprite, toon, toonUnique } from './toon';
+import { cardSprite, disposeSprite, textSprite } from './toon';
 
-export type Pose = 'stand' | 'walk' | 'sit' | 'type';
+export type Pose = 'stand' | 'walk' | 'sit' | 'type' | 'drive';
 
 /** Voice loudness (RMS) above which someone counts as speaking. */
 const SPEAKING = 0.04;
@@ -20,251 +21,47 @@ export function reachCurve(p: number): number {
   return 1 - u * u * (3 - 2 * u);
 }
 
-/** A chibi cartoon person — used for every human in the office. Forward is +z. */
+/** Adult, skinned avatar; profile style chooses one of the two licensed human rigs. */
 export class Person {
   readonly root = new THREE.Group();
-  private body = new THREE.Group();
-  private legL: THREE.Object3D;
-  private legR: THREE.Object3D;
-  private armL: THREE.Object3D;
-  private armR: THREE.Object3D;
-  private shirt: THREE.MeshToonMaterial;
-  private skin: THREE.MeshToonMaterial;
-  private hairMat: THREE.MeshToonMaterial;
-  private hair = new THREE.Group();
-  private look: Look;
+  private human: Human;
   private label: THREE.Sprite | null = null;
-  private speaking = false;
-  private mic: THREE.Mesh;
-  private head: THREE.Group;
-  private smile: THREE.Mesh;
-  private mouth: THREE.Mesh;
-  private voiceLevel = 0;
-  /** 0 = lips together, 1 = wide open. Follows the voice's loudness. */
-  private mouthOpen = 0;
-  /** Keep the talking mouth up through the short gaps between words. */
-  private talkUntil = 0;
-  private walkPhase = 0;
-  private reachT = -1;
+  private look: Look;
   pose: Pose = 'stand';
-
-  constructor(
-    private name: string,
-    color: string,
-    look: Look,
-  ) {
-    this.look = { ...look };
-    this.shirt = toonUnique(color);
-    const skin = (this.skin = toonUnique(SKIN_TONES[look.skin]));
-    this.hairMat = toonUnique(HAIR_COLORS[look.hair]);
-    this.hairMat.side = THREE.DoubleSide;
-    const pants = toon('#3d405b');
-    const ink = toon('#1d1d1d');
-
-    this.root.add(this.body);
-    // Torso
-    this.body.add(mesh(new THREE.CapsuleGeometry(0.26, 0.28, 6, 12), this.shirt, 0, 0.72, 0));
-    // Head
-    const head = (this.head = new THREE.Group());
-    head.position.y = 1.32;
-    head.add(mesh(new THREE.SphereGeometry(0.34, 20, 16), skin));
-    head.add(this.hair);
-    this.buildHair();
-    for (const sx of [-1, 1]) {
-      head.add(mesh(new THREE.SphereGeometry(0.055, 10, 8), ink, sx * 0.12, 0.02, 0.3, false));
-      head.add(mesh(new THREE.SphereGeometry(0.05, 10, 8), toon('#ff9f9f'), sx * 0.2, -0.08, 0.27, false));
-    }
-    const smile = (this.smile = mesh(new THREE.TorusGeometry(0.06, 0.015, 6, 12, Math.PI), ink, 0, -0.08, 0.32, false));
-    smile.rotation.z = Math.PI;
-    head.add(smile);
-    // Talking mouth: a flattened ball pressed into the face, scaled open and shut with the voice.
-    this.mouth = mesh(new THREE.SphereGeometry(1, 16, 12), toon('#7a2635'), 0, -0.1, 0.295, false);
-    const tongue = mesh(new THREE.SphereGeometry(1, 12, 10), toon('#ff8fa3'), 0, -0.5, 0, false);
-    tongue.scale.set(0.6, 0.45, 1.15);
-    this.mouth.add(tongue);
-    this.mouth.visible = false;
-    head.add(this.mouth);
-    this.body.add(head);
-
-    const limb = (len: number, r: number, mat: THREE.Material, x: number, y: number) => {
-      const pivot = new THREE.Group();
-      pivot.position.set(x, y, 0);
-      pivot.add(mesh(new THREE.CapsuleGeometry(r, len, 4, 8), mat, 0, -len / 2 - r / 2, 0));
-      this.body.add(pivot);
-      return pivot;
-    };
-    this.legL = limb(0.22, 0.1, pants, -0.12, 0.42);
-    this.legR = limb(0.22, 0.1, pants, 0.12, 0.42);
-    this.armL = limb(0.24, 0.08, this.shirt, -0.33, 0.9);
-    this.armR = limb(0.24, 0.08, this.shirt, 0.33, 0.9);
-    for (const arm of [this.armL, this.armR]) arm.add(mesh(new THREE.SphereGeometry(0.085, 12, 10), skin, 0, -0.38, 0));
-
-    // Little mic icon that pops up while speaking
-    this.mic = mesh(new THREE.SphereGeometry(0.09, 10, 8), toon('#7cf29a', { emissive: '#2a9d4b' }), 0, 2.25, 0, false);
-    this.mic.visible = false;
-    this.root.add(this.mic);
-
-    this.setLabel(name, false);
+  constructor(private name: string, color: string, look: Look) {
+    this.look={...look};this.human=new Human(look.style);this.root.add(this.human.root);this.setLabel(name,false);
   }
-
-  setColor(color: string) {
-    this.shirt.color.set(color);
+  get ready(){return this.human.ready;}
+  /** Loaded with every texture decoded; see Human.materialsReady. */
+  get materialsReady(){return this.human.materialsReady;}
+  /** The clip or procedural state the body is showing (airborne, landing, walk_neutral…), for headless checks. */
+  get motion(){return this.human.root.userData.motion as string|undefined;}
+  setColor(color:string) { this.root.userData.accent=color; }
+  get skinColor(){return SKIN_TONES[this.look.skin];}
+  setLook(look:Look){
+    if(look.style%2!==this.look.style%2){this.root.remove(this.human.root);this.human.dispose();this.human=new Human(look.style);this.root.add(this.human.root);}
+    this.look={...look};
   }
-
-  get skinColor(): string {
-    return SKIN_TONES[this.look.skin];
+  setLabel(name:string, muted:boolean|null){
+    const visible=this.label?.visible??true;
+    if(this.label){this.root.remove(this.label);disposeSprite(this.label);}
+    this.label=textSprite(name,{bg:'#151e24',color:'#ece8db',size:28});this.label.position.y=2.05;this.label.scale.multiplyScalar(.65);this.label.visible=visible;this.root.add(this.label);
   }
-
-  setLook(look: Look) {
-    const restyle = look.style !== this.look.style;
-    this.look = { ...look };
-    this.skin.color.set(SKIN_TONES[look.skin]);
-    this.hairMat.color.set(HAIR_COLORS[look.hair]);
-    if (restyle) this.buildHair();
+  setVoiceLevel(level:number){this.root.userData.voiceLevel=level;}
+  showLabel(v:boolean){if(this.label)this.label.visible=v;}
+  reach(){this.human.reach();}
+  setTransition(name:string|null,progress=0){this.human.setTransition(name,progress);}
+  setVehiclePose(pose:VehiclePose|null){this.human.setVehiclePose(pose);}
+  /**
+   * `airborne` selects the held flight pose (never the idle clip) and, on touchdown, a landing dip.
+   * `landingGrace` (s) keeps an interpolated peer airborne through brief false "grounded" frames at the apex.
+   */
+  update(dt:number,t:number,moving:boolean,airborne:boolean,speed=1.65,landingGrace=0){
+    this.human.setAirborne(airborne,landingGrace);
+    this.human.update(dt,moving&&!airborne?speed:0,this.pose==='sit'||this.pose==='type'||this.pose==='drive',this.pose==='type',this.pose==='drive');
   }
-
-  /** Hair is a set of shapes on the head (whose center is 0,0,0; the face looks down +z). */
-  private buildHair() {
-    for (const o of this.hair.children) (o as THREE.Mesh).geometry.dispose();
-    this.hair.clear();
-    const m = this.hairMat;
-    const add = (geo: THREE.BufferGeometry, x: number, y: number, z: number, rx = 0, rz = 0) => {
-      const part = mesh(geo, m, x, y, z);
-      part.rotation.set(rx, 0, rz);
-      this.hair.add(part);
-      return part;
-    };
-    const cap = () => add(new THREE.SphereGeometry(0.355, 20, 12, 0, Math.PI * 2, 0, Math.PI * 0.45), 0, 0.02, -0.02, -0.25);
-    switch (HAIR_STYLES[this.look.style]) {
-      case 'Short':
-        cap();
-        break;
-      case 'Long': {
-        cap();
-        // A curtain down the back, open at the front so the face shows.
-        // Around the head from ear to ear the back way, leaving the face open (phi = π/2 is the face).
-        const back = add(new THREE.SphereGeometry(0.37, 20, 14, Math.PI * 0.93, Math.PI * 1.14, Math.PI * 0.3, Math.PI * 0.5), 0, -0.06, -0.03);
-        back.scale.set(1.02, 1.35, 1);
-        break;
-      }
-      case 'Bun':
-        cap();
-        add(new THREE.SphereGeometry(0.14, 14, 12), 0, 0.3, -0.2);
-        break;
-      case 'Spiky':
-        cap();
-        // Two rows of spikes fanned out over the crown.
-        for (const [row, n, z, tilt] of [
-          [0, 5, 0.08, 0.35],
-          [1, 4, -0.12, -0.3],
-        ] as const) {
-          for (let i = 0; i < n; i++) {
-            const a = -0.85 + (i / (n - 1)) * 1.7;
-            const spike = add(new THREE.ConeGeometry(0.1, 0.3, 8), Math.sin(a) * 0.24, 0.33 - Math.abs(a) * 0.08 - row * 0.02, z);
-            spike.rotation.set(tilt, 0, -a * 0.9);
-          }
-        }
-        break;
-      case 'Curly': {
-        // Little puffs spread over the top and back of the head, leaving the face clear.
-        const n = 70;
-        for (let i = 0; i < n; i++) {
-          const y = 1 - (i / (n - 1)) * 2;
-          const r = Math.sqrt(1 - y * y);
-          const th = i * 2.39996;
-          const px = Math.cos(th) * r;
-          const pz = Math.sin(th) * r;
-          if (y < -0.15 || (pz > 0.35 && y < 0.55)) continue;
-          add(new THREE.SphereGeometry(0.1, 8, 6), px * 0.36, y * 0.36 + 0.04, pz * 0.36 - 0.02);
-        }
-        break;
-      }
-      case 'Ponytail': {
-        cap();
-        add(new THREE.SphereGeometry(0.075, 10, 8), 0, 0.12, -0.34);
-        const tail = add(new THREE.CapsuleGeometry(0.085, 0.3, 6, 10), 0, -0.1, -0.42, 0.35);
-        tail.scale.set(1, 1, 0.8);
-        break;
-      }
-      case 'Bald':
-        break;
-    }
-    this.hair.traverse((o) => ((o as THREE.Mesh).castShadow = true));
-  }
-
-  setLabel(name: string, muted: boolean | null) {
-    this.name = name;
-    if (this.label) {
-      this.root.remove(this.label);
-      disposeSprite(this.label);
-    }
-    const suffix = muted === null ? '' : muted ? ' 🔇' : ' 🎙️';
-    this.label = textSprite(`${name}${suffix}`, { bg: '#fffaf3', size: 40 });
-    this.label.position.y = 2.0;
-    this.root.add(this.label);
-  }
-
-  /** How loud this person is talking right now (0 when silent); drives the mic badge and the mouth. */
-  setVoiceLevel(level: number) {
-    this.voiceLevel = level;
-    this.speaking = level > SPEAKING;
-    this.mic.visible = this.speaking;
-  }
-
-  showLabel(v: boolean) {
-    if (this.label) this.label.visible = v;
-  }
-
-  /** Reach out with the right hand, as if pressing or grabbing something in front of you. */
-  reach() {
-    this.reachT = 0;
-  }
-
-  update(dt: number, t: number, moving: boolean, airborne: boolean) {
-    const target = moving ? 1 : 0;
-    this.walkPhase += dt * 11 * target;
-    const swing = Math.sin(this.walkPhase) * 0.7 * target;
-    if (airborne) {
-      this.legL.rotation.x = -0.5;
-      this.legR.rotation.x = 0.3;
-      this.armL.rotation.z = -2.4;
-      this.armR.rotation.z = 2.4;
-      this.armL.rotation.x = this.armR.rotation.x = 0;
-    } else {
-      this.legL.rotation.x = swing;
-      this.legR.rotation.x = -swing;
-      this.armL.rotation.x = -swing;
-      this.armR.rotation.x = swing;
-      this.armL.rotation.z = THREE.MathUtils.lerp(this.armL.rotation.z, -0.1, 0.3);
-      this.armR.rotation.z = THREE.MathUtils.lerp(this.armR.rotation.z, 0.1, 0.3);
-    }
-    let reach = 0;
-    if (this.reachT >= 0) {
-      this.reachT += dt;
-      reach = reachCurve(this.reachT / REACH_TIME);
-      // Forward is +z, so the character's right arm is the one on -x.
-      this.armL.rotation.x = THREE.MathUtils.lerp(this.armL.rotation.x, -1.65, reach);
-      this.armL.rotation.z = THREE.MathUtils.lerp(this.armL.rotation.z, 0.22, reach);
-      if (this.reachT >= REACH_TIME) this.reachT = -1;
-    }
-    // Lean into the reach a little.
-    this.body.rotation.x = reach * 0.12;
-    this.body.position.y = moving && !airborne ? Math.abs(Math.sin(this.walkPhase)) * 0.06 : 0;
-    if (this.speaking) this.mic.scale.setScalar(1 + Math.sin(t * 14) * 0.2);
-
-    // Lip flap: pop open fast on each syllable, close a little slower.
-    const want = THREE.MathUtils.clamp((this.voiceLevel - 0.02) / 0.12, 0, 1);
-    this.mouthOpen += (want - this.mouthOpen) * Math.min(1, dt * (want > this.mouthOpen ? 35 : 15));
-    if (this.voiceLevel > SPEAKING * 0.75) this.talkUntil = t + 0.4;
-    const talking = t < this.talkUntil;
-    this.smile.visible = !talking;
-    this.mouth.visible = talking;
-    if (talking) this.mouth.scale.set(0.07 * (1 - this.mouthOpen * 0.2), 0.01 + this.mouthOpen * 0.045, 0.05);
-    this.head.rotation.x = -this.mouthOpen * 0.08;
-  }
+  dispose(){this.human.dispose();if(this.label)disposeSprite(this.label);}
 }
-
-// -----------------------------------------------------------------------------------------------
 
 const STATUS_BULB: Record<string, string> = {
   starting: '#adb5bd',
@@ -284,71 +81,35 @@ const TASK_CHIP: Record<string, [string, string, string]> = {
   needs_input: ['❗ NEEDS YOU', STATUS_BULB.needs_input, '#ffffff'],
   done: ['✅ DONE', STATUS_BULB.done, '#2b2d42'],
   exited: ['💤 ASLEEP', STATUS_BULB.exited, '#ffffff'],
+  unknown: ['❔ UNKNOWN', '#dee2e6', '#2b2d42'],
   offline: ['💤 ASLEEP', STATUS_BULB.offline, '#ffffff'],
 };
 
-/** The little Claude worker that sits at a desk. Forward is +z. */
+/** A seated human worker with an independently animated skeleton and live task status. */
 export class Worker {
   readonly root = new THREE.Group();
-  private body = new THREE.Group();
-  private bulb: THREE.MeshToonMaterial;
-  private bulbMesh: THREE.Mesh;
-  private armL: THREE.Object3D;
-  private armR: THREE.Object3D;
+  private human: Human;
   private bubble: THREE.Sprite | null = null;
   private bubbleKey = '';
   /** The bubble is a task card: it hangs from its tail instead of floating. */
   private bubbleIsCard = false;
   private task: WorkerTask | undefined;
   private nameTag: THREE.Sprite | null = null;
-  private eyes: THREE.Mesh[] = [];
-  private blinkAt = Math.random() * 4;
   status = 'starting';
   bouncing = false;
-  private bounceT = 0;
-  private spawnT = 0;
-
+  /** Set from typingPose(): only a fresh, running agent turn types. */
+  typing = false;
+  /** False while the server's evidence is stale: the cached status is then only last-known. */
+  private live = true;
+  private reasonTag: THREE.Sprite | null = null;
+  private reasonKey = '';
+  /** Body state, set by the routine controller (worker-life.ts) from the worker's real server state. */
+  readonly motion: { speed: number; seated: boolean; activity: HumanActivity; detail: boolean; transition: string | null; progress: number } =
+    { speed: 0, seated: true, activity: 'none', detail: true, transition: null, progress: 0 };
   constructor(name: string, color: string) {
-    const skin = toonUnique(color);
-    const white = toon('#ffffff');
-    const ink = toon('#1d1d1d');
-
-    this.root.add(this.body);
-    // Bean-shaped body
-    const bean = mesh(new THREE.CapsuleGeometry(0.28, 0.3, 8, 16), skin, 0, 0.55, 0);
-    this.body.add(bean);
-    // Big cartoon eyes
-    for (const sx of [-1, 1]) {
-      const eye = mesh(new THREE.SphereGeometry(0.09, 12, 10), white, sx * 0.11, 0.7, 0.23, false);
-      eye.scale.z = 0.6;
-      this.body.add(eye);
-      const pupil = mesh(new THREE.SphereGeometry(0.045, 10, 8), ink, sx * 0.11, 0.7, 0.29, false);
-      this.body.add(pupil);
-      this.eyes.push(eye, pupil);
-    }
-    // Headset: band + mic
-    const band = mesh(new THREE.TorusGeometry(0.29, 0.025, 6, 20, Math.PI), toon('#2b2d42'), 0, 0.72, 0, false);
-    band.rotation.y = Math.PI / 2;
-    this.body.add(band);
-    for (const sx of [-1, 1]) this.body.add(mesh(new THREE.SphereGeometry(0.07, 10, 8), toon('#2b2d42'), sx * 0.29, 0.72, 0, false));
-    // Antenna with status bulb
-    this.body.add(mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.22, 6), toon('#2b2d42'), 0, 1.07, 0, false));
-    this.bulb = toonUnique(STATUS_BULB.starting);
-    this.bulb.emissive = new THREE.Color(STATUS_BULB.starting).multiplyScalar(0.6);
-    this.bulbMesh = mesh(new THREE.SphereGeometry(0.075, 12, 10), this.bulb, 0, 1.2, 0, false);
-    this.body.add(this.bulbMesh);
-
-    const arm = (x: number) => {
-      const pivot = new THREE.Group();
-      pivot.position.set(x, 0.55, 0.05);
-      pivot.add(mesh(new THREE.CapsuleGeometry(0.055, 0.16, 4, 8), skin, 0, -0.12, 0));
-      this.body.add(pivot);
-      return pivot;
-    };
-    this.armL = arm(-0.3);
-    this.armR = arm(0.3);
-    for (const sx of [-1, 1]) this.body.add(mesh(new THREE.CapsuleGeometry(0.06, 0.1, 4, 8), skin, sx * 0.12, 0.2, 0.05));
-
+    this.human=new Human(name.length);
+    this.root.add(this.human.root);
+    this.root.userData.accent=color;
     this.setName(name);
   }
 
@@ -365,9 +126,7 @@ export class Worker {
   setStatus(status: string, bounce: boolean) {
     this.status = status;
     this.bouncing = bounce;
-    const c = STATUS_BULB[status] ?? '#adb5bd';
-    this.bulb.color.set(c);
-    this.bulb.emissive.set(c).multiplyScalar(0.7);
+
     this.drawBubble();
   }
 
@@ -377,12 +136,19 @@ export class Worker {
     this.drawBubble();
   }
 
+  setLive(live: boolean) {
+    if (this.live === live) return;
+    this.live = live;
+    this.drawBubble();
+  }
+
   private drawBubble() {
-    const { status, bouncing: bounce, task } = this;
+    const { bouncing: bounce, task } = this;
+    const status = this.live ? this.status : 'unknown';
     const hot = status === 'needs_input' || (status === 'done' && bounce);
     const bg = hot ? (status === 'done' ? '#caffbf' : '#ffd6e0') : status === 'working' ? '#ffec99' : '#fffaf3';
     const bubble =
-      status === 'needs_input' ? '❗ needs you' : status === 'done' && bounce ? '✅ done!' : status === 'working' ? '⌨️ working' : status === 'offline' || status === 'exited' ? '💤' : '';
+      status === 'needs_input' ? '❗ needs you' : status === 'done' && bounce ? '✅ done!' : status === 'working' ? '⌨️ working' : status === 'offline' || status === 'exited' ? '💤' : status === 'unknown' ? '❔ status unknown' : '';
     const key = task ? `${status}|${bounce}|${task.name}|${task.summary}` : bubble;
     if (key === this.bubbleKey) return;
     this.bubbleKey = key;
@@ -394,53 +160,46 @@ export class Worker {
     this.bubbleIsCard = !!task;
     if (task) {
       const [text, chipBg, color] = TASK_CHIP[status] ?? TASK_CHIP.idle;
-      const asleep = status === 'offline' || status === 'exited';
+      const asleep = status === 'offline' || status === 'exited' || status === 'unknown';
       this.bubble = cardSprite({ chip: { text, bg: chipBg, color }, title: task.name, body: task.summary, bg: asleep ? '#e9ecef' : bg });
     } else if (bubble) this.bubble = textSprite(bubble, { bg, size: 38 });
     if (this.bubble) this.root.add(this.bubble);
   }
 
+  /** Why the worker is where it is (e.g. "Turn finished — on a coffee break"); '' hides it. */
+  setReason(text: string) {
+    if (text === this.reasonKey) return;
+    this.reasonKey = text;
+    if (this.reasonTag) {
+      this.root.remove(this.reasonTag);
+      disposeSprite(this.reasonTag);
+      this.reasonTag = null;
+    }
+    if (!text) return;
+    this.reasonTag = textSprite(text, { bg: '#fffaf3', color: '#2b2d42', size: 26 });
+    this.reasonTag.scale.multiplyScalar(0.8);
+    this.root.add(this.reasonTag);
+  }
+
   update(dt: number, t: number) {
-    const working = this.status === 'working';
-    // Pop-in when hired
-    this.spawnT = Math.min(1, this.spawnT + dt * 2.5);
-    const pop = this.spawnT < 1 ? 1 + Math.sin(this.spawnT * Math.PI) * 0.35 : 1;
-    // Typing arms
-    if (working) {
-      this.armL.rotation.x = -1.2 + Math.sin(t * 22) * 0.25;
-      this.armR.rotation.x = -1.2 + Math.sin(t * 22 + 1.7) * 0.25;
-    } else {
-      this.armL.rotation.x = THREE.MathUtils.lerp(this.armL.rotation.x, this.bouncing ? -2.6 : -0.3, 0.2);
-      this.armR.rotation.x = THREE.MathUtils.lerp(this.armR.rotation.x, this.bouncing ? -2.6 : -0.3, 0.2);
-    }
-    // Jump up and down when done / waiting on a human
-    if (this.bouncing) {
-      this.bounceT += dt * 7;
-      const s = Math.abs(Math.sin(this.bounceT));
-      this.body.position.y = s * 0.55;
-      const squash = s < 0.15 ? 1 - (0.15 - s) * 1.6 : 1;
-      this.body.scale.set(pop * (2 - squash), pop * squash, pop * (2 - squash));
-      this.body.rotation.y = Math.sin(this.bounceT * 0.5) * 0.3;
-    } else {
-      this.bounceT = 0;
-      this.body.position.y = working ? Math.abs(Math.sin(t * 11)) * 0.02 : Math.sin(t * 2) * 0.015;
-      this.body.scale.setScalar(pop);
-      this.body.rotation.y = THREE.MathUtils.lerp(this.body.rotation.y, 0, 0.1);
-    }
-    // Blink
-    this.blinkAt -= dt;
-    const blinking = this.blinkAt < 0.12 && this.blinkAt > 0;
-    if (this.blinkAt < 0) this.blinkAt = 2 + Math.random() * 4;
-    for (const e of this.eyes) e.scale.y = blinking ? 0.1 : 1;
-    const sleepy = this.status === 'offline' || this.status === 'exited';
-    this.bulbMesh.scale.setScalar(this.status === 'needs_input' ? 1 + Math.abs(Math.sin(t * 8)) * 0.5 : 1);
-    if (sleepy) this.body.rotation.z = Math.sin(t * 1.5) * 0.08;
-    if (this.bubble) this.bubble.position.y = (this.bubbleIsCard ? 1.74 : 1.95) + (this.bouncing ? this.body.position.y : 0) + Math.sin(t * 3) * 0.03;
-    if (this.nameTag) this.nameTag.position.y = 1.55 + (this.bouncing ? this.body.position.y : 0);
+    const m = this.motion;
+    this.human.setTransition(m.transition, m.progress);
+    this.human.setActivity(m.activity, m.detail);
+    // Typing only ever happens seated at the desk; the routine controller clears `seated` everywhere else it matters.
+    this.human.update(dt, m.speed, m.seated, this.typing && m.seated);
+    // Labels ride higher over a standing body than a seated one.
+    const lift = m.seated && !m.transition ? 0 : 0.42;
+    // The reason line sits just above the name; the bubble or task card moves up to make room.
+    const reason = this.reasonTag ? 0.27 : 0;
+    if (this.bubble) this.bubble.position.y = (this.bubbleIsCard ? 1.74 : 1.95) + lift + reason;
+    if (this.nameTag) this.nameTag.position.y = 1.55 + lift;
+    if (this.reasonTag) this.reasonTag.position.y = 1.55 + lift + reason;
   }
 
   dispose() {
+    this.human.dispose();
     if (this.bubble) disposeSprite(this.bubble);
     if (this.nameTag) disposeSprite(this.nameTag);
+    if (this.reasonTag) disposeSprite(this.reasonTag);
   }
 }

@@ -1,3 +1,7 @@
+import { Consultancy, ConsultancyError } from './consultancy.js';
+import { TelegramBridge, telegramConfig, type TelegramConfig, type TelegramTransport } from './telegram.js';
+import { chiefCommands } from './chief-commands.js';
+import { Empire } from './empire.js';
 import http from 'node:http';
 import https from 'node:https';
 import { randomBytes } from 'node:crypto';
@@ -8,7 +12,8 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { Config } from './config.js';
 import { Auth } from './auth.js';
-import { WorkerManager } from './workers.js';
+import { DeviceStore, type DeviceInfo } from './devices.js';
+import { WorkerManager, type WorkerRuntime } from './workers.js';
 import { GitHub } from './github.js';
 import { Team } from './team.js';
 import { Upgrader } from './upgrade.js';
@@ -21,6 +26,10 @@ import { RELAY_LOGIN, relayRequest, relayUpgrade, signInPage, stoppedPage, tunne
 import type { ChatLine, ClientMsg, PeerInfo, ProjectInfo, ServerMsg, ServicesState } from '../shared/protocol.js';
 import { SPAWN } from '../shared/layout.js';
 import { lookFromSeed, sanitizeLook } from '../shared/avatar.js';
+import { Continuity } from './continuity.js';
+import { SyncArtifacts } from './sync-artifacts.js';
+import { acquireHostLock } from './host-lock.js';
+import { ExecutionManager, ExecutionError, type ExecutionOptions } from './execution.js';
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -31,6 +40,7 @@ const MIME: Record<string, string> = {
   '.jpg': 'image/jpeg',
   '.ico': 'image/x-icon',
   '.json': 'application/json',
+  '.webmanifest': 'application/manifest+json',
   '.woff2': 'font/woff2',
   '.wasm': 'application/wasm',
   '.mp3': 'audio/mpeg',
@@ -42,6 +52,8 @@ const CLEANUPS = new Set(['keep', 'worktree', 'all']);
 interface Client {
   id: string;
   ws: WebSocket;
+  /** Set when the connection signed in with a device token, so revoking the device closes it. */
+  deviceId?: string;
   peer: PeerInfo;
   attached: Set<string>;
   /** Terminals whose output was skipped because this client fell behind; re-snapshotted later. */
@@ -106,22 +118,88 @@ function readBody(req: http.IncomingMessage, limit = 1024 * 1024): Promise<strin
   });
 }
 
+function sameOrigin(req: http.IncomingMessage, cfg: Config): boolean {
+  const host = (cfg.trustProxy && req.headers['x-forwarded-host']) || req.headers.host;
+  try {
+    return !!req.headers.origin && new URL(req.headers.origin).origin === `${isSecure(req, cfg) ? 'https' : 'http'}://${host}`;
+  } catch { return false; }
+}
+
 function send(res: http.ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}) {
   const json = JSON.stringify(body);
   res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', ...headers });
   res.end(json);
 }
 
+/** The bundled game apps' page origins (iOS WKURLSchemeHandler, Android WebViewAssetLoader). They get CORS, never cookies. */
+export const APP_ORIGINS: ReadonlySet<string> = new Set(['empire-app://game', 'https://appassets.androidplatform.net']);
+/** The one WebSocket subprotocol the server speaks; the bearer token rides alongside as `bearer.<token>`. */
+export const WS_PROTOCOL = 'empire.v1';
+const WS_BEARER_PREFIX = 'bearer.';
+
+const hasBearer = (req: http.IncomingMessage) => /^Bearer(\s|$)/i.test(req.headers.authorization ?? '');
+
+/** A device token from `Authorization: Bearer …` (never from the query string or a cookie). */
+function bearerFrom(req: http.IncomingMessage): string | undefined {
+  const m = /^Bearer\s+(\S+)\s*$/i.exec(req.headers.authorization ?? '');
+  return m?.[1];
+}
+
+/** Offered WebSocket subprotocols; the bearer token (if any) is taken from a `bearer.<token>` entry. */
+function wsProtocols(req: http.IncomingMessage): { offered: string[]; token?: string } {
+  const header = req.headers['sec-websocket-protocol'];
+  const offered = (Array.isArray(header) ? header.join(',') : header ?? '').split(',').map((v) => v.trim()).filter(Boolean);
+  const bearer = offered.filter((v) => v.startsWith(WS_BEARER_PREFIX));
+  // Exactly one token, or none; several is ambiguous and refused by the caller.
+  return { offered, token: bearer.length === 1 ? bearer[0].slice(WS_BEARER_PREFIX.length) : bearer.length ? '' : undefined };
+}
+
 const str = (v: unknown, max: number) => (typeof v === 'string' ? v.slice(0, max) : '');
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
 const COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 
-export async function startServer(cfg: Config) {
-  const publicDir = findPublicDir();
+/** Internal injection points let integration tests use fake processes and no external polling. */
+export interface ServerRuntime {
+  workers?: WorkerRuntime;
+  publicDir?: string;
+  backgroundServices?: boolean;
+  execution?: ExecutionOptions;
+  /** Explicit test injection; false prevents use of host Telegram environment. */
+  telegram?: { config: TelegramConfig; transport?: TelegramTransport } | false;
+  /** Packaged first-run desktops require an explicit execution choice before any local process. */
+  requireExecutionSetup?: boolean;
+}
+export async function startServer(cfg: Config, runtime: ServerRuntime = {}) {
+  const releaseHost = acquireHostLock(cfg.dataDir);
+  const startupCleanup: (() => void)[] = [releaseHost];
+  try {
+    return await startOwnedServer(cfg, runtime, releaseHost, startupCleanup);
+  } catch (error) {
+    for (const cleanup of startupCleanup.reverse()) { try { cleanup(); } catch { /* preserve the original startup error */ } }
+    throw error;
+  }
+}
+
+async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost: () => void, startupCleanup: (() => void)[]) {
+  const publicDir = runtime.publicDir ?? findPublicDir();
   const auth = new Auth(cfg.verifier, cfg.salt, cfg.secret);
+  const devices = new DeviceStore(cfg.dataDir, cfg.secret, cfg.verifier);
+  startupCleanup.push(() => devices.flush());
   const clients = new Map<string, Client>();
   const chat: ChatLine[] = [];
   const project = projectInfo(cfg);
+  const continuity = new Continuity(cfg.dataDir);
+  const artifacts = new SyncArtifacts(cfg.dir, cfg.dataDir, continuity.serverId);
+  const execution = new ExecutionManager(cfg.dataDir, runtime.execution);
+  startupCleanup.push(() => execution.stop());
+  let localQueueApproved = !runtime.requireExecutionSetup;
+  const localExecutionBlocker = () => {
+    const setup = execution.setup();
+    if (setup.storageError) return setup.storageError;
+    if (setup.config.mode === 'anthropic_cloud') return 'Provider cloud is selected. Use Cloud tasks in Execution settings; local queue work stays paused.';
+    if (runtime.requireExecutionSetup && !setup.config.completed) return 'Choose where workers run in Execution setup before starting local work.';
+    return undefined;
+  };
 
   const sendTo = (c: Client, msg: ServerMsg) => {
     if (c.ws.readyState === WebSocket.OPEN) c.ws.send(JSON.stringify(msg));
@@ -135,10 +213,22 @@ export async function startServer(cfg: Config) {
     }
   };
 
-  // --- Loopback-only endpoint that Claude Code hooks POST to --------------------------------
   let workers!: WorkerManager;
   let queue!: TaskQueue;
   let changes!: Changes;
+  let consultancy: Consultancy | undefined;
+  let observing = false;
+  const storageError = () => [workers?.recoveryError, queue?.recoveryError, consultancy?.recoveryError].filter(Boolean).join(' ') || undefined;
+  const observeContinuity = () => {
+    if (!workers || !queue || observing) return;
+    observing = true;
+    try { continuity.observe({ empire: empire.state, queue: queue.state(), workers: workers.list() }); }
+    finally { observing = false; }
+    broadcast({ t: 'continuity.status', status: continuity.status(storageError()) });
+  };
+  const empire = new Empire(cfg.dataDir, state => { broadcast({ t: 'empire', state }); observeContinuity(); });
+
+  // --- Loopback-only endpoint that Claude Code hooks POST to --------------------------------
   const hookServer = http.createServer(async (req, res) => {
     let url: URL;
     try {
@@ -159,6 +249,7 @@ export async function startServer(cfg: Config) {
     send(res, ok ? 200 : 401, {});
   });
   await new Promise<void>((resolve) => hookServer.listen(0, '127.0.0.1', resolve));
+  startupCleanup.push(() => hookServer.close());
   const hookPort = (hookServer.address() as { port: number }).port;
 
   // What the workers spend, all time and today, with the optional daily budget.
@@ -179,11 +270,13 @@ export async function startServer(cfg: Config) {
       update: (worker) => {
         broadcast({ t: 'worker.update', worker });
         queue?.onWorker(worker);
+        if (queue) empire.tick(workers.list(), queue.state(), 0);
       },
       remove: (workerId) => {
-        changes.forget(workerId);
+        changes?.forget(workerId);
         broadcast({ t: 'worker.remove', workerId });
         queue?.onWorkerGone(workerId);
+        if (queue) empire.tick(workers.list(), queue.state(), 0);
       },
       data: (workerId, data, viewers) => {
         const json = JSON.stringify({ t: 'term.data', workerId, data } satisfies ServerMsg);
@@ -200,8 +293,12 @@ export async function startServer(cfg: Config) {
       toast: (text, level) => broadcast({ t: 'toast', text, level }),
     },
     ledger,
+    () => empire.state.office.workstations,
+    runtime.workers,
+    localExecutionBlocker,
   );
 
+  startupCleanup.push(() => workers.shutdown());
   const github = new GitHub(
     cfg.dir,
     (state) => broadcast({ t: 'gh.issues', state }),
@@ -212,13 +309,44 @@ export async function startServer(cfg: Config) {
   );
   // The 📋 task queue seats workers by itself: it watches the workers and links PRs from GitHub.
   queue = new TaskQueue(cfg.dataDir, workers, !!project.branch, {
-    update: (state) => broadcast({ t: 'queue', state }),
+    update: (state) => { broadcast({ t: 'queue', state }); empire.tick(workers.list(), state, 0); },
     toast: (text, level) => broadcast({ t: 'toast', text, level }),
     claimIssue: (issue) => github.claim(issue),
     refreshGitHub: () => void github.refresh(),
-    hiringPaused: () => ledger.hiringPaused,
+    hiringPaused: () => localExecutionBlocker() || (!localQueueApproved ? 'Choose queue concurrency explicitly to start pending local tasks.' : undefined) || ledger.hiringPaused,
+    retryAllowed: task => empire.managerTaskRetryBlocker(task),
+  }, runtime.requireExecutionSetup);
+  // Saved appointment flags are historical until worker/queue evidence has been reconciled.
+  startupCleanup.push(() => queue.shutdown());
+  empire.tick(workers.list(), queue.state(), 0);
+  if (runtime.backgroundServices !== false) github.start();
+
+  consultancy = new Consultancy(cfg.dataDir, {
+    state: () => ({ ...queue.state(), storageError: queue.recoveryError }),
+    add: (prompt, by, title, issue, jobKey) => queue.add(prompt, by, title, issue, jobKey),
   });
-  github.start();
+  const office = consultancy;
+  const capacityReport = () => ({
+    workstations: empire.state.office.workstations,
+    workers: workers.list().filter(w => w.processState === 'running').length,
+    attention: workers.list().filter(w => w.status === 'needs_input').length,
+    concurrency: queue.limit,
+    queued: queue.recoveryError ? null : queue.state().tasks.filter(t => t.status === 'queued').length,
+    blocker: storageError() || localExecutionBlocker() || (!localQueueApproved || queue.limit === 0 ? 'The local task queue is paused. Set concurrency in the game’s Queue panel to start approved work.' : undefined) || ledger.hiringPaused,
+    mode: execution.setup().config.mode,
+  });
+  const chief = chiefCommands(office, () => {
+    const r = capacityReport();
+    return `${r.workstations} funded workstations · ${r.workers} running workers · concurrency ${r.concurrency} · ${r.queued === null ? 'queue count unavailable' : `${r.queued} tasks queued`} · ${r.attention} workers need input.${r.blocker ? ` Waiting: ${r.blocker}` : ''} This coordinator requires the execution host to remain running.`;
+  });
+  let telegram: TelegramBridge | undefined;
+  let telegramError: string | undefined;
+  try {
+    const config = runtime.telegram === false || runtime.backgroundServices === false && !runtime.telegram
+      ? undefined : runtime.telegram?.config ?? telegramConfig(process.env);
+    if (config) telegram = new TelegramBridge(cfg.dataDir, config, chief, runtime.telegram ? runtime.telegram.transport : undefined);
+  } catch (error) { telegramError = (error as Error).message; }
+  startupCleanup.push(() => telegram?.stop());
 
   // What each worker changed, for the Changes window at its desk (see changes.ts).
   changes = new Changes(
@@ -261,10 +389,10 @@ export async function startServer(cfg: Config) {
   const upgrader = new Upgrader(
     (state) => broadcast({ t: 'upgrade', state }),
     () => {
-      // cli.ts shuts down gracefully; systemd (Restart=always) then starts the new version, which
-      // wakes every worker.
+      // cli.ts shuts down gracefully; recovered tasks remain interrupted after restart.
       process.kill(process.pid, 'SIGTERM');
     },
+    runtime.backgroundServices !== false,
   );
 
   // --- HTTP ------------------------------------------------------------------------------------
@@ -295,6 +423,56 @@ export async function startServer(cfg: Config) {
     return send(res, 200, { ok: true }, { 'set-cookie': auth.cookie(req, auth.issue(), isSecure(req, cfg)) });
   };
 
+  /** Same password check and the same per-client attempt budget as the cookie login. */
+  const deviceLogin = async (req: http.IncomingMessage, res: http.ServerResponse) => {
+    const ip = clientIp(req, cfg.trustProxy);
+    if (!auth.allowAttempt(ip)) return send(res, 429, { error: 'Too many attempts. Try again in a few minutes.' });
+    let pw = '';
+    let deviceName: unknown;
+    try {
+      const body = JSON.parse(await readBody(req, 4096));
+      pw = str(body?.password, 512);
+      deviceName = body?.deviceName;
+    } catch {
+      return send(res, 400, { error: 'Bad request' });
+    }
+    if (!(await auth.checkPassword(pw))) return send(res, 401, { error: 'Wrong password' });
+    auth.recordSuccess(ip);
+    let issued: ReturnType<DeviceStore['issue']>;
+    try { issued = devices.issue(deviceName); }
+    catch (err) {
+      console.error('[devices] could not save a new device sign-in:', (err as Error).message);
+      return send(res, 500, { error: 'Could not save the device sign-in. Try again.' });
+    }
+    if (!issued) return send(res, 409, { error: 'Too many signed-in devices. Remove one in Settings first.' });
+    return send(res, 200, issued);
+  };
+
+  /**
+   * How a request is signed in: a device token (when a Bearer Authorization header is sent, only that
+   * counts) or the session cookie. Other schemes (a proxy's Basic auth, say) leave cookie auth as it was.
+   */
+  const authenticate = (req: http.IncomingMessage): { via: 'bearer'; device: DeviceInfo } | { via: 'cookie' } | undefined => {
+    if (hasBearer(req)) {
+      const device = devices.verify(bearerFrom(req));
+      return device ? { via: 'bearer', device } : undefined;
+    }
+    return auth.fromRequest(req) ? { via: 'cookie' } : undefined;
+  };
+
+  /**
+   * Closes a device's WebSockets. close() only starts the closing handshake, and a peer that ignores
+   * it could hold the socket open; messages are already dropped once it is CLOSING (see onConnection),
+   * and the socket is cut off outright shortly after.
+   */
+  const disconnectDevice = (deviceId: string) => {
+    for (const c of clients.values()) {
+      if (c.deviceId !== deviceId) continue;
+      c.ws.close(4401, 'Device signed out');
+      setTimeout(() => { if (c.ws.readyState !== WebSocket.CLOSED) c.ws.terminate(); }, 1000).unref();
+    }
+  };
+
   const handler = async (req: http.IncomingMessage, res: http.ServerResponse) => {
     try {
       // A service tunnel (localhost:5173 -> the office): relay to that worker's server.
@@ -312,7 +490,29 @@ export async function startServer(cfg: Config) {
       } catch {
         return send(res, 400, { error: 'Bad request' });
       }
+      // CORS, only for the bundled apps' own origins and never with credentials (no cookies cross-origin).
+      // Preflights, sign-in and health are answered for them; anything else only when a bearer token is sent.
+      const appOrigin = typeof req.headers.origin === 'string' && APP_ORIGINS.has(req.headers.origin) ? req.headers.origin : undefined;
+      if (appOrigin) {
+        if (req.method === 'OPTIONS') {
+          res.writeHead(204, {
+            'access-control-allow-origin': appOrigin,
+            'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS',
+            'access-control-allow-headers': 'Authorization, Content-Type',
+            'access-control-max-age': '600',
+            vary: 'Origin',
+            'cache-control': 'no-store',
+          });
+          res.end();
+          return;
+        }
+        if (hasBearer(req) || p === '/api/device/login' || p === '/api/health') {
+          res.setHeader('access-control-allow-origin', appOrigin);
+          res.setHeader('vary', 'Origin');
+        }
+      }
       if (p === '/api/login' && req.method === 'POST') return await login(req, res);
+      if (p === '/api/device/login' && req.method === 'POST') return await deviceLogin(req, res);
       // One-time reveal of the generated password. After this the plaintext is gone for good.
       const claimable = !!cfg.claimToken && !cfg.claimed && !!cfg.password;
       if (p === '/api/claim' && req.method === 'GET') return send(res, 200, { claimable });
@@ -338,6 +538,12 @@ export async function startServer(cfg: Config) {
       }
       if (p === '/api/health') return send(res, 200, { ok: true });
 
+      if (req.method === 'GET' && (p === '/sw.js' || p === '/manifest.webmanifest')) {
+        const file = path.join(publicDir, p.slice(1));
+        if (!existsSync(file)) return send(res, 404, { error: 'Not found' });
+        return serveFile(res, file, false);
+      }
+
       if (p.startsWith('/assets/')) {
         const file = path.join(publicDir, path.normalize(p).replace(/^(\.\.[/\\])+/, ''));
         if (file.startsWith(publicDir) && existsSync(file) && statSync(file).isFile()) return serveFile(res, file, true);
@@ -348,12 +554,120 @@ export async function startServer(cfg: Config) {
       if (p === '/claim' || p === '/claim.html') return serveFile(res, path.join(publicDir, 'claim.html'), false);
       if (p === '/favicon.svg') return serveFile(res, path.join(publicDir, 'favicon.svg'), false);
 
-      if (!auth.fromRequest(req)) {
-        if (p.startsWith('/api/')) return send(res, 401, { error: 'Not logged in' });
+      const signedIn = authenticate(req);
+      if (!signedIn) {
+        if (p.startsWith('/api/') || hasBearer(req)) return send(res, 401, { error: 'Not logged in' });
         res.writeHead(302, { location: '/login' }).end();
         return;
       }
-      if (p === '/api/whoami') return send(res, 200, { ok: true });
+      // A bearer token is never sent by a browser on its own, so a bearer request can't be a forgery;
+      // cookie requests keep the same-origin Origin check exactly as before.
+      const trusted = () => signedIn.via === 'bearer' || sameOrigin(req, cfg);
+      if (p === '/api/whoami') return send(res, 200, signedIn.via === 'bearer' ? { ok: true, deviceId: signedIn.device.id } : { ok: true });
+      if (p === '/api/devices' && req.method === 'GET') {
+        const current = signedIn.via === 'bearer' ? signedIn.device.id : undefined;
+        return send(res, 200, { devices: devices.list().map((d) => ({ ...d, current: d.id === current })) });
+      }
+      const deviceRoute = /^\/api\/devices\/([A-Za-z0-9_-]{1,32})$/.exec(p);
+      if (deviceRoute && req.method === 'DELETE') {
+        if (!trusted()) return send(res, 403, { error: 'A same-origin Origin header is required' });
+        let revoked: boolean;
+        try {
+          revoked = devices.revoke(deviceRoute[1]);
+        } catch (err) {
+          console.error('[devices] could not save a device revocation:', (err as Error).message);
+          return send(res, 500, { error: 'Could not save the revocation, so the device is still signed in. Its connections were closed; try again.' });
+        } finally {
+          // Whatever happened on disk, the device's live connections go now.
+          disconnectDevice(deviceRoute[1]);
+        }
+        if (!revoked) return send(res, 404, { error: 'No such device' });
+        return send(res, 200, { ok: true });
+      }
+      if (p.startsWith('/api/consultancy/')) {
+        if (req.method !== 'GET' && !trusted()) return send(res, 403, { error: 'A same-origin Origin header is required' });
+        try {
+          office.reconcile();
+          if (p === '/api/consultancy/jobs' && req.method === 'GET') return send(res, 200, office.snapshot());
+          if (p === '/api/consultancy/status' && req.method === 'GET') return send(res, 200, {
+            mode: 'rule_based', observedAt: Date.now(), repository: project.name,
+            resources: capacityReport(), telegram: telegram?.status() ?? { configured: false, running: false, error: telegramError },
+            hostRequired: true,
+          });
+          if (p === '/api/consultancy/jobs' && req.method === 'POST') {
+            let value: unknown;
+            try { value = JSON.parse(await readBody(req, 180_000)); }
+            catch { return send(res, 400, { error: 'Expected a JSON client brief.' }); }
+            return send(res, 200, office.create(value, 'CEO'));
+          }
+          const action = /^\/api\/consultancy\/jobs\/([a-zA-Z0-9_-]{1,80})\/(approve|reject)$/.exec(p);
+          if (action && req.method === 'POST') return send(res, 200, action[2] === 'approve' ? office.approve(action[1], 'CEO') : office.reject(action[1], 'CEO'));
+          return send(res, 404, { error: 'Unknown consultancy endpoint.' });
+        } catch (error) {
+          if (error instanceof ConsultancyError) return send(res, error.status, { error: error.message });
+          return send(res, 500, { error: 'Consultancy service could not complete this request.' });
+        }
+      }
+      if (p.startsWith('/api/execution/')) {
+        if (req.method !== 'GET' && !trusted()) return send(res, 403, {error:'A same-origin Origin header is required'});
+        try {
+          const body = async () => { try { return JSON.parse(await readBody(req, 32768)); } catch { throw new ExecutionError(400, 'invalid_json', 'Expected a JSON request.'); } };
+          if (p === '/api/execution/setup' && req.method === 'GET') return send(res, 200, execution.setup());
+          if (p === '/api/execution/setup' && req.method === 'PUT') {
+            const value = await body();
+            if (value?.mode !== execution.setup().config.mode && workers.list().some(w => w.processState === 'running' || w.processState === 'unknown'))
+              return send(res, 409, {error:'Stop or reconcile existing local workers before changing execution mode.'});
+            return send(res, 200, execution.updateSetup(value));
+          }
+          if (p === '/api/execution/check' && req.method === 'POST') return send(res, 200, await execution.check());
+          if (p === '/api/execution/tasks' && req.method === 'GET') return send(res, 200, {tasks:execution.tasks()});
+          if (p === '/api/execution/tasks' && req.method === 'POST') return send(res, 200, await execution.submit(await body()));
+          const stopping = /^\/api\/execution\/tasks\/([a-zA-Z0-9-]{1,80})\/stop$/.exec(p);
+          if (stopping && req.method === 'POST') return send(res, 200, await execution.stopTask(stopping[1]));
+          const refresh = /^\/api\/execution\/tasks\/([a-zA-Z0-9-]{1,80})\/refresh$/.exec(p);
+          if (refresh && req.method === 'POST') return send(res, 200, await execution.refresh(refresh[1]));
+          return send(res, 404, {error:'Unknown execution endpoint.'});
+        } catch (error) {
+          if (error instanceof ExecutionError) return send(res, error.status, {error:error.message,code:error.code});
+          return send(res, 500, {error:'Execution service could not complete this request.'});
+        }
+      }
+
+      if (p === '/api/continuity/status' && req.method === 'GET') return send(res, 200, continuity.status(storageError()));
+      if (p === '/api/continuity/events' && req.method === 'GET') {
+        const params = new URL(req.url ?? '/', 'http://x').searchParams;
+        const after = params.has('after') && /^\d+$/.test(params.get('after')!) ? Number(params.get('after')) : undefined;
+        return send(res, 200, continuity.feed(params.get('serverId') ?? undefined, after, storageError()));
+      }
+      if (p === '/api/sync/artifacts' && req.method === 'GET') return send(res, 200, { serverId: continuity.serverId, artifacts: await artifacts.list() });
+      if (p === '/api/sync/artifacts' && req.method === 'POST') {
+        if (!trusted()) return send(res, 403, { error: 'A same-origin Origin header is required' });
+        let body: unknown;
+        try { body = JSON.parse(await readBody(req, 4096)); }
+        catch { return send(res, 400, { error: 'Expected JSON with workerId' }); }
+        const workerId = body && typeof body === 'object' && 'workerId' in body ? body.workerId : undefined;
+        if (typeof workerId !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(workerId)) return send(res, 400, { error: 'Invalid workerId' });
+        if (changes.isBusy(workerId)) return send(res, 409, { error: 'Worker has a Git operation in progress' });
+        try {
+          const manifest = await artifacts.publish(workerId, publish => workers.publishArtifact(workerId, publish));
+          return send(res, 200, manifest);
+        } catch (error) { return send(res, 409, { error: (error as Error).message }); }
+      }
+      const artifactRoute = /^\/api\/sync\/artifacts\/([a-f0-9]{64})\/(manifest|bundle)$/.exec(p);
+      if (artifactRoute && req.method === 'GET') {
+        try {
+          if (artifactRoute[2] === 'manifest') return send(res, 200, artifacts.manifest(artifactRoute[1]));
+          const { file, manifest } = await artifacts.bundle(artifactRoute[1]);
+          res.writeHead(200, {
+            'content-type': 'application/octet-stream', 'content-length': String(manifest.bundle.bytes),
+            'content-disposition': `attachment; filename="${manifest.artifactId}.bundle"`,
+            'cache-control': 'private, no-store', 'x-content-type-options': 'nosniff',
+          });
+          createReadStream(file).on('error', () => res.destroy()).pipe(res);
+          return;
+        } catch (error) { return send(res, 404, { error: (error as Error).message }); }
+      }
+      if (p.startsWith('/api/continuity/') || p.startsWith('/api/sync/')) return send(res, 404, { error: 'Not found' });
       if (p === '/api/image' && req.method === 'GET') {
         // A picture on the wall, fetched by the office so the 3D view can draw it (see decor.ts).
         const r = await images.get(new URL(req.url ?? '/', 'http://x').searchParams.get('url') ?? '');
@@ -399,9 +713,12 @@ export async function startServer(cfg: Config) {
   };
 
   const server = cfg.tls ? https.createServer({ cert: cfg.tls.cert, key: cfg.tls.key }, handler) : http.createServer(handler);
+  server.once('close', releaseHost);
+  startupCleanup.push(() => server.close());
 
   // --- WebSocket -------------------------------------------------------------------------------
-  const wss = new WebSocketServer({ noServer: true, maxPayload: 2 * 1024 * 1024 });
+  // Only ever agree to empire.v1: the bearer.<token> entry must never be echoed back in the handshake.
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 2 * 1024 * 1024, handleProtocols: (offered) => (offered.has(WS_PROTOCOL) ? WS_PROTOCOL : false) });
   server.on('upgrade', (req, socket, head) => {
     socket.on('error', () => socket.destroy());
     const tunneled = tunneledPort(req, cfg.port);
@@ -427,15 +744,24 @@ export async function startServer(cfg: Config) {
     } catch {
       sameOrigin = false;
     }
-    if (url.pathname !== '/ws' || !auth.fromRequest(req) || !sameOrigin) {
+    const reject = () => {
       socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
       socket.destroy();
+    };
+    const protocols = wsProtocols(req);
+    if (protocols.token !== undefined) {
+      // Device token: it has to come with empire.v1, from no browser origin, this origin or a bundled app.
+      const allowedOrigin = !origin || sameOrigin || APP_ORIGINS.has(origin);
+      const device = allowedOrigin && protocols.offered.includes(WS_PROTOCOL) ? devices.verify(protocols.token) : undefined;
+      if (url.pathname !== '/ws' || !device) return reject();
+      wss.handleUpgrade(req, socket, head, (ws) => onConnection(ws, url, device.id));
       return;
     }
+    if (url.pathname !== '/ws' || !auth.fromRequest(req) || !sameOrigin) return reject();
     wss.handleUpgrade(req, socket, head, (ws) => onConnection(ws, url));
   });
 
-  const onConnection = (ws: WebSocket, url: URL) => {
+  const onConnection = (ws: WebSocket, url: URL, deviceId?: string) => {
     const id = randomBytes(5).toString('hex');
     const name = str(url.searchParams.get('name'), 24).trim() || `Guest ${id.slice(0, 3)}`;
     const colorParam = url.searchParams.get('color') ?? '';
@@ -443,6 +769,7 @@ export async function startServer(cfg: Config) {
     const client: Client = {
       id,
       ws,
+      deviceId,
       attached: new Set(),
       stale: new Set(),
       lastMoveAt: 0,
@@ -462,6 +789,7 @@ export async function startServer(cfg: Config) {
         sharing: false,
       },
     };
+    empire.tick(workers.list(), queue.state(), 0);
     clients.set(id, client);
     (ws as any).isAlive = true;
     ws.on('pong', () => ((ws as any).isAlive = true));
@@ -484,12 +812,16 @@ export async function startServer(cfg: Config) {
       usage: ledger.state(),
       queue: queue.state(),
     });
+    sendTo(client, { t: 'empire', state: empire.state });
+    sendTo(client, { t: 'continuity.status', status: continuity.status(storageError()) });
     for (const { workerId, frame } of workers.fullScreens()) sendTo(client, { t: 'screen', workerId, ...frame, full: true });
     broadcast({ t: 'peer.join', peer: client.peer }, id);
-    // Anyone whose process ended since (exited, or failed to resume) gets up as you walk in.
-    workers.wakeAll();
+    for (const error of [workers.recoveryError, queue.recoveryError])
+      if (error) sendTo(client, { t: 'toast', text: error, level: 'error' });
 
     ws.on('message', (raw) => {
+      // A socket being closed (a revoked device, say) gets no further say, even if its peer keeps talking.
+      if (ws.readyState !== WebSocket.OPEN) return;
       let msg: ClientMsg;
       try {
         msg = JSON.parse(raw.toString());
@@ -497,7 +829,12 @@ export async function startServer(cfg: Config) {
         return;
       }
       if (!msg || typeof msg !== 'object') return;
-      handleMessage(client, msg);
+      // One malformed message must never take the office (and every worker's PTY) down with it.
+      try {
+        handleMessage(client, msg);
+      } catch (err) {
+        console.error(`[ws] bad ${String((msg as { t?: unknown }).t)} message from ${client.peer.name}:`, err);
+      }
     });
     ws.on('close', () => {
       clients.delete(id);
@@ -510,7 +847,21 @@ export async function startServer(cfg: Config) {
 
   const handleMessage = (c: Client, msg: ClientMsg) => {
     const who = c.peer.name;
+    if ((msg.t === 'changes.commit' || msg.t === 'changes.discard' || msg.t === 'changes.pr') && workers.artifactPublishing(msg.workerId)) {
+      sendTo(c, { t: 'toast', text: 'This worker is publishing a sync artifact; wait for it to finish', level: 'warn' });
+      return;
+    }
     switch (msg.t) {
+      case 'empire.action': {
+        if (!msg.action || typeof msg.action !== 'object') break;
+        if (Date.now() - c.lastActAt < 250) break;
+        c.lastActAt = Date.now();
+        const error = empire.action(msg.action, queue);
+        if (error) sendTo(c, { t: 'toast', text: error, level: 'error' });
+        else empire.dispatchManagers(queue, who);
+        empire.tick(workers.list(), queue.state(), 0);
+        break;
+      }
       case 'move': {
         const p = c.peer;
         p.x = num(msg.x);
@@ -531,7 +882,7 @@ export async function startServer(cfg: Config) {
       case 'profile': {
         const name = str(msg.name, 24).trim();
         if (name) c.peer.name = name;
-        if (COLOR_RE.test(msg.color)) c.peer.color = msg.color;
+        if (typeof msg.color === 'string' && COLOR_RE.test(msg.color)) c.peer.color = msg.color;
         c.peer.look = sanitizeLook(msg.look, c.peer.look);
         broadcast({ t: 'peer.update', peer: c.peer });
         break;
@@ -571,10 +922,10 @@ export async function startServer(cfg: Config) {
       case 'worker.kill': {
         const w = workers.get(str(msg.workerId, 32));
         if (!w) break;
-        // The worker leaves right away; its worktree is dealt with after that, and the outcome follows.
-        const done = workers.kill(w.id, CLEANUPS.has(String(msg.cleanup)) ? msg.cleanup : undefined);
-        broadcast({ t: 'toast', text: `${who} sent ${w.name} home`, level: 'info' });
+        // Removal is announced only after the process has actually stopped.
+        const done = workers.kill(w.id, typeof msg.cleanup === 'string' && CLEANUPS.has(msg.cleanup) ? msg.cleanup : undefined);
         void done.then(({ note, error }) => {
+          if (!error) broadcast({ t: 'toast', text: `${who} sent ${w.name} home`, level: 'info' });
           if (note) broadcast({ t: 'toast', text: note, level: 'info' });
           if (error) broadcast({ t: 'toast', text: error, level: 'warn' });
         });
@@ -664,9 +1015,16 @@ export async function startServer(cfg: Config) {
       case 'queue.clear':
         queue.clear();
         break;
-      case 'queue.limit':
+      case 'queue.limit': {
+        const blocker = localExecutionBlocker();
+        if (num(msg.maxWorkers) > 0 && blocker) {
+          sendTo(c, { t: 'toast', text: blocker, level: 'warn' });
+          break;
+        }
+        localQueueApproved = num(msg.maxWorkers) > 0;
         queue.setLimit(num(msg.maxWorkers));
         break;
+      }
       case 'changes.watch':
         if (workers.get(str(msg.workerId, 32))) changes.watch(str(msg.workerId, 32), c.id);
         break;
@@ -766,6 +1124,8 @@ export async function startServer(cfg: Config) {
   }, 1000);
 
   // Drop dead connections so ghosts don't linger in the office.
+  empire.dispatchManagers(queue, 'Chief of staff');
+  const empireTimer = setInterval(() => { empire.tick(workers.list(), queue.state()); try { office.reconcile(); } catch { /* Durable service exposes recovery errors through its snapshot. */ } }, 5000);
   const heartbeat = setInterval(() => {
     for (const c of clients.values()) {
       if ((c.ws as any).isAlive === false) {
@@ -776,14 +1136,22 @@ export async function startServer(cfg: Config) {
       c.ws.ping();
     }
   }, 20_000);
+  startupCleanup.push(() => { clearInterval(empireTimer); clearInterval(heartbeat); clearInterval(resync); github.stop(); upgrader.stop(); services.stop(); changes.stop(); });
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
     server.listen(cfg.port, cfg.host, () => resolve());
   });
-  services.start();
+  if (runtime.backgroundServices !== false) services.start();
+  execution.start();
+  office.reconcile();
+  telegram?.start();
 
   const shutdown = () => {
+    telegram?.stop();
+    execution.stop();
+    clearInterval(empireTimer);
+    empire.flush();
     clearInterval(heartbeat);
     clearInterval(resync);
     github.stop();
@@ -793,10 +1161,11 @@ export async function startServer(cfg: Config) {
     changes.stop();
     workers.shutdown();
     ledger.flush();
+    devices.flush();
     for (const c of clients.values()) c.ws.close();
     server.close();
     hookServer.close();
   };
 
-  return { server, shutdown, workers, publicDir, hookPort };
+  return { server, shutdown, workers, publicDir, hookPort, execution, consultancy: office };
 }

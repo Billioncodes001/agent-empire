@@ -1,0 +1,5 @@
+# Install on the chosen host only after its domain points to that host.
+# Keep the application bound to loopback, as in compose.yaml.
+empire.example.com {
+    reverse_proxy 127.0.0.1:4600
+}

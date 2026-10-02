@@ -1,6 +1,7 @@
-import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync } from 'node:fs';
 import path from 'node:path';
 import type { Usage, UsageState } from '../shared/protocol.js';
+import { writeJsonAtomic } from './persistence.js';
 
 /*
  * Where a worker's numbers come from
@@ -29,6 +30,16 @@ export function addUsage(a: Usage, b: Usage, sign = 1): Usage {
     calls: a.calls + sign * b.calls,
   };
 }
+
+/** Drops negative components: spend is only ever booked, never taken back. */
+const clampUsage = (u: Usage): Usage => ({
+  input: Math.max(0, u.input),
+  output: Math.max(0, u.output),
+  cacheWrite: Math.max(0, u.cacheWrite),
+  cacheRead: Math.max(0, u.cacheRead),
+  cost: Math.max(0, u.cost),
+  calls: Math.max(0, u.calls),
+});
 
 const isZero = (u: Usage) => !u.input && !u.output && !u.cacheWrite && !u.cacheRead && !u.cost && !u.calls;
 
@@ -93,14 +104,58 @@ export interface UsageTracker {
   since: Usage;
   /** Latest transcript timestamp seen. */
   at?: number;
+  /** Everything earlier sessions of this worker (before a /clear or a fresh start) added up to. */
+  prior?: Usage;
+  /**
+   * The most this worker has already been booked to the ledger, per component. Claude Code's own
+   * tally can come in under our running estimate; measuring growth from this high-water mark (not
+   * from the last, possibly lower, figure) means that dip is neither handed back nor booked twice.
+   */
+  booked?: Usage;
 }
 
 export const newTracker = (): UsageTracker => ({ files: {}, since: zeroUsage() });
 
-export function trackerUsage(t: UsageTracker): Usage {
+/** The current session alone. */
+function sessionUsage(t: UsageTracker): Usage {
   if (!t.base) return { ...t.since };
   const { at: _at, ...base } = t.base;
   return addUsage(base, t.since);
+}
+
+export function trackerUsage(t: UsageTracker): Usage {
+  return t.prior ? addUsage(t.prior, sessionUsage(t)) : sessionUsage(t);
+}
+
+/**
+ * The worker moved to another transcript (/clear, or a fresh session). Its cost-state only covers
+ * that new session, so what the old one spent is set aside in `prior` and the tally starts over —
+ * otherwise the new session's tally would replace the old one and the worker's spend would drop.
+ */
+export function switchTranscript(t: UsageTracker, transcript: string) {
+  if (t.transcript) {
+    const session = sessionUsage(t);
+    if (!isZero(session)) t.prior = t.prior ? addUsage(t.prior, session) : session;
+  }
+  t.transcript = transcript;
+  t.base = undefined;
+  t.since = zeroUsage();
+  t.at = undefined;
+}
+
+/** What to add to the ledger for this worker now, moving its high-water mark up to `now`. */
+export function bookGrowth(t: UsageTracker, now: Usage): Usage {
+  const booked = t.booked ?? zeroUsage();
+  const grow = clampUsage(addUsage(now, booked, -1));
+  t.booked = {
+    input: Math.max(booked.input, now.input),
+    output: Math.max(booked.output, now.output),
+    cacheWrite: Math.max(booked.cacheWrite, now.cacheWrite),
+    cacheRead: Math.max(booked.cacheRead, now.cacheRead),
+    cost: Math.max(booked.cost, now.cost),
+    calls: Math.max(booked.calls, now.calls),
+  };
+  return grow;
 }
 
 const asUsage = (v: any): Usage | undefined =>
@@ -121,6 +176,9 @@ export function restoreTracker(saved: any): UsageTracker {
   if (base) t.base = { ...base, at: num(saved.base.at) };
   t.since = asUsage(saved.since) ?? zeroUsage();
   if (num(saved.at)) t.at = saved.at;
+  t.prior = asUsage(saved.prior);
+  // Saves from before `booked` existed: whatever the tracker adds up to was already booked then.
+  t.booked = asUsage(saved.booked) ?? (t.transcript ? trackerUsage(t) : undefined);
   return t;
 }
 
@@ -183,7 +241,7 @@ function applyLine(t: UsageTracker, cur: FileCursor, line: any): boolean {
       base.cacheRead += num(m.cacheReadInputTokens);
     }
     base.cost = num(line.totalCostUSD);
-    base.calls = trackerUsage(t).calls;
+    base.calls = sessionUsage(t).calls;
     t.base = { ...base, at: t.at ?? 0 };
     t.since = zeroUsage();
     return true;
@@ -304,6 +362,9 @@ export class Ledger {
   }
 
   add(delta: Usage) {
+    // Only growth is booked: a session's own tally can come in under our estimate of it, and a
+    // shrinking figure must never hand back budget that was already spent.
+    delta = clampUsage(delta);
     if (isZero(delta)) return;
     const day = localDay();
     this.total = addUsage(this.total, delta);
@@ -346,7 +407,7 @@ export class Ledger {
 
   private write() {
     try {
-      writeFileSync(this.file, JSON.stringify({ total: this.total, days: this.days }, null, 2), { mode: 0o600 });
+      writeJsonAtomic(this.file, { total: this.total, days: this.days });
     } catch {
       // disk issues shouldn't take the office down
     }

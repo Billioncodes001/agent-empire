@@ -1,11 +1,13 @@
 /**
- * Office sounds, synthesized with Web Audio so there are no audio files to ship: the room's air and a
- * humming fridge, workers typing while they work, footsteps, the coffee machine, birds outside the
+ * Recorded world foley plus quiet Web Audio office ambience: the room's air and a
+ * humming fridge, workers typing while they work, the coffee machine, birds outside the
  * windows, the odd rustle or phone, and the dings when a worker needs you.
  *
  * Everything goes through one master gain that Settings turns down or mutes. Voice chat doesn't.
  */
 import { DESKS, FLOOR } from '../shared/layout';
+import { WorldAudio, footSurface, type CarCue } from './world-audio';
+import type { VehicleMotion } from './vehicle';
 
 type Pos = { x: number; y: number; z: number };
 
@@ -43,6 +45,8 @@ interface Typist {
 
 export class OfficeSound {
   private ctx: AudioContext | null = null;
+  private foley?: WorldAudio;
+  private outdoors = false;
   private master!: GainNode;
   /** The room itself; it goes quiet while the tab is hidden. */
   private ambience!: GainNode;
@@ -120,6 +124,7 @@ export class OfficeSound {
     this.ambience.connect(this.master);
     this.alerts = ctx.createGain();
     this.alerts.connect(this.master);
+    this.foley = new WorldAudio(ctx, this.master);
     this.applyVolume();
     this.applyVisibility();
     this.startRoomTone();
@@ -141,7 +146,8 @@ export class OfficeSound {
   private applyVisibility() {
     if (!this.ctx) return;
     if (!document.hidden && this.ctx.state === 'suspended') void this.ctx.resume();
-    this.ambience.gain.setTargetAtTime(document.hidden ? 0 : 1, this.ctx.currentTime, 0.15);
+    this.ambience.gain.setTargetAtTime(document.hidden || this.outdoors ? 0 : 1, this.ctx.currentTime, 0.15);
+    this.foley?.visibility(document.hidden);
   }
 
   private count(what: string) {
@@ -263,19 +269,24 @@ export class OfficeSound {
   // ---- Footsteps --------------------------------------------------------------------------------
 
   /** One of your own footsteps, or the thump of landing a jump. */
-  step(kind: 'walk' | 'land' = 'walk') {
-    if (!this.ctx) return;
-    if (kind === 'land') this.play(pick(this.buf.steps), { gain: 0.5, rate: 0.75 });
-    else this.play(pick(this.buf.steps), { gain: rand(0.16, 0.21), rate: rand(0.9, 1.1) });
+  step(kind: 'walk' | 'land' = 'walk', running = false) {
+    this.foley?.step(footSurface(this.listener.x, this.listener.z), running, kind === 'land');
     this.count(kind === 'land' ? 'land' : 'step');
   }
-
-  /** Someone else's footstep. */
   stepAt(x: number, z: number) {
-    if (!this.ctx) return;
-    this.play(pick(this.buf.steps), { at: { x, y: 0.1, z }, gain: rand(0.3, 0.38), rate: rand(0.9, 1.1), ref: 1.5, rolloff: 1.4 });
+    this.foley?.step(footSurface(x, z), false, false, { x, y: .1, z });
     this.count('peerStep');
   }
+  carCue(name: CarCue, at: Pos) { this.foley?.cue(name, at); }
+  vehicle(motion: VehicleMotion, running: boolean, at: Pos, cabin: boolean) {
+    this.foley?.vehicle(motion, running, at, cabin);
+  }
+  environment(outside: boolean) {
+    if (outside === this.outdoors) return;
+    this.outdoors = outside; this.applyVisibility();
+  }
+  get recordings() { return this.foley?.status ?? 'locked'; }
+  get foleyPlayed() { return this.foley?.played ?? {}; }
 
   // ---- The coffee machine -------------------------------------------------------------------------
 

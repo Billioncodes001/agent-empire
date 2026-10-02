@@ -1,0 +1,19 @@
+// Optional Android Studio/Gradle build. The tested build is mobile/tools/build-android.py (no Gradle), which also
+// stages the game: run it once (or copy dist/public to ../build/portable/assets/game) before a Gradle build.
+plugins { id 'com.android.application' }
+android {
+    namespace 'com.agentempire.mobile'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'com.agentempire.mobile'
+        minSdk 26
+        targetSdk 35
+        versionCode 3
+        versionName '0.3.0'
+    }
+    sourceSets {
+        main { assets.srcDirs = ['../build/portable/assets'] }
+    }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+    buildTypes { release { minifyEnabled false } }
+}

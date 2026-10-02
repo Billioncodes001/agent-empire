@@ -1,15 +1,28 @@
+// First, so the splash counts every file the scene requests.
+import './ui/loading';
+import { Traversal } from './traversal';
+import { openFounding } from './ui/founding';
+import { buildCity } from './world/city';
+import { mountEmpire } from './ui/empire';
+import { officeCode, DEFAULT_KEYS, keyLabel, type Action } from './controls';
 import './style.css';
 import * as THREE from 'three';
-import { OutlineEffect } from 'three/examples/jsm/effects/OutlineEffect.js';
+import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { SSAOPass } from 'three/examples/jsm/postprocessing/SSAOPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { sameLook } from '../shared/avatar';
-import { DESK_BY_ID, DESKS, SPAWN, deskSeat } from '../shared/layout';
+import { DESK_BY_ID, FLOOR_RISE, SPAWN, deskSeat } from '../shared/layout';
 import type { PeerInfo, WorkerInfo } from '../shared/protocol';
 import { Net } from './net';
+import { apiFetch } from './endpoint';
 import { store, loadProfile, loadSettings, saveSettings, type Profile } from './state';
 import { EYE_HEIGHT, PlayerController, groundAt, isTyping } from './player';
 import { buildOffice, type InteractKind, type Interactable } from './world/office';
 import { Person, Worker } from './world/character';
-import { Hands } from './world/hands';
+import { OfficeLife } from './world/worker-life';
+import type { WaitingOn } from './world/routines';
 import { Laptop } from './world/laptop';
 import { BoardTexture, QueueBoardTexture, ServicesBoardTexture } from './world/boards';
 import { Gallery } from './world/gallery';
@@ -28,38 +41,84 @@ import { openTeam, routeTeamMessage } from './ui/team';
 import { mountServicesButton, openServices } from './ui/services';
 import { mountQueueButton, openQueue } from './ui/queue';
 import { openUpgrade, restarting, showRestarting, showUpgraded } from './ui/upgrade';
-import { openHelp, renderChat, renderPeople, renderWorkers, updateSpeaking } from './ui/hud';
+import { openHelp, openWorkersDialog, renderChat, renderPeople, renderWorkers, updateSpeaking } from './ui/hud';
+import { mountStatusStrip } from './ui/status-strip';
+import { typingPose } from './ui/status';
 import { openCharacter } from './ui/character';
+import { Tower } from './tower';
+import { GRAPHICS, applyGraphics } from './graphics';
 import { openSettings } from './ui/settings';
+import { appPanel } from './ui/app-panel';
+import { connectionView } from './ui/continuity';
+import { setupPwa } from './ui/pwa';
+import { maybeOfferExecutionSetup, openCloudTasks, openExecutionSetup } from './ui/execution';
+import { cloudSession, forgetSavedSnapshots } from './cloud/session';
+import { CloudNet } from './cloud/net';
+import { installCloudChrome, mountCloudStrip, openCloudPanel } from './cloud/ui';
+import { native } from './native';
 import { hiringPaused, renderUsage, usageLabel, usageTitle } from './ui/usage';
 
 // ---- Renderer & scene ---------------------------------------------------------------------------
 const canvas = $('scene') as HTMLCanvasElement;
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.info.autoReset=false;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
-const effect = new OutlineEffect(renderer, { defaultThickness: 0.0032, defaultColor: [0.17, 0.18, 0.26] });
+
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color('#bfe3ff');
-scene.fog = new THREE.Fog('#bfe3ff', 40, 90);
-const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 200);
+scene.background = new THREE.Color('#bed0dd');
+scene.fog = new THREE.Fog('#bdcad0', 140, 430);
+const camera = new THREE.PerspectiveCamera(64, 1, 0.08, 1500);
 
-scene.add(new THREE.HemisphereLight('#fff5e6', '#c9a27a', 1.5));
-scene.add(new THREE.AmbientLight('#ffffff', 0.5));
-const sun = new THREE.DirectionalLight('#fff1d6', 2.2);
+scene.add(new THREE.HemisphereLight('#d8e7f3', '#6a6250', .55));
+const sun = new THREE.DirectionalLight('#fff1db', 3.2);
 sun.position.set(-8, 18, 10);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
-Object.assign(sun.shadow.camera, { left: -22, right: 22, top: 16, bottom: -16, near: 1, far: 50 });
-sun.shadow.bias = -0.0008;
+sun.shadow.mapSize.set(4096, 4096);
+Object.assign(sun.shadow.camera, { left: -22, right: 22, top: 22, bottom: -22, near: 1, far: 100 });
+sun.shadow.bias = -0.00008;
 sun.shadow.normalBias = 0.02;
-scene.add(sun);
+scene.add(sun, sun.target);
+// The sky is also the image-based lighting every PBR material needs; without it skin and clothes go dark.
+// A failed download is retried twice. The splash waits for it (data-assets below), and if it only arrives after a
+// player chose "Enter anyway", three.js sees the new scene.environment and rebuilds the affected programs itself.
+function loadSky(attempt = 0) {
+  new HDRLoader().load('/textures/coastal-sky.hdr', hdr => {
+    const environment = new THREE.PMREMGenerator(renderer);
+    hdr.mapping = THREE.EquirectangularReflectionMapping;
+    scene.background = hdr;
+    scene.backgroundIntensity = .85;
+    scene.environment = environment.fromEquirectangular(hdr).texture;
+    scene.environmentIntensity = .7;
+    environment.dispose();
+  }, undefined, error => {
+    console.warn('HDR sky unavailable', error);
+    if (attempt < 2) window.setTimeout(() => loadSky(attempt + 1), 1500 * (attempt + 1));
+  });
+}
+loadSky();
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const ao = new SSAOPass(scene, camera, window.innerWidth, window.innerHeight);
+ao.kernelRadius = .55;
+ao.minDistance = .001;
+ao.maxDistance = .075;
+composer.addPass(ao);
+composer.addPass(new OutputPass());
 
 const office = buildOffice();
 scene.add(office.group);
+const city = buildCity();
+scene.add(city.group);
+office.group.add(city.chief);
+office.colliders.push(...city.colliders);
+store.on('empire', () => city.sync(store.empire));
+city.sync(store.empire);
 
 const noOutline = (obj: THREE.Object3D) =>
   obj.traverse((o) => {
@@ -130,15 +189,15 @@ const tvIdle = (() => {
   c.height = 720;
   const g = c.getContext('2d')!;
   const grad = g.createLinearGradient(0, 0, 1280, 720);
-  grad.addColorStop(0, '#3a0ca3');
-  grad.addColorStop(1, '#4cc9f0');
+  grad.addColorStop(0, '#172b31');
+  grad.addColorStop(1, '#45665e');
   g.fillStyle = grad;
   g.fillRect(0, 0, 1280, 720);
   g.fillStyle = '#fff';
   g.textAlign = 'center';
-  g.font = '900 88px Nunito, ui-rounded, system-ui, sans-serif';
-  g.fillText('📺 Office TV', 640, 330);
-  g.font = '700 44px Nunito, ui-rounded, system-ui, sans-serif';
+  g.font = '500 78px system-ui, sans-serif';
+  g.fillText('AGENT EMPIRE', 640, 330);
+  g.font = '400 36px system-ui, sans-serif';
   g.fillText('Click “Share screen” to put something up here', 640, 420);
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace;
@@ -150,7 +209,10 @@ tvMat.map = tvIdle;
 tvMat.toneMapped = false;
 
 // ---- Networking & state -------------------------------------------------------------------------
-const net = new Net(() => store.profile);
+// Cloud mode (CLOUD-04): the Empire lives in the user's GitHub; the same store is fed from its committed snapshots.
+const cloud = cloudSession();
+const cloudNet = cloud ? new CloudNet(cloud, () => store.profile) : null;
+const net: Net = cloudNet ?? new Net(() => store.profile);
 const voice = new Voice(net);
 
 const me = new Person(store.profile.name, store.profile.color, store.profile.look);
@@ -158,12 +220,44 @@ me.showLabel(false);
 scene.add(me.root);
 noOutline(me.root);
 const settings = loadSettings();
+applyGraphics(settings.quality, renderer, composer, ao, sun, scene);
+city.setQuality(settings.quality);
 const player = new PlayerController(camera, canvas, office.colliders);
 player.pos.set(SPAWN.x, 0, SPAWN.z);
 player.view = settings.view;
-const hands = new Hands(store.profile.color, me.skinColor);
+player.bindings = settings.keys;
 const sound = new OfficeSound();
 sound.setVolume(settings.volume, settings.muted);
+const empireUI = mountEmpire(net,player,()=>showQueue(),()=>{if(!traversal.interactCar()&&!empireUI.interact())use(target,'E');},()=>changeView(),(id)=>openWorkerTerminal(id));
+if (cloudNet) {
+  mountCloudStrip($('status-strip'), cloudNet, (tab) => openCloudPanel(cloudNet, tab));
+  installCloudChrome(cloudNet, {
+    forgetDevice: () => {
+      cloudNet.stop();
+      forgetSavedSnapshots();
+      const bridge = native();
+      void Promise.allSettled(['github.token', 'github.login', 'mode', 'state.repo'].map((k) => bridge.secureDelete(k as 'mode'))).then(() => location.reload());
+    },
+  });
+} else mountStatusStrip($('status-strip'), { openManagement: () => empireUI.openOperations(), openWorkers: () => openWorkersDialog(openWorkerTerminal) });
+const traversal = new Traversal(player,me,office,city,()=>{
+  if(!store.empire.delegated)net.send({t:'empire.action',action:{kind:'delegate',enabled:true}});
+}, (cue, at) => sound.carCue(cue, at));
+function paintViewButton() {
+  const next = player.view === 'third' ? 'First person' : 'Third person';
+  const button = $('btn-camera');
+  button.textContent = next;
+  button.setAttribute('aria-label', `Switch to ${next.toLowerCase()}`);
+  button.title = `${next} (${keyLabel(settings.keys.camera)})`;
+}
+paintViewButton();
+$('btn-camera').addEventListener('click', () => { changeView(); canvas.focus(); });
+function changeView() {
+  player.setView(player.view==='first'?'third':'first');
+  if(player.view==='third'){player.camDist=player.driving?7:4.6;player.camPitch=.16;}
+  settings.view=player.view;saveSettings(settings);
+  paintViewButton();
+}
 const hanger = new Hanger(net, camera, canvas, player, office, gallery);
 scene.add(hanger.ghost.group);
 hanger.onChange = () => {
@@ -177,8 +271,6 @@ hanger.onChange = () => {
 function showMyProfile(p: Profile) {
   me.setColor(p.color);
   me.setLook(p.look);
-  hands.setColor(p.color);
-  hands.setSkin(me.skinColor);
 }
 
 interface RemotePeer {
@@ -202,12 +294,58 @@ interface WorkerView {
   acked: boolean;
 }
 const workerViews = new Map<string, WorkerView>();
+// Worker routines (LIFE-03): desk ↔ amenities from real server state only. Reduced motion places bodies without walking.
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+const life = new OfficeLife(office, {
+  reducedMotion: () => reducedMotion.matches,
+  detail: () => settings.quality !== 'low',
+  onTyping: (id, typing) => { const w = store.workers.get(id), d = w && DESK_BY_ID.get(w.deskId); if (d) sound.setTyping(id, d.x, d.z, typing); },
+});
 let firstWelcome = true;
+let foundingOpened = false;
 /** The server version this page was loaded with. */
 let bootVersion = '';
 let upgradePhase = '';
 
-net.onStatus((up) => $('conn').classList.toggle('hidden', up));
+net.onStatus((up) => {
+  store.setConnected(up);
+  renderConnection();
+  // The host may not offer continuity yet; the socket can also push it.
+  if (up && !cloudNet)
+    apiFetch('/api/continuity/status', { cache: 'no-store', credentials: 'same-origin' })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body) => store.setContinuity(body))
+      .catch(() => {});
+});
+function renderConnection() {
+  const view = connectionView({ online: store.online, connected: store.connected, cloud: !!cloudNet });
+  const down = !store.online || !store.connected;
+  $('conn').classList.toggle('hidden', !down);
+  $('conn').classList.toggle('offline', !store.online);
+  $('conn-text').textContent = view.label;
+  $('conn').title = view.detail;
+  $('conn-retry').classList.toggle('hidden', !store.online);
+}
+store.on('connection', renderConnection);
+$('conn-retry').addEventListener('click', () => net.reconnectNow());
+window.addEventListener('online', () => {
+  store.setOnline(true);
+  net.reconnectNow();
+});
+window.addEventListener('offline', () => store.setOnline(false));
+setupPwa();
+
+let executionOfferChecked = false;
+function offerExecutionWhenFree() {
+  // Waits for character and founding to finish; retried whenever the last dialog closes.
+  if (cloudNet || executionOfferChecked || !store.empire.setup.completed || modalOpen()) return;
+  executionOfferChecked = true;
+  const openSetup = (): void => void openExecutionSetup({ openTasks: () => openCloudTasks({ openSetup }) });
+  void maybeOfferExecutionSetup(openSetup);
+}
+onModalChange((open) => {
+  if (!open) setTimeout(offerExecutionWhenFree, 0);
+});
 net.onMessage((msg) => {
   if (msg.t === 'welcome') voice.reset();
   store.apply(msg);
@@ -216,6 +354,10 @@ net.onMessage((msg) => {
   routeTeamMessage(msg);
   routePullMessage(msg);
   switch (msg.t) {
+    case 'empire':
+      if (!msg.state.setup.completed && !foundingOpened) { foundingOpened = true; openFounding(net); }
+      offerExecutionWhenFree();
+      break;
     case 'welcome': {
       const mine = store.peers.get(store.you);
       if (firstWelcome && mine) {
@@ -315,6 +457,8 @@ function syncPeers() {
   for (const [id, r] of remotes) {
     if (!store.peers.has(id)) {
       scene.remove(r.person.root);
+      if (r.bubble) disposeSprite(r.bubble.sprite);
+      r.person.dispose();
       remotes.delete(id);
     }
   }
@@ -344,6 +488,13 @@ function shouldBounce(w: WorkerInfo) {
 }
 
 function syncWorkers() {
+  const fresh = store.evidence().fresh;
+  for (const [id, view] of workerViews) if (!office.desks.has(view.deskId) || !store.workers.has(id)) {
+    const oldDesk = office.desks.get(view.deskId);
+    if (oldDesk) { oldDesk.setScreen(); oldDesk.vacancy.visible = true; }
+    view.model.root.removeFromParent(); view.laptop.root.removeFromParent();
+    life.remove(id); view.model.dispose(); view.laptop.dispose(); sound.removeTypist(id); workerViews.delete(id);
+  }
   for (const w of store.workers.values()) {
     let v = workerViews.get(w.id);
     const desk = office.desks.get(w.deskId);
@@ -351,15 +502,18 @@ function syncWorkers() {
     if (!v) {
       const model = new Worker(w.name, w.color);
       model.root.position.copy(desk.seatAnchor.position);
-      model.root.position.y = 0.4;
+      model.root.position.y = 0;
       model.root.position.z += 0.08;
       model.root.rotation.y = Math.PI;
-      model.root.scale.setScalar(0.82);
+      model.root.scale.setScalar(1);
       desk.group.add(model.root);
       const laptop = new Laptop();
       laptop.root.position.copy(desk.laptopAnchor.position);
       laptop.root.position.z -= 0.08;
       laptop.root.scale.setScalar(1.3);
+      // The terminal texture drives both Blender monitor panels. The keyboard is part of the workstation asset.
+      desk.setScreen(laptop.displayTexture);
+      laptop.root.visible = false;
       desk.group.add(laptop.root);
       noOutline(desk.group);
       desk.vacancy.visible = false;
@@ -381,15 +535,17 @@ function syncWorkers() {
       noOutline(v.model.root);
     }
     v.model.setTask(w.task);
-    const deskDef = DESK_BY_ID.get(w.deskId);
-    if (deskDef) sound.setTyping(w.id, deskDef.x, deskDef.z, w.status === 'working');
+    v.model.setLive(fresh);
+    // Typing (and its sound) only once the body is seated at the desk; see world/worker-life.ts.
+    life.sync(w.id, v.model, desk, { status: w.status, processState: w.processState, fresh, typing: typingPose(w, fresh), waitingOn: (w as WorkerInfo & { waitingOn?: WaitingOn }).waitingOn });
     const again = w.kind === 'shell' ? 'restart' : 'resume';
     v.laptop.setPlaceholder(w.status === 'offline' ? `💤 ${w.name} is asleep — press R to ${again}` : w.status === 'exited' ? `${w.name} exited` : 'booting…');
   }
   for (const [id, v] of workerViews) {
     if (store.workers.has(id)) continue;
     const desk = office.desks.get(v.deskId);
-    desk?.group.remove(v.model.root);
+    life.remove(id);
+    v.model.root.removeFromParent();
     desk?.group.remove(v.laptop.root);
     v.model.dispose();
     v.laptop.dispose();
@@ -400,15 +556,19 @@ function syncWorkers() {
   renderWorkers((id) => openWorkerTerminal(id));
 }
 store.on('workers', syncWorkers);
+store.on('freshness', syncWorkers);
+// Staleness arrives without a message, so poll for it; the check emits only on a change.
+setInterval(() => store.checkFreshness(), 1000);
 store.on('workers', renderUsage);
 store.on('usage', renderUsage);
+const tower = new Tower(net, player, office, () => syncWorkers());
 
 // ---- Actions ------------------------------------------------------------------------------------
 function freeDesk(): string | null {
   // Prefer the empty desk nearest to you.
   let best: string | null = null;
   let bestD = Infinity;
-  for (const d of DESKS) {
+  for (const { def: d } of office.desks.values()) {
     if (store.workerAtDesk(d.id)) continue;
     const dist = Math.hypot(d.x - player.pos.x, d.z - player.pos.z);
     if (dist < bestD) {
@@ -532,6 +692,7 @@ function openWorkerChanges(id: string) {
 }
 
 function showQueue() {
+  if (cloudNet) return openCloudPanel(cloudNet, 'jobs');
   openQueue(net, { openTerminal: openWorkerTerminal });
 }
 
@@ -565,18 +726,32 @@ function boardActions() {
   };
 }
 
-function watchShare() {
-  const streams = currentShares();
-  if (!streams.length) {
+/** Full-screen viewer for one share: the one given (a thumbnail), else whatever the TV shows. */
+function watchShare(share?: [string, MediaStream]) {
+  const pick = share ?? tvShare(currentShares());
+  if (!pick) {
     void toggleShare();
     return;
   }
   const video = h('video', { autoplay: true, playsinline: true, muted: true }) as HTMLVideoElement;
-  const [who, stream] = streams[0];
+  const [who, stream] = pick;
   video.srcObject = stream;
   const close = h('button.btn.close', { 'aria-label': 'Close' }, '✕');
   const el = h('div.modal.viewer', { role: 'dialog', 'aria-label': 'Screen share' }, h('header', {}, h('h2', {}, `🖥️ ${who}'s screen`), close), video);
-  const modal = openModal(el, { onClose: () => (video.srcObject = null) });
+  // Close once that share stops: its track ends, or its sharer stops or leaves.
+  const gone = () => {
+    if (!currentShares().some(([, s]) => s === stream)) modal.close();
+  };
+  const tracks = stream.getVideoTracks();
+  tracks.forEach((t) => t.addEventListener('ended', gone));
+  const unsub = store.on('peers', gone);
+  const modal = openModal(el, {
+    onClose: () => {
+      video.srcObject = null;
+      tracks.forEach((t) => t.removeEventListener('ended', gone));
+      unsub();
+    },
+  });
   close.addEventListener('click', () => modal.close());
 }
 
@@ -599,10 +774,13 @@ function interact(target: Interactable | null, key: DeskKey) {
   else if (target.kind === 'queue') showQueue();
   else if (target.kind === 'tv') watchShare();
   else if (target.kind === 'decor' && target.decorId) hanger.view(target.decorId);
+  else if (target.kind === 'elevator') tower.open();
   else if (target.kind === 'coffee') {
     toast('☕ Mmm, fresh coffee. +10 focus');
     sound.coffee();
   }
+  else if (target.kind === 'gym') toast('🏋️ A quick set in the gym corner.');
+  else if (target.kind === 'cafeteria') toast('🥐 Breakfast from the cafeteria counter.');
 }
 
 // ---- Interaction targeting & hint -----------------------------------------------------------------
@@ -612,7 +790,7 @@ let hintKey = '';
 function pickTarget(): Interactable | null {
   let best: Interactable | null = null;
   let bestD = Infinity;
-  for (const list of [office.interactables, gallery.interactables]) {
+  for (const list of [office.interactables, ...(office.floor === 0 ? [gallery.interactables] : [])]) {
     for (const it of list) {
       const d = Math.hypot(it.x - player.pos.x, it.z - player.pos.z);
       if (d < it.radius && d < bestD) {
@@ -625,7 +803,8 @@ function pickTarget(): Interactable | null {
 }
 
 function key(k: string, label: string) {
-  return h('span', {}, h('span.key', {}, k), label);
+  const action = (Object.keys(DEFAULT_KEYS) as Action[]).find(a => DEFAULT_KEYS[a] === `Key${k}`);
+  return h('span', {}, h('span.key', {}, action ? keyLabel(settings.keys[action]) : k), label);
 }
 
 function renderHint() {
@@ -679,8 +858,11 @@ function renderHint() {
   else if (target.kind === 'tv') {
     const any = currentShares().length > 0;
     k += any;
-    parts = [h('span.title', {}, '📺 Office TV'), key('E', any ? 'Watch full screen' : 'Share your screen')];
-  } else if (target.kind === 'coffee') parts = [h('span.title', {}, '☕ Coffee machine'), key('E', 'Grab a cup')];
+    parts = [h('span.title', {}, 'AGENT EMPIRE'), key('E', any ? 'Watch full screen' : 'Share your screen')];
+  } else if (target.kind === 'elevator') parts = [h('span.title', {}, `Elevator · Floor ${office.floor + 1}`), key('E', 'Floor directory')];
+  else if (target.kind === 'coffee') parts = [h('span.title', {}, '☕ Coffee machine'), key('E', 'Grab a cup')];
+  else if (target.kind === 'gym') parts = [h('span.title', {}, '🏋️ Gym'), key('E', 'Work out')];
+  else if (target.kind === 'cafeteria') parts = [h('span.title', {}, '🥐 Cafeteria'), key('E', 'Grab breakfast')];
   else if (target.kind === 'decor') {
     const id = target.decorId;
     const d = store.decor.find((x) => x.id === id);
@@ -719,9 +901,8 @@ function renderCrosshair() {
 
 // ---- Reaching out ---------------------------------------------------------------------------------
 let lastActSent = 0;
-/** Plays the reach on your hands and your character, and shows it to everyone else. */
+/** Plays the interaction gesture on your character, and shows it to everyone else. */
 function reach() {
-  if (player.view === 'first') hands.reach();
   me.reach();
   const now = performance.now();
   if (now - lastActSent > 120) {
@@ -740,13 +921,18 @@ function use(it: Interactable | null, key: DeskKey) {
 
 // ---- Input ----------------------------------------------------------------------------------------
 window.addEventListener('keydown', (e) => {
-  if (modalOpen() || isTyping(e) || e.metaKey || e.ctrlKey || e.altKey) return;
-  if (hanger.active && hangingKey(e.code)) {
+  if (modalOpen() || player.scripted || isTyping(e) || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (hanger.active && hangingKey(officeCode(e.code, settings.keys))) {
     e.preventDefault();
     return;
   }
-  switch (e.code) {
+  // Holding a key must not re-send spawn/resume/PR for every auto-repeat.
+  if (e.repeat) return;
+  // Enter/Space on a focused button or link belongs to that control, not the game.
+  if ((e.code === 'Enter' || e.code === 'Space') && (e.target as HTMLElement).closest?.('button, a, [role=button]')) return;
+  switch (officeCode(e.code, settings.keys)) {
     case 'KeyE':
+      if (traversal.interactCar() || empireUI.interact()) break;
       use(target, 'E');
       break;
     case 'KeyP':
@@ -779,10 +965,15 @@ window.addEventListener('keydown', (e) => {
     case 'KeyM':
       voice.toggleMute();
       break;
+    case 'KeyG':
+      empireUI.openMap();break;
+    case 'KeyN':
+      changeView();break;
     case 'KeyH':
-      openHelp();
+      openHelp(settings.keys);
       break;
     case 'KeyF':
+      if (office.floor > 0) { toast('Wall pictures are managed on the ground floor.'); break; }
       hanger.start();
       break;
     default:
@@ -845,7 +1036,7 @@ function backToGame() {
 const raycaster = new THREE.Raycaster();
 const CROSSHAIR = new THREE.Vector2(0, 0);
 /** How close (meters from your eyes) you must be to use each kind of thing. */
-const REACH: Record<InteractKind, number> = { desk: 4.5, coffee: 3, issues: 9, pulls: 9, services: 9, queue: 9, tv: 10, decor: 9 };
+const REACH: Record<InteractKind, number> = { elevator: 4, desk: 4.5, coffee: 3, gym: 5, cafeteria: 4, issues: 9, pulls: 9, services: 9, queue: 9, tv: 10, decor: 9 };
 const eye = new THREE.Vector3();
 
 /** What the ray through `ndc` lands on first, and whether it is within reach (plus `slack` meters). */
@@ -891,7 +1082,7 @@ player.onClick = (ndc) => {
 // Chat
 const chatInput = $('chat-input') as HTMLInputElement;
 chatInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') {
+  if (e.key === 'Enter' && !e.isComposing) {
     const text = chatInput.value.trim();
     if (text) net.send({ t: 'chat', text });
     chatInput.value = '';
@@ -927,11 +1118,15 @@ function currentShares(): [string, MediaStream][] {
   return out;
 }
 
+/** Remote shares win the TV; your own share is what others see anyway. */
+function tvShare(shares: [string, MediaStream][]): [string, MediaStream] | undefined {
+  return shares.find(([who]) => who !== 'You') ?? shares[0];
+}
+
 let tvStream: MediaStream | null = null;
 function refreshShares() {
   const shares = currentShares();
-  // Remote shares win the TV; your own share is what others see anyway.
-  const pick = shares.find(([who]) => who !== 'You') ?? shares[0];
+  const pick = tvShare(shares);
   const stream = pick?.[1] ?? null;
   if (stream !== tvStream) {
     tvStream = stream;
@@ -947,7 +1142,7 @@ function refreshShares() {
       .map(([who, s]) => {
         const v = h('video', { autoplay: true, playsinline: true, muted: true }) as HTMLVideoElement;
         v.srcObject = s;
-        return h('div.share-thumb', { onclick: () => watchShare(), title: 'Watch full screen' }, v, h('span.who', {}, `🖥️ ${who}`));
+        return h('div.share-thumb', { onclick: () => watchShare([who, s]), title: 'Watch full screen' }, v, h('span.who', {}, `🖥️ ${who}`));
       }),
   );
   hintKey = '';
@@ -957,13 +1152,17 @@ voice.onChange(() => {
   const vb = $('btn-voice');
   vb.classList.toggle('on', voice.inVoice);
   vb.querySelector('span')!.textContent = voice.inVoice ? 'Leave voice' : 'Join voice';
+  vb.setAttribute('aria-label', voice.inVoice ? 'Leave voice' : 'Join voice');
   const mb = $('btn-mute');
   mb.classList.toggle('hidden', !voice.inVoice);
   mb.textContent = voice.muted ? '🔇' : '🎙️';
+  mb.setAttribute('aria-label', voice.muted ? 'Unmute microphone' : 'Mute microphone');
+  mb.setAttribute('aria-pressed', String(voice.muted));
   mb.classList.toggle('danger', voice.muted);
   const sb = $('btn-share');
   sb.classList.toggle('on', voice.sharing);
   sb.querySelector('span')!.textContent = voice.sharing ? 'Stop sharing' : 'Share screen';
+  sb.setAttribute('aria-label', voice.sharing ? 'Stop sharing screen' : 'Share screen');
   refreshShares();
 });
 
@@ -988,19 +1187,26 @@ mountServicesButton($('btn-services'));
 mountQueueButton($('btn-queue'), showQueue);
 $('btn-team').addEventListener('click', () => openTeam(net));
 $('btn-upgrade').addEventListener('click', () => openUpgrade(net));
-$('btn-help').addEventListener('click', () => openHelp());
-$('btn-decor').addEventListener('click', () => (hanger.active ? hanger.cancel() : hanger.start()));
+$('btn-help').addEventListener('click', () => openHelp(settings.keys));
+$('btn-decor').addEventListener('click', () => office.floor > 0 ? toast('Wall pictures are managed on the ground floor.') : (hanger.active ? hanger.cancel() : hanger.start()));
 $('btn-settings').addEventListener('click', () =>
   openSettings(
     settings,
     (s) => {
+      const qualityChanged = settings.quality !== s.quality;
       Object.assign(settings, s);
+      if (qualityChanged) { applyGraphics(settings.quality, renderer, composer, ao, sun, scene); city.setQuality(settings.quality); resize(); }
       saveSettings(settings);
       player.setView(settings.view);
+      player.bindings = settings.keys;
+      paintViewButton();
+      player.clearKeys();
+      hintKey = '';
       sound.setVolume(settings.volume, settings.muted);
     },
     editProfile,
     () => sound.ding('done'),
+    appPanel(net),
   ),
 );
 
@@ -1012,13 +1218,18 @@ function editProfile() {
 }
 
 // ---- Main loop ---------------------------------------------------------------------------------------
+const headPos = new THREE.Vector3();
 function resize() {
   const w = window.innerWidth;
   const hgt = window.innerHeight;
+  // Here rather than once at startup: moving to another monitor or zooming changes the device
+  // ratio. The quality profile still caps it.
+  const ratio = Math.min(window.devicePixelRatio || 1, GRAPHICS[settings.quality].pixelRatio);
+  if (renderer.getPixelRatio() !== ratio) { renderer.setPixelRatio(ratio); composer.setPixelRatio(ratio); }
   renderer.setSize(w, hgt, false);
+  composer.setSize(w, hgt);
   camera.aspect = w / hgt;
   camera.updateProjectionMatrix();
-  hands.setAspect(w / hgt);
 }
 window.addEventListener('resize', resize);
 resize();
@@ -1037,24 +1248,56 @@ function frame(ts?: number) {
   const dt = Math.min(timer.getDelta(), 0.1);
   const t = timer.getElapsed();
 
+  renderer.info.reset();
   player.update(dt);
+  if (!tower.active) traversal.update(dt);
+  tower.update(dt);
+  city.update(t, dt,player.pos,player.driving);
+  empireUI.update(dt);
+  canvas.dataset.position = `${player.pos.x.toFixed(1)}, ${player.pos.y.toFixed(1)}, ${player.pos.z.toFixed(1)}`;
+  canvas.dataset.view = player.view;
+  canvas.dataset.traversal = tower.active ? 'elevator' : traversal.state;
+  canvas.dataset.floor = String(office.floor + 1);
+  canvas.dataset.motion = me.motion ?? 'loading';
+  // The splash hands over only when the player is textured and the sky lighting is in (ui/loading.ts).
+  const pending = [!me.materialsReady && 'character', !scene.environment && 'sky lighting', !city.car.userData.ready && 'car'].filter(Boolean).join(', ');
+  canvas.dataset.assets = pending ? 'loading' : 'ready';
+  canvas.dataset.pending = pending;
+  canvas.dataset.fps = String(Math.round(1 / Math.max(dt,.001)));
+
+
+  if (player.driving) { city.car.position.copy(player.pos); city.car.rotation.y=player.facing; }
+  const outside = player.pos.z >= 30;
+  city.animateCar(dt, player.vehicle, player.driving);
+  sound.environment(outside);
+  sound.vehicle(player.vehicle, player.driving, city.car.position, player.view === 'first');
+  canvas.dataset.audio = sound.recordings;
+  canvas.dataset.vehicle = `${(Math.abs(player.drivingSpeed)*3.6).toFixed(0)} km/h · ${player.vehicle.rpm.toFixed(0)} rpm`;
+  office.group.visible = !outside;
+  city.chief.visible = office.floor === 0;
+  gallery.group.visible = office.floor === 0;
+  city.group.visible = outside;
+  sun.position.set(player.pos.x-24, player.pos.y+40, player.pos.z+24);
+  sun.target.position.set(player.pos.x,player.pos.y,player.pos.z);
+  sun.target.updateMatrixWorld();
+
   me.root.position.copy(player.pos);
   me.root.position.y += player.stepOffset;
   me.root.rotation.y = player.facing;
-  me.update(dt, t, player.moving && player.grounded, !player.grounded);
+  me.update(dt,t,player.moving&&player.grounded,!player.grounded,player.speed);
+  traversal.placeDriver();
   me.setVoiceLevel(voice.inVoice ? voice.localLevel : 0);
   const firstPerson = player.view === 'first';
   // In first person you are the camera; in third, hide yourself when it's zoomed in right behind your head.
-  me.root.visible = !firstPerson && camera.position.distanceTo(new THREE.Vector3(player.pos.x, player.pos.y + 1.3, player.pos.z)) > 1.5;
-  if (firstPerson) hands.update(dt, t, { yaw: player.camYaw, pitch: player.lookPitch, walkPhase: player.walkPhase, walking: player.moving && player.grounded, airborne: !player.grounded });
+  me.root.visible = !firstPerson && camera.position.distanceTo(headPos.set(player.pos.x, player.pos.y + 1.3, player.pos.z)) > 1.5;
 
   // Your ears are in your head, facing wherever the camera looks.
   camera.getWorldDirection(lookDir);
-  sound.update({ x: player.pos.x, y: player.pos.y + EYE_HEIGHT, z: player.pos.z, fx: lookDir.x, fz: lookDir.z });
+  sound.update({ x: player.pos.x, y: player.pos.y + EYE_HEIGHT - (outside ? 0 : office.group.position.y), z: player.pos.z, fx: lookDir.x, fz: lookDir.z });
   const s = Math.floor(player.walkPhase / Math.PI);
   if (s !== stride) {
     stride = s;
-    if (player.moving && player.grounded) sound.step();
+    if (player.moving && player.grounded && !player.driving) sound.step('walk', player.speed > 2.5);
   }
   if (!player.grounded) fallV = Math.min(fallV, player.vy);
   else {
@@ -1072,6 +1315,7 @@ function frame(ts?: number) {
   for (const [id, r] of remotes) {
     const p = store.peers.get(id);
     if (!p) continue;
+    r.person.root.visible = (p.z >= 30) === outside && (outside || Math.floor((p.y + .01) / FLOOR_RISE) === office.floor);
     r.target.set(p.x, p.y, p.z);
     const pos = r.person.root.position;
     pos.lerp(r.target, Math.min(1, dt * 12));
@@ -1080,8 +1324,8 @@ function frame(ts?: number) {
     r.person.root.rotation.y += diff * Math.min(1, dt * 12);
     // On their feet if they're standing on something: the floor, a desk, a stair, the loft.
     const airborne = p.y > groundAt(office.colliders, p.x, p.z, p.y) + 0.05;
-    const walking = p.moving && !airborne;
-    r.person.update(dt, t, walking, airborne && Math.abs(pos.y - r.target.y) > 0.01);
+    const walking = r.person.root.visible && p.moving && !airborne;
+    r.person.update(dt, t, walking, airborne && Math.abs(pos.y - r.target.y) > 0.01, 1.65, 0.15);
     // Their walk cycle takes a step every π/11 seconds.
     r.stepT = walking ? r.stepT + dt : 0.2;
     if (r.stepT >= Math.PI / 11) {
@@ -1095,10 +1339,11 @@ function frame(ts?: number) {
       r.bubble = undefined;
     }
     const d = Math.hypot(pos.x - player.pos.x, pos.z - player.pos.z);
-    voice.setVolume(id, d < 4 ? 1 : Math.max(0.2, 1 - (d - 4) / 16));
+    voice.setVolume(id, !r.person.root.visible ? 0 : d < 4 ? 1 : Math.max(0.2, 1 - (d - 4) / 16));
   }
 
   const camPos = camera.position;
+  life.update(dt);
   for (const [id, v] of workerViews) {
     v.model.update(dt, t);
     const desk = DESK_BY_ID.get(v.deskId)!;
@@ -1120,12 +1365,8 @@ function frame(ts?: number) {
     updateSpeaking(voice);
   }
 
-  effect.render(scene, camera);
-  if (firstPerson) {
-    // Hands go on top of everything, so they never clip into a desk you walk up to.
-    renderer.clearDepth();
-    effect.render(hands.scene, hands.camera);
-  }
+  composer.render();
+  canvas.dataset.drawCalls=String(renderer.info.render.calls);
   requestAnimationFrame(frame);
 }
 
@@ -1155,6 +1396,6 @@ if (saved?.look) {
 }
 
 // Debug handle for quick checks from the console / headless screenshots.
-(window as any).__office = { store, player, camera, workerViews, scene, net, renderer, hands, me, remotes, settings, gallery, hanger };
+(window as any).__office = { store, player, camera, workerViews, scene, net, renderer, me, remotes, settings, gallery, hanger, city, empireUI, life };
 (window as any).__voice = voice;
 (window as any).__sound = sound;

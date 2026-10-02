@@ -1,4 +1,5 @@
 import type { ServerMsg, WorktreeCleanup, WorktreeState } from '../../shared/protocol';
+import { autoFocus } from '../keyboard';
 import { h, openModal } from './dom';
 
 export interface PromptOptions {
@@ -37,14 +38,14 @@ export function openPrompt(opts: PromptOptions) {
   const submit = h('button.btn.primary', { type: 'submit' }, opts.submitLabel ?? 'Send ✨');
   const cancel = h('button.btn', { type: 'button' }, 'Cancel');
   const form = h(
-    'form.modal',
+    'form.modal.ae-dark',
     { role: 'dialog', 'aria-label': opts.title },
     h('header', {}, h('h2', {}, opts.title)),
     h('div.body', {}, opts.subtitle ? h('p', { style: 'margin:0 0 10px;font-weight:700;color:var(--muted)' }, opts.subtitle) : null, ta, wtRow),
     h('footer', {}, h('span.grow', {}, 'Enter to send · Shift+Enter for a new line'), cancel, submit),
   ) as HTMLFormElement;
 
-  const modal = openModal(form);
+  const modal = openModal(form, { dirty: () => ta.value.trim() !== (opts.initial ?? '').trim() });
   cancel.addEventListener('click', () => modal.close());
   const send = () => {
     const text = ta.value.trim();
@@ -73,15 +74,15 @@ export function openPrompt(opts: PromptOptions) {
     }
   });
   setTimeout(() => {
-    ta.focus();
-    ta.setSelectionRange(ta.value.length, ta.value.length);
+    autoFocus(ta, form);
+    if (document.activeElement === ta) ta.setSelectionRange(ta.value.length, ta.value.length);
   }, 30);
 }
 
 export function confirmDialog(title: string, body: string, confirmLabel: string, onConfirm: () => void) {
   const yes = h('button.btn.danger', { type: 'button' }, confirmLabel);
   const no = h('button.btn', { type: 'button' }, 'Never mind');
-  const el = h('div.modal', { role: 'alertdialog', 'aria-label': title }, h('header', {}, h('h2', {}, title)), h('div.body', {}, h('p', { style: 'margin:0;font-weight:700' }, body)), h('footer', {}, no, yes));
+  const el = h('div.modal.ae-dark', { role: 'alertdialog', 'aria-label': title }, h('header', {}, h('h2', {}, title)), h('div.body', {}, h('p', { style: 'margin:0;font-weight:700' }, body)), h('footer', {}, no, yes));
   const modal = openModal(el);
   no.addEventListener('click', () => modal.close());
   yes.addEventListener('click', () => {
