@@ -6,8 +6,12 @@
 #   is published, nothing is uploaded to Play or TestFlight.
 # - Each signing step turns on when its secrets exist; otherwise the build is unsigned and its file name says so.
 #
+# Signing secrets live only in the GitHub Environment `release` (deployment rule: tags v* only; required reviewer:
+# the owner; see docs/RELEASING.md). A job joins that environment only on a tag run, so a dry run from any branch
+# never reads a signing secret: it signs with the public development key (--dev) and builds unsigned apps.
+#
 # Every action is pinned to a full commit SHA (version in the comment). Secrets appear only in the steps that need
-# them; jobs see at most a true/false "HAS_*" flag. There is no pull_request trigger.
+# them; jobs see at most a true/false "HAS_*" flag, which is false outside a tag run. There is no pull_request trigger.
 name: Release
 
 on:
@@ -91,10 +95,10 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment: ${{ needs.verify.outputs.release == 'true' && 'release' || '' }}
     permissions:
       contents: read
     env:
-      HAS_GAME_SIGNING_KEY: ${{ secrets.GAME_SIGNING_KEY != '' }}
       RELEASE: ${{ needs.verify.outputs.release }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -115,18 +119,18 @@ jobs:
           want=$(jq -r .sha256 dist/public/cloud/coordinator.json)
           have=$(sha256sum release/assets/agent-empire-coordinator.mjs | cut -d' ' -f1)
           [ "$want" = "$have" ] || { echo "::error::coordinator bundle differs from the one shipped in the client ($have != $want)"; exit 1; }
-      - name: Sign the game manifest
-        if: env.HAS_GAME_SIGNING_KEY == 'true'
+      - name: Sign the game manifest (tag run, release environment)
+        if: env.RELEASE == 'true'
         env:
           GAME_SIGNING_KEY: ${{ secrets.GAME_SIGNING_KEY }}
         run: |
-          if [ "$RELEASE" = true ]; then node tools/release/sign.mjs check-key; else node tools/release/sign.mjs check-key --allow-dev || echo "::warning::dry run: GAME_SIGNING_KEY does not match the pinned key"; fi
+          [ -n "$GAME_SIGNING_KEY" ] || { echo "::error::GAME_SIGNING_KEY is missing from the release environment"; exit 1; }
+          node tools/release/sign.mjs check-key
           node tools/release/sign.mjs sign release/assets/game-manifest.json
-      - name: Development signature (dry run without GAME_SIGNING_KEY)
-        if: env.HAS_GAME_SIGNING_KEY != 'true'
+      - name: Development signature (dry run)
+        if: env.RELEASE != 'true'
         run: |
-          if [ "$RELEASE" = true ]; then echo "::error::GAME_SIGNING_KEY is required to publish a release"; exit 1; fi
-          echo "::warning::GAME_SIGNING_KEY is not set: signing with the public development key (untrusted, dry run only)"
+          echo "::warning::dry run: signing with the public development key (untrusted)"
           node tools/release/sign.mjs sign --dev release/assets/game-manifest.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -148,11 +152,12 @@ jobs:
             runner: macos-15-intel
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
+    environment: ${{ needs.verify.outputs.release == 'true' && 'release' || '' }}
     permissions:
       contents: read
     env:
-      HAS_APPLE_SIGNING: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12 != '' && secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD != '' }}
-      HAS_ASC_KEY: ${{ secrets.ASC_KEY_ID != '' && secrets.ASC_ISSUER_ID != '' && secrets.ASC_KEY_P8 != '' }}
+      HAS_APPLE_SIGNING: ${{ needs.verify.outputs.release == 'true' && secrets.APPLE_DEVELOPER_ID_CERT_P12 != '' && secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD != '' }}
+      HAS_ASC_KEY: ${{ needs.verify.outputs.release == 'true' && secrets.ASC_KEY_ID != '' && secrets.ASC_ISSUER_ID != '' && secrets.ASC_KEY_P8 != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -193,7 +198,8 @@ jobs:
           [ -n "$IDENTITY" ] || { echo "::error::No Developer ID Application identity in APPLE_DEVELOPER_ID_CERT_P12"; exit 1; }
           echo "APPLE_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
           echo "APPLE_SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
-      - name: Package (sign and notarize when configured)
+      - name: Package, sign and notarize
+        if: env.HAS_APPLE_SIGNING == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -202,16 +208,17 @@ jobs:
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
         run: |
-          if [ "$HAS_APPLE_SIGNING" = true ] && [ "$HAS_ASC_KEY" = true ]; then
+          if [ "$HAS_ASC_KEY" = true ]; then
             export APPLE_API_KEY_PATH="$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8" APPLE_API_KEY_ID="$ASC_KEY_ID" APPLE_API_ISSUER="$ASC_ISSUER_ID"
             printf '%s' "$ASC_KEY_P8" > "$APPLE_API_KEY_PATH"
-          fi
-          if [ "$HAS_APPLE_SIGNING" != true ]; then
-            unset APPLE_ID APPLE_APP_SPECIFIC_PASSWORD
-            echo "::warning::Apple signing secrets are not set: building an UNSIGNED macOS app"
+            trap 'rm -f "$APPLE_API_KEY_PATH"' EXIT
           fi
           node tools/release/package-macos.mjs --out release/assets
-          rm -f "$RUNNER_TEMP"/AuthKey_*.p8
+      - name: Package unsigned
+        if: env.HAS_APPLE_SIGNING != 'true'
+        run: |
+          echo "::warning::no Apple signing (dry run, or secrets not set): building an UNSIGNED macOS app"
+          node tools/release/package-macos.mjs --out release/assets
       - name: Remove the signing keychain
         if: always() && env.APPLE_KEYCHAIN != ''
         run: security delete-keychain "$APPLE_KEYCHAIN" || true
@@ -227,14 +234,15 @@ jobs:
     needs: verify
     runs-on: windows-latest
     timeout-minutes: 45
+    environment: ${{ needs.verify.outputs.release == 'true' && 'release' || '' }}
     permissions:
       contents: read
     defaults:
       run:
         shell: bash
     env:
-      HAS_WINDOWS_CERT: ${{ secrets.WINDOWS_CERT_P12 != '' && secrets.WINDOWS_CERT_PASSWORD != '' }}
-      HAS_AZURE_SIGNING: ${{ secrets.AZURE_TENANT_ID != '' && secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_CLIENT_SECRET != '' && vars.AZURE_SIGNING_ENDPOINT != '' && vars.AZURE_SIGNING_ACCOUNT != '' && vars.AZURE_SIGNING_PROFILE != '' }}
+      HAS_WINDOWS_CERT: ${{ needs.verify.outputs.release == 'true' && secrets.WINDOWS_CERT_P12 != '' && secrets.WINDOWS_CERT_PASSWORD != '' }}
+      HAS_AZURE_SIGNING: ${{ needs.verify.outputs.release == 'true' && secrets.AZURE_TENANT_ID != '' && secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_CLIENT_SECRET != '' && vars.AZURE_SIGNING_ENDPOINT != '' && vars.AZURE_SIGNING_ACCOUNT != '' && vars.AZURE_SIGNING_PROFILE != '' }}
       VERSION: ${{ needs.verify.outputs.version }}
       APP_DIR: release/windows/Agent Empire-win32-x64
     steps:
@@ -298,18 +306,20 @@ jobs:
           echo "WINDOWS_LABEL=$LABEL" >> "$GITHUB_ENV"
           mkdir -p release/assets
           node tools/release/zip.mjs "$APP_DIR" "release/assets/Agent-Empire-$VERSION-windows-x64$LABEL.zip" --prefix "Agent Empire"
-      - name: Squirrel.Windows installer and update feed (signed by Squirrel with the certificate when set)
+      - name: Squirrel.Windows installer and update feed, signed by Squirrel with the certificate
+        if: env.HAS_WINDOWS_CERT == 'true'
         env:
           CERT_P12: ${{ secrets.WINDOWS_CERT_P12 }}
           CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
         run: |
-          if [ "$HAS_WINDOWS_CERT" = true ]; then
-            PFX="$RUNNER_TEMP/windows-installer-cert.pfx"
-            echo "$CERT_P12" | base64 --decode > "$PFX"
-            trap 'rm -f "$PFX"' EXIT
-            export WINDOWS_SIGN_PARAMS="/f \"$(cygpath -w "$PFX")\" /p \"$CERT_PASSWORD\" /fd sha256 /tr http://timestamp.digicert.com /td sha256"
-          fi
+          PFX="$RUNNER_TEMP/windows-installer-cert.pfx"
+          echo "$CERT_P12" | base64 --decode > "$PFX"
+          trap 'rm -f "$PFX"' EXIT
+          export WINDOWS_SIGN_PARAMS="/f \"$(cygpath -w "$PFX")\" /p \"$CERT_PASSWORD\" /fd sha256 /tr http://timestamp.digicert.com /td sha256"
           node tools/release/package-windows-installer.mjs --app "$APP_DIR" --out release/assets --label "$WINDOWS_LABEL"
+      - name: Squirrel.Windows installer and update feed (unsigned, or signed by Azure next)
+        if: env.HAS_WINDOWS_CERT != 'true'
+        run: node tools/release/package-windows-installer.mjs --app "$APP_DIR" --out release/assets --label "$WINDOWS_LABEL"
       - name: Sign the installer with Azure Artifact Signing
         if: env.HAS_WINDOWS_CERT != 'true' && env.HAS_AZURE_SIGNING == 'true'
         uses: Azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
@@ -343,10 +353,11 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    environment: ${{ needs.verify.outputs.release == 'true' && 'release' || '' }}
     permissions:
       contents: read
     env:
-      HAS_ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_B64 != '' && secrets.ANDROID_KEYSTORE_PASSWORD != '' && secrets.ANDROID_KEY_ALIAS != '' && secrets.ANDROID_KEY_PASSWORD != '' }}
+      HAS_ANDROID_KEYSTORE: ${{ needs.verify.outputs.release == 'true' && secrets.ANDROID_KEYSTORE_B64 != '' && secrets.ANDROID_KEYSTORE_PASSWORD != '' && secrets.ANDROID_KEY_ALIAS != '' && secrets.ANDROID_KEY_PASSWORD != '' }}
       VERSION: ${{ needs.verify.outputs.version }}
       BUNDLETOOL_VERSION: 1.18.3
       BUNDLETOOL_SHA256: a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29
@@ -370,22 +381,23 @@ jobs:
         run: |
           curl -fsSL -o "$RUNNER_TEMP/bundletool.jar" "https://github.com/google/bundletool/releases/download/$BUNDLETOOL_VERSION/bundletool-all-$BUNDLETOOL_VERSION.jar"
           echo "$BUNDLETOOL_SHA256  $RUNNER_TEMP/bundletool.jar" | sha256sum -c -
-      - name: Build (upload-key signed when configured)
+      - name: Build, signed with the upload key
+        if: env.HAS_ANDROID_KEYSTORE == 'true'
         env:
           ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          SIGNING=()
-          if [ "$HAS_ANDROID_KEYSTORE" = true ]; then
-            echo "$ANDROID_KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/upload.jks"
-            trap 'rm -f "$RUNNER_TEMP/upload.jks"' EXIT
-            SIGNING=(--release-keystore "$RUNNER_TEMP/upload.jks" --key-alias "$ANDROID_KEY_ALIAS")
-          else
-            echo "::warning::Android upload key is not set: the APK is signed with a throwaway development key (debug-signed)"
-          fi
-          python3 mobile/tools/build-android.py --sdk "$ANDROID_HOME" --jdk "$JAVA_HOME" --variant release --aab --bundletool "$RUNNER_TEMP/bundletool.jar" "${SIGNING[@]}"
+          echo "$ANDROID_KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/upload.jks"
+          trap 'rm -f "$RUNNER_TEMP/upload.jks"' EXIT
+          python3 mobile/tools/build-android.py --sdk "$ANDROID_HOME" --jdk "$JAVA_HOME" --variant release --aab --bundletool "$RUNNER_TEMP/bundletool.jar" \
+            --release-keystore "$RUNNER_TEMP/upload.jks" --key-alias "$ANDROID_KEY_ALIAS"
+      - name: Build, debug-signed
+        if: env.HAS_ANDROID_KEYSTORE != 'true'
+        run: |
+          echo "::warning::no upload key (dry run, or secrets not set): the APK is signed with a throwaway development key (debug-signed)"
+          python3 mobile/tools/build-android.py --sdk "$ANDROID_HOME" --jdk "$JAVA_HOME" --variant release --aab --bundletool "$RUNNER_TEMP/bundletool.jar"
       - name: Name the assets
         run: |
           mkdir -p release/assets release/android-unsigned
@@ -410,55 +422,16 @@ jobs:
           path: release/android-unsigned
           retention-days: 7
 
-  play:
-    name: Google Play (internal track)
-    needs: [verify, android]
-    if: needs.verify.outputs.release == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      contents: read
-    outputs:
-      uploaded: ${{ steps.upload.outputs.uploaded }}
-    env:
-      HAS_PLAY: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON != '' && secrets.ANDROID_KEYSTORE_B64 != '' }}
-      VERSION: ${{ needs.verify.outputs.version }}
-      PLAY_RELEASE_STATUS: ${{ vars.PLAY_RELEASE_STATUS || 'completed' }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: env.HAS_PLAY == 'true'
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        if: env.HAS_PLAY == 'true'
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        if: env.HAS_PLAY == 'true'
-        with:
-          name: release-android
-          path: release/assets
-      - name: Upload the App Bundle
-        id: upload
-        if: env.HAS_PLAY == 'true'
-        env:
-          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
-        run: |
-          node tools/release/play-upload.mjs --aab "release/assets/Agent-Empire-$VERSION-android.aab" --track internal --status "$PLAY_RELEASE_STATUS" --name "$VERSION"
-          echo "uploaded=true" >> "$GITHUB_OUTPUT"
-      - name: Play upload not configured
-        if: env.HAS_PLAY != 'true'
-        run: echo "::notice::PLAY_SERVICE_ACCOUNT_JSON (and the upload keystore) are not set; skipping the Play upload"
-
   ios:
     name: iOS
     needs: verify
     runs-on: macos-15
     timeout-minutes: 60
+    environment: ${{ needs.verify.outputs.release == 'true' && 'release' || '' }}
     permissions:
       contents: read
     env:
-      HAS_IOS_SIGNING: ${{ secrets.ASC_KEY_ID != '' && secrets.ASC_ISSUER_ID != '' && secrets.ASC_KEY_P8 != '' && secrets.IOS_DIST_CERT_P12 != '' && secrets.IOS_DIST_CERT_PASSWORD != '' && secrets.IOS_PROVISIONING_PROFILE_B64 != '' && secrets.APPLE_TEAM_ID != '' }}
+      HAS_IOS_SIGNING: ${{ needs.verify.outputs.release == 'true' && secrets.ASC_KEY_ID != '' && secrets.ASC_ISSUER_ID != '' && secrets.ASC_KEY_P8 != '' && secrets.IOS_DIST_CERT_P12 != '' && secrets.IOS_DIST_CERT_PASSWORD != '' && secrets.IOS_PROVISIONING_PROFILE_B64 != '' && secrets.APPLE_TEAM_ID != '' }}
       RELEASE: ${{ needs.verify.outputs.release }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -544,17 +517,17 @@ jobs:
 
   assemble:
     name: Channel file and checksums
-    needs: [verify, game, desktop-macos, desktop-windows, android, ios, play]
-    if: always() && needs.verify.result == 'success' && needs.game.result == 'success' && needs.desktop-macos.result == 'success' && needs.desktop-windows.result == 'success' && needs.android.result == 'success' && needs.ios.result == 'success' && (needs.play.result == 'success' || needs.play.result == 'skipped')
+    needs: [verify, game, desktop-macos, desktop-windows, android, ios]
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment: ${{ needs.verify.outputs.release == 'true' && 'release' || '' }}
     permissions:
       contents: read
     env:
-      HAS_GAME_SIGNING_KEY: ${{ secrets.GAME_SIGNING_KEY != '' }}
       RELEASE: ${{ needs.verify.outputs.release }}
       VERSION: ${{ needs.verify.outputs.version }}
-      PLAY_UPLOADED: ${{ needs.play.outputs.uploaded }}
+      # Repository variable PLAY_LISTED=true once the Play listing is public (a public fact, not a secret).
+      PLAY_LISTED: ${{ vars.PLAY_LISTED }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -570,19 +543,18 @@ jobs:
       - name: Build the channel files
         run: |
           NOTES="docs/release-notes/$VERSION.md"
-          node tools/release/channel.mjs --assets release/assets --notes-file "$NOTES" $([ "$PLAY_UPLOADED" = true ] && echo --play-published)
-      - name: Sign the channel files
-        if: env.HAS_GAME_SIGNING_KEY == 'true'
+          node tools/release/channel.mjs --assets release/assets --notes-file "$NOTES" $([ "$PLAY_LISTED" = true ] && echo --play-published)
+      - name: Sign the channel files (tag run, release environment)
+        if: env.RELEASE == 'true'
         env:
           GAME_SIGNING_KEY: ${{ secrets.GAME_SIGNING_KEY }}
         run: |
-          if [ "$RELEASE" = true ]; then node tools/release/sign.mjs check-key; fi
+          [ -n "$GAME_SIGNING_KEY" ] || { echo "::error::GAME_SIGNING_KEY is missing from the release environment"; exit 1; }
+          node tools/release/sign.mjs check-key
           node tools/release/sign.mjs sign release/assets/channel-*.json
-      - name: Development signature (dry run without GAME_SIGNING_KEY)
-        if: env.HAS_GAME_SIGNING_KEY != 'true'
-        run: |
-          if [ "$RELEASE" = true ]; then echo "::error::GAME_SIGNING_KEY is required to publish a release"; exit 1; fi
-          node tools/release/sign.mjs sign --dev release/assets/channel-*.json
+      - name: Development signature (dry run)
+        if: env.RELEASE != 'true'
+        run: node tools/release/sign.mjs sign --dev release/assets/channel-*.json
       - name: Verify every signature against the pinned key
         if: env.RELEASE == 'true'
         run: for f in release/assets/*.sig; do node tools/release/sign.mjs verify "${f%.sig}"; done
@@ -602,9 +574,10 @@ jobs:
   publish:
     name: Publish the GitHub Release
     needs: [verify, assemble]
-    if: always() && needs.assemble.result == 'success' && needs.verify.outputs.release == 'true'
+    if: needs.verify.outputs.release == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment: release
     permissions:
       contents: write
     env:
@@ -629,3 +602,43 @@ jobs:
           if [ -f "$NOTES" ]; then NOTE_ARGS=(--notes-file "$NOTES"); else NOTE_ARGS=(--generate-notes); fi
           if [ "$PRERELEASE" = true ]; then PRE_ARGS=(--prerelease --latest=false); else PRE_ARGS=(--latest); fi
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "Agent Empire $VERSION" "${NOTE_ARGS[@]}" "${PRE_ARGS[@]}" release/assets/*
+
+  play:
+    name: Google Play (internal track)
+    # Only after every signature is verified (assemble), alongside publish; never on a dry run.
+    needs: [verify, assemble]
+    if: needs.verify.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: release
+    permissions:
+      contents: read
+    env:
+      HAS_PLAY: ${{ needs.verify.outputs.release == 'true' && secrets.PLAY_SERVICE_ACCOUNT_JSON != '' && secrets.ANDROID_KEYSTORE_B64 != '' }}
+      VERSION: ${{ needs.verify.outputs.version }}
+      PLAY_RELEASE_STATUS: ${{ vars.PLAY_RELEASE_STATUS || 'completed' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.HAS_PLAY == 'true'
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: env.HAS_PLAY == 'true'
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: env.HAS_PLAY == 'true'
+        with:
+          name: release-bundle
+          path: release/assets
+      - name: The App Bundle is the one in the verified release bundle
+        if: env.HAS_PLAY == 'true'
+        run: cd release/assets && grep -F " Agent-Empire-$VERSION-android.aab" SHA256SUMS | sha256sum -c -
+      - name: Upload the App Bundle
+        if: env.HAS_PLAY == 'true'
+        env:
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: node tools/release/play-upload.mjs --aab "release/assets/Agent-Empire-$VERSION-android.aab" --track internal --status "$PLAY_RELEASE_STATUS" --name "$VERSION"
+      - name: Play upload not configured
+        if: env.HAS_PLAY != 'true'
+        run: echo "::notice::PLAY_SERVICE_ACCOUNT_JSON (and the upload keystore) are not in the release environment; skipping the Play upload"

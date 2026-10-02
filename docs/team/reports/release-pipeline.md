@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Branch | `claude/release-pipeline` (from `d26d7fa`) |
+| Branch | `claude/release-pipeline` (from `d26d7fa`). Security fixes are on `claude/release-hardening` (from integration `2a16cdc`) |
 | Author | Claude (Claude Code), release lane |
 | Plan | `docs/team/RELEASE_PLAN.md`. Its contract section now records what was implemented |
 | Owner steps | `docs/RELEASING.md` |
@@ -78,7 +78,7 @@ Nothing was pushed, tagged, released or uploaded. No secrets were set, and no re
 | `desktop-macos` | `macos-15` (arm64) and `macos-15-intel` (x64) | Builds the app. Developer ID signing and notarization turn on with their secrets |
 | `desktop-windows` | windows-latest | Builds the app. Signs with a .pfx through the signtool vendored by `@electron/windows-sign`, or with Azure Artifact Signing |
 | `android` | ubuntu | SDK 35, build-tools 35.0.0, JDK 17. bundletool 1.18.3 is checksum-pinned. Builds the APK and AAB with the upload key, or a labelled debug-signed APK |
-| `play` | ubuntu | Uploads to the internal track. Tag only; needs its secrets |
+| `play` | ubuntu | Uploads to the internal track. Tag only, after `assemble` (alongside `publish`). It uploads the AAB from the verified `release-bundle` and checks it against `SHA256SUMS` |
 | `ios` | macos-15 | Policy checks and a simulator Release build. On a tag with secrets: archive, export, and TestFlight upload |
 | `assemble` | ubuntu | Channel files and their signatures, signature verification, `SHA256SUMS` |
 | `publish` | ubuntu | `gh release create --verify-tag` with every asset. The only job with `contents: write`, and it has no secrets |
@@ -150,6 +150,39 @@ The owner chose `electron-winstaller` **5.4.4** (MIT). It is an exact-pinned dev
 - The file is produced only for signed and notarized builds. `shell.macos.feed.<arch>` uses the same stable (latest) and beta (per-tag) URL scheme.
 
 **Needed from the desktop shell (updater lane):** `desktop/main.cjs` must handle Squirrel.Windows' `--squirrel-install`, `--squirrel-updated`, `--squirrel-uninstall` and `--squirrel-obsolete` arguments. On those it creates or removes shortcuts through `..\Update.exe` and quits. It takes feed URLs only from the verified channel file.
+
+## Security review fixes (`claude/release-hardening`)
+
+The review of `claude/release-integration` `2a16cdc` returned **ACCEPT WITH FIXES**.
+
+**#3: any branch could reach the signing secrets through a manual run.** Fixed:
+- All signing secrets and the Azure variables move to the GitHub Environment `release`. Its deployment rule allows `v*` tags only, and it requires the owner as reviewer.
+- The jobs that can sign (game, desktop-macos, desktop-windows, android, ios, assemble) declare `environment: ${{ needs.verify.outputs.release == 'true' && 'release' || '' }}`. They join the environment only on a tag run.
+- `publish` and `play` run only on a tag and declare `environment: release`. `verify` never joins.
+- Every `HAS_*` presence flag starts with `needs.verify.outputs.release == 'true' &&`, so it is false on a dry run.
+- Each step that receives a secret is gated by `env.RELEASE == 'true'` or such a flag. The step that signs the manifest or channel files now runs only on a tag, and checks the pinned key first.
+- The dry-run steps always run `sign.mjs sign --dev`.
+- macOS, Windows and Android each split into a signed step (with secrets) and a secret-free unsigned step.
+- `docs/RELEASING.md` gives the owner's exact setup: create the environment, add the reviewer, add the tag deployment rule `v*`, move the secrets with `gh secret set … --env release`, delete repository copies, and create a tag ruleset (restrict creation, update and deletion of `v*` to admin/maintain, with a `gh api` command). It also explains the three approval batches on a tag run.
+
+**Low: Play could consume a versionCode when later jobs failed.** Fixed:
+- `play` now `needs: [verify, assemble]` and runs alongside `publish`.
+- It uploads the AAB from the verified `release-bundle` after `sha256sum -c` against `SHA256SUMS`.
+- `assemble` no longer depends on `play`. The channel file's Play link now comes from the public repository variable `PLAY_LISTED=true` instead of from the upload result.
+
+**Tests:** two new tests in `tests/release-tools.test.ts` parse `release.yml` and assert:
+- exactly the jobs that reference secrets join `release` (conditionally on a tag, or tag-only), and `verify` never does;
+- every secret presence flag is release-gated;
+- every secret-bearing step has a release gate with no `||`;
+- `game` and `assemble` sign with `--dev` on a dry run, and with the production key only on a tag after `check-key`;
+- each signed desktop and Android step has a secret-free unsigned twin;
+- `play` depends on `assemble` and checks the AAB.
+
+A mutation check confirmed it: removing the release guard from a flag, or the environment line from `game`, makes the tests fail.
+
+**Unverified:**
+- GitHub's handling of an environment expression that evaluates to `''` (no environment) on dry runs. This is a common pattern, but it has not been run here.
+- The approval flow itself.
 
 ## Verification
 

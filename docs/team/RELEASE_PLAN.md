@@ -40,7 +40,7 @@ The owner's direction, recorded before implementation on 2026-10-02: GitHub is t
    - Plus **`channel-<stable|beta>.json`**: the update channel file every app reads.
 7. **Cloud coordinator:** the `agent-empire-coordinator.mjs` bundle and its sha256 are also release assets. A user's state repo updates its coordinator only when the user accepts the in-app prompt; no state repo is ever changed automatically.
 
-Actions are pinned to full commit SHAs. Secrets are used only in the steps that need them. No step runs on pull requests from forks.
+Actions are pinned to full commit SHAs. Secrets are used only in the steps that need them. No step runs on pull requests from forks. All signing secrets live in the GitHub Environment `release`, which allows only `v*` tags and requires the owner's approval. Jobs join it only on tag runs, so dry runs from any branch always sign with the development key and build unsigned apps. The Play upload runs only after `assemble` has verified every signature.
 
 ## Update channel contract (`channel-<channel>.json`, signed)
 
