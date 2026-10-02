@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { avatarDef, type Outfit } from '../../shared/outfit';
-import { avatarLoader, avatarUrl, hasTint, loadClips, tintedMaterial, type AvatarExtras } from './avatars';
+import { avatarLoader, avatarUrl, hasTint, loadClips, sharedLoad, tintedMaterial, type AvatarExtras } from './avatars';
 
 const assets = new Map<string, Promise<GLTF>>();
 export type VehiclePose = { phase: 'reach' | 'enter' | 'exit' | 'drive'; progress: number; steering?: number; handle?: THREE.Vector3; feet?: { l: THREE.Vector3; r: THREE.Vector3 } };
@@ -12,9 +12,10 @@ export type VehiclePose = { phase: 'reach' | 'enter' | 'exit' | 'drive'; progres
  */
 export type HumanActivity = 'none' | 'bike' | 'weights' | 'stretch' | 'coffee' | 'eat';
 function source(url: string) {
-  if (!assets.has(url)) assets.set(url, avatarLoader().loadAsync(url).then((gltf) => { guardHumanMaterials(gltf.scene); return gltf; }));
-  return assets.get(url)!;
+  return sharedLoad(assets, url, () => avatarLoader().loadAsync(url).then((gltf) => { guardHumanMaterials(gltf.scene); return gltf; }));
 }
+/** Delays before re-requesting a body whose model or clips failed to download (the failed load is not cached). */
+const LOAD_RETRY_MS = [2_000, 8_000, 30_000];
 
 /** Map slots a glTF metallic-roughness material can carry; all are copied when a texture repair arrives. */
 const MAP_SLOTS = ['map', 'normalMap', 'metalnessMap', 'roughnessMap', 'aoMap', 'alphaMap', 'emissiveMap'] as const;
@@ -171,8 +172,11 @@ export class Human {
     this.outfit = { ...outfit };
     this.root.name = 'Realistic human';
     this.root.userData.avatar = outfit.avatar;
-    const url = avatarUrl(outfit.avatar);
-    void Promise.all([source(url), loadClips(avatarDef(outfit.avatar).body)])
+    this.load(0);
+  }
+  private load(attempt: number) {
+    const url = avatarUrl(this.outfit.avatar);
+    void Promise.all([source(url), loadClips(avatarDef(this.outfit.avatar).body)])
       .then(([gltf, clips]) => {
         if (this.disposed) return;
         const extras = gltf.scene.userData as AvatarExtras;
@@ -213,10 +217,14 @@ export class Human {
         this.seatedBaseZ = model.position.z;
         this.baseY = model.position.y;
         this.ready = true;
+        delete this.root.userData.assetError;
       })
       .catch((error) => {
+        if (this.disposed) return;
         console.warn('Human model could not load', error);
         this.root.userData.assetError = true;
+        const delay = LOAD_RETRY_MS[attempt];
+        if (delay !== undefined) setTimeout(() => { if (!this.disposed && !this.model) this.load(attempt + 1); }, delay);
       });
   }
   /** Swaps the body material for a recoloured copy when the outfit names colours; default attire stays shared. */

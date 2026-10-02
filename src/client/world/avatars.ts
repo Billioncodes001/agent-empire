@@ -38,10 +38,25 @@ export function avatarLoader(): GLTFLoader {
   return new GLTFLoader();
 }
 
+/**
+ * Shares one in-flight load per key, but forgets a failed one so the next caller fetches again: a single dropped
+ * request on a phone changing networks must not leave every later body of that kind invisible until a reload.
+ */
+export function sharedLoad<T>(cache: Map<string, Promise<T>>, key: string, load: () => Promise<T>): Promise<T> {
+  let pending = cache.get(key);
+  if (!pending) {
+    pending = load().catch((error) => {
+      if (cache.get(key) === pending) cache.delete(key);
+      throw error;
+    });
+    cache.set(key, pending);
+  }
+  return pending;
+}
+
 const clipLoads = new Map<string, Promise<THREE.AnimationClip[]>>();
 export function loadClips(body: 'male' | 'female'): Promise<THREE.AnimationClip[]> {
-  if (!clipLoads.has(body)) clipLoads.set(body, avatarLoader().loadAsync(clipsUrl(body)).then((gltf) => gltf.animations));
-  return clipLoads.get(body)!;
+  return sharedLoad(clipLoads, body, () => avatarLoader().loadAsync(clipsUrl(body)).then((gltf) => gltf.animations));
 }
 
 const masks = new Map<AvatarId, THREE.Texture>();

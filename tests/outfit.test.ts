@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import * as THREE from 'three';
 import { AVATARS, AVATAR_IDS, CEO_AVATARS, WORKER_AVATARS, avatarDef, ceoAvatar, chiefAvatar, sanitizeOutfit, workerAvatar, workerOutfit } from '../src/shared/outfit';
-import { tintedMaterial, type AvatarExtras } from '../src/client/world/avatars';
+import { sharedLoad, tintedMaterial, type AvatarExtras } from '../src/client/world/avatars';
 import { WorkerManager, type WorkerRuntime } from '../src/server/workers';
 import type { Ledger } from '../src/server/usage';
 import type { WorkerInfo } from '../src/shared/protocol';
@@ -101,4 +101,18 @@ test('the recolour shader hooks into three’s standard material chunks', () => 
   const uniforms = shader.uniforms as Record<string, { value: unknown }>;
   assert.deepEqual((uniforms.outfitOn.value as THREE.Vector3).toArray(), [1, 0, 1], 'shirt keeps its fabric when no colour was chosen');
   assert.equal(material.customProgramCacheKey(), tintedMaterial(source, { avatar: 'business-m02', shirt: '#ffffff' }, extras).customProgramCacheKey(), 'one program for every recoloured body');
+});
+
+test('a failed avatar download is forgotten so the next body retries, while one in flight is shared', async () => {
+  const cache = new Map<string, Promise<string>>();
+  let calls = 0;
+  const failing = () => { calls++; return Promise.reject(new Error('network dropped')); };
+  await assert.rejects(sharedLoad(cache, 'clips-male', failing), /network dropped/);
+  assert.equal(cache.has('clips-male'), false, 'a rejected load must not stay cached');
+  const ok = () => { calls++; return Promise.resolve('clips'); };
+  const [a, b] = [sharedLoad(cache, 'clips-male', ok), sharedLoad(cache, 'clips-male', ok)];
+  assert.equal(a, b, 'concurrent callers share one request');
+  assert.equal(await a, 'clips');
+  assert.equal(calls, 2);
+  assert.equal(await sharedLoad(cache, 'clips-male', failing), 'clips', 'a successful load stays cached');
 });
