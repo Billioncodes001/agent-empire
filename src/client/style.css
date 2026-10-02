@@ -1145,3 +1145,19 @@ html.ae-cloud #hud .status-strip.cloud-strip .status-monitor { white-space: nowr
   .cloud-dl dd { margin-bottom: 6px; }
   html.ae-cloud #hud .status-strip.cloud-strip .status-monitor { display: none; }
 }
+
+/* ---------- In-app updates (src/client/update/ui.ts) ---------- */
+#toasts .toast.update-toast { pointer-events: auto !important; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: center; max-width: min(560px, calc(100vw - 32px));
+  color: #e6ecea; background: linear-gradient(160deg, rgba(22, 42, 50, .97), rgba(14, 28, 34, .97)); border: 1px solid rgba(155, 209, 186, .45); border-radius: 14px; padding: 8px 10px 8px 16px; font: 600 14px/1.35 Inter, 'SF Pro Text', system-ui, sans-serif; box-shadow: 0 18px 50px -20px rgba(0, 0, 0, .8); }
+.update-toast-actions { display: flex; gap: 8px; }
+.update-toast .btn { min-height: 40px; padding: 0 14px; border-radius: 10px; border: 1px solid rgba(155, 209, 186, .3); background: rgba(255, 255, 255, .05); color: inherit; font: inherit; cursor: pointer; }
+.update-toast .btn.primary { color: #0f2019; background: linear-gradient(135deg, #d6efe2, #9bd1ba); border-color: #c7e8d8; }
+.update-toast .btn:focus-visible { outline: 2px solid #c3e7d7; outline-offset: 2px; }
+.modal.update-modal { width: min(620px, 100%); }
+.update-body { display: flex; flex-direction: column; gap: 12px; }
+.update-body .status-card p { margin: 6px 0 0; }
+.update-versions { margin: 0; }
+.update-notes { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; background: rgba(255, 255, 255, .03); }
+.update-notes p { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); }
+.menu-item.update { border-color: rgba(155, 209, 186, .7); }
+@media (prefers-reduced-motion: reduce) { #toasts .toast.update-toast { animation: none; } }

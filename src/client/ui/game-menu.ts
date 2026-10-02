@@ -95,6 +95,11 @@ let extension: MenuExtension | null = null;
 export function setMenuExtension(ext: MenuExtension | null) {
   extension = ext;
 }
+/** "Check for updates" / "Update available" (src/client/update/ui.ts), in every mode. */
+let updateEntry: (() => MenuEntry | null) | null = null;
+export function setMenuUpdateEntry(entry: (() => MenuEntry | null) | null) {
+  updateEntry = entry;
+}
 
 export function mountGameMenu(opts: { player: PlayerController; openMap: () => void; openOperations: () => void }) {
   let menu: Modal | null = null;
@@ -139,6 +144,7 @@ export function mountGameMenu(opts: { player: PlayerController; openMap: () => v
         item('Settings', 'Camera, graphics, sound, keys', () => document.getElementById('btn-settings')?.click()),
         item('Controls', touchMode() ? 'Touch and keyboard help' : 'Keyboard and mouse help', help),
         ...(extension?.items() ?? []).map((e) => item(e.label, e.detail, e.run, e.cls ?? '')),
+        ...[updateEntry?.()].filter((e): e is MenuEntry => !!e).map((e) => item(e.label, e.detail, e.run, e.cls ?? '')),
         touchMode() && chat
           ? item('Chat', 'Message people in the office', () => {
               document.documentElement.classList.add('ae-chat-open');

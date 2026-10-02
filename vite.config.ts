@@ -1,5 +1,6 @@
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import { resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
 
 /**
  * `vite build --mode fixture` (npm run build:client:fixture) is the only build that may point the GitHub client at a
@@ -9,6 +10,18 @@ import { resolve } from 'node:path';
  */
 const FIXTURE_MARKER = '__AGENT_EMPIRE_FIXTURE_BUILD__';
 const LOOPBACK = /^http:\/\/(127\.0\.0\.1|localhost):\d{2,5}$/;
+/**
+ * The game's own version (one version for everything: docs/team/RELEASE_PLAN.md), from package.json. The page reads it
+ * as __AGENT_EMPIRE_GAME_VERSION__; the native shells read game-version.json at the bundle root to know which game
+ * they carry, and check that an installed update's file names the version they were asked to install (REL-04).
+ */
+const GAME_VERSION: string = JSON.parse(readFileSync(resolve(import.meta.dirname, 'package.json'), 'utf8')).version;
+const gameVersionFile = (): Plugin => ({
+  name: 'agent-empire-game-version',
+  generateBundle() {
+    this.emitFile({ type: 'asset', fileName: 'game-version.json', source: `${JSON.stringify({ version: GAME_VERSION })}\n` });
+  },
+});
 
 export default defineConfig(({ mode }) => {
   const fake = process.env.VITE_AGENT_EMPIRE_FAKE_GITHUB_API?.trim();
@@ -22,7 +35,11 @@ export default defineConfig(({ mode }) => {
   publicDir: resolve(import.meta.dirname, 'src/client/public'),
   // The override never reaches import.meta.env; only the define below carries it, and only in fixture mode.
   envPrefix: 'VITE_PUBLIC_',
-  define: { __AGENT_EMPIRE_FIXTURE__: fixture ? JSON.stringify({ marker: FIXTURE_MARKER, api: fake }) : 'undefined' },
+  define: {
+    __AGENT_EMPIRE_FIXTURE__: fixture ? JSON.stringify({ marker: FIXTURE_MARKER, api: fake }) : 'undefined',
+    __AGENT_EMPIRE_GAME_VERSION__: JSON.stringify(GAME_VERSION),
+  },
+  plugins: [gameVersionFile()],
   build: {
     outDir: resolve(import.meta.dirname, fixture ? 'dist/public-fixture' : 'dist/public'),
     emptyOutDir: true,

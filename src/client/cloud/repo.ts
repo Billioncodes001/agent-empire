@@ -240,6 +240,60 @@ export class CloudRepo {
     }
   }
 
+  /** The head commit's tree as {path → {sha, size}}. */
+  private async headTree(): Promise<{ commit: string; tree: string; entries: Map<string, { sha: string; size?: number }> }> {
+    const branch = await this.defaultBranch();
+    const ref = await this.call('GET', `/git/ref/heads/${branch}`);
+    const commit = ref.data?.object?.sha;
+    if (typeof commit !== 'string' || !/^[a-f0-9]{40,64}$/.test(commit)) throw new RepoError('github', 'GitHub returned an invalid branch head.');
+    const c = await this.call('GET', `/git/commits/${commit}`);
+    const tree = c.data?.tree?.sha;
+    if (typeof tree !== 'string') throw new RepoError('github', 'GitHub returned an invalid commit.');
+    const t = await this.call('GET', `/git/trees/${tree}?recursive=1`);
+    const entries = new Map<string, { sha: string; size?: number }>();
+    for (const e of Array.isArray(t.data?.tree) ? t.data.tree : []) if (e?.type === 'blob' && typeof e.path === 'string' && typeof e.sha === 'string') entries.set(e.path, { sha: e.sha, size: e.size });
+    return { commit, tree, entries };
+  }
+
+  /**
+   * REL-05: which coordinator the state repository runs. `manifest` is coordinator/coordinator.json (written when the
+   * app updates the coordinator); without one, the bundle itself is read so its sha256 can be compared.
+   */
+  async coordinatorInfo(paths: { bundle: string; manifest: string }): Promise<{ manifest: string | null; bundle: string | null }> {
+    const head = await this.headTree();
+    const read = async (path: string, max: number) => {
+      const e = head.entries.get(path);
+      if (!e) return null;
+      if (e.size !== undefined && e.size > max) throw new RepoError('invalid_state', `${path} is larger than the app can read.`);
+      return this.blobs.get(e.sha) ?? (await this.blob(e.sha));
+    };
+    const manifest = await read(paths.manifest, 64 * 1024);
+    return { manifest, bundle: manifest ? null : await read(paths.bundle, 6 * 1024 * 1024) };
+  }
+
+  /**
+   * Commits `files` in one commit on top of the current head (Git Data API, never forced). A concurrent coordinator
+   * commit is retried on the new head; files outside `files` are never touched. Returns the new commit sha.
+   */
+  async commitFiles(files: { path: string; content: string }[], message: string): Promise<string> {
+    const branch = await this.defaultBranch();
+    for (let attempt = 1; ; attempt++) {
+      const head = await this.headTree();
+      const tree = await this.call('POST', '/git/trees', { base_tree: head.tree, tree: files.map((f) => ({ path: f.path, mode: '100644', type: 'blob', content: f.content })) });
+      const commit = await this.call('POST', '/git/commits', { message, tree: tree.data?.sha, parents: [head.commit] });
+      try {
+        await this.call('PATCH', `/git/refs/heads/${branch}`, { sha: commit.data?.sha, force: false });
+        return commit.data.sha as string;
+      } catch (error) {
+        if (error instanceof RepoError && error.code === 'conflict' && attempt < 4) {
+          await new Promise((r) => setTimeout(r, 300 * attempt));
+          continue;
+        }
+        throw error;
+      }
+    }
+  }
+
   /** Start needs the workflow enabled again (shutdown disabled it); shutdown's last step may ask the app to disable it. */
   async setWorkflowEnabled(enabled: boolean): Promise<void> {
     await this.call('PUT', `/actions/workflows/${WORKFLOW_FILE}/${enabled ? 'enable' : 'disable'}`);
