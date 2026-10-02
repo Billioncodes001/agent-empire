@@ -27,6 +27,8 @@ export interface QueueEvents {
   hiringPaused(): string | undefined;
   /** Current manager ownership can reject superseded startup tasks, including legacy keys. */
   retryAllowed?(task: QueueTask): string | undefined;
+  /** Why this queued task must wait (e.g. its client job reached its approved budget). It stays queued, unfailed. */
+  taskHold?(task: QueueTask): string | undefined;
 }
 
 export const DEFAULT_MAX_WORKERS = 3;
@@ -337,6 +339,8 @@ export class TaskQueue {
         if (t.error !== sibling) { t.error = sibling; if (!this.changed()) break; }
         continue;
       }
+      // A held task keeps its place; later, unheld work may still be seated.
+      if (this.events.taskHold?.(t)) continue;
       if (this.busy() >= this.maxWorkers) break;
       // A spent budget holds the queue instead of failing every task; the pump seats them once hiring resumes.
       if (this.events.hiringPaused()) break;
