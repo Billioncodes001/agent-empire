@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Pure rules for in-app updates (docs/team/RELEASE_PLAN.md, REL-04), Foundation only, so Checks/run.sh covers them on
@@ -129,6 +130,34 @@ enum UpdatePolicy {
         if name.unicodeScalars.contains(where: { $0 == "\\" || $0.value < 0x20 || $0.value == 0x7f }) { return false }
         let trimmed = name.hasSuffix("/") ? String(name.dropLast()) : name
         return trimmed.split(separator: "/", omittingEmptySubsequences: false).allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
+    }
+
+    // MARK: the shell's own check of the signed release (defense in depth)
+
+    /// Ed25519 (CryptoKit Curve25519.Signing) over `message` with the pinned raw 32-byte public key.
+    static func verifyEd25519(_ message: Data, signatureBase64: String, publicKeyBase64: String = releasePublicKey) -> Bool {
+        guard let sig = Data(base64Encoded: signatureBase64.trimmingCharacters(in: .whitespacesAndNewlines)), sig.count == 64,
+              let raw = Data(base64Encoded: publicKeyBase64), raw.count == 32,
+              let key = try? Curve25519.Signing.PublicKey(rawRepresentation: raw) else { return false }
+        return key.isValidSignature(sig, for: message)
+    }
+
+    /// The signed channel file inside the release tagged v<version> (every release publishes channel-beta.json).
+    static func releaseChannelURL(_ version: String) -> String {
+        "https://github.com/\(releaseRepo)/releases/download/v\(version)/channel-beta.json"
+    }
+
+    /// Why the page's installGame request doesn't match the verified release document (or the app is too old), or nil.
+    static func releaseMismatch(_ doc: [String: Any], version: String, url: String, sha256: String, shellVersion: String?) -> String? {
+        guard doc["schema"] as? Int == 1, doc["version"] as? String == version else { return "The signed release is for another version." }
+        if let tag = doc["tag"] as? String, tag != "v\(version)" { return "The signed release is for another version." }
+        guard let game = doc["game"] as? [String: Any], game["url"] as? String == url, game["sha256"] as? String == sha256 else {
+            return "That update does not match the signed release. Nothing was installed."
+        }
+        if let min = game["minShell"] as? String {
+            guard isSemver(min), let shell = shellVersion, isSemver(shell), compare(shell, min) >= 0 else { return "This update needs app version \(min) or newer." }
+        }
+        return nil
     }
 
     // MARK: bundle state machine (files are GameUpdater's)

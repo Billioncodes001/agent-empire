@@ -156,6 +156,66 @@ public final class UpdatePolicy {
         }
     }
 
+    // ---- the shell's own check of the signed release (defense in depth) ----------------------------------------
+
+    private static final byte[] SPKI_ED25519_PREFIX = {0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00};
+
+    /**
+     * Ed25519 over `message` with a raw 32-byte base64 public key (java.security, Android 13 / API 33+ and any JDK 15+).
+     * TRUE or FALSE; null when this platform has no Ed25519 (Android 8 to 12), in which case the caller relies on the
+     * page's WebCrypto check plus the pinned-repository and sha256 rules, and logs that the native check was skipped.
+     */
+    public static Boolean verifyEd25519(byte[] message, String signatureBase64, String publicKeyBase64) {
+        java.security.KeyFactory factory;
+        try {
+            factory = java.security.KeyFactory.getInstance("Ed25519");
+        } catch (java.security.NoSuchAlgorithmException unavailable) {
+            return null;
+        }
+        try {
+            byte[] sig = java.util.Base64.getDecoder().decode(signatureBase64 == null ? "" : signatureBase64.trim());
+            byte[] raw = java.util.Base64.getDecoder().decode(publicKeyBase64);
+            if (sig.length != 64 || raw.length != 32) return Boolean.FALSE;
+            byte[] der = new byte[SPKI_ED25519_PREFIX.length + 32];
+            System.arraycopy(SPKI_ED25519_PREFIX, 0, der, 0, SPKI_ED25519_PREFIX.length);
+            System.arraycopy(raw, 0, der, SPKI_ED25519_PREFIX.length, 32);
+            java.security.Signature verifier = java.security.Signature.getInstance("Ed25519");
+            verifier.initVerify(factory.generatePublic(new java.security.spec.X509EncodedKeySpec(der)));
+            verifier.update(message);
+            return verifier.verify(sig);
+        } catch (Exception bad) {
+            return Boolean.FALSE;
+        }
+    }
+
+    /** The signed channel file inside the release tagged v<version> (every release publishes channel-beta.json). */
+    public static String releaseChannelUrl(String version) {
+        return "https://github.com/" + RELEASE_REPO + "/releases/download/v" + version + "/channel-beta.json";
+    }
+
+    /** Why the page's request doesn't match the signed release (or the app is too old for it), or null. */
+    public static String releaseMismatch(String docVersion, String docTag, String signedUrl, String signedSha, String minShell,
+                                         String version, String url, String sha256, String shellVersion) {
+        if (docVersion == null || !docVersion.equals(version) || (docTag != null && !docTag.equals("v" + version))) return "The signed release is for another version.";
+        if (signedUrl == null || !signedUrl.equals(url) || signedSha == null || !signedSha.equals(sha256)) return "That update does not match the signed release. Nothing was installed.";
+        if (minShell != null && (!isSemver(minShell) || !isSemver(shellVersion) || compare(shellVersion, minShell) < 0)) return "This update needs app version " + minShell + " or newer.";
+        return null;
+    }
+
+    // ---- install status (security review #4) ---------------------------------------------------------------
+
+    /** A status intent counts only with the nonce of the session this app started (kept in memory, never exported). */
+    public static boolean installStatusAccepted(String expected, String got) {
+        return expected != null && got != null && expected.length() >= 16 && java.security.MessageDigest.isEqual(expected.getBytes(java.nio.charset.StandardCharsets.UTF_8), got.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    /** The only activities the install confirmation may open: the system package installer. */
+    public static final List<String> SYSTEM_INSTALLERS = Collections.unmodifiableList(Arrays.asList("com.google.android.packageinstaller", "com.android.packageinstaller"));
+
+    public static boolean isSystemInstaller(String packageName, boolean systemApp) {
+        return systemApp && packageName != null && SYSTEM_INSTALLERS.contains(packageName);
+    }
+
     // ---- bundle state machine (the files themselves are GameUpdater's) ------------------------------------------
 
     /** Answers whether an installed bundle folder exists with the right game-version.json. */

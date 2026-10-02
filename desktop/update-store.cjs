@@ -369,4 +369,72 @@ function autoUpdateFeed(platform, feed) {
   return { url: String(feed).replace(/\/RELEASES$/, '') };
 }
 
-module.exports = { squirrelUpdateExe, squirrelEvent, autoUpdateFeed, RELEASE_PUBLIC_KEY, DEV_RELEASE_PUBLIC_KEY, RELEASE_KEY_IS_DEVELOPMENT, BOOT_TIMEOUT_MS, MAX_TEXT_BYTES, safeEntryName, zipEntries, extractZip, download, fixtureMapper, createBundleStore, bundleVersion };
+/* ---------- the shell's own check of the signed release (defense in depth) ---------- */
+
+const SPKI_ED25519_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
+
+/** Ed25519 over `bytes` with a raw 32-byte base64 public key. Never throws. */
+function verifyEd25519(bytes, signatureBase64, publicKeyBase64 = RELEASE_PUBLIC_KEY) {
+  try {
+    const sig = Buffer.from(String(signatureBase64).trim(), 'base64');
+    const raw = Buffer.from(publicKeyBase64, 'base64');
+    if (sig.length !== 64 || raw.length !== 32) return false;
+    const key = crypto.createPublicKey({ key: Buffer.concat([SPKI_ED25519_PREFIX, raw]), format: 'der', type: 'spki' });
+    return crypto.verify(null, Buffer.from(bytes), key, sig);
+  } catch {
+    return false;
+  }
+}
+
+const RELEASE_REPO = 'Billioncodes001/agent-empire';
+/** The signed channel file inside the release tagged v<version> (every release publishes channel-beta.json). */
+const releaseChannelUrl = (version) => `https://github.com/${RELEASE_REPO}/releases/download/v${version}/channel-beta.json`;
+
+/**
+ * Fetches and verifies the release's own signed channel file with the pinned key, so the shell never relies on the
+ * page alone (a script injected into the page could otherwise ask for any published asset). `get(url)` returns
+ * {status, body: Buffer}. Returns the parsed document for exactly `version`.
+ */
+async function signedRelease(version, get, publicKey = RELEASE_PUBLIC_KEY) {
+  if (!isSemver(version)) throw new Error('Malformed version.');
+  const url = releaseChannelUrl(version);
+  const [doc, sig] = await Promise.all([get(url), get(`${url}.sig`)]);
+  if (doc.status !== 200 || sig.status !== 200) throw new Error(`The signed release ${version} could not be read (${doc.status !== 200 ? doc.status : sig.status}).`);
+  if (!verifyEd25519(doc.body, sig.body.toString('utf8'), publicKey)) throw new Error('The release’s signature does not match this app’s release key. Nothing was installed.');
+  let parsed;
+  try {
+    parsed = JSON.parse(doc.body.toString('utf8'));
+  } catch {
+    throw new Error('The signed release is not readable.');
+  }
+  if (!parsed || parsed.schema !== 1 || parsed.version !== version || (parsed.tag !== undefined && parsed.tag !== `v${version}`)) throw new Error('The signed release is for another version.');
+  return parsed;
+}
+
+/** The page's installGame request must match the signed release exactly, and the app must be new enough (minShell). */
+function checkGameAgainstRelease(release, { url, sha256, version }, shellVersion) {
+  const g = release && release.game;
+  if (!g || g.url !== url || g.sha256 !== sha256 || release.version !== version) throw new Error('That update does not match the signed release. Nothing was installed.');
+  if (!isSemver(g.minShell) || !isSemver(shellVersion) || compareSemver(shellVersion, g.minShell) < 0) throw new Error(`This update needs app version ${g.minShell} or newer.`);
+}
+
+/** Squirrel's NuGet version (tools/release/package-windows-installer.mjs nugetVersion): 1.0.0-beta.2 → 1.0.0-beta002. */
+function nugetVersion(version) {
+  const m = /^(\d+\.\d+\.\d+)(?:-([a-z]+)\.(\d+))?$/.exec(version);
+  if (!m) throw new Error(`No Squirrel package for ${version}.`);
+  return m[2] ? `${m[1]}-${m[2]}${m[3].padStart(3, '0')}` : m[1];
+}
+
+/** The signed release's Windows package: a tagged asset named AgentEmpire-<nuget>-full.nupkg with its sha256. */
+function windowsPackage(release, version) {
+  const n = release && release.shell && release.shell.windows && release.shell.windows.downloads && release.shell.windows.downloads.x64 && release.shell.windows.downloads.x64.nupkg;
+  const name = `AgentEmpire-${nugetVersion(version)}-full.nupkg`;
+  const a = n && releaseAsset(n.url);
+  if (!a || a.tag !== `v${version}` || a.file !== name || !isSha256(n.sha256)) throw new Error('The signed release has no Windows update package.');
+  return { url: n.url, sha256: n.sha256, name };
+}
+
+/** A one-line Squirrel RELEASES index for a package we verified ourselves. */
+const squirrelReleases = (bytes, name) => `${crypto.createHash('sha1').update(bytes).digest('hex').toUpperCase()} ${name} ${bytes.length}\r\n`;
+
+module.exports = { verifyEd25519, releaseChannelUrl, signedRelease, checkGameAgainstRelease, nugetVersion, windowsPackage, squirrelReleases, squirrelUpdateExe, squirrelEvent, autoUpdateFeed, RELEASE_PUBLIC_KEY, DEV_RELEASE_PUBLIC_KEY, RELEASE_KEY_IS_DEVELOPMENT, BOOT_TIMEOUT_MS, MAX_TEXT_BYTES, safeEntryName, zipEntries, extractZip, download, fixtureMapper, createBundleStore, bundleVersion };

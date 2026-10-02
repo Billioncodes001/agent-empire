@@ -12,7 +12,7 @@ import { isChannel, type Channel, type ChannelFile } from './channel';
 import { fetchChannel, SourceError, type Fetcher, type KeyValue } from './source';
 import { decide, type Offer } from './decide';
 import type { NativeInfo, UpdateBridge } from './bridge';
-import { coordinatorDecision, commitCoordinatorUpdate, readInstalledCoordinator, type CoordinatorStatus } from './coordinator';
+import { coordinatorDecision, commitCoordinatorUpdate, readInstalledCoordinator, type CoordinatorStatus, type InstalledCoordinator } from './coordinator';
 import type { CloudRepo } from '../cloud/repo';
 import { sha256Hex } from './verify';
 
@@ -161,12 +161,22 @@ export class UpdateService {
     }
   }
 
+  private own: Promise<InstalledCoordinator | null> | null = null;
+  /** This build's bundled coordinator and its version (the game version), when the build ships one. */
+  private ownCoordinator(): Promise<InstalledCoordinator | null> {
+    this.own ??= (async () => {
+      const text = await this.deps.bundledCoordinator?.().catch(() => null);
+      return text ? { version: builtGameVersion(), sha256: await sha256Hex(text) } : null;
+    })();
+    return this.own;
+  }
+
   private async refreshCoordinator() {
     const file = this.state.channelFile;
     if (!this.cloud || !file?.coordinator) return this.set({ coordinator: null });
     try {
       const installed = await readInstalledCoordinator(this.cloud);
-      this.set({ coordinator: coordinatorDecision(file, installed) });
+      this.set({ coordinator: coordinatorDecision(file, installed, undefined, await this.ownCoordinator()) });
     } catch {
       // Reading GitHub failed (offline, rate limit): no coordinator prompt this time.
     }

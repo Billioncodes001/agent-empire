@@ -32,6 +32,8 @@ export interface DesktopShell {
   auto: boolean;
   /** Squirrel.Mac static feeds per architecture (Electron autoUpdater, serverType 'json'). */
   feed?: Partial<Record<DesktopArch, string>>;
+  /** Windows: the signed release's Squirrel package (downloads.x64.nupkg). The shell installs only this file. */
+  nupkg?: { url: string; sha256: string };
 }
 export interface AndroidShell {
   version: string;
@@ -117,6 +119,15 @@ export function releaseFolder(url: unknown): string | null {
   return null;
 }
 
+/**
+ * The stable macOS feed the release lane publishes: .../releases/latest/download/RELEASES-darwin-<arm64|x64>.json
+ * (Squirrel.Mac checks the downloaded app's code signature against the running app before applying it).
+ */
+export function isMacLatestFeed(url: unknown): boolean {
+  const a = releaseAsset(url);
+  return !!a && a.tag === null && /^RELEASES-darwin-(arm64|x64)\.json$/.test(a.file);
+}
+
 /** The release page https://github.com/<repo>/releases/tag/<tag>; returns the tag or null. */
 export function releasePage(url: unknown): string | null {
   const parts = releasePath(url);
@@ -181,11 +192,13 @@ function desktop(where: string, v: unknown): DesktopShell {
     const feed: Partial<Record<DesktopArch, string>> = {};
     for (const arch of ['arm64', 'x64'] as const) {
       if (absent(raw[arch])) continue;
-      if (releaseFolder(raw[arch])) feed[arch] = raw[arch] as string;
+      if (releaseFolder(raw[arch]) || isMacLatestFeed(raw[arch])) feed[arch] = raw[arch] as string;
       else feed[arch] = asset(`${where}.feed.${arch}`, raw[arch]);
     }
     out.feed = feed;
   }
+  const nupkg = isRec(r.downloads) && isRec(r.downloads.x64) && isRec(r.downloads.x64.nupkg) ? r.downloads.x64.nupkg : null;
+  if (nupkg) out.nupkg = { url: asset(`${where}.downloads.x64.nupkg.url`, nupkg.url, `v${out.version}`), sha256: sha(`${where}.downloads.x64.nupkg.sha256`, nupkg.sha256) };
   return out;
 }
 

@@ -13,7 +13,7 @@
  *                                                                       'auto-update' when downloaded, then 'restart')
  */
 import { BridgeError, NativeBridge, TIMEOUTS, native, type AppPlatform, type Native } from '../native';
-import { isAppleUrl, isPlayUrl, releaseAsset, releaseFolder, releasePage, RELEASES_API, type DesktopArch } from './channel';
+import { isAppleUrl, isMacLatestFeed, isPlayUrl, releaseAsset, releaseFolder, releasePage, RELEASES_API, type DesktopArch } from './channel';
 import { isSemver } from './semver';
 
 export type DesktopOs = 'macos' | 'windows' | 'linux';
@@ -131,7 +131,7 @@ export function updateBridge(n: Native = native()): UpdateBridge | null {
       if (!isSemver(p.version)) throw new BridgeError('That update is not valid.', 'invalid');
       const params: Record<string, string> = { version: p.version };
       if (p.url && (releaseAsset(p.url) || releasePage(p.url))) params.url = p.url;
-      if (p.feed && (releaseAsset(p.feed) || releaseFolder(p.feed))) params.feed = p.feed;
+      if (p.feed && ((releaseAsset(p.feed)?.tag ?? null) !== null || releaseFolder(p.feed) || isMacLatestFeed(p.feed))) params.feed = p.feed;
       if (p.sha256 && SHA.test(p.sha256)) params.sha256 = p.sha256;
       if (p.play && isPlayUrl(p.play)) params.play = p.play;
       if (p.testflight && isAppleUrl(p.testflight)) params.testflight = p.testflight;

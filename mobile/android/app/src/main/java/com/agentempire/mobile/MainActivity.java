@@ -147,7 +147,6 @@ public final class MainActivity extends Activity implements NativeBridge.Host {
             backCallback = this::onGameBack;
             getOnBackInvokedDispatcher().registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT, backCallback);
         }
-        handleInstallStatus(getIntent());
         if (debuggable && handleDebugIntent(getIntent())) return; // it loads the game when done
         loadGame();
     }
@@ -314,28 +313,8 @@ public final class MainActivity extends Activity implements NativeBridge.Host {
 
     @Override public void bootReported() { main.removeCallbacks(trialCheck); }
 
-    /** The system installer's answer for an app update (GameUpdater.installApk): show its confirmation. */
-    private boolean handleInstallStatus(Intent intent) {
-        if (intent == null || !GameUpdater.INSTALL_ACTION.equals(intent.getAction())) return false;
-        int status = intent.getIntExtra(android.content.pm.PackageInstaller.EXTRA_STATUS, Integer.MIN_VALUE);
-        if (status == android.content.pm.PackageInstaller.STATUS_PENDING_USER_ACTION) {
-            Intent confirm = Build.VERSION.SDK_INT >= 33 ? intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent.class) : legacyIntentExtra(intent);
-            if (confirm != null) {
-                confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                try {
-                    startActivity(confirm);
-                } catch (ActivityNotFoundException none) {
-                    Log.w(TAG, "No installer to confirm the app update");
-                }
-            }
-        } else if (status != android.content.pm.PackageInstaller.STATUS_SUCCESS) {
-            Log.w(TAG, "App update not installed: " + intent.getStringExtra(android.content.pm.PackageInstaller.EXTRA_STATUS_MESSAGE));
-        }
-        return true;
-    }
-
-    @SuppressWarnings("deprecation")
-    private static Intent legacyIntentExtra(Intent intent) { return intent.getParcelableExtra(Intent.EXTRA_INTENT); }
+    // App-update install status: InstallStatusReceiver (not exported; nonce-checked). The exported launcher activity
+    // never acts on an install status intent (security review #4).
 
     // ---- Launch overlay ------------------------------------------------------------------------------------------
 
@@ -497,7 +476,6 @@ public final class MainActivity extends Activity implements NativeBridge.Host {
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
-        if (handleInstallStatus(intent)) return;
         setIntent(intent);
         if (debuggable) handleDebugIntent(intent);
     }

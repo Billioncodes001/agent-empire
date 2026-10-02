@@ -44,6 +44,8 @@ import java.util.zip.ZipInputStream;
 final class GameUpdater {
     private static final String TAG = "AgentEmpire";
     static final String INSTALL_ACTION = "com.agentempire.mobile.INSTALL_STATUS";
+    /** The nonce of the app-update session this app started; InstallStatusReceiver ignores any other status intent. */
+    static volatile String installNonce;
 
     private final Activity activity;
     private final File root;
@@ -250,9 +252,37 @@ final class GameUpdater {
 
     // ---- game bundles -------------------------------------------------------------------------------------------
 
+    /**
+     * Defense in depth: reads the release's own signed channel (channel-beta.json in the v<version> release), verifies it
+     * with the pinned key and returns it. Without Ed25519 on this Android version (below 13) the native signature check
+     * is skipped and logged; the page has already verified the same file with WebCrypto.
+     */
+    JSONObject signedRelease(String version) throws IOException {
+        String url = UpdatePolicy.releaseChannelUrl(version);
+        Fetched doc = fetch(url, null, UpdatePolicy.MAX_TEXT_BYTES, null);
+        Fetched sig = fetch(url + ".sig", null, 4096, null);
+        if (doc.status != 200 || sig.status != 200) throw new IOException("The signed release " + version + " could not be read.");
+        Boolean ok = UpdatePolicy.verifyEd25519(doc.body, new String(sig.body, StandardCharsets.UTF_8), UpdatePolicy.RELEASE_PUBLIC_KEY);
+        if (ok == null) Log.w(TAG, "No Ed25519 on this Android version: the shell's own release signature check is skipped");
+        else if (!ok) throw new IOException("The release's signature does not match this app's release key. Nothing was installed.");
+        try {
+            return new JSONObject(new String(doc.body, StandardCharsets.UTF_8));
+        } catch (Exception bad) {
+            throw new IOException("The signed release is not readable.");
+        }
+    }
+
+    private static String str(JSONObject o, String key) {
+        return o != null && o.opt(key) instanceof String ? o.optString(key) : null;
+    }
+
     /** Downloads, verifies (sha256 from the signed channel), unpacks and marks pending. */
     String installGame(String url, String sha256, String version) throws IOException {
         if (!UpdatePolicy.isTaggedAsset(url) || !UpdatePolicy.isSha256(sha256)) throw new IOException("That update is not an Agent Empire release.");
+        JSONObject release = signedRelease(version);
+        JSONObject game = release.optJSONObject("game");
+        String mismatch = UpdatePolicy.releaseMismatch(str(release, "version"), str(release, "tag"), str(game, "url"), str(game, "sha256"), str(game, "minShell"), version, url, sha256, shellVersion());
+        if (mismatch != null) throw new IOException(mismatch);
         synchronized (this) {
             String refused = UpdatePolicy.refuse(state, builtinVersion, version);
             if (refused != null) throw new IOException(refused);
@@ -358,8 +388,14 @@ final class GameUpdater {
      * installer (the user confirms; Android refuses an APK signed with another key). Returns "installer", or
      * "permission" after opening the "install unknown apps" setting when this app may not install yet.
      */
-    String installApk(String url, String sha256) throws IOException {
+    String installApk(String url, String sha256, String version) throws IOException {
         if (!UpdatePolicy.isTaggedAsset(url) || !UpdatePolicy.isSha256(sha256)) throw new IOException("That download is not an Agent Empire release.");
+        String shell = shellVersion();
+        if (!UpdatePolicy.isSemver(version) || (UpdatePolicy.isSemver(shell) && UpdatePolicy.compare(version, shell) <= 0)) throw new IOException(version + " is not newer than this app.");
+        JSONObject release = signedRelease(version);
+        JSONObject signedApk = release.optJSONObject("shell") == null ? null : release.optJSONObject("shell").optJSONObject("android");
+        String mismatch = UpdatePolicy.releaseMismatch(str(release, "version"), str(release, "tag"), str(signedApk, "url"), str(signedApk, "sha256"), null, version, url, sha256, shell);
+        if (mismatch != null) throw new IOException(mismatch);
         if (Build.VERSION.SDK_INT >= 26 && !activity.getPackageManager().canRequestPackageInstalls()) {
             Intent settings = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + activity.getPackageName()));
             activity.runOnUiThread(() -> activity.startActivity(settings));
@@ -382,9 +418,13 @@ final class GameUpdater {
                     copy(in, out, UpdatePolicy.MAX_APK_BYTES);
                     session.fsync(out);
                 }
-                Intent status = new Intent(INSTALL_ACTION).setPackage(activity.getPackageName()).setClass(activity, MainActivity.class);
+                // The answer goes to a non-exported receiver, tagged with a fresh in-memory nonce (security review #4).
+                byte[] random = new byte[24];
+                new java.security.SecureRandom().nextBytes(random);
+                installNonce = hex(random);
+                Intent status = new Intent(INSTALL_ACTION).setClass(activity, InstallStatusReceiver.class).putExtra(InstallStatusReceiver.EXTRA_NONCE, installNonce);
                 int flags = PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= 31 ? PendingIntent.FLAG_MUTABLE : 0);
-                session.commit(PendingIntent.getActivity(activity, id, status, flags).getIntentSender());
+                session.commit(PendingIntent.getBroadcast(activity, id, status, flags).getIntentSender());
             }
             return "installer";
         } catch (java.security.NoSuchAlgorithmException impossible) {

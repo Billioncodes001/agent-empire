@@ -156,12 +156,16 @@ async function handleBridge(request) {
       const r = await updates.download(request.params.url, { etag: request.params.etag, maxBytes: updates.MAX_TEXT_BYTES, fixture: updateFixture });
       return { status: r.status, body: r.body.toString('utf8'), etag: r.etag };
     }
-    case 'update.installGame':
+    case 'update.installGame': {
+      // Defense in depth: the shell reads the release's own signed channel and installs only what it names.
+      const release = await updates.signedRelease(request.params.version, (url) => updates.download(url, { fixture: updateFixture, maxBytes: updates.MAX_TEXT_BYTES }));
+      updates.checkGameAgainstRelease(release, request.params, app.getVersion());
       return bundles.install(request.params, async (url) => {
         const r = await updates.download(url, { fixture: updateFixture });
         if (r.status !== 200) throw new Error(`GitHub answered ${r.status} for the update.`);
         return r.body;
       });
+    }
     case 'update.activate':
       if (!bundles.activate()) throw new Error('No update is waiting.');
       // Answer first, then restart the game into the new bundle (a trial until it reports booting).
@@ -276,6 +280,32 @@ function canAutoUpdate() {
   );
 }
 
+/**
+ * The feed the autoUpdater may use, taken from the release's own signed channel (never from the page):
+ *   macOS    the signed release's Squirrel.Mac feed for this architecture (Squirrel.Mac also checks the code signature)
+ *   Windows  Squirrel.Windows doesn't verify Authenticode, so the shell downloads the nupkg named in the signed release
+ *            (its tag, not "latest"), checks its sha256, and points Squirrel at a local folder holding only that
+ *            package and a RELEASES index computed here. An unverified package is never applied.
+ */
+async function verifiedFeed(release, version) {
+  if (process.platform === 'darwin') {
+    const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
+    const feed = release.shell && release.shell.macos && release.shell.macos.auto === true && release.shell.macos.feed && release.shell.macos.feed[arch];
+    if (typeof feed !== 'string' || !(policy.releaseAsset(feed) || policy.isMacLatestFeed(feed))) throw new Error('The signed release has no macOS update feed.');
+    return updates.autoUpdateFeed('darwin', feed);
+  }
+  const pkg = updates.windowsPackage(release, version);
+  const r = await updates.download(pkg.url, { fixture: updateFixture });
+  if (r.status !== 200) throw new Error(`GitHub answered ${r.status} for the app update.`);
+  if (require('node:crypto').createHash('sha256').update(r.body).digest('hex') !== pkg.sha256) throw new Error('The app update does not match the signed release (sha256). Nothing was installed.');
+  const dir = path.join(app.getPath('userData'), 'squirrel-feed');
+  require('node:fs').rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, pkg.name), r.body);
+  writeFileSync(path.join(dir, 'RELEASES'), updates.squirrelReleases(r.body, pkg.name));
+  return { url: dir };
+}
+
 /** 'idle' | 'downloading' | 'ready' (downloaded; the next openNative restarts into it). */
 let nativeUpdate = 'idle';
 /**
@@ -292,12 +322,15 @@ async function openNativeUpdate({ version, url, feed }) {
     if (nativeUpdate === 'downloading') throw new Error('The app update is already downloading.');
     nativeUpdate = 'downloading';
     try {
+      if (!policy.isSemver(version) || policy.compareSemver(version, app.getVersion()) <= 0) throw new Error(`${version} is not newer than this app.`);
+      const release = await updates.signedRelease(version, (u) => updates.download(u, { fixture: updateFixture, maxBytes: updates.MAX_TEXT_BYTES }));
+      const feedOptions = await verifiedFeed(release, version);
       await new Promise((resolve, reject) => {
         autoUpdater.removeAllListeners();
         autoUpdater.once('error', reject);
         autoUpdater.once('update-not-available', () => reject(new Error(`The update feed has no newer app than ${app.getVersion()}.`)));
         autoUpdater.once('update-downloaded', resolve);
-        autoUpdater.setFeedURL(updates.autoUpdateFeed(process.platform, feed));
+        autoUpdater.setFeedURL(feedOptions);
         autoUpdater.checkForUpdates();
       });
       nativeUpdate = 'ready';

@@ -18,6 +18,8 @@ final class GameUpdater {
     let builtinVersion: String?
     /// Debug builds only: a loopback stand-in for GitHub releases (launch argument / environment AE_UPDATE_FIXTURE).
     var fixtureOrigin: String?
+    /// The app's own version, for the signed release's minShell.
+    var shellVersion: String?
     private(set) var state: UpdatePolicy.State
     private var rolledBack: String?
     private var installing = false
@@ -178,6 +180,20 @@ final class GameUpdater {
             if let why = UpdatePolicy.refuse(state, builtin: builtinVersion, version: version) { throw Failure.refused(why) }
             if installing { throw Failure.refused("An update is already being installed.") }
             installing = true
+        }
+        // Defense in depth: the release's own signed channel, verified with the pinned key, must name exactly this zip.
+        do {
+            let channel = UpdatePolicy.releaseChannelURL(version)
+            let (doc, sig) = try await (fetch(channel, etag: nil), fetch(channel + ".sig", etag: nil))
+            guard doc.status == 200, sig.status == 200 else { throw Failure.refused("The signed release \(version) could not be read.") }
+            guard UpdatePolicy.verifyEd25519(doc.body, signatureBase64: String(decoding: sig.body, as: UTF8.self)) else {
+                throw Failure.refused("The release's signature does not match this app's release key. Nothing was installed.")
+            }
+            guard let parsed = try? JSONSerialization.jsonObject(with: doc.body) as? [String: Any] else { throw Failure.refused("The signed release is not readable.") }
+            if let why = UpdatePolicy.releaseMismatch(parsed, version: version, url: url, sha256: sha256, shellVersion: shellVersion) { throw Failure.refused(why) }
+        } catch {
+            locked { installing = false }
+            throw error
         }
         defer { locked { installing = false } }
         let (file, response) = try await URLSession.shared.download(for: try request(for: url), delegate: RedirectGuard(fixture: fixtureOrigin))

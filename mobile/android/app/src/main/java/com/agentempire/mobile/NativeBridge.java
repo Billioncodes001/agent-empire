@@ -249,7 +249,7 @@ final class NativeBridge {
                 if (sideload && UpdatePolicy.isTaggedAsset(url) && UpdatePolicy.isSha256(sha)) {
                     updateIo.execute(() -> {
                         try {
-                            String action = host.updater().installApk(url, sha);
+                            String action = host.updater().installApk(url, sha, version);
                             main.post(() -> resolve(id, "{\"action\":" + JSONObject.quote(action) + "}"));
                         } catch (Exception error) {
                             main.post(() -> reject(id, message(error, "The app update could not be downloaded.")));
