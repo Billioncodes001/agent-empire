@@ -39,6 +39,8 @@ export interface NativeInfo {
   installSource?: string;
   /** One-shot: the version the shell rolled back from at this start (it never reported booting). */
   rolledBack?: string;
+  /** Android: an app update handed to the system installer never finished (the app was closed meanwhile). */
+  installPending?: string;
 }
 
 export interface FetchResult {
@@ -95,6 +97,7 @@ export function parseNativeInfo(raw: unknown, platform: AppPlatform): NativeInfo
   const source = str(r.installSource, 32);
   if (source && /^[a-z-]+$/.test(source)) info.installSource = source;
   if (isSemver(r.rolledBack)) info.rolledBack = r.rolledBack;
+  if (isSemver(r.installPending)) info.installPending = r.installPending;
   return info;
 }
 

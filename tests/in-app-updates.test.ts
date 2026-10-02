@@ -303,6 +303,8 @@ test('bridge: nativeInfo answers are validated', () => {
   assert.throws(() => parseNativeInfo({ platform: 'android', shellVersion: '1.0.0' }, 'ios'));
   assert.throws(() => parseNativeInfo({ platform: 'ios', shellVersion: 'one' }, 'ios'));
   assert.equal(parseNativeInfo({ platform: 'desktop', shellVersion: '1.0.0', os: 'macos', rolledBack: '1.0.1' }, 'desktop').rolledBack, '1.0.1');
+  assert.equal(parseNativeInfo({ platform: 'android', shellVersion: '1.0.0', installPending: '1.0.2' }, 'android').installPending, '1.0.2');
+  assert.equal(parseNativeInfo({ platform: 'android', shellVersion: '1.0.0', installPending: '<b>' }, 'android').installPending, undefined);
 });
 
 // ---- service flow ----------------------------------------------------------------------------------------------------------

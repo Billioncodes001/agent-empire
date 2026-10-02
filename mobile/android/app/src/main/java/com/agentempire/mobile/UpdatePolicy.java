@@ -209,11 +209,37 @@ public final class UpdatePolicy {
         return expected != null && got != null && expected.length() >= 16 && java.security.MessageDigest.isEqual(expected.getBytes(java.nio.charset.StandardCharsets.UTF_8), got.getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
-    /** The only activities the install confirmation may open: the system package installer. */
-    public static final List<String> SYSTEM_INSTALLERS = Collections.unmodifiableList(Arrays.asList("com.google.android.packageinstaller", "com.android.packageinstaller"));
+    /** ApplicationInfo.FLAG_SYSTEM and FLAG_UPDATED_SYSTEM_APP (plain values, so this stays testable off-device). */
+    public static final int FLAG_SYSTEM = 0x1, FLAG_UPDATED_SYSTEM_APP = 0x80;
+    /**
+     * The confirmation actions PackageInstaller puts in EXTRA_INTENT for STATUS_PENDING_USER_ACTION (install, and the
+     * permission review some versions show first).
+     */
+    public static final List<String> CONFIRM_ACTIONS = Collections.unmodifiableList(Arrays.asList(
+        "android.content.pm.action.CONFIRM_INSTALL", "android.content.pm.action.CONFIRM_PERMISSIONS", "android.content.pm.action.CONFIRM_PRE_APPROVAL"));
 
-    public static boolean isSystemInstaller(String packageName, boolean systemApp) {
-        return systemApp && packageName != null && SYSTEM_INSTALLERS.contains(packageName);
+    /**
+     * Whether the install confirmation may be opened: the intent is a package-installer confirmation, and it resolves to
+     * an activity of a system app (built in, or an updated built-in app). Any OEM installer qualifies (Google, AOSP,
+     * Xiaomi, Samsung…); an installed third-party app never does.
+     */
+    public static boolean isInstallerConfirmation(String action, String resolvedPackage, int resolvedAppFlags) {
+        return action != null && CONFIRM_ACTIONS.contains(action) && resolvedPackage != null && !resolvedPackage.isEmpty()
+            && (resolvedAppFlags & (FLAG_SYSTEM | FLAG_UPDATED_SYSTEM_APP)) != 0;
+    }
+
+    /** An app update older than this (with no answer from the installer) is forgotten. */
+    public static final long INSTALL_PENDING_MAX_MS = 24L * 60 * 60 * 1000;
+
+    /**
+     * The non-secret marker "app update <version> pending since <time>", read at launch. The nonce lives only in memory,
+     * so a process killed mid-install can't finish the confirmation; the page then tells the player to tap Update again.
+     * Returns "show" (still older than that version, recent), "done" (installed) or "stale" (too old / malformed).
+     */
+    public static String installPendingState(String version, long since, String shellVersion, long now) {
+        if (!isSemver(version) || since <= 0 || now < since || now - since > INSTALL_PENDING_MAX_MS) return "stale";
+        if (isSemver(shellVersion) && compare(shellVersion, version) >= 0) return "done";
+        return "show";
     }
 
     // ---- bundle state machine (the files themselves are GameUpdater's) ------------------------------------------
