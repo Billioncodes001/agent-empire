@@ -6,12 +6,16 @@ import { fileURLToPath } from 'node:url';
 import { assertNoFixtureBuild } from './check-no-fixture.mjs';
 
 // Every shell file the app loads. The Windows stage copies exactly these; tests/desktop-bridge.test.ts checks the list.
-const DESKTOP_FILES = ['package.json', 'main.cjs', 'preload.cjs', 'bridge-policy.cjs', 'app-protocol.cjs', 'secure-store.cjs', 'device-flow.cjs', 'local-host.cjs', 'credential-vault.cjs',
+const DESKTOP_FILES = ['package.json', 'main.cjs', 'preload.cjs', 'bridge-policy.cjs', 'app-protocol.cjs', 'update-store.cjs', 'secure-store.cjs', 'device-flow.cjs', 'local-host.cjs', 'credential-vault.cjs',
   'device.html', 'device.js', 'device-preload.cjs', 'credentials.html', 'credentials.js', 'credentials-preload.cjs', 'shell.css'];
 const project = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const args = process.argv.slice(2);
+const allArgs = process.argv.slice(2);
+// --skip-archive (release workflow): leave the packaged folder unzipped so it can be code-signed first, then archived
+// by tools/release/zip.mjs (Windows runners have no zip/unzip commands).
+const skipArchive = allArgs.includes('--skip-archive');
+const args = allArgs.filter(arg => arg !== '--skip-archive');
 const crossPackage = args.length > 0;
-if (crossPackage && args.join(' ') !== '--platform=win32 --arch=x64') throw new Error('Supported target: --platform=win32 --arch=x64; omit flags to prepare the local desktop.');
+if (crossPackage && args.join(' ') !== '--platform=win32 --arch=x64') throw new Error('Supported target: --platform=win32 --arch=x64 [--skip-archive]; omit flags to prepare the local desktop.');
 const platform = crossPackage ? 'win32' : process.platform;
 const arch = crossPackage ? 'x64' : process.arch;
 // Cross packages have their own input and output trees; never replace a running macOS bundle.
@@ -44,7 +48,8 @@ copyFileSync(path.join(project, 'package.json'), path.join(root, 'package.json')
 copyFileSync(path.join(project, 'package-lock.json'), path.join(root, 'package-lock.json'));
 if (install) {
   // npm's OS/CPU override selects optional native packages for the target, not this build host.
-  execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['ci', '--prefix', root, '--omit=dev', '--include=optional', '--ignore-scripts', '--no-audit', '--no-fund', `--os=${platform}`, `--cpu=${arch}`], { stdio: 'inherit' });
+  // On a Windows host npm.cmd can only be started through a shell (Node refuses .cmd files without one).
+  execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['ci', '--prefix', root, '--omit=dev', '--include=optional', '--ignore-scripts', '--no-audit', '--no-fund', `--os=${platform}`, `--cpu=${arch}`], { stdio: 'inherit', shell: process.platform === 'win32' });
   writeFileSync(markerPath, marker);
 }
 const nativeRoot = path.join(root, 'node_modules/@lydell', `node-pty-${platform}-${arch}`);
@@ -58,6 +63,7 @@ if (crossPackage) {
   copyFileSync(path.join(project, 'docs/PLATFORMS.md'), path.join(output, 'READ-ME-PLATFORMS.md'));
   verifyWindowsPty(path.join(output, 'resources/app/runtime/node_modules/@lydell/node-pty-win32-x64'));
   assertWindowsX64(path.join(output, 'Agent Empire.exe'));
+  if (skipArchive) { console.log(`Windows app folder (not archived): ${output}`); process.exit(0); }
   const zip = `${output}.zip`;
   rmSync(zip, { force: true });
   execFileSync('zip', ['-q', '-r', zip, path.basename(output)], { cwd: path.dirname(output), stdio: 'inherit' });

@@ -17,7 +17,8 @@ const kindOf = (url: string): Kind => {
   if (/\.(jpe?g|png|webp|ktx2|avif)$/.test(path)) return 'textures';
   return 'other';
 };
-const shortName = (url: string) => (url.startsWith('blob:') ? 'character textures' : decodeURIComponent(url.split('?')[0].split('/').pop() || url));
+// Embedded images decode through blob: URLs; the corporate avatars' textures are files under /models/avatars/.
+const shortName = (url: string) => (url.startsWith('blob:') || /\/models\/avatars\/.+\.webp/.test(url) ? 'character textures' : decodeURIComponent(url.split('?')[0].split('/').pop() || url));
 
 const splash = document.getElementById('splash');
 const bar = splash?.querySelector<HTMLElement>('.splash-bar i');

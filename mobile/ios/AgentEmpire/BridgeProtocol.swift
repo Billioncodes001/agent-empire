@@ -13,6 +13,13 @@ enum BridgeProtocol {
         case githubDeviceFlow = "github.deviceFlow"
         case signedOut = "app.signedOut"
         case openExternal = "app.openExternal"
+        // In-app updates (REL-04), validated with UpdatePolicy below.
+        case updateFetch = "update.fetch"
+        case updateInstallGame = "update.installGame"
+        case updateActivate = "update.activate"
+        case updateBootOk = "update.bootOk"
+        case updateNativeInfo = "update.nativeInfo"
+        case updateOpenNative = "update.openNative"
     }
 
     /// The only keys stored for the page. Provider API keys are never among them.
@@ -136,6 +143,30 @@ enum BridgeProtocol {
               let host = parts.host, !host.isEmpty, parts.user == nil, parts.password == nil, let url = parts.url
         else { return .failure(.badURL) }
         return .success(url)
+    }
+
+    // MARK: update.* parameters
+
+    static func updateFetch(_ params: [String: Any]) -> Result<(url: String, etag: String?), Failure> {
+        guard let url = params["url"] as? String, UpdatePolicy.isFetchURL(url) else { return .failure(.badValue("That address is not an Agent Empire release.")) }
+        let etag = (params["etag"] as? String).flatMap { $0.count <= 200 && $0.range(of: "^[\\x21-\\x7e]+$", options: .regularExpression) != nil ? $0 : nil }
+        return .success((url, etag))
+    }
+
+    static func installGame(_ params: [String: Any]) -> Result<(url: String, sha256: String, version: String), Failure> {
+        guard let url = params["url"] as? String, UpdatePolicy.isTaggedAsset(url) else { return .failure(.badValue("That update is not an Agent Empire release.")) }
+        guard let sha = params["sha256"] as? String, UpdatePolicy.isSha256(sha) else { return .failure(.badValue("Malformed sha256.")) }
+        guard let version = params["version"] as? String, UpdatePolicy.isSemver(version) else { return .failure(.badValue("Malformed version.")) }
+        return .success((url, sha, version))
+    }
+
+    /// update.openNative on iOS: TestFlight or the App Store only; the app never installs code itself.
+    static func storeURL(_ params: [String: Any]) -> Result<URL, Failure> {
+        guard let version = params["version"] as? String, UpdatePolicy.isSemver(version) else { return .failure(.badValue("Malformed version.")) }
+        for key in ["testflight", "appStore"] {
+            if let text = params[key] as? String, UpdatePolicy.isAppleURL(text), let url = URL(string: text) { return .success(url) }
+        }
+        return .failure(.badValue("This update has no TestFlight or App Store link yet."))
     }
 
     static func reason(_ params: [String: Any]) -> Result<String, Failure> {

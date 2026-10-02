@@ -4,24 +4,42 @@ import { readFile } from 'node:fs/promises';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone } from 'three/examples/jsm/utils/SkeletonUtils.js';
-import { Human, RUN_FLIGHT_PHASE, landingDip, locomotionClip, prepareHumanModel } from '../src/client/world/human';
+import { Human, RUN_FLIGHT_PHASE, landingDip, locomotionClip, prepareHumanModel as prepareModel } from '../src/client/world/human';
+import { AVATAR_IDS, avatarDef, isAvatarId } from '../src/shared/outfit';
 
 // Exercise the actual shipped meshes/rigs on the CPU; texture decode requires a browser.
-async function geometryAsset(name: string) {
-  const bytes = await readFile(new URL(`../src/client/public/models/${name}`, import.meta.url));
+async function parseGlb(url: URL) {
+  const bytes = await readFile(url);
   const length = bytes.readUInt32LE(12),
     data = JSON.parse(bytes.subarray(20, 20 + length).toString());
-  data.buffers[0].uri = `data:application/octet-stream;base64,${bytes.subarray(28 + length).toString('base64')}`;
+  if (data.buffers) data.buffers[0].uri = `data:application/octet-stream;base64,${bytes.subarray(28 + length).toString('base64')}`;
   delete data.images;
   delete data.textures;
+  delete data.samplers;
+  delete data.extensionsRequired;
+  delete data.extensionsUsed;
   data.materials = [];
-  for (const mesh of data.meshes) for (const primitive of mesh.primitives) delete primitive.material;
+  for (const mesh of data.meshes ?? []) for (const primitive of mesh.primitives) delete primitive.material;
   globalThis.ProgressEvent ??= class ProgressEvent {
     constructor(_type: string, data: object) {
       Object.assign(this, data);
     }
   } as typeof globalThis.ProgressEvent;
   return new GLTFLoader().parseAsync(JSON.stringify(data), '');
+}
+const MODELS = new URL('../src/client/public/models/', import.meta.url);
+/**
+ * A shipped model. For a corporate avatar this is what the game assembles: its mesh-only GLB with the shared
+ * clip file of its body as `animations` (see src/client/world/avatars.ts).
+ */
+async function geometryAsset(name: string) {
+  if (!isAvatarId(name)) return parseGlb(new URL(name, MODELS));
+  const [mesh, clips] = await Promise.all([parseGlb(new URL(`avatars/${name}.glb`, MODELS)), parseGlb(new URL(`avatars/clips-${avatarDef(name).body}.glb`, MODELS))]);
+  return { scene: mesh.scene, animations: clips.animations };
+}
+/** As the game prepares a body: at the avatar's own height (scene extras), else the legacy 1.78 m. */
+function prepareHumanModel(model: THREE.Object3D, animations: THREE.AnimationClip[]) {
+  return prepareModel(model, animations, (model.userData.height as number | undefined) ?? 1.78);
 }
 function bounds(model: THREE.Object3D) {
   model.updateWorldMatrix(true, true);
@@ -33,7 +51,7 @@ function bounds(model: THREE.Object3D) {
   });
   return new THREE.Box3().setFromObject(model);
 }
-for (const name of ['founder.glb', 'chief-of-staff.glb'])
+for (const name of AVATAR_IDS)
   test(`${name}: animation stays at adult scale and clones have independent bones`, async () => {
     const gltf = await geometryAsset(name),
       one = clone(gltf.scene),
@@ -43,7 +61,7 @@ for (const name of ['founder.glb', 'chief-of-staff.glb'])
     for (let frame = 0; frame < 120; frame++) mixer.update(1 / 60);
     const box = bounds(one),
       size = box.getSize(new THREE.Vector3());
-    assert.ok(size.y > 1.65 && size.y < 1.95, `animated height ${size.y}`);
+    assert.ok(size.y > 1.6 && size.y < 1.95, `animated height ${size.y}`);
     assert.ok(Math.abs(box.min.y) < 0.1, `feet at ${box.min.y}`);
     assert.ok(size.x < 1 && size.z < 1, `human proportions ${size.toArray()}`);
     const a = one.getObjectByName('Bip01_L_Thigh'),
@@ -64,7 +82,7 @@ test('sedan export contains a standalone vehicle at road scale', async () => {
   assert.ok(size.z > 4 && size.z < 5.2);
   assert.equal(car.getObjectByName('Preview_ground'), undefined);
 });
-for (const name of ['founder.glb', 'chief-of-staff.glb'])
+for (const name of AVATAR_IDS)
   test(`${name}: recorded locomotion and sit clips have finite grounded poses`, async () => {
     const gltf = await geometryAsset(name),
       model = clone(gltf.scene),
@@ -105,7 +123,7 @@ test('Blender workstation has two independent display surfaces and fits a 2.2 m 
  const size = bounds(gltf.scene).getSize(new THREE.Vector3());
  assert.ok(size.x < 2.2 && size.y < 1.6 && size.z < 1.1);
 });
-for (const asset of ['founder.glb', 'chief-of-staff.glb']) test(`${asset}: typing wrists reach the keyboard and fingers point along its surface`, async () => {
+for (const asset of AVATAR_IDS) test(`${asset}: typing wrists reach the keyboard and fingers point along its surface`, async () => {
  const gltf = await geometryAsset(asset), model = clone(gltf.scene), mixer = prepareHumanModel(model, gltf.animations);
  const bones = new Map<string, THREE.Bone>();
  model.traverse(o => { if (o instanceof THREE.Bone) bones.set(o.name.replace(/[^a-z0-9]/gi, '').toLowerCase(), o); });
@@ -136,7 +154,7 @@ test('sedan wheels have independent steering and spin pivots attached outside th
   assert.ok(before.distanceTo(after)<.04, `${id}: rolling around the axle, not the body`);
  }
 });
-for(const asset of ['founder.glb','chief-of-staff.glb']) test(`${asset}: held vehicle transition keeps a stable adult pose`,async()=>{
+for(const asset of AVATAR_IDS) test(`${asset}: held vehicle transition keeps a stable adult pose`,async()=>{
  const gltf=await geometryAsset(asset),model=clone(gltf.scene),mixer=prepareHumanModel(model,gltf.animations);
  const bones=new Map<string,THREE.Bone>();model.traverse(o=>{if(o instanceof THREE.Bone)bones.set(o.name.replace(/[^a-z0-9]/gi,'').toLowerCase(),o);});
  const human=Object.create(Human.prototype) as Human, root=new THREE.Group();root.add(model);
@@ -170,7 +188,7 @@ async function bareHuman(asset: string) {
   return { gltf, human, root, model, mixer, bones, at };
 }
 
-for (const asset of ['founder.glb', 'chief-of-staff.glb']) test(`${asset}: the held flight frame has both feet off the floor`, async () => {
+for (const asset of AVATAR_IDS) test(`${asset}: the held flight frame has both feet off the floor`, async () => {
   const { gltf, model, mixer, at } = await bareHuman(asset);
   mixer.stopAllAction();
   const clip = gltf.animations.find(c => c.name === 'run_neutral')!;
@@ -181,7 +199,7 @@ for (const asset of ['founder.glb', 'chief-of-staff.glb']) test(`${asset}: the h
   for (const side of ['l', 'r']) assert.ok(at(`bip01${side}foot`).y > 0.15, `${side} foot is up in the flight frame`);
 });
 
-for (const asset of ['founder.glb', 'chief-of-staff.glb']) test(`${asset}: a jump never plays the idle clip mid-air, tucks, and lands with planted feet`, async () => {
+for (const asset of AVATAR_IDS) test(`${asset}: a jump never plays the idle clip mid-air, tucks, and lands with planted feet`, async () => {
   const { human, root, model, at } = await bareHuman(asset);
   const dt = 1 / 60;
   for (let i = 0; i < 30; i++) human.update(dt, 0);
@@ -234,7 +252,7 @@ test('walk ↔ run selection has hysteresis, so a speed hovering at the boundary
   assert.equal(landingDip(1, 0.06), 0);
 });
 
-for (const asset of ['founder.glb', 'chief-of-staff.glb']) test(`${asset}: accelerating from walk to run keeps the stride continuous`, async () => {
+for (const asset of AVATAR_IDS) test(`${asset}: accelerating from walk to run keeps the stride continuous`, async () => {
   const { human, root, at } = await bareHuman(asset);
   const dt = 1 / 60;
   const feet = () => ['l', 'r'].map(s => root.worldToLocal(at(`bip01${s}foot`)));
@@ -255,7 +273,7 @@ for (const asset of ['founder.glb', 'chief-of-staff.glb']) test(`${asset}: accel
   assert.ok(switching < steady * 1.35, `no pop across the blend (${switching.toFixed(3)} vs steady ${steady.toFixed(3)})`);
 });
 
-for (const asset of ['founder.glb', 'chief-of-staff.glb']) test(`${asset}: amenity poses never accumulate and let go cleanly`, async () => {
+for (const asset of AVATAR_IDS) test(`${asset}: amenity poses never accumulate and let go cleanly`, async () => {
   const { human, root, bones } = await bareHuman(asset);
   for (const activity of ['weights', 'stretch', 'coffee'] as const) {
     human.setActivity(activity);
@@ -269,4 +287,70 @@ for (const asset of ['founder.glb', 'chief-of-staff.glb']) test(`${asset}: ameni
   for (let i = 0; i < 180; i++) human.update(1 / 60, 0);
   const props = root.children.filter(o => o.name.startsWith('prop:'));
   assert.ok(props.length > 0 && props.every(p => !p.visible), 'cup and dumbbells are put away');
+});
+
+// ---- Corporate avatars: shared clips, rest poses and shipped files ----------------------------------------
+const CLIP_NAMES = ['idle_neutral_01', 'walk_neutral', 'run_neutral', 'sit_chair_idle_neutral_01', 'sit_down_chair_01', 'sit_stand_up_chair_01', 'sit_down_chair_left', 'sit_stand_up_chair_left', 'wave_01'];
+for (const body of ['male', 'female'] as const) test(`clips-${body}.glb: rotations on every bone, translation only on the pelvis, no scale`, async () => {
+  const clips = await parseGlb(new URL(`avatars/clips-${body}.glb`, MODELS));
+  const names = clips.animations.map((c) => c.name);
+  for (const name of CLIP_NAMES) assert.ok(names.includes(name), `${body} clips include ${name}`);
+  for (const clip of clips.animations)
+    for (const track of clip.tracks) {
+      const [node, property] = track.name.split('.');
+      assert.notEqual(property, 'scale', `${clip.name}: ${track.name} would impose the source body's proportions`);
+      if (property === 'position') assert.equal(node, 'Bip01_Pelvis', `${clip.name}: only the pelvis translates (${track.name})`);
+    }
+});
+
+for (const id of AVATAR_IDS) test(`${id}: rest pose matches its clip rig bone for bone, so shared clips retarget without distortion`, async () => {
+  const [mesh, clips] = await Promise.all([parseGlb(new URL(`avatars/${id}.glb`, MODELS)), parseGlb(new URL(`avatars/clips-${avatarDef(id).body}.glb`, MODELS))]);
+  const bones = new Map<string, THREE.Object3D>();
+  mesh.scene.traverse((o) => { if ((o as THREE.Bone).isBone) bones.set(o.name, o); });
+  const rig = new Map<string, THREE.Object3D>();
+  clips.scene.traverse((o) => { if (o.name.startsWith('Bip01_')) rig.set(o.name, o); });
+  assert.ok(bones.size >= 80, `${bones.size} bones`);
+  let worst = 0, worstName = '';
+  for (const [name, source] of rig) {
+    const bone = bones.get(name);
+    assert.ok(bone, `${id} has ${name}`);
+    const angle = bone.quaternion.angleTo(source.quaternion);
+    if (angle > worst) { worst = angle; worstName = name; }
+  }
+  assert.ok(worst < THREE.MathUtils.degToRad(1), `rest rotations within 1° (worst ${THREE.MathUtils.radToDeg(worst).toFixed(2)}° at ${worstName})`);
+  // Clips move the pelvis in its parent's frame: both rigs must agree on that frame and the hip height.
+  mesh.scene.updateMatrixWorld(true);
+  clips.scene.updateMatrixWorld(true);
+  const pelvis = bones.get('Bip01_Pelvis')!, source = rig.get('Bip01_Pelvis')!;
+  const q = (o: THREE.Object3D) => o.getWorldQuaternion(new THREE.Quaternion());
+  assert.ok(q(pelvis.parent!).angleTo(q(source.parent!)) < 1e-3, 'pelvis parent frame matches the clip rig');
+  const height = (o: THREE.Object3D) => o.getWorldPosition(new THREE.Vector3()).y;
+  assert.ok(Math.abs(height(pelvis) - height(source)) < 0.01, `hip height ${height(pelvis).toFixed(3)} vs clip rig ${height(source).toFixed(3)}`);
+  // Every animated bone exists on the avatar.
+  for (const clip of clips.animations) for (const track of clip.tracks) assert.ok(bones.has(track.name.split('.')[0]), `${clip.name} targets ${track.name}`);
+});
+
+for (const id of AVATAR_IDS) test(`${id}: ships textured, non-metallic materials with both texture sizes and a recolour mask`, async () => {
+  const bytes = await readFile(new URL(`avatars/${id}.glb`, MODELS));
+  const length = bytes.readUInt32LE(12), json = JSON.parse(bytes.subarray(20, 20 + length).toString());
+  assert.deepEqual(json.extensionsRequired, ['EXT_texture_webp']);
+  const names = json.materials.map((m: { name: string }) => m.name);
+  assert.ok(names.includes('body') && names.includes('head'), names.join());
+  for (const m of json.materials) {
+    assert.equal(m.pbrMetallicRoughness.metallicFactor, 0, `${m.name} is dielectric`);
+    const texture = json.textures[m.pbrMetallicRoughness.baseColorTexture.index];
+    const uri = json.images[texture.extensions.EXT_texture_webp.source].uri as string;
+    assert.match(uri, new RegExp(`^${id}/.+-1024\\.webp$`));
+    for (const size of [1024, 512]) {
+      const file = await readFile(new URL(`avatars/${uri.replace('-1024.webp', `-${size}.webp`)}`, MODELS));
+      assert.equal(file.subarray(8, 12).toString(), 'WEBP', `${uri} at ${size}`);
+    }
+  }
+  const mask = await readFile(new URL(`avatars/${id}/mask-512.webp`, MODELS));
+  assert.equal(mask.subarray(8, 12).toString(), 'WEBP');
+  const extras = json.scenes[0].extras;
+  assert.equal(extras.avatar, id);
+  assert.ok(extras.height > 1.6 && extras.height < 1.95, `height ${extras.height}`);
+  for (const region of avatarDef(id).regions) assert.ok(extras.regions[region]?.area > 0.001, `${id} has a ${region} region`);
+  if (!avatarDef(id).regions.includes('tie')) assert.equal(extras.regions.tie, undefined, 'no tie region on a tieless outfit');
 });

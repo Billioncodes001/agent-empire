@@ -3,6 +3,7 @@ import type { ContinuityStatus } from './continuity.js';
 // Wire protocol between browser and server. Every WebSocket frame is one JSON object.
 
 import type { Look } from './avatar.js';
+import type { Outfit } from './outfit.js';
 import type { DecorPlacement, Decoration } from './decor.js';
 
 export type WorkerStatus =
@@ -59,6 +60,8 @@ export interface WorkerInfo {
   task?: WorkerTask;
   /** Tokens and cost of its Claude session so far, subagents included (agents only). */
   usage?: Usage;
+  /** Attire chosen when it was hired; absent means the stable default from shared/outfit.ts (workerOutfit). */
+  outfit?: Outfit;
 }
 
 /** Tokens and what they cost, summed over a Claude Code session or the whole office. */
@@ -416,7 +419,7 @@ export type ClientMsg =
   /** You reached out to use something; everyone else sees your character's arm do it. */
   | { t: 'act' }
   | { t: 'profile'; name: string; color: string; look: Look }
-  | { t: 'worker.spawn'; deskId: string; prompt?: string; worktree?: boolean; kind?: WorkerKind }
+  | { t: 'worker.spawn'; deskId: string; prompt?: string; worktree?: boolean; kind?: WorkerKind; outfit?: Outfit }
   | { t: 'worker.resume'; workerId: string }
   | { t: 'worker.kill'; workerId: string; cleanup?: WorktreeCleanup }
   /** Asks what the worker's worktree holds; answered with a `worker.worktree` message. */
@@ -480,6 +483,8 @@ export type ServerMsg =
       invites: boolean;
       /** The running server's version; a change after a reconnect means the office was upgraded. */
       version: string;
+      /** The server's release version (package.json), for the apps' "your server runs vX" notice (REL-05). */
+      appVersion?: string;
       upgrade: UpgradeState;
       services: ServicesState;
       /** Pictures on the walls. */

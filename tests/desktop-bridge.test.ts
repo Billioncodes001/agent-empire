@@ -18,7 +18,7 @@ test('bridge policy: method and key allowlists, session keys and per-key values'
   assert.deepEqual([...policy.SESSION_KEYS], ['server.token', 'server.deviceId', 'github.token', 'github.login']);
   assert.equal(policy.isMethod('secure.get'), true);
   assert.equal(policy.isMethod('shell.exec'), false);
-  assert.deepEqual([...policy.METHODS], ['secure.get', 'secure.set', 'secure.delete', 'github.deviceFlow', 'app.signedOut', 'app.openExternal', 'app.runLocal']);
+  assert.deepEqual([...policy.METHODS], ['secure.get', 'secure.set', 'secure.delete', 'github.deviceFlow', 'app.signedOut', 'app.openExternal', 'app.runLocal', 'update.fetch', 'update.installGame', 'update.activate', 'update.bootOk', 'update.nativeInfo', 'update.openNative']);
   assert.deepEqual([...policy.MODES], ['cloud', 'server', 'local']);
   for (const key of ['anthropic.key', 'openai.key', 'password', '__proto__', '']) assert.equal(policy.isKey(key), false, key);
 

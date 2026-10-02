@@ -21,7 +21,9 @@ public final class BridgePolicy {
 
     /** The only methods the page can call. Nothing else is exposed. */
     public static final Set<String> METHODS = Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
-        "secure.get", "secure.set", "secure.delete", "github.deviceFlow", "app.signedOut", "app.openExternal")));
+        "secure.get", "secure.set", "secure.delete", "github.deviceFlow", "app.signedOut", "app.openExternal",
+        // In-app updates (REL-04), validated with UpdatePolicy.
+        "update.fetch", "update.installGame", "update.activate", "update.bootOk", "update.nativeInfo", "update.openNative")));
 
     /** Fixed key allowlist for secure.get/set/delete. */
     public static final List<String> KEYS = Collections.unmodifiableList(Arrays.asList(

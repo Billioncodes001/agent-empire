@@ -13,6 +13,7 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { SSAOPass } from 'three/examples/jsm/postprocessing/SSAOPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { sameLook } from '../shared/avatar';
+import { workerOutfit, type Outfit } from '../shared/outfit';
 import { DESK_BY_ID, FLOOR_RISE, SPAWN, deskSeat } from '../shared/layout';
 import type { PeerInfo, WorkerInfo } from '../shared/protocol';
 import { Net } from './net';
@@ -49,6 +50,7 @@ import { Tower } from './tower';
 import { GRAPHICS, applyGraphics } from './graphics';
 import { openSettings } from './ui/settings';
 import { appPanel } from './ui/app-panel';
+import { startUpdates, updateSettingsSection } from './update';
 import { connectionView } from './ui/continuity';
 import { setupPwa } from './ui/pwa';
 import { maybeOfferExecutionSetup, openCloudTasks, openExecutionSetup } from './ui/execution';
@@ -240,6 +242,8 @@ if (cloudNet) {
     },
   });
 } else mountStatusStrip($('status-strip'), { openManagement: () => empireUI.openOperations(), openWorkers: () => openWorkersDialog(openWorkerTerminal) });
+// In-app updates (REL-03/05): the prompt waits for a calm moment (never mid-jump, typing or in a dialog).
+const updateService = startUpdates({ airborne: () => !player.grounded, cloudRepo: cloudNet?.repo ?? null });
 const traversal = new Traversal(player,me,office,city,()=>{
   if(!store.empire.delegated)net.send({t:'empire.action',action:{kind:'delegate',enabled:true}});
 }, (cue, at) => sound.carCue(cue, at));
@@ -271,6 +275,8 @@ hanger.onChange = () => {
 function showMyProfile(p: Profile) {
   me.setColor(p.color);
   me.setLook(p.look);
+  // The chief of staff never wears the CEO's suit (shared/outfit.ts).
+  city.dressChief(p.look);
 }
 
 interface RemotePeer {
@@ -373,6 +379,7 @@ net.onMessage((msg) => {
       renderProject();
       $('btn-team').classList.toggle('hidden', !store.invites);
       // Back from a restart on another version: this page's code is stale, so load the new one.
+      updateService.setServerVersion(msg.appVersion ?? msg.version);
       if (!bootVersion) bootVersion = msg.version;
       else if (msg.version !== bootVersion || restarting()) showUpgraded(msg.upgrade);
       upgradePhase = msg.upgrade.phase;
@@ -500,7 +507,7 @@ function syncWorkers() {
     const desk = office.desks.get(w.deskId);
     if (!desk) continue;
     if (!v) {
-      const model = new Worker(w.name, w.color);
+      const model = new Worker(w.name, w.color, workerOutfit(w));
       model.root.position.copy(desk.seatAnchor.position);
       model.root.position.y = 0;
       model.root.position.z += 0.08;
@@ -534,6 +541,7 @@ function syncWorkers() {
       v.model.setStatus(w.status, shouldBounce(w));
       noOutline(v.model.root);
     }
+    v.model.setOutfit(workerOutfit(w));
     v.model.setTask(w.task);
     v.model.setLive(fresh);
     // Typing (and its sound) only once the body is seated at the desk; see world/worker-life.ts.
@@ -579,8 +587,8 @@ function freeDesk(): string | null {
   return best;
 }
 
-function hire(deskId: string, prompt?: string, worktree = false) {
-  net.send({ t: 'worker.spawn', deskId, prompt, worktree });
+function hire(deskId: string, prompt?: string, worktree = false, outfit?: Outfit) {
+  net.send({ t: 'worker.spawn', deskId, prompt, worktree, ...(outfit ? { outfit } : {}) });
 }
 
 function openShell(deskId: string) {
@@ -596,7 +604,8 @@ function promptAtDesk(deskId: string) {
       subtitle: 'A fresh Claude Code worker will sit down and start on this right away.',
       submitLabel: 'Hire & start',
       worktreeOption: !!store.project?.branch,
-      onSubmit: (text, o) => hire(deskId, text, o.worktree),
+      outfitOption: true,
+      onSubmit: (text, o) => hire(deskId, text, o.worktree, o.outfit),
     });
   } else if (w.status === 'exited' || w.status === 'offline') {
     toast(`${w.name} is asleep — press R to resume first`, 'warn');
@@ -1206,9 +1215,15 @@ $('btn-settings').addEventListener('click', () =>
     },
     editProfile,
     () => sound.ding('done'),
-    appPanel(net),
+    combineSections(appPanel(net), updateSettingsSection(updateService)),
   ),
 );
+
+function combineSections(...sections: { el: HTMLElement; dispose(): void }[]) {
+  const el = document.createElement('div');
+  el.append(...sections.map((s) => s.el));
+  return { el, dispose: () => sections.forEach((s) => s.dispose()) };
+}
 
 function editProfile() {
   openCharacter(false, (p) => {
@@ -1396,6 +1411,6 @@ if (saved?.look) {
 }
 
 // Debug handle for quick checks from the console / headless screenshots.
-(window as any).__office = { store, player, camera, workerViews, scene, net, renderer, me, remotes, settings, gallery, hanger, city, empireUI, life };
+(window as any).__office = { store, player, camera, workerViews, scene, net, renderer, me, remotes, settings, gallery, hanger, city, empireUI, life, office };
 (window as any).__voice = voice;
 (window as any).__sound = sound;

@@ -59,4 +59,18 @@ Plan: [OFFICE_LIFE_AND_MOBILE_PLAN.md](OFFICE_LIFE_AND_MOBILE_PLAN.md).
 | LIFE-03 | Worker routines driven by real states | Reviewed and accepted | Idle/done workers take breaks; stale/offline workers never walk. Review fixes 88cd160 |
 | LIFE-04 | Task dependencies (`waitingOn`) | Backlog | Needs backend lane |
 | LIFE-05 | Character variety and Blender pipeline | Backlog | Blender not installed on this host |
+| REL-06 | In-app update device re-run after the security fixes | Reviewed and accepted | [Report](reports/update-device-rerun.md). macOS packaged app and iPhone 18 Pro simulator pass every check; Android 15 emulator passes except the shell's own signature check, which then fell open. Fixed: genuine Android updates refused (Keystore), unreadable dark-dialog status lines, Android now verifies with its own RFC 8032 verifier (security review ACCEPT, 1,407-case differential vs OpenSSL), rollback notice held until the splash is gone. The last two are unit-tested, not re-run on a device. Release gate: shells still pin the public dev key until the owner pins the real one |
+| LIFE-06 | Corporate attire (CEO/chief suits, worker default outfit, hire-dialog customisation) | Reviewed and accepted | [Report](reports/corporate-outfits.md). Rocketbox business avatars (MIT) via a TypeScript pipeline; review ACCEPT WITH FIXES, the medium (failed clip/model downloads cached for the session) fixed with a retry and a test. 559/559 tests, 19/19 outfit and 411/411 mobile checks on the merged tree. Open (low): frustum culling disabled for skinned bodies; old rigs still in `tools/avatars/rigs/`. Not run on the iPhone simulator |
 | ORG-01..06 | Executives, estimates, approval desk, marketing, research, onboarding | Backlog | Follows CONSULT-04 |
+
+## Releases and in-app updates
+
+Plan: [RELEASE_PLAN.md](RELEASE_PLAN.md). Owner steps: [RELEASING.md](../RELEASING.md).
+
+| ID | Slice | State | Evidence / next dependency |
+| --- | --- | --- | --- |
+| REL-01 | Unified version (1.0.0-beta.1), version sync and tag rules | Reviewed and accepted | [Report](reports/release-pipeline.md) |
+| REL-02 | `release.yml`: signed game bundle and channel, desktop/Android/iOS builds, signing gated on secrets in a protected `release` environment | Reviewed and accepted | Every action pinned to a verified SHA; dry runs use `--dev`. No GitHub run yet. The owner must create the environment, the secrets and the real signing key |
+| REL-03 | Client update service and prompt | Reviewed and accepted | [Report](reports/in-app-updates.md). Signature checked before trust; forward-only; stable-feed round-trip test |
+| REL-04 | Native bundle store, rollback, native update paths | Reviewed and accepted | Shells verify the channel signature themselves (Android 8–12: page check plus sha256). Windows feeds Squirrel only a verified package. Device re-run after the fixes is still pending |
+| REL-05 | Coordinator update prompt; server version notice | Reviewed and accepted | Explicit confirmation only; never offers a lower version |

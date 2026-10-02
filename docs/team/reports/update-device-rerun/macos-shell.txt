@@ -1,0 +1,6 @@
+
+DevTools listening on ws://127.0.0.1:9333/devtools/browser/3ff03ee2-3597-460e-9934-d94c4b21e36f
+Update fixture: release downloads come from http://127.0.0.1:4721 (development key only).
+[56863:1002/125811.442560:ERROR:gpu/command_buffer/service/shared_image/shared_image_manager.cc:254] SharedImageManager::ProduceSkia: Trying to Produce a Skia representation from a non-existent mailbox.
+[56863:1002/125816.566392:ERROR:gpu/command_buffer/service/shared_image/shared_image_manager.cc:254] SharedImageManager::ProduceSkia: Trying to Produce a Skia representation from a non-existent mailbox.
+The updated game did not report booting within 20 s; rolled back.

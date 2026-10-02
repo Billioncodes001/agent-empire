@@ -1,0 +1,2 @@
+2026-10-02 13:18:18.832697Empire: the updated game did not report booting within 20 s; rolled back
+2026-10-02 13:23:58.412970Empire: the updated game did not report booting within 20 s; rolled back

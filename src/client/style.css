@@ -1061,6 +1061,10 @@ html.ae-touch .lift-status { top: calc(96px + env(safe-area-inset-top)); }
 .modal.ae-dark .btn.danger { color: #ffe3d6; background: rgba(160, 70, 40, .32); border-color: rgba(242, 196, 173, .5); }
 .modal.ae-dark .btn.on, .modal.ae-dark .btn[aria-checked=true] { color: var(--accent-2); background: rgba(155, 209, 186, .16); border-color: var(--accent); }
 .modal.ae-dark .btn.close { width: 44px; padding: 0; border-radius: 50%; font-size: 16px; }
+/* Status lines (updates, server upgrade): the light-paper fills would put the light --ink on a light background. */
+.modal.ae-dark .upgrade-status { color: #e0f2fe; background: #15324a; border: 1px solid rgba(224, 242, 254, .3); font-weight: 600; }
+.modal.ae-dark .upgrade-status.ok { color: #d8f5e3; background: #173a2c; border-color: rgba(216, 245, 227, .3); }
+.modal.ae-dark .upgrade-status.error { color: #ffd6e0; background: #4a1f2a; border-color: rgba(255, 214, 224, .35); }
 .modal.ae-dark textarea, .modal.ae-dark input[type=text] { min-height: 46px; font: inherit; font-size: 16px; color: var(--ink); background: rgba(6, 14, 18, .6); border: 1px solid var(--line); border-radius: 11px; padding: 10px 14px; transition: border-color .2s, box-shadow .2s; }
 .modal.ae-dark textarea::placeholder, .modal.ae-dark input[type=text]::placeholder { color: #6f8783; }
 .modal.ae-dark textarea:focus, .modal.ae-dark input[type=text]:focus { border-color: var(--accent); box-shadow: 0 0 0 4px rgba(155, 209, 186, .16); }
@@ -1145,3 +1149,46 @@ html.ae-cloud #hud .status-strip.cloud-strip .status-monitor { white-space: nowr
   .cloud-dl dd { margin-bottom: 6px; }
   html.ae-cloud #hud .status-strip.cloud-strip .status-monitor { display: none; }
 }
+
+/* ---------- In-app updates (src/client/update/ui.ts) ---------- */
+#toasts .toast.update-toast { pointer-events: auto !important; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: center; max-width: min(560px, calc(100vw - 32px));
+  color: #e6ecea; background: linear-gradient(160deg, rgba(22, 42, 50, .97), rgba(14, 28, 34, .97)); border: 1px solid rgba(155, 209, 186, .45); border-radius: 14px; padding: 8px 10px 8px 16px; font: 600 14px/1.35 Inter, 'SF Pro Text', system-ui, sans-serif; box-shadow: 0 18px 50px -20px rgba(0, 0, 0, .8); }
+.update-toast-actions { display: flex; gap: 8px; }
+.update-toast .btn { min-height: 40px; padding: 0 14px; border-radius: 10px; border: 1px solid rgba(155, 209, 186, .3); background: rgba(255, 255, 255, .05); color: inherit; font: inherit; cursor: pointer; }
+.update-toast .btn.primary { color: #0f2019; background: linear-gradient(135deg, #d6efe2, #9bd1ba); border-color: #c7e8d8; }
+.update-toast .btn:focus-visible { outline: 2px solid #c3e7d7; outline-offset: 2px; }
+.modal.update-modal { width: min(620px, 100%); }
+.update-body { display: flex; flex-direction: column; gap: 12px; }
+.update-body .status-card p { margin: 6px 0 0; }
+.update-versions { margin: 0; }
+.update-notes { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; background: rgba(255, 255, 255, .03); }
+.update-notes p { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); }
+.menu-item.update { border-color: rgba(155, 209, 186, .7); }
+@media (prefers-reduced-motion: reduce) { #toasts .toast.update-toast { animation: none; } }
+/* ---- Corporate attire: CEO suit buttons and the hire dialog's outfit option ---- */
+.suit-chip { position: relative; display: inline-block; flex: none; width: 16px; height: 20px; margin-right: 8px; border-radius: 5px 5px 3px 3px; background: var(--suit); border: 1px solid rgba(255, 255, 255, .3); overflow: hidden; vertical-align: -5px; }
+.suit-chip::before { content: ''; position: absolute; left: 50%; top: -6px; width: 10px; height: 10px; background: var(--shirt); transform: translateX(-50%) rotate(45deg); }
+.suit-chip::after { content: ''; position: absolute; left: 50%; top: 2px; width: 3px; height: 11px; border-radius: 1px; background: var(--tie); transform: translateX(-50%); }
+.charsel .seg .btn.suit-opt, .outfit-avatars .btn { display: inline-flex; align-items: center; }
+.outfit-pick { margin-top: 12px; border: 1px solid var(--line, rgba(255, 255, 255, .16)); border-radius: 12px; padding: 0 12px; }
+.outfit-pick summary { display: flex; align-items: center; gap: 10px; min-height: 44px; cursor: pointer; list-style: none; font-weight: 700; }
+.outfit-pick summary::-webkit-details-marker { display: none; }
+.outfit-pick summary::after { content: '▾'; margin-left: auto; color: var(--muted); transition: transform .2s; }
+.outfit-pick[open] summary::after { transform: rotate(180deg); }
+.outfit-sum { color: var(--muted); font-size: 13px; font-weight: 600; }
+.outfit-body { display: grid; grid-template-columns: 170px 1fr; gap: 14px; padding-bottom: 12px; }
+.outfit-body:has(.outfit-stage[hidden]) { grid-template-columns: 1fr; }
+.outfit-stage { position: relative; min-height: 230px; border: 1px solid var(--line, rgba(255, 255, 255, .16)); border-radius: 12px; background: radial-gradient(circle at 50% 28%, #3a5f62 0, #1d363d 52%, #0f2027 100%); }
+.outfit-stage[hidden] { display: none; }
+.outfit-stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+.outfit-opts label { display: block; margin: 12px 0 8px; font-weight: 700; }
+.outfit-opts label:first-child { margin-top: 0; }
+.outfit-avatars { gap: 6px; }
+.outfit-avatars .btn { min-height: 40px; padding: 0 10px; font-size: 13px; }
+.outfit-colours .swatches { margin-top: 0; }
+.swatch.original { background: repeating-linear-gradient(135deg, #d9d6cf 0 5px, #7b7f86 5px 10px); }
+@media (max-width: 640px), (max-height: 480px) {
+  .outfit-body { grid-template-columns: 1fr; }
+  .outfit-stage { min-height: 190px; }
+}
+@media (prefers-reduced-motion: reduce) { .outfit-pick summary::after { transition: none; } }

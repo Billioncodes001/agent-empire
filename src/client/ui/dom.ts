@@ -142,14 +142,14 @@ export function closeAllModals() {
   while (stack.length) stack[stack.length - 1].close();
 }
 
-export function toast(text: string, level: 'info' | 'warn' | 'error' = 'info') {
+export function toast(text: string, level: 'info' | 'warn' | 'error' = 'info', ms = 3500) {
   const el = h('div.toast', { class: level }, text);
   document.getElementById('toasts')!.append(el);
   setTimeout(() => {
     el.style.transition = 'opacity .3s';
     el.style.opacity = '0';
     setTimeout(() => el.remove(), 300);
-  }, 3500);
+  }, ms);
 }
 
 export function timeAgo(iso: string | number): string {
