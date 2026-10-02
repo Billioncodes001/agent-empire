@@ -15,14 +15,20 @@
  * Releases offered (the game zips are the real dist/public with game-version.json rewritten):
  *   GOOD   (default 0.1.1)  the real game: boots and reports update.bootOk
  *   BROKEN (default 0.1.2)  an index.html that never boots, to prove the 20 s rollback
+ *   OLDER  (optional, UPDATE_OLDER) the real game relabelled as a LOWER version, for downgrade checks
  * POST /__fixture/latest/<version> chooses which one is the latest stable release; /__fixture shows the state.
+ * GET /__fixture?since=<count> lists the requests since an earlier `count`.
+ * POST /__fixture/tamper/<off|page|shell|all> alters files after signing so their signatures no longer match:
+ *   page   channel-stable.json (what the page reads through `latest`)
+ *   shell  channel-beta.json (what each shell reads from the tagged release before installing)
+ * UPDATE_APK=<file> also publishes that APK as the GOOD release's Android app (shell.android url/sha256, debug-signed).
  * Download URLs answer with a 302 to /__assets/… on this origin, so the shells' redirect handling is exercised.
  */
 import { createServer, type Server } from 'node:http';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { RELEASE_REPO } from '../src/client/update/channel';
-import { channelJson, makeZip, sha256, sign, type ZipFile } from '../tests/update-fixtures';
+import { asset, channelJson, makeZip, sha256, sign, type ZipFile } from '../tests/update-fixtures';
 
 export interface FixtureRelease {
   version: string;
@@ -67,24 +73,35 @@ export interface UpdateFixtureOptions {
   minShell?: string;
   coordinator?: string | null;
   notes?: string;
+  older?: string;
+  /** An APK published as the GOOD release's sideload Android app. */
+  apk?: Buffer;
 }
 
-export function startUpdateFixture(opts: UpdateFixtureOptions): Promise<{ server: Server; origin: string; releases: Map<string, FixtureRelease>; setLatest(v: string): void; log: string[] }> {
+export type TamperMode = 'off' | 'page' | 'shell' | 'all';
+
+export function startUpdateFixture(opts: UpdateFixtureOptions): Promise<{ server: Server; origin: string; releases: Map<string, FixtureRelease>; setLatest(v: string): void; setTamper(m: TamperMode): void; log: string[] }> {
   if (opts.port === 4610) throw new Error('Never 4610.');
   const good = opts.good ?? '0.1.1', broken = opts.broken ?? '0.1.2';
   const releases = new Map<string, FixtureRelease>([
     [good, { version: good, zip: gameZipFrom(opts.game, good), broken: false }],
     [broken, { version: broken, zip: brokenZip(broken), broken: true }],
   ]);
+  if (opts.older) releases.set(opts.older, { version: opts.older, zip: gameZipFrom(opts.game, opts.older), broken: false });
+  let tamper: TamperMode = 'off';
+  const apkName = (v: string) => `Agent-Empire-${v}-android-debug-signed.apk`;
   const coordinator = opts.coordinator === undefined ? readFileSync(join(opts.game, 'cloud/agent-empire-coordinator.mjs'), 'utf8') : opts.coordinator;
   let latest = good;
   const log: string[] = [];
   const channelFor = (version: string) => {
     const r = releases.get(version)!;
-    const doc = channelJson({ version, gameSha: sha256(r.zip), minShell: opts.minShell ?? '0.1.0', coordinatorSha: coordinator ? sha256(coordinator) : undefined, notes: opts.notes ?? (r.broken ? `Fixture ${version}: a deliberately broken bundle (rollback check).` : `Fixture ${version}: the same city, delivered as a signed over-the-air update.\nSaves and settings are not changed.`) });
+    const android = opts.apk && version === good ? { name: apkName(version), url: asset(version, apkName(version)), sha256: sha256(opts.apk), signed: false, play: null } : undefined;
+    const doc = channelJson({ version, gameSha: sha256(r.zip), minShell: opts.minShell ?? '0.1.0', coordinatorSha: coordinator ? sha256(coordinator) : undefined, android, notes: opts.notes ?? (r.broken ? `Fixture ${version}: a deliberately broken bundle (rollback check).` : `Fixture ${version}: the same city, delivered as a signed over-the-air update.\nSaves and settings are not changed.`) });
     const text = `${JSON.stringify(doc, null, 2)}\n`;
     return { text, sig: `${sign(text)}\n` };
   };
+  /** The served text: signed, then altered when tampering applies to this file (same JSON shape, wrong signature). */
+  const served = (text: string, file: 'page' | 'shell') => (tamper === 'all' || tamper === file ? text.replace('"notes": "', '"notes": "TAMPERED after signing. ') : text);
   const prefix = `/${RELEASE_REPO}/releases`;
   const server = createServer((req, res) => {
     const url = new URL(req.url || '/', 'http://fixture');
@@ -94,7 +111,12 @@ export function startUpdateFixture(opts: UpdateFixtureOptions): Promise<{ server
       res.writeHead(status, { 'Content-Type': type, 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' });
       res.end(body);
     };
-    if (p === '/__fixture') return send(200, JSON.stringify({ latest, releases: [...releases.keys()], requests: log.slice(-40) }, null, 2));
+    if (p === '/__fixture') return send(200, JSON.stringify({ latest, good, broken, older: opts.older ?? null, tamper, apk: !!opts.apk, releases: [...releases.keys()], count: log.length, requests: url.searchParams.has('since') ? log.slice(Number(url.searchParams.get('since')) || 0) : log.slice(-40) }, null, 2));
+    const tamperPick = /^\/__fixture\/tamper\/(off|page|shell|all)$/.exec(p);
+    if (tamperPick && req.method === 'POST') {
+      tamper = tamperPick[1] as TamperMode;
+      return send(200, `tamper is ${tamper}`, 'text/plain');
+    }
     const pick = /^\/__fixture\/latest\/([^/]+)$/.exec(p);
     if (pick && req.method === 'POST') {
       if (!releases.has(pick[1])) return send(404, 'unknown version', 'text/plain');
@@ -111,9 +133,11 @@ export function startUpdateFixture(opts: UpdateFixtureOptions): Promise<{ server
       const r = releases.get(assetPath[1]);
       if (!r) return send(404, 'Not Found', 'text/plain');
       const name = assetPath[2];
-      if (name === 'channel-stable.json' || name === 'channel-beta.json') return send(200, channelFor(r.version).text);
+      if (name === 'channel-stable.json') return send(200, served(channelFor(r.version).text, 'page'));
+      if (name === 'channel-beta.json') return send(200, served(channelFor(r.version).text, 'shell'));
       if (name === 'channel-stable.json.sig' || name === 'channel-beta.json.sig') return send(200, channelFor(r.version).sig, 'text/plain');
       if (name === `agent-empire-game-${r.version}.zip`) return send(200, r.zip, 'application/zip');
+      if (opts.apk && r.version === good && name === apkName(r.version)) return send(200, opts.apk, 'application/vnd.android.package-archive');
       if (name === 'agent-empire-coordinator.mjs' && coordinator) return send(200, coordinator, 'text/javascript');
       return send(404, 'Not Found', 'text/plain');
     }
@@ -127,7 +151,7 @@ export function startUpdateFixture(opts: UpdateFixtureOptions): Promise<{ server
   return new Promise((ok) =>
     server.listen(opts.port, opts.host ?? '127.0.0.1', () => {
       const origin = `http://127.0.0.1:${opts.port}`;
-      ok({ server, origin, releases, setLatest: (v) => (latest = v), log });
+      ok({ server, origin, releases, setLatest: (v) => (latest = v), setTamper: (m) => (tamper = m), log });
     }),
   );
 }
@@ -136,7 +160,7 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename
   const port = Number(process.env.UPDATE_FIXTURE_PORT || 4719);
   const host = process.env.UPDATE_FIXTURE_HOST || '127.0.0.1';
   const game = resolve(import.meta.dirname, '../dist/public');
-  const fx = await startUpdateFixture({ port, host, game, good: process.env.UPDATE_GOOD, broken: process.env.UPDATE_BROKEN });
+  const fx = await startUpdateFixture({ port, host, game, good: process.env.UPDATE_GOOD, broken: process.env.UPDATE_BROKEN, older: process.env.UPDATE_OLDER, apk: process.env.UPDATE_APK ? readFileSync(process.env.UPDATE_APK) : undefined });
   for (const r of fx.releases.values()) console.log(`release ${r.version}${r.broken ? ' (broken)' : ''}: ${(r.zip.length / 1e6).toFixed(1)} MB, sha256 ${sha256(r.zip).slice(0, 12)}…`);
   console.log(`update fixture on http://${host}:${port} (dev-signed; shells honour it only with the development key)`);
 }
