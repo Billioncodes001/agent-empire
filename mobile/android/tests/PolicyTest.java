@@ -203,6 +203,24 @@ public final class PolicyTest {
         tampered[3] ^= 1;
         check(Boolean.FALSE.equals(UpdatePolicy.verifyEd25519(tampered, sig, UpdatePolicy.RELEASE_PUBLIC_KEY)), "Ed25519: tampering fails");
         check(Boolean.FALSE.equals(UpdatePolicy.verifyEd25519(msg, "garbage", UpdatePolicy.RELEASE_PUBLIC_KEY)), "Ed25519: garbage fails");
+        // In an Android 13+ app process the first "Ed25519" KeyFactory and Signature come from Android Keystore, which only
+        // handles keys kept in the Keystore: importing the pinned raw key throws (found on the Android 15 emulator,
+        // docs/team/reports/update-device-rerun.md). That must never turn a genuine release into "signature does not match".
+        // Android 15 has no software Ed25519 provider (Conscrypt offers none), and unlike the JDK its KeyFactory does not
+        // fail over to the next provider, so the JDK's own Ed25519 provider is taken out for this check.
+        java.security.Provider[] installed = java.security.Security.getProviders();
+        java.util.List<java.security.Provider> software = new java.util.ArrayList<>();
+        for (java.security.Provider p : installed) if (p.getService("KeyFactory", "Ed25519") != null) software.add(p);
+        for (java.security.Provider p : software) java.security.Security.removeProvider(p.getName());
+        java.security.Security.insertProviderAt(new FakeKeystoreProvider(), 1);
+        try {
+            Boolean genuine = UpdatePolicy.verifyEd25519(msg, sig, UpdatePolicy.RELEASE_PUBLIC_KEY);
+            check(genuine == null, "Ed25519: with only Android Keystore's Ed25519 the native check is unavailable (null), never a refusal of a genuine release (got " + genuine + ")");
+        } finally {
+            java.security.Security.removeProvider("AndroidKeyStore");
+            for (java.security.Provider p : software) java.security.Security.insertProviderAt(p, java.util.Arrays.asList(installed).indexOf(p) + 1);
+        }
+        check(Boolean.TRUE.equals(UpdatePolicy.verifyEd25519(msg, sig, UpdatePolicy.RELEASE_PUBLIC_KEY)), "Ed25519: providers restored");
         String url = "https://github.com/" + UpdatePolicy.RELEASE_REPO + "/releases/download/v1.0.1/agent-empire-game-1.0.1.zip", sha = repeat("a", 64);
         check(UpdatePolicy.releaseMismatch("1.0.1", "v1.0.1", url, sha, "1.0.0", "1.0.1", url, sha, "1.0.0") == null, "request matches the signed release");
         check(UpdatePolicy.releaseMismatch("1.0.1", "v1.0.1", url, sha, "1.0.0", "1.0.1", url, repeat("b", 64), "1.0.0") != null, "another sha256 is refused");
@@ -276,6 +294,34 @@ public final class PolicyTest {
     }
 
     private static void eq(String actual, String expected) { check(expected.equals(actual), "expected " + expected + " but got " + actual); }
+
+    /** Stands in for Android Keystore's Ed25519 KeyFactory and Signature: they refuse any key not kept in the Keystore. */
+    public static final class FakeKeystoreProvider extends java.security.Provider {
+        public FakeKeystoreProvider() {
+            super("AndroidKeyStore", 1.0, "test stand-in for Android Keystore");
+            put("KeyFactory.Ed25519", FakeKeystoreKeyFactory.class.getName());
+            put("Signature.Ed25519", FakeKeystoreSignature.class.getName());
+        }
+    }
+
+    public static final class FakeKeystoreKeyFactory extends java.security.KeyFactorySpi {
+        private static java.security.spec.InvalidKeySpecException refuse() { return new java.security.spec.InvalidKeySpecException("To generate a key pair in Android Keystore, use KeyPairGenerator"); }
+        @Override protected java.security.PublicKey engineGeneratePublic(java.security.spec.KeySpec spec) throws java.security.spec.InvalidKeySpecException { throw refuse(); }
+        @Override protected java.security.PrivateKey engineGeneratePrivate(java.security.spec.KeySpec spec) throws java.security.spec.InvalidKeySpecException { throw refuse(); }
+        @Override protected <T extends java.security.spec.KeySpec> T engineGetKeySpec(java.security.Key key, Class<T> type) throws java.security.spec.InvalidKeySpecException { throw refuse(); }
+        @Override protected java.security.Key engineTranslateKey(java.security.Key key) throws java.security.InvalidKeyException { throw new java.security.InvalidKeyException("Keystore keys only"); }
+    }
+
+    public static final class FakeKeystoreSignature extends java.security.SignatureSpi {
+        @Override protected void engineInitVerify(java.security.PublicKey key) throws java.security.InvalidKeyException { throw new java.security.InvalidKeyException("Keystore keys only"); }
+        @Override protected void engineInitSign(java.security.PrivateKey key) throws java.security.InvalidKeyException { throw new java.security.InvalidKeyException("Keystore keys only"); }
+        @Override protected void engineUpdate(byte b) { }
+        @Override protected void engineUpdate(byte[] b, int off, int len) { }
+        @Override protected byte[] engineSign() { return new byte[0]; }
+        @Override protected boolean engineVerify(byte[] sig) { return false; }
+        @Override @Deprecated protected void engineSetParameter(String param, Object value) { }
+        @Override @Deprecated protected Object engineGetParameter(String param) { return null; }
+    }
 
     private static void check(boolean ok, String what) {
         checks++;
