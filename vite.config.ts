@@ -15,6 +15,8 @@ export default defineConfig(({ mode }) => {
   const fixture = mode === 'fixture';
   if (fixture && (!fake || !LOOPBACK.test(fake))) throw new Error('A fixture build needs VITE_AGENT_EMPIRE_FAKE_GITHUB_API=http://127.0.0.1:<port>.');
   if (!fixture && fake) throw new Error('VITE_AGENT_EMPIRE_FAKE_GITHUB_API is set: unset it, or build a fixture with `npm run build:client:fixture` (writes dist/public-fixture).');
+  // Renamed with the VITE_PUBLIC_ prefix below; fail loudly instead of silently ignoring a fork's OAuth App id.
+  if (process.env.VITE_AGENT_EMPIRE_GITHUB_CLIENT_ID) throw new Error('VITE_AGENT_EMPIRE_GITHUB_CLIENT_ID was renamed: set VITE_PUBLIC_AGENT_EMPIRE_GITHUB_CLIENT_ID instead.');
   return {
   root: resolve(import.meta.dirname, 'src/client'),
   publicDir: resolve(import.meta.dirname, 'src/client/public'),
