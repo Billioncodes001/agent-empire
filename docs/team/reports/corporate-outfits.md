@@ -109,6 +109,18 @@ The shipped `dist/public` people assets are now 12 MB for all ten avatars, both 
 
 - **Lowpoly 33-bone variant:** not built. The Rocketbox `Export/` folder has only the hipoly mesh, and these avatars (7–9k triangles) are about the size of the rigs they replace (7.1k and 9.3k). Phones get the 512² texture set instead. A meshoptimizer LOD (three ships the simplifier) is possible later.
 - **KTX2:** not used. There is no `toktx` or `basisu` and no new dependencies; WebP is used instead.
-- **iPhone 18 Pro simulator:** not run. The booted simulator was showing another author's session (it is shared with the release/update work), so I did not install a build over it. Phone acceptance here is Chrome mobile emulation at 812×375 with touch, not device execution.
+- **iPhone 18 Pro simulator:** not run by the author; run afterwards by the coordinator (2026-10-02, see "iPhone follow-up" below).
+
+## iPhone follow-up (coordinator, 2026-10-02)
+
+Debug simulator build of `codex/empire-world` after PR #9, installed fresh on the iPhone 18 Pro simulator (iOS 27). The update re-run had left a downloaded `1.0.0-beta.2` game bundle (older code) active in the app, which the shell rightly prefers over the built-in `1.0.0-beta.1`; the app was reinstalled to drop it.
+
+- **Works on iOS WebKit:** the founder card shows the suit catalogue with textured previews (black suit, pinstripe, taupe skirt suit), switching suits re-dresses the preview, and the CEO walks the city in the chosen suit. No black silhouettes.
+- **Bug fixed: founder card clipped in phone landscape.** The preview had a fixed 360px height inside a ~261px card body at 874×402, so the figure's legs and the last suit row were cut off. In landscape at heights ≤ 520px the preview now fills the body and the options scroll beside it.
+- **Bug fixed: name field unusable with the keyboard open.** About 113px stay visible above an iPhone landscape keyboard. The card body was 23px tall, the name field sat below it and Return did nothing. While typing (`html.ae-kb`), the founder card now shows only the name field and Continue; the title, suits and accents return when the keyboard closes.
+- **Checks:** `tools/outfit-ui-check.ts` adds 9 checks at 874×402, 812×375 and 667×375: the preview fits, the last suit is reachable and selectable, and with the keyboard open (viewport shrunk while the field has focus, as the Android app sees it) the name field and Continue are fully visible. The fit and keyboard checks fail without the CSS fix and pass with it (28/28). `mobile-ui-check` 411/411. The fixed layout was confirmed on the simulator, including scrolling the suit list. `06b-character-select-phone-874x402.jpg`.
+- **Observed, not changed:**
+  - The simulator's first tap on a control often only focuses it, as seen before on the name field. Check on a real device.
+  - iOS keeps Keychain items across an uninstall, so a reinstalled app resumes its old server session (here a stopped test server, so it kept reconnecting, which is correct for an unreachable host). Whether a reinstall should start signed out is a product decision.
 - **Recolour quality:** the mask rules are heuristics, checked visually in the debug previews and the screenshots above. Painted details such as M03's tie knot on the shirt front and F02's two-tone jacket and trousers take the shirt or suit colour together.
 - **Specular and roughness:** these are constant per material (body 0.78, head 0.58). The Rocketbox specular maps are not converted.

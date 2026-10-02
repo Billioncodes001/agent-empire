@@ -184,6 +184,13 @@ button { font-family: inherit; }
   .charsel .body { grid-template-columns: 1fr; }
   .charsel-stage { min-height: 230px; }
 }
+/* Phone landscape: the preview fills the card's height instead of a fixed 360px that was cut off, and the options
+   scroll beside it, so every suit stays reachable (iPhone 18 Pro, 874x402). */
+@media (min-width: 641px) and (max-height: 520px) {
+  .charsel .body { overflow: hidden; grid-template-rows: minmax(0, 1fr); }
+  .charsel-stage { min-height: 0; }
+  .charsel-opts { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; }
+}
 
 /* Terminal modal */
 .modal.term { width: min(1200px, 100%); height: min(820px, calc(var(--vh) - 32px)); background: #1e1f2e; }
@@ -1101,6 +1108,11 @@ html.ae-kb .modal footer { padding-top: 4px; padding-bottom: 4px; }
 html.ae-kb .modal footer .btn { min-height: 38px; }
 html.ae-kb .modal .btn.close { width: 36px; min-height: 36px; height: 36px; }
 html.ae-kb .charsel .charsel-stage { display: none; }
+/* Phone landscape leaves ~100px above the keyboard: the founder card keeps only the name field (labelled "Your name")
+   and Continue while typing; the title, suits and accents return when the keyboard closes. */
+html.ae-kb .charsel header, html.ae-kb .charsel .charsel-opts > :not(input) { display: none; }
+html.ae-kb .charsel .body { overflow: auto; }
+html.ae-kb .charsel .charsel-opts { overflow: visible; }
 html.ae-kb .charsel .body { grid-template-columns: 1fr; }
 
 /* ---- Cloud mode (CLOUD-04/05): the Empire lives in the user's GitHub; nothing here is live ---- */
