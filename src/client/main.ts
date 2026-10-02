@@ -13,6 +13,7 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { SSAOPass } from 'three/examples/jsm/postprocessing/SSAOPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { sameLook } from '../shared/avatar';
+import { workerOutfit, type Outfit } from '../shared/outfit';
 import { DESK_BY_ID, FLOOR_RISE, SPAWN, deskSeat } from '../shared/layout';
 import type { PeerInfo, WorkerInfo } from '../shared/protocol';
 import { Net } from './net';
@@ -271,6 +272,8 @@ hanger.onChange = () => {
 function showMyProfile(p: Profile) {
   me.setColor(p.color);
   me.setLook(p.look);
+  // The chief of staff never wears the CEO's suit (shared/outfit.ts).
+  city.dressChief(p.look);
 }
 
 interface RemotePeer {
@@ -500,7 +503,7 @@ function syncWorkers() {
     const desk = office.desks.get(w.deskId);
     if (!desk) continue;
     if (!v) {
-      const model = new Worker(w.name, w.color);
+      const model = new Worker(w.name, w.color, workerOutfit(w));
       model.root.position.copy(desk.seatAnchor.position);
       model.root.position.y = 0;
       model.root.position.z += 0.08;
@@ -534,6 +537,7 @@ function syncWorkers() {
       v.model.setStatus(w.status, shouldBounce(w));
       noOutline(v.model.root);
     }
+    v.model.setOutfit(workerOutfit(w));
     v.model.setTask(w.task);
     v.model.setLive(fresh);
     // Typing (and its sound) only once the body is seated at the desk; see world/worker-life.ts.
@@ -579,8 +583,8 @@ function freeDesk(): string | null {
   return best;
 }
 
-function hire(deskId: string, prompt?: string, worktree = false) {
-  net.send({ t: 'worker.spawn', deskId, prompt, worktree });
+function hire(deskId: string, prompt?: string, worktree = false, outfit?: Outfit) {
+  net.send({ t: 'worker.spawn', deskId, prompt, worktree, ...(outfit ? { outfit } : {}) });
 }
 
 function openShell(deskId: string) {
@@ -596,7 +600,8 @@ function promptAtDesk(deskId: string) {
       subtitle: 'A fresh Claude Code worker will sit down and start on this right away.',
       submitLabel: 'Hire & start',
       worktreeOption: !!store.project?.branch,
-      onSubmit: (text, o) => hire(deskId, text, o.worktree),
+      outfitOption: true,
+      onSubmit: (text, o) => hire(deskId, text, o.worktree, o.outfit),
     });
   } else if (w.status === 'exited' || w.status === 'offline') {
     toast(`${w.name} is asleep — press R to resume first`, 'warn');
@@ -1396,6 +1401,6 @@ if (saved?.look) {
 }
 
 // Debug handle for quick checks from the console / headless screenshots.
-(window as any).__office = { store, player, camera, workerViews, scene, net, renderer, me, remotes, settings, gallery, hanger, city, empireUI, life };
+(window as any).__office = { store, player, camera, workerViews, scene, net, renderer, me, remotes, settings, gallery, hanger, city, empireUI, life, office };
 (window as any).__voice = voice;
 (window as any).__sound = sound;

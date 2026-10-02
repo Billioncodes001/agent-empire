@@ -1,0 +1,44 @@
+{
+  "label": "before",
+  "base": "http://localhost:4733/",
+  "desktop-1440x900": {
+    "modelBytes": 17298864,
+    "modelFiles": {
+      "/models/chief-of-staff.glb": 7521288,
+      "/models/executive-sedan.glb": 2118612,
+      "/models/founder.glb": 6601780,
+      "/models/workstation.glb": 1057184
+    },
+    "frames": {
+      "mean": 3.9304219823356217,
+      "p95": 4.799999999999272,
+      "frames": 1019
+    },
+    "renderer": {
+      "geometries": 464,
+      "textures": 80,
+      "triangles": 806647,
+      "calls": 816
+    }
+  },
+  "phone-812x375": {
+    "modelBytes": 17298864,
+    "modelFiles": {
+      "/models/chief-of-staff.glb": 7521288,
+      "/models/executive-sedan.glb": 2118612,
+      "/models/founder.glb": 6601780,
+      "/models/workstation.glb": 1057184
+    },
+    "frames": {
+      "mean": 2.9676797627872498,
+      "p95": 3.7000000000007276,
+      "frames": 1349
+    },
+    "renderer": {
+      "geometries": 473,
+      "textures": 83,
+      "triangles": 819797,
+      "calls": 846
+    }
+  }
+}

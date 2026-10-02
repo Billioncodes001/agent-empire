@@ -9,6 +9,9 @@ artifacts/
 
 release/
 
+# Downloaded build inputs for `npm run build:avatars` (Rocketbox FBX/TGA); never committed.
+.cache/
+
 # iOS: bundled game copied from dist/public by tools/sync-ios-game.sh
 mobile/ios/AgentEmpire/Game/
 mobile/ios/build/

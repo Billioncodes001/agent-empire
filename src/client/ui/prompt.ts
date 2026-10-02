@@ -1,6 +1,8 @@
 import type { ServerMsg, WorktreeCleanup, WorktreeState } from '../../shared/protocol';
 import { autoFocus } from '../keyboard';
 import { h, openModal } from './dom';
+import type { Outfit } from '../../shared/outfit';
+import { outfitPicker } from './outfit-picker';
 
 export interface PromptOptions {
   title: string;
@@ -10,7 +12,9 @@ export interface PromptOptions {
   submitLabel?: string;
   /** Offer the "own git worktree" option (only when hiring a new worker). */
   worktreeOption?: boolean;
-  onSubmit(text: string, opts: { worktree: boolean }): void;
+  /** Offer the "Outfit" option: default corporate attire, or an avatar and colours (only when hiring). */
+  outfitOption?: boolean;
+  onSubmit(text: string, opts: { worktree: boolean; outfit?: Outfit }): void;
 }
 
 const WT_KEY = 'agent-office.worktree';
@@ -37,15 +41,16 @@ export function openPrompt(opts: PromptOptions) {
     : null;
   const submit = h('button.btn.primary', { type: 'submit' }, opts.submitLabel ?? 'Send ✨');
   const cancel = h('button.btn', { type: 'button' }, 'Cancel');
+  const outfit = opts.outfitOption ? outfitPicker() : null;
   const form = h(
     'form.modal.ae-dark',
     { role: 'dialog', 'aria-label': opts.title },
     h('header', {}, h('h2', {}, opts.title)),
-    h('div.body', {}, opts.subtitle ? h('p', { style: 'margin:0 0 10px;font-weight:700;color:var(--muted)' }, opts.subtitle) : null, ta, wtRow),
+    h('div.body', {}, opts.subtitle ? h('p', { style: 'margin:0 0 10px;font-weight:700;color:var(--muted)' }, opts.subtitle) : null, ta, wtRow, outfit?.element ?? null),
     h('footer', {}, h('span.grow', {}, 'Enter to send · Shift+Enter for a new line'), cancel, submit),
   ) as HTMLFormElement;
 
-  const modal = openModal(form, { dirty: () => ta.value.trim() !== (opts.initial ?? '').trim() });
+  const modal = openModal(form, { dirty: () => ta.value.trim() !== (opts.initial ?? '').trim() || !!outfit?.value(), onClose: () => outfit?.dispose() });
   cancel.addEventListener('click', () => modal.close());
   const send = () => {
     const text = ta.value.trim();
@@ -61,7 +66,7 @@ export function openPrompt(opts: PromptOptions) {
         // storage blocked
       }
     }
-    opts.onSubmit(text, { worktree: !!opts.worktreeOption && wtBox.checked });
+    opts.onSubmit(text, { worktree: !!opts.worktreeOption && wtBox.checked, outfit: outfit?.value() });
   };
   form.addEventListener('submit', (e) => {
     e.preventDefault();
