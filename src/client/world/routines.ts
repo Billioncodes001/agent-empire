@@ -2,11 +2,12 @@
  * Worker routines (LIFE-03): where a worker's body is and what it does, as a pure function of the
  * worker's REAL server state. Nothing here manufactures progress. A worker sits and types only
  * during a fresh, running agent turn; it takes a break only while the server says it is idle,
- * its turn has ended, or (LIFE-04, once the server sends it) it is waiting on another task. It never
+ * its turn has ended, or (LIFE-04, the server's `waitingOn`) it is waiting on another worker's task. It never
  * walks around while its state is unknown, stale, offline or exited. Breaks never cost tokens:
  * this module only reads state and never sends anything.
  */
 import type { AmenityKind, AmenitySpot } from './furnishing-layout';
+import type { WaitingOn as ServerWaitingOn } from '../../shared/protocol';
 
 export type Place = 'desk' | AmenityKind | 'away';
 export type Activity =
@@ -18,11 +19,8 @@ export type Activity =
   | 'unknown' // evidence is stale or the status is not recognised
   | 'break'; // at an amenity because the real state is idle, done or waiting
 
-/** Reserved for LIFE-04: the task this worker's task depends on. Not sent by the server yet. */
-export interface WaitingOn {
-  id?: string;
-  name: string;
-}
+/** LIFE-04: WorkerInfo.waitingOn from the server. Only the blocking worker's name is needed for the routine. */
+export type WaitingOn = Pick<ServerWaitingOn, 'name'> & Partial<Omit<ServerWaitingOn, 'name'>>;
 
 export interface RoutineInput {
   /** Stable worker id; seeds the per-worker amenity choice. */
@@ -52,6 +50,8 @@ export const BREAK_AFTER_MS = 6_000;
 export const ROTATE_MS = 12 * 60_000;
 export const AMENITY_ORDER: readonly AmenityKind[] = ['coffee', 'cafeteria', 'gym'];
 const AMENITY_LABEL: Record<AmenityKind, string> = { coffee: 'on a coffee break', cafeteria: 'at the cafeteria', gym: 'at the gym' };
+/** Where a waiting worker is, for "Waiting on Bea — at the coffee bar". */
+const WAITING_LABEL: Record<AmenityKind, string> = { coffee: 'at the coffee bar', cafeteria: 'at the cafeteria', gym: 'at the gym' };
 
 /** FNV-1a, so the same worker id always picks the same amenity on every client. */
 export function stableHash(text: string): number {
@@ -91,7 +91,7 @@ export function planRoutine(i: RoutineInput): RoutinePlan {
     case 'done': {
       if (i.waitingOn) {
         const amenity = amenityFor(i.id, i.since, i.now);
-        return { place: amenity, activity: 'break', reason: `Waiting on ${i.waitingOn.name} — ${AMENITY_LABEL[amenity]}` };
+        return { place: amenity, activity: 'break', reason: `Waiting on ${i.waitingOn.name} — ${WAITING_LABEL[amenity]}` };
       }
       if (i.now - i.since < BREAK_AFTER_MS) return desk('seated');
       const amenity = amenityFor(i.id, i.since, i.now);
