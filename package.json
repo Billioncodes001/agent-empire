@@ -19,6 +19,7 @@
     "build:client:fixture": "vite build --mode fixture && vite build --config vite.cloud.config.ts && node tools/ship-coordinator.mjs dist/public-fixture",
     "build:server": "tsc -p tsconfig.server.json",
     "build:cloud": "vite build --config vite.cloud.config.ts",
+    "build:avatars": "tsx tools/avatars/build-avatars.ts",
     "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.client.json --noEmit && tsc -p tsconfig.cloud.json --noEmit",
     "start": "node bin/agent-office.js",
     "prepare": "npm run build",

@@ -1,6 +1,8 @@
 import * as THREE from 'three';
-import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import type { GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone } from 'three/examples/jsm/utils/SkeletonUtils.js';
+import { avatarDef, type Outfit } from '../../shared/outfit';
+import { avatarLoader, avatarUrl, hasTint, loadClips, sharedLoad, tintedMaterial, type AvatarExtras } from './avatars';
 
 const assets = new Map<string, Promise<GLTF>>();
 export type VehiclePose = { phase: 'reach' | 'enter' | 'exit' | 'drive'; progress: number; steering?: number; handle?: THREE.Vector3; feet?: { l: THREE.Vector3; r: THREE.Vector3 } };
@@ -10,9 +12,10 @@ export type VehiclePose = { phase: 'reach' | 'enter' | 'exit' | 'drive'; progres
  */
 export type HumanActivity = 'none' | 'bike' | 'weights' | 'stretch' | 'coffee' | 'eat';
 function source(url: string) {
-  if (!assets.has(url)) assets.set(url, new GLTFLoader().loadAsync(url).then((gltf) => { guardHumanMaterials(gltf.scene); return gltf; }));
-  return assets.get(url)!;
+  return sharedLoad(assets, url, () => avatarLoader().loadAsync(url).then((gltf) => { guardHumanMaterials(gltf.scene); return gltf; }));
 }
+/** Delays before re-requesting a body whose model or clips failed to download (the failed load is not cached). */
+const LOAD_RETRY_MS = [2_000, 8_000, 30_000];
 
 /** Map slots a glTF metallic-roughness material can carry; all are copied when a texture repair arrives. */
 const MAP_SLOTS = ['map', 'normalMap', 'metalnessMap', 'roughnessMap', 'aoMap', 'alphaMap', 'emissiveMap'] as const;
@@ -27,7 +30,7 @@ function humanMaterials(root: THREE.Object3D): HumanMaterial[] {
   return [...out];
 }
 /**
- * Every material on both licensed rigs carries a base-colour texture (models.test.ts). One without it, or whose
+ * Every material on every licensed avatar carries a base-colour texture (models.test.ts). One without it, or whose
  * image never decoded, is a texture that failed: GLTFLoader logs it and builds the material without the map.
  */
 export function missingHumanTextures(root: THREE.Object3D): string[] {
@@ -73,7 +76,7 @@ function repairSource(url: string, gltf: GLTF): Promise<boolean> {
       for (const delay of [1500, 5000]) {
         await new Promise((r) => setTimeout(r, delay));
         try {
-          const fresh = await new GLTFLoader().loadAsync(url);
+          const fresh = await avatarLoader().loadAsync(url);
           repairHumanMaterials(gltf.scene, fresh.scene);
           if (!missingHumanTextures(gltf.scene).length) return true;
         } catch (error) {
@@ -162,21 +165,36 @@ export class Human {
   get materialsReady(): boolean {
     return this.ready && !!this.model && !missingHumanTextures(this.model).length;
   }
-  constructor(variant = 0) {
+  /** Recoloured materials owned by this body (shared avatar materials are never disposed here). */
+  private tinted: THREE.Material[] = [];
+  readonly outfit: Outfit;
+  constructor(outfit: Outfit) {
+    this.outfit = { ...outfit };
     this.root.name = 'Realistic human';
-    const url = variant % 2 ? '/models/chief-of-staff.glb' : '/models/founder.glb';
-    void source(url)
-      .then((gltf) => {
+    this.root.userData.avatar = outfit.avatar;
+    this.load(0);
+  }
+  private load(attempt: number) {
+    const url = avatarUrl(this.outfit.avatar);
+    void Promise.all([source(url), loadClips(avatarDef(this.outfit.avatar).body)])
+      .then(([gltf, clips]) => {
         if (this.disposed) return;
+        const extras = gltf.scene.userData as AvatarExtras;
         if (missingHumanTextures(gltf.scene).length) {
           this.root.userData.textureError = true;
-          void repairSource(url, gltf).then((ok) => { if (ok) delete this.root.userData.textureError; });
+          void repairSource(url, gltf).then((ok) => {
+            if (!ok) return;
+            delete this.root.userData.textureError;
+            if (this.model && !this.disposed) this.applyTint(gltf, extras); // re-copy the repaired textures
+          });
         }
         const model = clone(gltf.scene);
-        this.mixer = prepareHumanModel(model, gltf.animations);
-        for (const clip of gltf.animations) this.actions.set(clip.name, this.mixer.clipAction(clip));
+        this.mixer = prepareHumanModel(model, clips, THREE.MathUtils.clamp(extras.height ?? 1.78, 1.6, 1.95));
+        for (const clip of clips) this.actions.set(clip.name, this.mixer.clipAction(clip));
+        this.model = model;
+        this.applyTint(gltf, extras);
         // A second action on the run clip holds the flight frame while the stride action keeps its own time.
-        const run = gltf.animations.find((c) => c.name === 'run_neutral');
+        const run = clips.find((c) => c.name === 'run_neutral');
         if (run) {
           const flight = run.clone();
           flight.name = FLIGHT;
@@ -188,19 +206,39 @@ export class Human {
           if (o instanceof THREE.Mesh) {
             o.castShadow = true;
             o.receiveShadow = true;
+            // A skinned body's bounding sphere is computed once from the pose at that moment; after a worker walks
+            // to a desk and is re-parented to it, the cached sphere no longer encloses the body and frustum culling
+            // hid it (seen on new hires). A few bodies are cheap to always submit.
+            if ((o as THREE.SkinnedMesh).isSkinnedMesh) o.frustumCulled = false;
           }
           if (o instanceof THREE.Bone) this.bones.set(o.name.replace(/[^a-z0-9]/gi, '').toLowerCase(), o);
         });
         this.root.add(model);
-        this.model = model;
         this.seatedBaseZ = model.position.z;
         this.baseY = model.position.y;
         this.ready = true;
+        delete this.root.userData.assetError;
       })
       .catch((error) => {
+        if (this.disposed) return;
         console.warn('Human model could not load', error);
         this.root.userData.assetError = true;
+        const delay = LOAD_RETRY_MS[attempt];
+        if (delay !== undefined) setTimeout(() => { if (!this.disposed && !this.model) this.load(attempt + 1); }, delay);
       });
+  }
+  /** Swaps the body material for a recoloured copy when the outfit names colours; default attire stays shared. */
+  private applyTint(gltf: GLTF, extras: AvatarExtras) {
+    if (!this.model || !hasTint(this.outfit)) return;
+    const body = humanMaterials(gltf.scene).find((m) => m.name === 'body');
+    if (!body) return;
+    this.tinted.forEach((m) => m.dispose());
+    const material = tintedMaterial(body, this.outfit, extras);
+    this.tinted = [material];
+    this.model.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (mesh.isMesh && (mesh.material as THREE.Material).name === 'body') mesh.material = material;
+    });
   }
   /** Rotate a bone about one of the model's own axes (0 lateral, 1 up, 2 forward), expressed in the bone parent's space. */
   private rotate(name: string, angle: number, axisIndex: 0 | 1 | 2 = 0) {
@@ -587,12 +625,14 @@ export class Human {
     this.disposed = true;
     this.mixer?.stopAllAction();
     this.props?.forEach((p) => p.traverse((o) => { if (o instanceof THREE.Mesh) { o.geometry.dispose(); (o.material as THREE.Material).dispose(); } }));
+    this.tinted.forEach((m) => m.dispose());
+    this.tinted = [];
     this.root.clear();
   }
 }
 
 /** Evaluate the skeleton before normalizing its dimensions to human scale. */
-export function prepareHumanModel(model: THREE.Object3D, animations: THREE.AnimationClip[]) {
+export function prepareHumanModel(model: THREE.Object3D, animations: THREE.AnimationClip[], targetHeight = 1.78) {
   // The cloned Rocketbox skeleton must be evaluated before measuring a skinned mesh.
   // Measuring stale bone matrices produces a centimetre-high bound and a 100x giant.
   const mixer = new THREE.AnimationMixer(model);
@@ -608,7 +648,7 @@ export function prepareHumanModel(model: THREE.Object3D, animations: THREE.Anima
   });
   const bounds = new THREE.Box3().setFromObject(model),
     height = bounds.max.y - bounds.min.y;
-  const scale = 1.78 / Math.max(height, 0.01),
+  const scale = targetHeight / Math.max(height, 0.01),
     center = bounds.getCenter(new THREE.Vector3());
   model.scale.setScalar(scale);
   model.position.set(-center.x * scale, -bounds.min.y * scale, -center.z * scale);

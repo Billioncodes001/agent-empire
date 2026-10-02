@@ -9,7 +9,11 @@ Original Git history and source are preserved. Upstream package metadata declare
 
 ## Tidewater / Microsoft Rocketbox
 
-`src/client/public/models/chief-of-staff.glb` is Tidewater's `marta.glb`; `founder.glb` is its `joe.glb`. These are Microsoft Rocketbox avatars converted with idle and gesture animations by Tidewater's tools. The included Rocketbox license applies to both.
+`tools/avatars/rigs/chief-of-staff.glb` is Tidewater's `marta.glb`; `tools/avatars/rigs/founder.glb` is its `joe.glb`. These are Microsoft Rocketbox avatars converted with idle and gesture animations by Tidewater's tools. The included Rocketbox license applies to both. They are no longer shipped: they are the animation sources from which `npm run build:avatars` derives the shared clip files `src/client/public/models/avatars/clips-male.glb` and `clips-female.glb` (rotation tracks, pelvis translation only).
+
+### Corporate avatars
+
+`src/client/public/models/avatars/` holds ten Microsoft Rocketbox avatars converted by `tools/avatars/build-avatars.ts` (mesh-only GLBs, resized WebP textures, generated recolour masks): `Business_Male_01`, `Business_Male_02`, `Business_Male_03`, `Business_Male_04`, `Business_Male_05`, `Business_Male_06`, `Business_Female_01`, `Business_Female_02`, `Business_Female_03` and `Business_Female_04`, from `Assets/Avatars/Professions/` of https://github.com/microsoft/Microsoft-Rocketbox at commit `0943055db6ec570bcef9f2c8b41c9e5467c808f9` (file checksums in `tools/avatars/sources.lock.json`). The source FBX/TGA files are build inputs only and are not committed. MIT License, Copyright (c) 2020 Microsoft; the license text ships as `src/client/public/models/LICENSE-Rocketbox.md`.
 
 Sources:
 - https://github.com/dgreenheck/tidewater

@@ -59,6 +59,7 @@ Plan: [OFFICE_LIFE_AND_MOBILE_PLAN.md](OFFICE_LIFE_AND_MOBILE_PLAN.md).
 | LIFE-03 | Worker routines driven by real states | Reviewed and accepted | Idle/done workers take breaks; stale/offline workers never walk. Review fixes 88cd160 |
 | LIFE-04 | Task dependencies (`waitingOn`) | Backlog | Needs backend lane |
 | LIFE-05 | Character variety and Blender pipeline | Backlog | Blender not installed on this host |
+| LIFE-06 | Corporate attire (CEO/chief suits, worker default outfit, hire-dialog customisation) | Reviewed and accepted | [Report](reports/corporate-outfits.md). Rocketbox business avatars (MIT) via a TypeScript pipeline; review ACCEPT WITH FIXES, the medium (failed clip/model downloads cached for the session) fixed with a retry and a test. 559/559 tests, 19/19 outfit and 411/411 mobile checks on the merged tree. Open (low): frustum culling disabled for skinned bodies; old rigs still in `tools/avatars/rigs/`. Not run on the iPhone simulator |
 | ORG-01..06 | Executives, estimates, approval desk, marketing, research, onboarding | Backlog | Follows CONSULT-04 |
 
 ## Releases and in-app updates

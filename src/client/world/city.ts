@@ -12,7 +12,8 @@ import { GRAPHICS, type GraphicsQuality } from '../graphics';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { Water } from 'three/examples/jsm/objects/Water.js';
 import { SITES, type EmpireState } from '../../shared/empire';
-import { lookFromSeed } from '../../shared/avatar';
+import { lookFromSeed, type Look } from '../../shared/avatar';
+import { ceoAvatar, chiefAvatar, workerAvatar, workerOutfit } from '../../shared/outfit';
 import { Person } from './character';
 import { textPlane } from './toon';
 import { SURFACE as S, boxMesh as box, solid } from './materials';
@@ -377,14 +378,12 @@ export function buildCity() {
   foliage.finish();
   for (const child of group.children) if (child instanceof THREE.Group && child !== foliage.group) batchStaticMeshes(child);
   batchStaticMeshes(group);
-  const chief = new Person('Chief of staff', '#345f65', lookFromSeed('empire-chief'));
+  // The chief of staff dresses by the CEO's choice (never in the same suit); see shared/outfit.ts.
+  const chief = new Person('Chief of staff', '#345f65', lookFromSeed('empire-chief'), { avatar: chiefAvatar(ceoAvatar(store.profile.look.style)) });
   chief.showLabel(false);
   chief.root.position.set(8, 0, 9);
   const citizens = Array.from({ length: 8 }, (_, i) => {
-    const p = new Person('Resident', '#8c9a9e', {
-      ...lookFromSeed(`citizen-${i}`),
-      style: i % 2,
-    });
+    const p = new Person('Resident', '#8c9a9e', lookFromSeed(`citizen-${i}`), { avatar: workerAvatar(`citizen-${i}`) });
     p.showLabel(false);
     group.add(p.root);
     return p;
@@ -470,6 +469,8 @@ export function buildCity() {
       if (hinge) hinge.rotation.y = amount * 1.08;
     },
     chief: chief.root,
+    /** Re-dresses the chief of staff after the CEO picks a suit. */
+    dressChief(look: Look) { chief.setOutfit({ avatar: chiefAvatar(ceoAvatar(look.style)) }); },
     sync(state: EmpireState) {
       growTower(state.office.floors);
       for (const sector of state.sectors) {
@@ -506,12 +507,13 @@ export function buildCity() {
         const sector = store.empire.sectors.find((s) => s.id === site.id)!;
         const assigned = assignedWorkers(site.id, store.workers.values())
           .filter((w) => w.id !== sector.manager?.workerId)
-          .map((w) => ({ id: w.id, name: w.name, color: w.color, typing: typingPose(w, ev.fresh) }));
+          .map((w) => ({ id: w.id, name: w.name, color: w.color, outfit: workerOutfit(w), typing: typingPose(w, ev.fresh) }));
         if (managerAvailable(sector))
           assigned.unshift({
             id: sector.manager!.id,
             name: sector.manager!.name,
             color: '#567b70',
+            outfit: workerOutfit({ id: sector.manager!.id }),
             typing: managerTyping(sector, store.queue.tasks, store.workers, ev),
           });
         assigned.splice(3);
@@ -520,10 +522,11 @@ export function buildCity() {
           displayedWorkers.add(worker.id);
           let person = staffViews.get(worker.id);
           if (!person) {
-            person = new Person(worker.name, worker.color, lookFromSeed(worker.id));
+            person = new Person(worker.name, worker.color, lookFromSeed(worker.id), worker.outfit);
             group.add(person.root);
             staffViews.set(worker.id, person);
           }
+          person.setOutfit(worker.outfit);
           person.pose = worker.typing ? 'type' : 'sit';
           person.root.position.set(site.x + [-2, 3, 6][i], 0, site.z - 1.9);
           person.root.rotation.y = Math.PI;
