@@ -23,6 +23,16 @@ export function promptGate(c: GateContext): GateVerdict {
   return 'show';
 }
 
+/**
+ * When a one-off notice (a rolled-back update, an unfinished app install) may appear: only once the splash is gone and
+ * the page is visible, so it is never shown and expired behind the loading screen (seen on a slow Android emulator,
+ * docs/team/reports/update-device-rerun.md). Unlike the prompt it does not wait for typing or a jump to end.
+ */
+export function noticeGate(c: Pick<GateContext, 'boot' | 'hidden'>): GateVerdict {
+  if (c.boot !== 'ready' && c.boot !== 'forced') return 'wait';
+  return c.hidden ? 'wait' : 'show';
+}
+
 export function isTextEntry(el: Element | null): boolean {
   if (!el || !(el as HTMLElement).tagName) return false;
   const h = el as HTMLElement;
