@@ -7,12 +7,14 @@ import { randomBytes } from 'node:crypto';
 import { initialEmpire, MANAGER_NAMES, type SupervisionState } from '../src/shared/empire.js';
 import type { ServerMsg, WorkerInfo, QueueTask } from '../src/shared/protocol.js';
 import { sanitizeOutfit } from '../src/shared/outfit.js';
+import { projectWaitingOn, withWaitingOn } from '../src/server/waiting.js';
 
 const port = Number(process.env.FIXTURE_PORT || 4613);
 if (!Number.isInteger(port) || port < 1024 || port > 65535 || port === 4610) throw new Error('Use an isolated fixture port (not 4610).');
 const root = resolve(import.meta.dirname, '../dist/public');
-const scenarios = ['working', 'idle', 'needs_input', 'turn_ended', 'interrupted', 'unknown', 'missing', 'stale', 'disconnected'] as const;
-let scenario: typeof scenarios[number] = 'needs_input';
+const scenarios = ['working', 'idle', 'needs_input', 'turn_ended', 'interrupted', 'unknown', 'missing', 'stale', 'disconnected', 'waiting'] as const;
+// FIXTURE_SCENARIO picks the starting scenario (e.g. waiting for LIFE-04: one job, one worker working, one waiting on it).
+let scenario: typeof scenarios[number] = (scenarios as readonly string[]).includes(process.env.FIXTURE_SCENARIO ?? '') ? process.env.FIXTURE_SCENARIO as typeof scenarios[number] : 'needs_input';
 // Like the real server, only ever agree to empire.v1 so a bearer.<token> entry is never echoed back.
 const sockets = new WebSocketServer({ noServer: true, handleProtocols: (offered) => (offered.has('empire.v1') ? 'empire.v1' : false) });
 // Fixture-only device sign-in for the bundled apps: any password works (or only FIXTURE_PASSWORD when set, so the
@@ -26,7 +28,7 @@ const json = (res: import('node:http').ServerResponse, status: number, body: unk
 const send = (ws: WebSocket, msg: ServerMsg) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg)); };
 function snapshot() {
   const now = Date.now();
-  const phase: SupervisionState['chief']['phase'] = ['missing', 'stale', 'disconnected'].includes(scenario) ? 'working' : scenario as SupervisionState['chief']['phase'];
+  const phase: SupervisionState['chief']['phase'] = ['missing', 'stale', 'disconnected', 'waiting'].includes(scenario) ? 'working' : scenario as SupervisionState['chief']['phase'];
   const status: WorkerInfo['status'] = phase === 'turn_ended' ? 'done' : phase === 'interrupted' || phase === 'unknown' ? 'offline' : phase as WorkerInfo['status'];
   const worker: WorkerInfo = { id: 'fixture-chief', kind: 'agent', deskId: 'desk-1', name: 'Alex · fixture', color: '#54bab6', status,
     processState: phase === 'interrupted' ? 'stopped' : phase === 'unknown' ? 'unknown' : 'running',
@@ -50,7 +52,34 @@ function snapshot() {
       reason: phase === 'needs_input' ? 'Waiting for a permission decision in the terminal.' : phase === 'interrupted' ? 'The server restarted; this attempt was interrupted.' : phase === 'unknown' ? 'Prior process state cannot be established. Diagnose it before retrying.' : 'Synthetic observed state.' },
     workforce: { active: phase === 'working' ? 1 : 0, attention: phase === 'needs_input' ? 1 : 0, queued: 0 } };
   if (scenario === 'missing') delete state.supervision;
-  return { state, worker, task };
+  const job = scenario === 'waiting' ? waitingJob(now) : { workers: [], tasks: [] };
+  const tasks = [task, ...job.tasks];
+  // The real server projection (src/server/waiting.ts) decides who is waiting on whom; nothing is hand-set here.
+  const waits = projectWaitingOn(tasks, [worker, ...job.workers]);
+  return { state, worker, task, tasks, jobWorkers: job.workers.map((w) => withWaitingOn(w, waits)) };
+}
+/**
+ * LIFE-04 scenario: one client job with three ordered items. Cyrus finished item 1, Bea is working on item 2, and item 3
+ * depends on both, so it stays queued and Cyrus waits on Bea at an amenity. A second job shows a held task whose
+ * dependency stopped before finishing. Display-only: no process, no provider.
+ */
+const WAITING_DESKS = ['desk-2', 'desk-3'];
+function waitingJob(now: number): { workers: WorkerInfo[]; tasks: QueueTask[] } {
+  const base = { kind: 'agent' as const, acked: true, createdBy: 'Fixture', cols: 90, rows: 25, viewers: [] as string[] };
+  const bea: WorkerInfo = { ...base, id: 'fixture-bea', deskId: WAITING_DESKS[0], name: 'Bea', color: '#f7aef8', status: 'working', processState: 'running', createdAt: now - 600_000,
+    task: { name: 'Build checkout API', summary: 'Synthetic fixture — no agent runs' } };
+  const cyrus: WorkerInfo = { ...base, id: 'fixture-cyrus', deskId: WAITING_DESKS[1], name: 'Cyrus', color: '#5bc0eb', status: 'done', processState: 'running', createdAt: now - 1_200_000,
+    task: { name: 'Design checkout schema', summary: 'Finished — synthetic fixture' } };
+  const item = (n: number, title: string, extra: Partial<QueueTask>): QueueTask => ({ id: `fixture-job-${n}`, jobKey: `consultancy:consultancy-fixture00000:item-${n}`, title, prompt: 'Synthetic fixture',
+    addedBy: 'Fixture CEO', addedAt: now - 1_300_000, status: 'queued', attempt: 1, ...extra });
+  const tasks: QueueTask[] = [
+    item(1, 'Design checkout schema', { status: 'done', outcome: 'done', workerId: cyrus.id, workerName: 'Cyrus', deskId: cyrus.deskId, startedAt: now - 1_200_000, finishedAt: now - 300_000 }),
+    item(2, 'Build checkout API', { status: 'running', workerId: bea.id, workerName: 'Bea', deskId: bea.deskId, startedAt: now - 600_000 }),
+    item(3, 'Wire checkout into the storefront', { dependsOn: ['fixture-job-1', 'fixture-job-2'], blockedBy: ['fixture-job-2'] }),
+    { id: 'fixture-held-1', title: 'Draft launch email copy', prompt: 'Synthetic fixture', addedBy: 'Fixture CEO', addedAt: now - 900_000, status: 'done', attempt: 1, outcome: 'exited', error: 'stopped before finishing', finishedAt: now - 500_000 },
+    { id: 'fixture-held-2', title: 'Send launch emails', prompt: 'Synthetic fixture', addedBy: 'Fixture CEO', addedAt: now - 900_000, status: 'done', attempt: 1, outcome: 'failed', error: 'dependency fixture-held-1 did not finish', dependsOn: ['fixture-held-1'], finishedAt: now - 499_000 },
+  ];
+  return { workers: [bea, cyrus], tasks };
 }
 // Synthetic desk staff for attire checks: FIXTURE_WORKERS=n seats n extra idle workers in default attire, and a hire
 // from the desk dialog seats one more with the chosen outfit. They are display-only: no process, no provider.
@@ -64,12 +93,16 @@ function seatFixtureWorker(deskId: string, outfit?: unknown): WorkerInfo {
   extraWorkers.set(w.id, w);
   return w;
 }
-for (let i = 0; i < Math.min(18, Number(process.env.FIXTURE_WORKERS) || 0); i++) seatFixtureWorker(`desk-${i + 2}`);
+for (let i = 0, n = Math.min(18, Number(process.env.FIXTURE_WORKERS) || 0), desk = 2; i < n && desk <= 20; desk++)
+  if (!WAITING_DESKS.includes(`desk-${desk}`) || process.env.FIXTURE_SCENARIO !== 'waiting') { seatFixtureWorker(`desk-${desk}`); i++; }
 function publish(ws: WebSocket) {
-  const {state, worker, task} = snapshot();
+  const {state, worker, tasks, jobWorkers} = snapshot();
   send(ws, { t: 'worker.update', worker });
   for (const w of extraWorkers.values()) send(ws, { t: 'worker.update', worker: w });
-  send(ws, { t: 'queue', state: { tasks: [task], maxWorkers: 1 } });
+  for (const w of jobWorkers) send(ws, { t: 'worker.update', worker: w });
+  // Leaving the waiting scenario sends its job workers home again.
+  if (!jobWorkers.length) for (const id of ['fixture-bea', 'fixture-cyrus']) send(ws, { t: 'worker.remove', workerId: id });
+  send(ws, { t: 'queue', state: { tasks, maxWorkers: jobWorkers.length ? 3 : 1 } });
   send(ws, { t: 'empire', state });
 }
 const controls = `<!doctype html><html lang="en"><meta charset="utf-8"><title>Agent Empire QA controls</title>
@@ -153,19 +186,19 @@ server.on('upgrade', (req, socket, head) => {
   sockets.handleUpgrade(req, socket, head, ws => { if (token) socketToken.set(ws, token); ws.on('close', () => socketToken.delete(ws)); sockets.emit('connection', ws); });
 });
 sockets.on('connection', ws => {
-  const {worker, task} = snapshot();
+  const {worker, tasks, jobWorkers} = snapshot();
   const empty = { items: [], fetchedAt: Date.now(), loading: false };
   const zero = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, cost: 0, calls: 0 };
-  send(ws, { t: 'welcome', you: 'fixture-ceo', peers: [], workers: [worker], project: { name: 'UI fixture · synthetic data', dir: '[isolated fixture]', agentCmd: 'disabled' },
+  send(ws, { t: 'welcome', you: 'fixture-ceo', peers: [], workers: [worker, ...jobWorkers], project: { name: 'UI fixture · synthetic data', dir: '[isolated fixture]', agentCmd: 'disabled' },
     issues: empty, pulls: empty, ice: [], chat: [], invites: false, version: 'fixture', upgrade: { available: false, phase: 'idle' },
-    services: { items: [], port }, decor: [], usage: { total: zero, today: zero, day: '2026-09-27', pauseHiring: false }, queue: { tasks: [task], maxWorkers: 1 } });
+    services: { items: [], port }, decor: [], usage: { total: zero, today: zero, day: '2026-09-27', pauseHiring: false }, queue: { tasks, maxWorkers: jobWorkers.length ? 3 : 1 } });
   publish(ws);
   ws.on('message', raw => {
     let msg: any; try { msg = JSON.parse(raw.toString()); } catch { return; }
     if (msg.t === 'worker.attach') send(ws, { t: 'term.snapshot', workerId: 'fixture-chief', cols: 90, rows: 25, data: 'SYNTHETIC TERMINAL — no commands execute.\r\nType to test keyboard routing: ' });
     else if (msg.t === 'term.input' && typeof msg.data === 'string') send(ws, { t: 'term.data', workerId: 'fixture-chief', data: msg.data.replace(/\r/g, '\r\n') });
     else if (msg.t === 'ping') send(ws, { t: 'pong', at: msg.at });
-    else if (msg.t === 'worker.spawn' && typeof msg.deskId === 'string' && /^desk-([2-9]|1[0-9]|20)$/.test(msg.deskId) && msg.kind !== 'shell' && ![...extraWorkers.values()].some((w) => w.deskId === msg.deskId)) {
+    else if (msg.t === 'worker.spawn' && typeof msg.deskId === 'string' && /^desk-([2-9]|1[0-9]|20)$/.test(msg.deskId) && msg.kind !== 'shell' && ![...extraWorkers.values()].some((w) => w.deskId === msg.deskId) && !(scenario === 'waiting' && WAITING_DESKS.includes(msg.deskId))) {
       const w = seatFixtureWorker(msg.deskId, msg.outfit);
       for (const client of sockets.clients) send(client, { t: 'worker.update', worker: w });
       send(ws, { t: 'toast', level: 'info', text: `Fixture only: ${w.name} sat down for display; no agent runs.` });

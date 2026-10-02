@@ -23,7 +23,6 @@ import { EYE_HEIGHT, PlayerController, groundAt, isTyping } from './player';
 import { buildOffice, type InteractKind, type Interactable } from './world/office';
 import { Person, Worker } from './world/character';
 import { OfficeLife } from './world/worker-life';
-import type { WaitingOn } from './world/routines';
 import { Laptop } from './world/laptop';
 import { BoardTexture, QueueBoardTexture, ServicesBoardTexture } from './world/boards';
 import { Gallery } from './world/gallery';
@@ -41,6 +40,7 @@ import { openAsk } from './ui/ask';
 import { openTeam, routeTeamMessage } from './ui/team';
 import { mountServicesButton, openServices } from './ui/services';
 import { mountQueueButton, openQueue } from './ui/queue';
+import { workerTaskLine } from '../shared/dependencies';
 import { openUpgrade, restarting, showRestarting, showUpgraded } from './ui/upgrade';
 import { openHelp, openWorkersDialog, renderChat, renderPeople, renderWorkers, updateSpeaking } from './ui/hud';
 import { mountStatusStrip } from './ui/status-strip';
@@ -542,10 +542,10 @@ function syncWorkers() {
       noOutline(v.model.root);
     }
     v.model.setOutfit(workerOutfit(w));
-    v.model.setTask(w.task);
+    v.model.setTask(workerTaskLine(w));
     v.model.setLive(fresh);
     // Typing (and its sound) only once the body is seated at the desk; see world/worker-life.ts.
-    life.sync(w.id, v.model, desk, { status: w.status, processState: w.processState, fresh, typing: typingPose(w, fresh), waitingOn: (w as WorkerInfo & { waitingOn?: WaitingOn }).waitingOn });
+    life.sync(w.id, v.model, desk, { status: w.status, processState: w.processState, fresh, typing: typingPose(w, fresh), waitingOn: w.waitingOn });
     const again = w.kind === 'shell' ? 'restart' : 'resume';
     v.laptop.setPlaceholder(w.status === 'offline' ? `💤 ${w.name} is asleep — press R to ${again}` : w.status === 'exited' ? `${w.name} exited` : 'booting…');
   }
