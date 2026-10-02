@@ -126,6 +126,12 @@ function releaseFolder(input) {
   return parts[4] === 'download' && !!parts[5] && SEGMENT.test(parts[5]) && parts[5] !== '..';
 }
 
+/** The stable macOS feed: .../releases/latest/download/RELEASES-darwin-<arm64|x64>.json, nothing else under latest. */
+function isMacLatestFeed(input) {
+  const a = releaseAsset(input);
+  return !!a && a.tag === null && /^RELEASES-darwin-(arm64|x64)\.json$/.test(a.file);
+}
+
 /** update.fetch: a release asset, or the releases listing used to find the newest pre-release. */
 const isUpdateFetchUrl = (url) => url === RELEASES_API || releaseAsset(url) !== null;
 
@@ -303,7 +309,7 @@ function parseRequest(raw) {
       }
       if (p.feed !== undefined) {
         const a = releaseAsset(p.feed);
-        if (!releaseFolder(p.feed) && (!a || a.tag === null)) return fail('That update feed is not an Agent Empire release.');
+        if (!releaseFolder(p.feed) && !isMacLatestFeed(p.feed) && (!a || a.tag === null)) return fail('That update feed is not an Agent Empire release.');
         out.feed = p.feed;
       }
       if (!out.url && !out.feed) return fail('Nothing to open.');
@@ -339,5 +345,5 @@ module.exports = {
   APP_SCHEME, APP_HOST, APP_ORIGIN, METHODS, MODES, PAGE_MODES, KEYS, SESSION_KEYS, GITHUB_SCOPES, SIGN_OUT_REASONS, MAX_VALUE_LENGTH, GESTURE_WINDOW_MS,
   isKey, isMethod, isDeviceToken, isClientId, serverOrigin, invalidValue, scopes, externalUrl, isVerificationUrl, gestureAllows, isAppUrl,
   parseRequest, configFor, shouldResumeLocal,
-  RELEASE_REPO, RELEASES_API, ASSET_REDIRECT_HOSTS, isSemver, isSha256, compareSemver, releaseAsset, releasePage, releaseFolder, isUpdateFetchUrl, isAssetRedirect,
+  RELEASE_REPO, RELEASES_API, ASSET_REDIRECT_HOSTS, isSemver, isSha256, compareSemver, releaseAsset, releasePage, releaseFolder, isMacLatestFeed, isUpdateFetchUrl, isAssetRedirect,
 };
