@@ -5,7 +5,7 @@
  */
 import type { ExecutionTask } from '../shared/execution.js';
 import type { CloudExecution, EventCursorState } from './schema.js';
-import type { ProvisionResult } from './provisioning.js';
+import type { ProvisionResult, WorkerModel } from './provisioning.js';
 export { ProvisionError, type ProvisionResult } from './provisioning.js';
 
 export interface ProviderObservation {
@@ -42,7 +42,7 @@ export interface ProviderAdapter {
    * Finds or creates the agent and cloud environment jobs run on (src/cloud/provisioning.ts). Never
    * starts a session. Throws ProvisionError with a user-safe message.
    */
-  provision(): Promise<ProvisionResult>;
+  provision(model: WorkerModel): Promise<ProvisionResult>;
   dispatch(request: DispatchRequest): Promise<{ sourceCommit: string; observation: ProviderObservation }>;
   /** Reads status/usage events after `cursor`, then the session. Never persists model text. */
   observe(sessionId: string, cursor: EventCursorState): Promise<{ observation: ProviderObservation; cursor: EventCursorState }>;

@@ -30,6 +30,8 @@
 import { initialCloudState, parseStateFiles, serializeState, STATE_FILES, validateExecution, validateLimits, validateProvisionRepository, type CloudExecution, type CloudLimits, type CloudState } from './schema.js';
 import { intentPath, parseIntent } from './intents.js';
 import type { ExecutionConfig } from '../shared/execution.js';
+import { uuidv7 } from './uuid.js';
+import { DEFAULT_WORKER_MODEL, isWorkerModel, type WorkerModel } from './worker-spec.js';
 import { decodeBase64Utf8, defaultSleep, encodeBase64Utf8, GitHubClient, GitHubError, GitHubStateStore, validateRepoRef, type FileChange } from './store.js';
 import { COORDINATOR_BUNDLE_PATH, coordinatorWorkflow, WORKFLOW_FILE, WORKFLOW_PATH, type WorkflowOptions } from './workflow.js';
 
@@ -84,7 +86,9 @@ export interface InstallOptions {
    * is asked to find or create the Anthropic agent and environment for it. Ignored when `execution` is given.
    */
   provision?: ExecutionConfig['repository'];
-  /** Random UUID source (tests); defaults to crypto.getRandomValues. */
+  /** Worker model for automatic setup (default Sonnet 5; owner decision 2026-10-02). */
+  provisionModel?: WorkerModel;
+  /** UUIDv7 source for the intent id (tests); defaults to uuidv7(now). */
   uuid?: () => string;
   /** Contents of the built single-file coordinator (npm run build:cloud). */
   coordinatorBundle: string;
@@ -125,15 +129,9 @@ export function checkInstallOptions(options: InstallOptions) {
   const projectToken = options.secrets.PROJECT_GITHUB_TOKEN?.trim();
   if (projectToken && !projectToken.startsWith('github_pat_')) throw new InstallError('secrets', 'project_token_not_fine_grained', 'The project token must be a fine-grained personal access token scoped to the selected repositories (github_pat_…). Classic and OAuth tokens grant too much access.');
   const workflow = coordinatorWorkflow(options.workflow); // validates the interval
-  return { repoName, limits, execution, provision, workflow };
-}
-
-/** RFC 4122 version 4 from getRandomValues (also available outside secure contexts, unlike randomUUID). */
-function randomUuid(): string {
-  const b = crypto.getRandomValues(new Uint8Array(16));
-  b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
-  const hex = [...b].map(x => x.toString(16).padStart(2, '0')).join('');
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  if (options.provisionModel !== undefined && !isWorkerModel(options.provisionModel)) throw new InstallError('execution', 'invalid', 'Unsupported worker model.');
+  const provisionModel = options.provisionModel ?? DEFAULT_WORKER_MODEL;
+  return { repoName, limits, execution, provision, provisionModel, workflow };
 }
 
 /** Parses an existing Empire's state files with the coordinator's rules; an InstallError says why it is unusable. */
@@ -143,7 +141,7 @@ function parseExisting(step: InstallStep, files: Record<string, string>, now: nu
 }
 
 export async function installStateRepository(client: GitHubClient, options: InstallOptions, encryptSecret: EncryptSecret): Promise<InstallResult> {
-  const { repoName, limits, execution, provision, workflow } = checkInstallOptions(options);
+  const { repoName, limits, execution, provision, provisionModel, workflow } = checkInstallOptions(options);
   const onStep: OnStep = options.onStep ?? (() => {});
   const sleep = options.sleep ?? defaultSleep;
   const steps = {} as InstallResult['steps'];
@@ -235,7 +233,7 @@ export async function installStateRepository(client: GitHubClient, options: Inst
       if ((await text(COORDINATOR_BUNDLE_PATH)) !== options.coordinatorBundle) changes.push({ path: COORDINATOR_BUNDLE_PATH, content: options.coordinatorBundle });
       // Never overwrite an existing Empire: re-running setup updates the coordinator only.
       if (!alreadyInstalled) {
-        const initial = initialCloudState(options.now, { limits, ...(execution ? { execution } : {}), ...(provision ? { provision } : {}), ...(options.workflow?.intervalMinutes ? { intervalMinutes: options.workflow.intervalMinutes } : {}) });
+        const initial = initialCloudState(options.now, { limits, ...(execution ? { execution } : {}), ...(provision ? { provision, model: provisionModel } : {}), ...(options.workflow?.intervalMinutes ? { intervalMinutes: options.workflow.intervalMinutes } : {}) });
         for (const [path, content] of Object.entries(serializeState(initial))) changes.push({ path, content });
         current = initial; wroteInitial = true;
       }
@@ -249,11 +247,13 @@ export async function installStateRepository(client: GitHubClient, options: Inst
     let executionStep: InstallResult['execution'];
     if (wroteInitial) {
       executionStep = execution ? 'already_configured' : provision ? 'requested' : 'no_anthropic_key';
-    } else if (current?.meta.execution) executionStep = 'already_configured';
-    else if (current?.meta.provisioning) executionStep = 'already_requested';
-    else if (!provision) executionStep = 'no_anthropic_key';
+    } else if (current?.meta.provisioning?.status === 'pending') executionStep = 'already_requested';
+    else if (current?.meta.execution && !current.meta.provisioning) executionStep = 'already_configured';
+    else if (!provision) executionStep = current?.meta.execution ? 'already_configured' : 'no_anthropic_key';
     else {
-      // An existing Empire without execution settings: ask its coordinator through an intent, like any client.
+      // An existing Empire without execution settings, or whose automatic setup failed: running setup again asks its
+      // coordinator through a fresh intent, like any client (a failed request is only retried on its own when it is
+      // retryable, so this is how the user retries after fixing the cause).
       let found = false;
       const intentCommit = await commitIfNeeded(client, store, base, branch, sleep, async (files, text) => {
         found = false;
@@ -264,8 +264,8 @@ export async function installStateRepository(client: GitHubClient, options: Inst
         }
         const metaText = await text(STATE_FILES.meta);
         const configRevision = metaText ? Number(JSON.parse(metaText).configRevision) : 0;
-        const id = (options.uuid ?? randomUuid)();
-        const content = `${JSON.stringify({ schemaVersion: 1, id, createdAt: options.now, kind: 'provision', repository: provision, configRevision }, null, 2)}\n`;
+        const id = (options.uuid ?? (() => uuidv7(options.now)))();
+        const content = `${JSON.stringify({ schemaVersion: 1, id, createdAt: options.now, kind: 'provision', repository: provision, model: provisionModel, configRevision }, null, 2)}\n`;
         parseIntent(intentPath(id), content); // never commit an intent the coordinator could not parse
         return { changes: [{ path: intentPath(id), content }], message: `Agent Empire intent provision ${id}` };
       });

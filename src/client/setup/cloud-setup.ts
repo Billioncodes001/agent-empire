@@ -18,6 +18,7 @@ import type { CloudLimits } from '../../cloud/schema';
 import { linkedProviders, parseCents, STATE_REPO_NAME, type Interval, type Limits, type ProviderId, type RepoRef } from './model';
 import { sealForGitHub } from './sealed-box';
 import { GITHUB_API, githubApiBase } from '../cloud/api-base';
+import { DEFAULT_WORKER_MODEL, workerModelLabel } from '../../cloud/worker-spec';
 
 export const SECRET_NAMES: Record<ProviderId, SecretName> = { anthropic: 'ANTHROPIC_API_KEY', openai: 'OPENAI_API_KEY' };
 /** Where the client build ships the coordinator (tools/ship-coordinator.mjs) and its integrity manifest. */
@@ -48,7 +49,7 @@ export function executionPlan(plan: Pick<CloudPlan, 'projects' | 'providers'>): 
   const more = plan.projects.length > 1 ? ` (the first of your ${plan.projects.length} projects; change it later in Cloud Empire → Limits)` : '';
   return {
     repository: { owner: project.owner, name: project.name, baseBranch: project.defaultBranch || 'main' },
-    note: `Jobs run on ${project.owner}/${project.name}${more}. Your coordinator’s first run creates (or reuses) an Anthropic agent “Agent Empire worker” and a cloud environment in your Anthropic account. Creating them is not a billed item and starts no session; you pay only for jobs you confirm.`,
+    note: `Jobs run on ${project.owner}/${project.name}${more} with ${workerModelLabel(DEFAULT_WORKER_MODEL)} (change the model under Cloud Empire → Limits). Your coordinator’s first run creates (or reuses) an Anthropic agent “Agent Empire worker” and a cloud environment in your Anthropic account. Creating them is not a billed item and starts no session; you pay only for jobs you confirm. Jobs run in an Anthropic cloud sandbox with full internet access, so a worker can install packages and also fetch untrusted content; it approves its own tool use inside the sandbox. Your keys never enter the sandbox.`,
   };
 }
 

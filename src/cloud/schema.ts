@@ -13,6 +13,7 @@ import { initialEmpire, newSector, SITES, type EmpireState, type SectorState, ty
 import { DESKS_PER_FLOOR } from '../shared/layout.js';
 import type { ExecutionConfig, ExecutionTask } from '../shared/execution.js';
 import { COMMIT, PROVIDER_ID, TASK_ID, validateConfig } from '../server/execution-validation.js';
+import { DEFAULT_WORKER_MODEL, isWorkerModel, WORKER_ENVIRONMENT, type WorkerModel } from './worker-spec.js';
 
 export const CLOUD_SCHEMA_VERSION = 1;
 export const STATE_FILES = {
@@ -66,6 +67,8 @@ export interface CloudProvisioning {
   repository: ExecutionConfig['repository'];
   /** `pending`: the next run tries. `failed`: `message` says why; retried hourly when `retryable`. */
   status: 'pending' | 'failed';
+  /** Worker model for the agent (absent in states written before 2026-10-02: the default, Sonnet 5). */
+  model?: WorkerModel;
   requestedAt: number;
   attempts: number;
   lastAttemptAt?: number;
@@ -73,6 +76,7 @@ export interface CloudProvisioning {
   message?: string;
 }
 export const PROVISION_RETRY_MS = 60 * 60_000;
+export interface CloudExecutionProfile { model: WorkerModel; networking: typeof WORKER_ENVIRONMENT.config.networking.type }
 
 /** Scheduled-run cost estimate shown by setup. Dispatch-triggered runs come on top. */
 export interface ScheduleEstimate {
@@ -113,6 +117,8 @@ export interface CloudMeta {
   execution?: CloudExecution;
   /** Automatic execution setup waiting for (or having failed in) a coordinator run. */
   provisioning?: CloudProvisioning;
+  /** What automatic setup created, for display. Absent for manually entered IDs (unknown to the coordinator). */
+  executionProfile?: CloudExecutionProfile;
 }
 export interface CloudHeartbeat { schemaVersion: 1; lastRunId?: string; lastRunAt?: number }
 export interface ProcessedIntent { id: string; at: number; outcome: 'applied' | 'rejected' | 'duplicate'; kind?: string }
@@ -228,7 +234,7 @@ export function promptHash(text: string): string {
 }
 export const promptPreview = (text: string) => text.length > 200 ? text.slice(0, 199) + '…' : text;
 
-export function initialCloudState(now: number, options: { limits?: CloudLimits; execution?: CloudExecution; intervalMinutes?: number; provision?: ExecutionConfig['repository'] } = {}): CloudState {
+export function initialCloudState(now: number, options: { limits?: CloudLimits; execution?: CloudExecution; intervalMinutes?: number; provision?: ExecutionConfig['repository']; model?: WorkerModel } = {}): CloudState {
   const limits = validateLimits(options.limits ?? DEFAULT_LIMITS);
   const empire = initialEmpire(now);
   empire.reports[0].text = 'Cloud mode: the coordinator in your GitHub state repository keeps the city running. City credits are simulation credits; provider usage is billed by your provider.';
@@ -238,7 +244,7 @@ export function initialCloudState(now: number, options: { limits?: CloudLimits; 
       lifecycle: { status: 'running', changedAt: now, workflow: 'enabled' },
       coordinator: {}, schedule: scheduleEstimate(options.intervalMinutes), limits,
       ...(options.execution ? { execution: validateExecution(options.execution) } : {}),
-      ...(options.provision && !options.execution ? { provisioning: { provider: 'anthropic' as const, repository: validateProvisionRepository(options.provision), status: 'pending' as const, requestedAt: now, attempts: 0 } } : {}),
+      ...(options.provision && !options.execution ? { provisioning: { provider: 'anthropic' as const, repository: validateProvisionRepository(options.provision), status: 'pending' as const, model: options.model ?? DEFAULT_WORKER_MODEL, requestedAt: now, attempts: 0 } } : {}),
     },
     empire,
     jobs: { schemaVersion: 1, jobs: [] },
@@ -292,7 +298,8 @@ export function validateProvisionRepository(value: unknown): ExecutionConfig['re
 }
 
 export function validateProvisioning(file: string, value: unknown): CloudProvisioning {
-  const p = rec(file, value, ['provider', 'repository', 'status', 'requestedAt', 'attempts', 'lastAttemptAt', 'retryable', 'message']);
+  const p = rec(file, value, ['provider', 'repository', 'status', 'model', 'requestedAt', 'attempts', 'lastAttemptAt', 'retryable', 'message']);
+  if (p.model !== undefined && !isWorkerModel(p.model)) throw new SchemaError(file, 'invalid provisioning model');
   if (p.provider !== 'anthropic' || (p.status !== 'pending' && p.status !== 'failed')) throw new SchemaError(file, 'invalid provisioning');
   let repository: ExecutionConfig['repository'];
   try { repository = validateProvisionRepository(p.repository); } catch { throw new SchemaError(file, 'invalid provisioning repository'); }
@@ -305,7 +312,11 @@ export function validateProvisioning(file: string, value: unknown): CloudProvisi
 
 export function validateMeta(value: unknown): CloudMeta {
   const f = STATE_FILES.meta;
-  const m = rec(f, value, ['schemaVersion', 'createdAt', 'revision', 'configRevision', 'lifecycle', 'coordinator', 'schedule', 'limits', 'execution', 'provisioning']);
+  const m = rec(f, value, ['schemaVersion', 'createdAt', 'revision', 'configRevision', 'lifecycle', 'coordinator', 'schedule', 'limits', 'execution', 'provisioning', 'executionProfile']);
+  if (m.executionProfile !== undefined) {
+    const x = rec(f, m.executionProfile, ['model', 'networking']);
+    if (!isWorkerModel(x.model) || x.networking !== WORKER_ENVIRONMENT.config.networking.type) throw new SchemaError(f, 'invalid execution profile');
+  }
   if (m.schemaVersion !== CLOUD_SCHEMA_VERSION) throw new SchemaError(f, 'unsupported schemaVersion');
   const lifecycle = rec(f, m.lifecycle, ['status', 'changedAt', 'workflow']);
   if (!['running', 'shutting_down', 'shutdown'].includes(String(lifecycle.status)) || !['enabled', 'disable_requested', 'disabled'].includes(String(lifecycle.workflow))) throw new SchemaError(f, 'invalid lifecycle');

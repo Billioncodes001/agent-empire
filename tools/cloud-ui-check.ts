@@ -334,6 +334,8 @@ async function run() {
     await page.locator('.cloud-modal button', { hasText: 'Check GitHub now' }).click();
     await page.waitForFunction(() => /agent_fixture1|agent_provisioned1/.test(document.querySelector('.cloud-modal')?.textContent ?? ''), null, { timeout: 15_000 });
     ok(/Anthropic Managed Agents \(agent agent_provisioned1, environment env_provisioned1\)/.test(await page.locator('.cloud-modal').innerText()), `${tag}: status shows execution ready with the recorded IDs`);
+    const readyText = await page.locator('.cloud-modal').innerText();
+    ok(/Set up automatically: Claude Sonnet 5, unrestricted networking/.test(readyText) && /full internet access/.test(readyText) && /untrusted content/.test(readyText), `${tag}: status names the model and the sandbox's internet access`);
     await shot(page, `${size.tag}-14-execution-ready`);
     await page.locator('.cloud-modal .empire-tab', { hasText: 'New job' }).click();
     await page.fill('.cloud-modal textarea', 'Fixture only; nothing runs.');
@@ -365,6 +367,9 @@ async function run() {
     await page.locator('.cloud-modal .empire-tab', { hasText: 'Limits' }).click();
     await page.fill('.cloud-modal input[aria-label="Project owner for automatic setup"]', 'fixture');
     await page.fill('.cloud-modal input[aria-label="Project repository for automatic setup"]', 'repo');
+    ok((await page.locator('.cloud-modal select[aria-label="Worker model"]').inputValue()) === 'claude-sonnet-5' && (await page.locator('.cloud-modal select[aria-label="Worker model"] option').count()) === 3, 'no execution: the worker model defaults to Sonnet 5, with Opus and Fable selectable');
+    ok(/full internet access/.test(await page.locator('.cloud-modal').innerText()), 'no execution: Limits states the sandbox has full internet access');
+    await page.locator('.cloud-modal select[aria-label="Worker model"]').selectOption('claude-opus-5-5');
     await shot(page, 'desktop-1440x900-15-limits-set-up-automatically');
     const mark = gh.requests.length;
     await page.locator('.cloud-modal button', { hasText: 'Set up automatically' }).click();
@@ -372,7 +377,7 @@ async function run() {
     const writes = gh.requests.slice(mark).filter((r) => r.method !== 'GET');
     const file = Object.entries(gh.files(FULL)).find(([p, t]) => p.startsWith('intents/') && t.includes('"provision"'));
     const body = file ? JSON.parse(file[1]) : null;
-    ok(writes.length === 2 && !!body && body.repository.owner === 'fixture' && body.repository.name === 'repo' && body.repository.baseBranch === 'main' && Number.isInteger(body.configRevision), `no execution: Set up automatically writes one provision intent and one wake-up (${writes.map((r) => `${r.method} ${r.path.replace(/^\/repos\/founder\/agent-empire-state/, '')}`).join(', ')})`);
+    ok(writes.length === 2 && !!body && body.repository.owner === 'fixture' && body.repository.name === 'repo' && body.repository.baseBranch === 'main' && body.model === 'claude-opus-5-5' && Number.isInteger(body.configRevision), `no execution: Set up automatically writes one provision intent and one wake-up (${writes.map((r) => `${r.method} ${r.path.replace(/^\/repos\/founder\/agent-empire-state/, '')}`).join(', ')})`);
     ok(errors.length === 0, `no execution: no console errors (${errors.join(' | ') || 'none'})`);
     await context.close();
   }

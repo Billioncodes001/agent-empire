@@ -7,7 +7,8 @@
  * real provider money.
  */
 import { SITES, type SiteId } from '../../shared/empire';
-import { CANCELLABLE, cloudStatus, dollars, executionStatus, JOB_LABEL, JOB_TONE, jobCounts, shortAge, snapshotTime, todaySpend } from './map';
+import { CANCELLABLE, cloudStatus, dollars, executionStatus, JOB_LABEL, JOB_TONE, jobCounts, SANDBOX_NOTE, shortAge, snapshotTime, todaySpend } from './map';
+import { DEFAULT_WORKER_MODEL, WORKER_MODELS, type WorkerModel } from '../../cloud/worker-spec';
 import { repoLabel } from './repo';
 import type { CloudNet, NewJobRequest } from './net';
 import { store } from '../state';
@@ -365,6 +366,8 @@ function limitsTab(net: CloudNet, state: CloudState): HTMLElement[] {
   const autoOwner = h('input', { type: 'text', value: target?.owner ?? '', placeholder: 'owner', 'aria-label': 'Project owner for automatic setup' }) as HTMLInputElement;
   const autoName = h('input', { type: 'text', value: target?.name ?? '', placeholder: 'repository', 'aria-label': 'Project repository for automatic setup' }) as HTMLInputElement;
   const autoBase = h('input', { type: 'text', value: target?.baseBranch ?? 'main', 'aria-label': 'Base branch for automatic setup' }) as HTMLInputElement;
+  const autoModel = h('select', { 'aria-label': 'Worker model' }, ...WORKER_MODELS.map((m) => h('option', { value: m.id }, `${m.label}${m.id === DEFAULT_WORKER_MODEL ? ' (default)' : ''} · ${m.price}`))) as HTMLSelectElement;
+  autoModel.value = state.meta.provisioning?.model ?? state.meta.executionProfile?.model ?? DEFAULT_WORKER_MODEL;
   const autoErr = h('p.setting-note.cloud-error', { role: 'alert' });
   const autoForm = h(
     'form.cloud-form',
@@ -377,12 +380,13 @@ function limitsTab(net: CloudNet, state: CloudState): HTMLElement[] {
           return;
         }
         autoErr.textContent = '';
-        void net.submit({ kind: 'provision', repository, configRevision: state.meta.configRevision }, 'Set up execution').then((id) => {
+        void net.submit({ kind: 'provision', repository, model: autoModel.value as WorkerModel, configRevision: state.meta.configRevision }, 'Set up execution').then((id) => {
           if (!id) autoErr.textContent = 'Not sent. Check the repository fields.';
         });
       },
     },
     h('div.cloud-row', {}, field('Owner', autoOwner), field('Repository', autoName), field('Base branch', autoBase)),
+    h('div.cloud-row', {}, field('Worker model', autoModel, 'Billed by Anthropic per token for jobs you confirm. Each model gets its own agent.')),
     autoErr,
     h('div.sector-actions', {}, h('button.btn.primary', { type: 'submit', disabled: net.info.busy || exec.kind === 'setting_up' }, exec.kind === 'failed' ? 'Try setup again' : 'Set up automatically')),
   );
@@ -416,10 +420,11 @@ function limitsTab(net: CloudNet, state: CloudState): HTMLElement[] {
       {},
       h('h3', {}, 'Agent execution'),
       h('p.setting-note', {}, `${exec.label}. ${exec.detail}`),
-      h('p.setting-note', {}, 'Automatic: your coordinator uses the Anthropic key in your Actions secrets to find or create an agent “Agent Empire worker” and a cloud environment, then records their IDs. Creating them is not a billed item and starts no session; jobs are charged only when you confirm them.'),
+      h('p.setting-note', {}, `Automatic: your coordinator uses the Anthropic key in your Actions secrets to find or create an agent “Agent Empire worker” and a cloud environment, then records their IDs. Creating them is not a billed item and starts no session; jobs are charged only when you confirm them.${ex ? ' This replaces the current execution settings once it finishes.' : ''}`),
+      h('p.setting-note', {}, SANDBOX_NOTE),
       autoForm,
     ),
-    h('section.empire-section', {}, h('h3', {}, 'Use existing IDs'), h('p.setting-note', {}, 'Advanced. References only: an Anthropic agent and environment you already created, and the project repository jobs run on. Keys stay in your GitHub Actions secrets.'), execForm),
+    h('section.empire-section', {}, h('h3', {}, 'Use existing IDs'), h('p.setting-note', {}, 'Advanced. References only: an Anthropic agent and environment you already created, and the project repository jobs run on. Keys stay in your GitHub Actions secrets. Saving these withdraws any automatic setup request.'), execForm),
   ];
 }
 
