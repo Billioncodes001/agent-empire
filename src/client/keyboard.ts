@@ -71,6 +71,8 @@ function reveal(field: HTMLElement) {
 }
 
 let tracking = false;
+/** Below this visible height with the keyboard open, html.ae-kb-tight trims dialogs to the field being typed in. */
+export const TIGHT_KEYBOARD_PX = 200;
 
 /** Installs the keyboard-aware layout once per page. Safe to call again. */
 export function trackKeyboard() {
@@ -95,6 +97,8 @@ export function trackKeyboard() {
     // The keyboard is open when a field has focus and the visible area is clearly shorter than the full page.
     const open = isTouchDevice() && isTextEntry(active) && full - height > 60;
     root.classList.toggle('ae-kb', open);
+    // Phone landscape: roughly 100px above the keyboard, too little for a dialog's usual layout (see style.css).
+    root.classList.toggle('ae-kb-tight', open && height < TIGHT_KEYBOARD_PX);
     if (open) {
       root.style.setProperty('--ae-vvh', `${Math.round(height)}px`);
       root.style.setProperty('--ae-vvt', `${Math.round(top)}px`);
