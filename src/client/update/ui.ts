@@ -62,6 +62,7 @@ export function mountUpdateUi(service: UpdateService, opts: UpdateUiOptions = {}
   let toastEl: HTMLElement | null = null;
   let waiting: ReturnType<typeof setInterval> | null = null;
   let rolledBackShown = false;
+  let installPendingShown = false;
 
   const gate = () =>
     promptGate({
@@ -98,6 +99,10 @@ export function mountUpdateUi(service: UpdateService, opts: UpdateUiOptions = {}
 
   const consider = () => {
     const s = service.state;
+    if (s.info?.installPending && !installPendingShown) {
+      installPendingShown = true;
+      toast(`The app update to ${s.info.installPending} didn’t finish installing. Tap Update again to finish installing.`, 'warn');
+    }
     if (s.info?.rolledBack && !rolledBackShown) {
       rolledBackShown = true;
       toast(`The update to ${s.info.rolledBack} didn’t start, so the app went back to ${s.info.installedGame ?? s.info.builtinGame ?? 'the previous version'}.`, 'warn');

@@ -234,6 +234,8 @@ final class NativeBridge {
                     JSONObject out = new JSONObject().put("platform", "android").put("shellVersion", u.shellVersion())
                         .put("installedGame", nullable(u.installedGame())).put("builtinGame", nullable(u.builtinVersion())).put("pendingGame", nullable(u.pendingGame()))
                         .put("canInstallGame", true).put("canAutoUpdate", false).put("installSource", u.installSource());
+                    String pendingApp = u.installPending();
+                    if (pendingApp != null) out.put("installPending", pendingApp);
                     String back = u.takeRolledBack();
                     if (back != null) out.put("rolledBack", back);
                     resolve(id, out.toString());

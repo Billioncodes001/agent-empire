@@ -13,8 +13,9 @@ import android.util.Log;
 /**
  * The system installer's answer for an app update (GameUpdater.installApk). Not exported: only the PendingIntent this
  * app handed to PackageInstaller can reach it, and the intent must carry the in-memory nonce of the session this app
- * started. The confirmation activity in EXTRA_INTENT is launched only when it resolves to the system package installer,
- * so a crafted intent can never make this app launch another activity on its behalf (security review #4).
+ * started. The confirmation activity in EXTRA_INTENT is launched only when it is a package-installer confirmation that
+ * resolves to a system app's activity (any OEM's installer), so a crafted intent can never make this app launch a
+ * third-party activity on its behalf (security review #4).
  */
 public final class InstallStatusReceiver extends BroadcastReceiver {
     private static final String TAG = "AgentEmpire";
@@ -30,14 +31,15 @@ public final class InstallStatusReceiver extends BroadcastReceiver {
         int status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, Integer.MIN_VALUE);
         if (status != PackageInstaller.STATUS_PENDING_USER_ACTION) {
             GameUpdater.installNonce = null; // the session is over
+            GameUpdater.clearInstallPending(context);
             if (status != PackageInstaller.STATUS_SUCCESS) Log.w(TAG, "App update not installed: " + intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE));
             return;
         }
         Intent confirm = confirmIntent(intent);
         if (confirm == null) return;
         ResolveInfo target = context.getPackageManager().resolveActivity(confirm, 0);
-        boolean system = target != null && target.activityInfo != null && (target.activityInfo.applicationInfo.flags & ApplicationInfo.FLAG_SYSTEM) != 0;
-        if (target == null || !UpdatePolicy.isSystemInstaller(target.activityInfo.packageName, system)) {
+        int flags = target != null && target.activityInfo != null ? target.activityInfo.applicationInfo.flags & (ApplicationInfo.FLAG_SYSTEM | ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) : 0;
+        if (target == null || target.activityInfo == null || !UpdatePolicy.isInstallerConfirmation(confirm.getAction(), target.activityInfo.packageName, flags)) {
             Log.w(TAG, "Refused an install confirmation that is not the system package installer");
             return;
         }

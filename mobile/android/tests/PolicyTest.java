@@ -212,9 +212,20 @@ public final class PolicyTest {
         String nonce = repeat("n", 48);
         check(UpdatePolicy.installStatusAccepted(nonce, nonce) && !UpdatePolicy.installStatusAccepted(nonce, null) && !UpdatePolicy.installStatusAccepted(nonce, repeat("m", 48))
             && !UpdatePolicy.installStatusAccepted(null, nonce) && !UpdatePolicy.installStatusAccepted(null, null), "install status needs this session's nonce");
-        check(UpdatePolicy.isSystemInstaller("com.google.android.packageinstaller", true) && UpdatePolicy.isSystemInstaller("com.android.packageinstaller", true)
-            && !UpdatePolicy.isSystemInstaller("com.google.android.packageinstaller", false) && !UpdatePolicy.isSystemInstaller("com.evil.app", true) && !UpdatePolicy.isSystemInstaller(null, true),
-            "only the system package installer may confirm");
+        String confirm = "android.content.pm.action.CONFIRM_INSTALL";
+        for (String oem : new String[]{"com.google.android.packageinstaller", "com.android.packageinstaller", "com.miui.packageinstaller", "com.samsung.android.packageinstaller"}) {
+            check(UpdatePolicy.isInstallerConfirmation(confirm, oem, UpdatePolicy.FLAG_SYSTEM), "built-in installer confirms: " + oem);
+            check(UpdatePolicy.isInstallerConfirmation(confirm, oem, UpdatePolicy.FLAG_UPDATED_SYSTEM_APP), "updated built-in installer confirms: " + oem);
+            check(!UpdatePolicy.isInstallerConfirmation(confirm, oem, 0), "a non-system app is refused even with an installer name: " + oem);
+        }
+        check(UpdatePolicy.isInstallerConfirmation("android.content.pm.action.CONFIRM_PERMISSIONS", "com.android.packageinstaller", UpdatePolicy.FLAG_SYSTEM), "permission review confirmation");
+        check(!UpdatePolicy.isInstallerConfirmation("android.intent.action.VIEW", "com.android.settings", UpdatePolicy.FLAG_SYSTEM), "another system activity (not an installer confirmation) is refused");
+        check(!UpdatePolicy.isInstallerConfirmation(null, "com.android.packageinstaller", UpdatePolicy.FLAG_SYSTEM) && !UpdatePolicy.isInstallerConfirmation(confirm, null, UpdatePolicy.FLAG_SYSTEM), "missing action or target refused");
+        long now = 1_000_000_000L;
+        check(UpdatePolicy.installPendingState("1.0.2", now - 60_000, "1.0.1", now).equals("show"), "killed mid-install: tell the player to tap Update again");
+        check(UpdatePolicy.installPendingState("1.0.2", now - 60_000, "1.0.2", now).equals("done"), "installed: forget the marker");
+        check(UpdatePolicy.installPendingState("1.0.2", now - UpdatePolicy.INSTALL_PENDING_MAX_MS - 1, "1.0.1", now).equals("stale"), "older than a day: forget");
+        check(UpdatePolicy.installPendingState("latest", now, "1.0.1", now).equals("stale") && UpdatePolicy.installPendingState("1.0.2", now + 5, "1.0.1", now).equals("stale"), "malformed marker: forget");
     }
 
     /** secure.set per-key rules, the same as iOS BridgeProtocol.validate. */

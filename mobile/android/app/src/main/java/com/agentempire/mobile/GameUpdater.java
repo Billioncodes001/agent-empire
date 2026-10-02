@@ -422,6 +422,7 @@ final class GameUpdater {
                 byte[] random = new byte[24];
                 new java.security.SecureRandom().nextBytes(random);
                 installNonce = hex(random);
+                markInstallPending(version);
                 Intent status = new Intent(INSTALL_ACTION).setClass(activity, InstallStatusReceiver.class).putExtra(InstallStatusReceiver.EXTRA_NONCE, installNonce);
                 int flags = PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= 31 ? PendingIntent.FLAG_MUTABLE : 0);
                 session.commit(PendingIntent.getBroadcast(activity, id, status, flags).getIntentSender());
@@ -433,6 +434,40 @@ final class GameUpdater {
             //noinspection ResultOfMethodCallIgnored
             apk.delete();
         }
+    }
+
+    // ---- "app update pending" marker (non-secret) -------------------------------------------------------------
+
+    private static File pendingFile(android.content.Context context) { return new File(new File(context.getFilesDir(), "game-bundles"), "app-install-pending.json"); }
+
+    private void markInstallPending(String version) {
+        try (OutputStream out = new FileOutputStream(pendingFile(activity))) {
+            out.write(new JSONObject().put("version", version).put("since", System.currentTimeMillis()).toString().getBytes(StandardCharsets.UTF_8));
+        } catch (Exception ignored) {
+            // Only a hint for the next launch.
+        }
+    }
+
+    static void clearInstallPending(android.content.Context context) {
+        //noinspection ResultOfMethodCallIgnored
+        pendingFile(context).delete();
+    }
+
+    /**
+     * At launch (nativeInfo): an app update this app handed to the installer, still unanswered because the process was
+     * killed. Returns the version to tell the player about, or null (and forgets an installed or stale marker).
+     */
+    String installPending() {
+        try (InputStream in = new FileInputStream(pendingFile(activity))) {
+            JSONObject o = new JSONObject(new String(readAll(in, 4096), StandardCharsets.UTF_8));
+            String version = o.optString("version", null);
+            String state = installNonce != null ? "busy" : UpdatePolicy.installPendingState(version, o.optLong("since", 0), shellVersion(), System.currentTimeMillis());
+            if ("show".equals(state)) return version;
+            if (!"busy".equals(state)) clearInstallPending(activity);
+        } catch (Exception none) {
+            // No marker.
+        }
+        return null;
     }
 
     // ---- helpers ------------------------------------------------------------------------------------------------
