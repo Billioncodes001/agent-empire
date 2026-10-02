@@ -194,3 +194,33 @@ Files: `UpdatePolicy.swift` (pure) and `GameUpdater.swift` (URLSession with a re
 - **Uninstalled simulator app:** I uninstalled the existing `com.agentempire.mobile` from the shared booted simulator (iPhone 18 Pro) to start clean, which removed that app's simulator data.
 - **Browsers:** a plain browser doesn't check for updates (no CORS on GitHub release downloads). Cloud mode in a browser therefore never sees the coordinator prompt.
 - **Beta selection:** the newest pre-release comes from the unauthenticated releases API (60 requests an hour per IP). ETags and the cache keep it to a handful a day.
+
+## Security review fixes (`claude/updater-fixes`, from `2a16cdc`)
+
+The review of `claude/release-integration` `2a16cdc` was "accept with fixes". Each fix below has tests that fail without it.
+
+| Finding | Fix | Tests |
+|---|---|---|
+| **#1 (critical)** `tools/release/channel.mjs` writes the stable macOS feed `…/releases/latest/download/RELEASES-darwin-<arch>.json`, which both the client and desktop parsers refused. Once Apple secrets exist, every stable channel would have failed to parse | Both parsers accept, under `latest/download`, only `RELEASES-darwin-(arm64\|x64).json`. The client also carries the signed `downloads.x64.nupkg` `{url, sha256}`. `channel.mjs` is unchanged | `tests/update-roundtrip.test.ts`: `buildChannel()` (stable and beta; macOS and Windows signed and unsigned; Android signed and debug-signed) → `parseChannel()` → `nativeOffer()` → desktop `parseRequest(update.openNative)`. Also tests that only the two macOS feed names are accepted |
+| **#2** Squirrel.Windows applies whatever `RELEASES`/`.nupkg` the feed lists, and the stable feed was `latest`, not the signed tag | On Windows, `desktop/main.cjs` `verifiedFeed()` works in this order: <ol><li>reads the release's own signed channel (the tag `v<version>`, never `latest`);</li><li>takes `downloads.x64.nupkg`, which must be the tagged asset `AgentEmpire-<nuget>-full.nupkg`;</li><li>downloads it and checks the sha256;</li><li>writes it with a `RELEASES` index computed locally into `<userData>/squirrel-feed`;</li><li>points `autoUpdater` at that folder.</li></ol> The version must be newer than the app. The macOS feed is also taken from the signed release | `tests/updater-security.test.ts`: the package must come from the tag and have the right name and hash; `latest` and other tags are refused; the `RELEASES` line matches the release lane's `parseReleases` |
+| **#4** `MainActivity.handleInstallStatus` was reachable through the exported launcher with any `EXTRA_INTENT` | The `PackageInstaller` answer now goes to `InstallStatusReceiver`: <ul><li>declared `exported=false`, with an explicit component;</li><li>accepts only intents carrying the per-session in-memory nonce (24 random bytes, compared in constant time);</li><li>launches `EXTRA_INTENT` only when it resolves to a system app `com.google.android.packageinstaller` / `com.android.packageinstaller`, pinned to that component.</li></ul> The launcher activity no longer handles install intents | `PolicyTest` (nonce rules, system-installer rule) |
+| **Low (a)** shells trusted the page's url/sha256 | Before `installGame`, and on desktop and Android before the native app update, every shell fetches `channel-beta.json(.sig)` from the release `v<version>`. It verifies the file with the pinned key and requires the request to match it exactly: version, tag, game url and sha256, `minShell` ≤ app version; on Android, the APK url and sha256. Platform Ed25519: <ul><li>desktop: `node:crypto`;</li><li>iOS: CryptoKit `Curve25519.Signing`;</li><li>Android: `java.security` Ed25519 on API 33+. Below Android 13 there is no platform Ed25519, so the native check is skipped and logged; the page's WebCrypto/tweetnacl check and the pinned-repo and sha256 rules still apply.</li></ul> | desktop `tests/updater-security.test.ts`; Android `PolicyTest` signs with the dev seed and verifies; iOS Checks |
+| **Low (b)** the coordinator could be offered below what runs. Example: a repository set up by a newer app, with no manifest, after a switch from beta to stable | `coordinatorDecision` takes this app's own bundled coordinator `{version, sha256}`. A matching unknown bundle counts as that version, so nothing older is offered | `tests/updater-security.test.ts` |
+
+**For the owner (App Review guideline 2.5.2):** the iOS app downloads JavaScript game bundles and runs them in WKWebView. These are signed, hash-checked, and run only inside the web view, which the guidelines allow for HTML5 content. Whether to ship over-the-air game updates on iOS, or to update the game only through TestFlight/App Store builds, is your decision before App Store submission.
+
+Results on this branch:
+
+| Check | Result |
+|---|---|
+| typecheck | pass |
+| `npm test` | 464 pass (was 455) |
+| build, build:cloud | pass |
+| `tools/update-ui-check.ts` | 57 pass |
+| Android `PolicyTest` | 439 checks; debug APK builds |
+| iOS Checks | 124 pass; simulator build succeeded |
+
+Not re-run on devices for these fixes:
+- the packaged macOS app, the iOS simulator app and the Android emulator;
+- the Windows Squirrel path (no Windows host);
+- the Android installer-confirmation launch.
