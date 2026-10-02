@@ -1,6 +1,6 @@
 {
   "name": "agent-empire",
-  "version": "0.1.0",
+  "version": "1.0.0-beta.1",
   "description": "A persistent agent-powered office and founding city district",
   "type": "module",
   "bin": {
@@ -26,7 +26,13 @@
     "test:browser": "node tests/browser-smoke.mjs",
     "desktop:prepare": "npm run build && node tools/prepare-desktop.mjs",
     "desktop": "npm run desktop:prepare && npm start --prefix desktop",
-    "desktop:package": "npm run desktop:prepare && npm run package --prefix desktop"
+    "desktop:package": "npm run desktop:prepare && npm run package --prefix desktop",
+    "version:set": "node tools/release/version.mjs set",
+    "version:check": "node tools/release/version.mjs check",
+    "release:game": "node tools/release/package-game.mjs",
+    "release:channel": "node tools/release/channel.mjs",
+    "release:sign": "node tools/release/sign.mjs sign",
+    "release:check-key": "node tools/release/sign.mjs check-key"
   },
   "engines": {
     "node": ">=20"
