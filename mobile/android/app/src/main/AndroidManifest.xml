@@ -37,5 +37,7 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- App-update install status from PackageInstaller only (explicit, non-exported, nonce-checked). -->
+        <receiver android:name=".InstallStatusReceiver" android:exported="false" />
     </application>
 </manifest>

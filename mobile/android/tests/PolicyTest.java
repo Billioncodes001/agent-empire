@@ -181,6 +181,40 @@ public final class PolicyTest {
         missing.active = "1.0.0-beta.9";
         UpdatePolicy.launch(missing, builtin, usable, 1);
         check(missing.active == null, "a missing bundle folder falls back to the built-in game");
+        security();
+    }
+
+    /** Security review: the shell's own Ed25519 check, request binding to the signed release, install status (#4). */
+    private static void security() throws Exception {
+        // Signed with the public development seed (tools/release/sign.mjs DEV_KEY_SEED_TEXT), as the release tooling does.
+        byte[] seed = java.security.MessageDigest.getInstance("SHA-256").digest("agent-empire/dev-release-key/v1: public test key, never trusted by a release build".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        byte[] pkcs8 = new byte[48];
+        byte[] prefix = {0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20};
+        System.arraycopy(prefix, 0, pkcs8, 0, 16);
+        System.arraycopy(seed, 0, pkcs8, 16, 32);
+        java.security.PrivateKey key = java.security.KeyFactory.getInstance("Ed25519").generatePrivate(new java.security.spec.PKCS8EncodedKeySpec(pkcs8));
+        byte[] msg = "{\"version\":\"1.0.1\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        java.security.Signature signer = java.security.Signature.getInstance("Ed25519");
+        signer.initSign(key);
+        signer.update(msg);
+        String sig = java.util.Base64.getEncoder().encodeToString(signer.sign());
+        check(Boolean.TRUE.equals(UpdatePolicy.verifyEd25519(msg, sig + "\n", UpdatePolicy.RELEASE_PUBLIC_KEY)), "Ed25519: the dev-signed release verifies against the pinned key");
+        byte[] tampered = msg.clone();
+        tampered[3] ^= 1;
+        check(Boolean.FALSE.equals(UpdatePolicy.verifyEd25519(tampered, sig, UpdatePolicy.RELEASE_PUBLIC_KEY)), "Ed25519: tampering fails");
+        check(Boolean.FALSE.equals(UpdatePolicy.verifyEd25519(msg, "garbage", UpdatePolicy.RELEASE_PUBLIC_KEY)), "Ed25519: garbage fails");
+        String url = "https://github.com/" + UpdatePolicy.RELEASE_REPO + "/releases/download/v1.0.1/agent-empire-game-1.0.1.zip", sha = repeat("a", 64);
+        check(UpdatePolicy.releaseMismatch("1.0.1", "v1.0.1", url, sha, "1.0.0", "1.0.1", url, sha, "1.0.0") == null, "request matches the signed release");
+        check(UpdatePolicy.releaseMismatch("1.0.1", "v1.0.1", url, sha, "1.0.0", "1.0.1", url, repeat("b", 64), "1.0.0") != null, "another sha256 is refused");
+        check(UpdatePolicy.releaseMismatch("1.0.2", null, url, sha, null, "1.0.1", url, sha, "1.0.0") != null, "another version is refused");
+        check(UpdatePolicy.releaseMismatch("1.0.1", "v1.0.1", url, sha, "1.1.0", "1.0.1", url, sha, "1.0.0") != null, "minShell above the app is refused");
+        check(UpdatePolicy.releaseChannelUrl("1.0.1").equals("https://github.com/" + UpdatePolicy.RELEASE_REPO + "/releases/download/v1.0.1/channel-beta.json"), "signed release URL");
+        String nonce = repeat("n", 48);
+        check(UpdatePolicy.installStatusAccepted(nonce, nonce) && !UpdatePolicy.installStatusAccepted(nonce, null) && !UpdatePolicy.installStatusAccepted(nonce, repeat("m", 48))
+            && !UpdatePolicy.installStatusAccepted(null, nonce) && !UpdatePolicy.installStatusAccepted(null, null), "install status needs this session's nonce");
+        check(UpdatePolicy.isSystemInstaller("com.google.android.packageinstaller", true) && UpdatePolicy.isSystemInstaller("com.android.packageinstaller", true)
+            && !UpdatePolicy.isSystemInstaller("com.google.android.packageinstaller", false) && !UpdatePolicy.isSystemInstaller("com.evil.app", true) && !UpdatePolicy.isSystemInstaller(null, true),
+            "only the system package installer may confirm");
     }
 
     /** secure.set per-key rules, the same as iOS BridgeProtocol.validate. */
