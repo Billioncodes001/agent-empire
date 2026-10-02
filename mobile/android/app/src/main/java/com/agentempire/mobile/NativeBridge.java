@@ -20,7 +20,9 @@ import java.util.concurrent.Executors;
  *   empireAndroid.postMessage(JSON.stringify({id, method, params}))
  *
  * Methods: secure.get {key}, secure.set {key, value}, secure.delete {key}, github.deviceFlow {clientId, scopes},
- * app.signedOut {reason}, app.openExternal {url}. The answer arrives asynchronously as
+ * app.signedOut {reason}, app.openExternal {url}, and the in-app update calls (REL-04; src/client/update/bridge.ts):
+ * update.fetch {url, etag?}, update.installGame {url, sha256, version}, update.activate, update.bootOk,
+ * update.nativeInfo, update.openNative {version, url?, sha256?, play?}. The answer arrives asynchronously as
  * window.__empireNative.resolve(id, result) or window.__empireNative.reject(id, message).
  * The legacy APP-02 message {type: 'signedOut', reason} (no id, no answer) is also accepted.
  *
@@ -46,6 +48,12 @@ final class NativeBridge {
         GitHubDeviceFlow deviceFlow(String clientId, String scope, GitHubDeviceFlow.Callback callback);
         /** Session keys were cleared; reload the game without them. */
         void signedOut(String reason);
+        /** In-app updates: the bundle store and installer. */
+        GameUpdater updater();
+        /** A pending bundle became the trial: reload the game into it and start the 20 s rollback timer. */
+        void restartGame();
+        /** The page booted: stop the rollback timer. */
+        void bootReported();
     }
 
     private final Host host;
@@ -53,6 +61,8 @@ final class NativeBridge {
     private final boolean debuggable;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService io = Executors.newSingleThreadExecutor();
+    /** Update downloads take minutes: their own threads, so secure storage never waits behind them. */
+    private final ExecutorService updateIo = Executors.newFixedThreadPool(2);
     private GitHubDeviceFlow flow;
 
     NativeBridge(Host host, SecureStore store, boolean debuggable) {
@@ -71,6 +81,7 @@ final class NativeBridge {
     void destroy() {
         if (flow != null) flow.cancel();
         io.shutdown();
+        updateIo.shutdown();
     }
 
     private void handle(String message) {
@@ -175,9 +186,96 @@ final class NativeBridge {
                 else reject(id, "No browser is available");
                 return;
             }
+            case "update.fetch": {
+                String url = params.optString("url", null);
+                String etag = params.optString("etag", null);
+                if (!UpdatePolicy.isFetchUrl(url)) { reject(id, "That address is not an Agent Empire release."); return; }
+                final String tag = UpdatePolicy.isEtag(etag) ? etag : null;
+                updateIo.execute(() -> {
+                    try {
+                        GameUpdater.Fetched r = host.updater().fetch(url, tag, UpdatePolicy.MAX_TEXT_BYTES, null);
+                        JSONObject out = new JSONObject().put("status", r.status).put("body", new String(r.body, java.nio.charset.StandardCharsets.UTF_8))
+                            .put("etag", r.etag == null ? JSONObject.NULL : r.etag);
+                        main.post(() -> resolve(id, out.toString()));
+                    } catch (Exception error) {
+                        main.post(() -> reject(id, message(error, "GitHub could not be reached.")));
+                    }
+                });
+                return;
+            }
+            case "update.installGame": {
+                String url = params.optString("url", null), sha = params.optString("sha256", null), version = params.optString("version", null);
+                if (!UpdatePolicy.isTaggedAsset(url)) { reject(id, "That update is not an Agent Empire release."); return; }
+                if (!UpdatePolicy.isSha256(sha)) { reject(id, "Malformed sha256."); return; }
+                if (!UpdatePolicy.isSemver(version)) { reject(id, "Malformed version."); return; }
+                updateIo.execute(() -> {
+                    try {
+                        String installed = host.updater().installGame(url, sha, version);
+                        main.post(() -> resolve(id, "{\"version\":" + JSONObject.quote(installed) + "}"));
+                    } catch (Exception error) {
+                        main.post(() -> reject(id, message(error, "The update could not be installed.")));
+                    }
+                });
+                return;
+            }
+            case "update.activate":
+                if (!host.updater().activate(System.currentTimeMillis())) { reject(id, "No update is waiting."); return; }
+                resolve(id, "true");
+                main.postDelayed(host::restartGame, 50);
+                return;
+            case "update.bootOk":
+                host.updater().bootOk();
+                host.bootReported();
+                resolve(id, "true");
+                return;
+            case "update.nativeInfo": {
+                GameUpdater u = host.updater();
+                try {
+                    JSONObject out = new JSONObject().put("platform", "android").put("shellVersion", u.shellVersion())
+                        .put("installedGame", nullable(u.installedGame())).put("builtinGame", nullable(u.builtinVersion())).put("pendingGame", nullable(u.pendingGame()))
+                        .put("canInstallGame", true).put("canAutoUpdate", false).put("installSource", u.installSource());
+                    String back = u.takeRolledBack();
+                    if (back != null) out.put("rolledBack", back);
+                    resolve(id, out.toString());
+                } catch (Exception impossible) {
+                    reject(id, "The app could not report its version.");
+                }
+                return;
+            }
+            case "update.openNative": {
+                String version = params.optString("version", null), url = params.optString("url", null), sha = params.optString("sha256", null), play = params.optString("play", null);
+                if (!UpdatePolicy.isSemver(version)) { reject(id, "Malformed version."); return; }
+                boolean sideload = !"play".equals(host.updater().installSource());
+                if (sideload && UpdatePolicy.isTaggedAsset(url) && UpdatePolicy.isSha256(sha)) {
+                    updateIo.execute(() -> {
+                        try {
+                            String action = host.updater().installApk(url, sha, version);
+                            main.post(() -> resolve(id, "{\"action\":" + JSONObject.quote(action) + "}"));
+                        } catch (Exception error) {
+                            main.post(() -> reject(id, message(error, "The app update could not be downloaded.")));
+                        }
+                    });
+                    return;
+                }
+                if (play != null && UpdatePolicy.isPlayUrl(play)) {
+                    if (!host.consumeGesture()) { reject(id, "Opening Google Play needs a tap first"); return; }
+                    if (host.openExternal(play)) resolve(id, "{\"action\":\"store\"}");
+                    else reject(id, "Google Play is not available");
+                    return;
+                }
+                reject(id, "This update has nothing this app can open.");
+                return;
+            }
             default:
                 reject(id, "Unknown method");
         }
+    }
+
+    private static Object nullable(String value) { return value == null ? JSONObject.NULL : value; }
+
+    private static String message(Exception error, String fallback) {
+        String m = error.getMessage();
+        return m == null || m.isEmpty() ? fallback : m.length() > 300 ? m.substring(0, 300) : m;
     }
 
     private void signOut(String id, String reason) {

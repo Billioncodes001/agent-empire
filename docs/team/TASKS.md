@@ -60,3 +60,15 @@ Plan: [OFFICE_LIFE_AND_MOBILE_PLAN.md](OFFICE_LIFE_AND_MOBILE_PLAN.md).
 | LIFE-04 | Task dependencies (`waitingOn`) | Backlog | Needs backend lane |
 | LIFE-05 | Character variety and Blender pipeline | Backlog | Blender not installed on this host |
 | ORG-01..06 | Executives, estimates, approval desk, marketing, research, onboarding | Backlog | Follows CONSULT-04 |
+
+## Releases and in-app updates
+
+Plan: [RELEASE_PLAN.md](RELEASE_PLAN.md). Owner steps: [RELEASING.md](../RELEASING.md).
+
+| ID | Slice | State | Evidence / next dependency |
+| --- | --- | --- | --- |
+| REL-01 | Unified version (1.0.0-beta.1), version sync and tag rules | Reviewed and accepted | [Report](reports/release-pipeline.md) |
+| REL-02 | `release.yml`: signed game bundle and channel, desktop/Android/iOS builds, signing gated on secrets in a protected `release` environment | Reviewed and accepted | Every action pinned to a verified SHA; dry runs use `--dev`. No GitHub run yet. The owner must create the environment, the secrets and the real signing key |
+| REL-03 | Client update service and prompt | Reviewed and accepted | [Report](reports/in-app-updates.md). Signature checked before trust; forward-only; stable-feed round-trip test |
+| REL-04 | Native bundle store, rollback, native update paths | Reviewed and accepted | Shells verify the channel signature themselves (Android 8–12: page check plus sha256). Windows feeds Squirrel only a verified package. Device re-run after the fixes is still pending |
+| REL-05 | Coordinator update prompt; server version notice | Reviewed and accepted | Explicit confirmation only; never offers a lower version |

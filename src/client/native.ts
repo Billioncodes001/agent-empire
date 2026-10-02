@@ -23,7 +23,10 @@ export type SecureKey = (typeof SECURE_KEYS)[number];
 /** Keys that hold credentials: a browser without a shell never persists these. */
 export const SECRET_KEYS: ReadonlySet<SecureKey> = new Set(['server.token', 'github.token']);
 
-export type BridgeMethod = 'secure.get' | 'secure.set' | 'secure.delete' | 'github.deviceFlow' | 'app.signedOut' | 'app.openExternal' | 'app.runLocal';
+export type BridgeMethod =
+  | 'secure.get' | 'secure.set' | 'secure.delete' | 'github.deviceFlow' | 'app.signedOut' | 'app.openExternal' | 'app.runLocal'
+  // In-app updates (docs/team/RELEASE_PLAN.md, REL-04); typed wrappers in src/client/update/bridge.ts.
+  | 'update.fetch' | 'update.installGame' | 'update.activate' | 'update.bootOk' | 'update.nativeInfo' | 'update.openNative';
 export interface BridgeRequest {
   id: string;
   method: BridgeMethod;
@@ -78,7 +81,7 @@ interface Transport {
 }
 
 /** Default timeouts. The device flow waits for the player on GitHub, whose device codes last 15 minutes. */
-export const TIMEOUTS = { default: 15_000, deviceFlow: 16 * 60_000, runLocal: 10 * 60_000 } as const;
+export const TIMEOUTS = { default: 15_000, deviceFlow: 16 * 60_000, runLocal: 10 * 60_000, update: 10 * 60_000 } as const;
 const MAX_VALUE = 8192;
 const GITHUB_SCOPES = new Set(['repo', 'workflow', 'read:user']);
 const CLIENT_ID = /^[A-Za-z0-9._-]{1,64}$/;

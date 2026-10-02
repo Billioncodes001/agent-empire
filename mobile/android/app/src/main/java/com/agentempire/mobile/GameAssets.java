@@ -21,13 +21,30 @@ import java.util.Map;
 final class GameAssets {
     /** Produces the body of the synthetic config script for each page load (reads secure storage). */
     interface ConfigSource { String configScript(); }
+    /** The installed game bundle to serve (in-app updates, GameUpdater), or null for the APK's own assets/game. */
+    interface BundleRoot { java.io.File activeRoot(); }
 
     private final AssetManager assets;
     private final ConfigSource config;
+    private final BundleRoot bundle;
 
-    GameAssets(AssetManager assets, ConfigSource config) {
+    GameAssets(AssetManager assets, ConfigSource config, BundleRoot bundle) {
         this.assets = assets;
         this.config = config;
+        this.bundle = bundle;
+    }
+
+    /**
+     * Opens "game/<path>" from the active installed bundle when there is one (same AssetPolicy path rules, and the
+     * resolved file must stay inside the bundle folder), else from the APK. Throws IOException when missing.
+     */
+    private InputStream open(String asset) throws IOException {
+        java.io.File dir = bundle == null ? null : bundle.activeRoot();
+        if (dir == null) return assets.open(asset, AssetManager.ACCESS_STREAMING);
+        java.io.File file = new java.io.File(dir, asset.substring(AssetPolicy.ASSET_ROOT.length() + 1));
+        String base = dir.getCanonicalPath() + java.io.File.separator;
+        if (!file.getCanonicalPath().startsWith(base) || !file.isFile()) throw new IOException("missing");
+        return new java.io.FileInputStream(file);
     }
 
     /** Only called for app-origin URLs. Never returns null, so nothing on this origin reaches the network. */
@@ -46,7 +63,7 @@ final class GameAssets {
         String mime = AssetPolicy.mimeType(asset);
         InputStream in;
         try {
-            in = assets.open(asset, AssetManager.ACCESS_STREAMING);
+            in = open(asset);
         } catch (IOException missing) {
             return text(404, "Not Found");
         }

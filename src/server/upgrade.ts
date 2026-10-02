@@ -62,6 +62,8 @@ export class Upgrader {
   readonly state: UpgradeState;
   /** What the running server is: its commit, or the package version outside a git checkout. */
   readonly version: string;
+  /** The release version from package.json (REL-05: the apps show it, and never act on it). */
+  readonly packageVersion: string;
   private branch?: string;
   private latestSha?: string;
   private checking?: Promise<void>;
@@ -80,6 +82,7 @@ export class Upgrader {
       // keep the default
     }
     this.version = current?.sha ?? pkg;
+    this.packageVersion = pkg;
     const branch = current ? gitSync(['rev-parse', '--abbrev-ref', 'HEAD']) : undefined;
     // Only deploy/aws.sh's systemd unit sets this, and it restarts the office whenever it exits.
     // A checkout on a tag (detached HEAD) has no branch to follow.

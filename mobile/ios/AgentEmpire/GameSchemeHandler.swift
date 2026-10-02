@@ -14,11 +14,18 @@ final class GameSchemeHandler: NSObject, WKURLSchemeHandler {
         return FileManager.default.fileExists(atPath: url.appendingPathComponent("index.html").path) ? url : nil
     }
 
-    private let root: URL
+    /// The folder to serve, asked per request: the active installed game bundle (in-app updates, GameUpdater), else
+    /// the bundled Game folder, which is always the final fallback.
+    private let rootProvider: () -> URL
     private var running = Set<ObjectIdentifier>()
 
     init(root: URL) {
-        self.root = root.standardizedFileURL.resolvingSymlinksInPath()
+        let fixed = root.standardizedFileURL.resolvingSymlinksInPath()
+        rootProvider = { fixed }
+    }
+
+    init(rootProvider: @escaping () -> URL) {
+        self.rootProvider = rootProvider
     }
 
     static let mimeTypes: [String: String] = [
@@ -59,7 +66,7 @@ final class GameSchemeHandler: NSObject, WKURLSchemeHandler {
         let id = ObjectIdentifier(task)
         running.insert(id)
         let request = task.request
-        let root = self.root
+        let root = rootProvider().standardizedFileURL.resolvingSymlinksInPath()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let reply = Self.reply(to: request, root: root)
             DispatchQueue.main.async {

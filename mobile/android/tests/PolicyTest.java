@@ -23,8 +23,9 @@ public final class PolicyTest {
         injection();
         server();
         bridge();
+        updates();
         if (args.length > 0) bundle(Paths.get(args[0]));
-        System.out.println("PolicyTest: " + checks + " checks passed (origin, asset paths/traversal, MIME, config injection, server address, bridge rules"
+        System.out.println("PolicyTest: " + checks + " checks passed (origin, asset paths/traversal, MIME, config injection, server address, bridge rules, in-app updates"
             + (args.length > 0 ? ", every bundled file" : "") + ")");
     }
 
@@ -94,7 +95,7 @@ public final class PolicyTest {
         check(BridgePolicy.KEYS.containsAll(BridgePolicy.SESSION_KEYS) && !BridgePolicy.SESSION_KEYS.contains("mode") && !BridgePolicy.SESSION_KEYS.contains("server.host")
             && BridgePolicy.SESSION_KEYS.contains("server.token") && BridgePolicy.SESSION_KEYS.contains("github.token"), "session keys");
         eq(String.join(",", BridgePolicy.METHODS.stream().sorted().collect(Collectors.toList())),
-            "app.openExternal,app.signedOut,github.deviceFlow,secure.delete,secure.get,secure.set");
+            "app.openExternal,app.signedOut,github.deviceFlow,secure.delete,secure.get,secure.set,update.activate,update.bootOk,update.fetch,update.installGame,update.nativeInfo,update.openNative");
         for (String bad : new String[]{null, "secure.list", "eval", "app.exit", "github.token"}) check(!BridgePolicy.isMethod(bad), "method rejected: " + bad);
         check(BridgePolicy.isRequestId("42") && BridgePolicy.isRequestId("req-1:a.b") && !BridgePolicy.isRequestId("a'b") && !BridgePolicy.isRequestId("x);alert(1") && !BridgePolicy.isRequestId(""), "ids");
         check(BridgePolicy.isClientId("Ov23li3G3aR4rgZ0lCJ3") && !BridgePolicy.isClientId("a b") && !BridgePolicy.isClientId("x&scope=admin"), "client ids");
@@ -122,6 +123,98 @@ public final class PolicyTest {
         check(BridgePolicy.SESSION_KEYS.toString().equals("[server.token, server.deviceId, github.token, github.login]"), "session keys: the same set iOS clears");
         check(AssetPolicy.htmlHeaders().get("Content-Security-Policy").equals(AssetPolicy.HTML_CSP) && AssetPolicy.HTML_CSP.contains("frame-src 'self'")
             && AssetPolicy.HTML_CSP.contains("object-src 'none'") && !AssetPolicy.HTML_CSP.contains("*"), "every HTML response carries the CSP that keeps foreign frames out");
+    }
+
+    /** In-app updates (REL-04): URLs, versions, zip-slip names and the bundle state machine with its 20 s rollback. */
+    private static void updates() throws Exception {
+        String repo = "https://github.com/" + UpdatePolicy.RELEASE_REPO;
+        check(UpdatePolicy.RELEASE_PUBLIC_KEY.length() == 44 && UpdatePolicy.RELEASE_KEY_IS_DEVELOPMENT, "dev release key pinned (same string as src/shared/release-key.ts)");
+        String[] a = UpdatePolicy.releaseAsset(repo + "/releases/download/v1.0.0-beta.2/agent-empire-game-1.0.0-beta.2.zip");
+        check(a != null && a[0].equals("v1.0.0-beta.2") && a[1].equals("agent-empire-game-1.0.0-beta.2.zip"), "release asset parsed");
+        check(UpdatePolicy.releaseAsset(repo + "/releases/latest/download/channel-stable.json")[0] == null, "latest asset");
+        check(UpdatePolicy.isFetchUrl(UpdatePolicy.RELEASES_API) && !UpdatePolicy.isFetchUrl("https://api.github.com/user"), "fetch urls");
+        for (String bad : new String[]{null, "https://evil.test/a.zip", repo.replace("Billioncodes001", "evil") + "/releases/download/v1/a.zip", repo + "/releases/download/../a.zip",
+            repo + "/releases/download/v1/%2e%2e", repo + "/releases/download/v1/a.zip?x=1", "http://github.com/" + UpdatePolicy.RELEASE_REPO + "/releases/download/v1/a.zip",
+            "https://github.com:444/" + UpdatePolicy.RELEASE_REPO + "/releases/download/v1/a.zip", "https://u@github.com/" + UpdatePolicy.RELEASE_REPO + "/releases/download/v1/a.zip",
+            repo + "/archive/v1.zip", repo + "/releases/download/v1/a/b.zip"})
+            check(UpdatePolicy.releaseAsset(bad) == null && !UpdatePolicy.isTaggedAsset(bad), "release asset rejected: " + bad);
+        check(UpdatePolicy.isAssetRedirect("https://release-assets.githubusercontent.com/x?sig=1") && UpdatePolicy.isAssetRedirect("https://objects.githubusercontent.com/y")
+            && !UpdatePolicy.isAssetRedirect("http://objects.githubusercontent.com/y") && !UpdatePolicy.isAssetRedirect("https://evil.test/y")
+            && !UpdatePolicy.isAssetRedirect("https://objects.githubusercontent.com.evil.test/y"), "redirect hosts");
+        check(UpdatePolicy.isPlayUrl("https://play.google.com/store/apps/details?id=com.agentempire.mobile") && !UpdatePolicy.isPlayUrl("https://evil.test/x"), "play links");
+        String[] order = {"0.1.0", "1.0.0-alpha", "1.0.0-alpha.1", "1.0.0-beta", "1.0.0-beta.2", "1.0.0-beta.10", "1.0.0-rc.1", "1.0.0", "1.0.1", "2.0.0"};
+        for (int i = 0; i < order.length - 1; i++) check(UpdatePolicy.compare(order[i], order[i + 1]) < 0, order[i] + " < " + order[i + 1]);
+        for (String bad : new String[]{"1.0", "v1.0.0", "01.0.0", "1.0.0-", "1.0.0+b", ""}) check(!UpdatePolicy.isSemver(bad), "not a version: " + bad);
+        check(UpdatePolicy.isSha256(repeat("a", 64)) && !UpdatePolicy.isSha256(repeat("A", 64)) && !UpdatePolicy.isSha256("abc"), "sha256 shape");
+        for (String ok : new String[]{"index.html", "assets/main.js", "assets/", "a b/c+d.glb"}) check(UpdatePolicy.safeEntryName(ok), "zip name ok: " + ok);
+        for (String bad : new String[]{null, "", "../x", "a/../../x", "/etc/passwd", "C:/x", "a\\b", "a\u0000b", "a//b", "./x", "a/./b", repeat("x", 600)})
+            check(!UpdatePolicy.safeEntryName(bad), "zip name refused: " + bad);
+        check(UpdatePolicy.fixtureUrl(UpdatePolicy.RELEASES_API, "http://10.0.2.2:4719").equals("http://10.0.2.2:4719/api/repos/" + UpdatePolicy.RELEASE_REPO + "/releases?per_page=20"), "fixture mapping");
+
+        // Bundle state machine.
+        java.util.Set<String> present = new java.util.HashSet<>(Arrays.asList("1.0.0-beta.2", "1.0.0-beta.3"));
+        UpdatePolicy.Usable usable = present::contains;
+        String builtin = "1.0.0-beta.1";
+        UpdatePolicy.State s = new UpdatePolicy.State();
+        check(UpdatePolicy.refuse(s, builtin, "1.0.0-beta.1") != null && UpdatePolicy.refuse(s, builtin, "0.9.0") != null && UpdatePolicy.refuse(s, builtin, "1.0.0-beta.2") == null, "forward only");
+        s.pending = "1.0.0-beta.2";
+        check(UpdatePolicy.refuse(s, builtin, "1.0.0-beta.2") != null, "already pending");
+        check(UpdatePolicy.launch(s, builtin, usable, 1000) == null && "1.0.0-beta.2".equals(s.active) && "1.0.0-beta.2".equals(s.trialVersion) && s.pending == null, "pending becomes a trial at launch");
+        check(!UpdatePolicy.trialExpired(s, 1000 + 19_999) && UpdatePolicy.trialExpired(s, 1000 + 20_000), "20 s boot window");
+        UpdatePolicy.bootOk(s);
+        check("1.0.0-beta.2".equals(s.knownGood) && s.trialVersion == null, "bootOk makes it known-good");
+        s.pending = "1.0.0-beta.3";
+        check(UpdatePolicy.activate(s, builtin, usable, 5000) && "1.0.0-beta.3".equals(s.active), "activate starts the trial now");
+        check(UpdatePolicy.trialExpired(s, 25_000), "no boot report in 20 s");
+        check("1.0.0-beta.3".equals(UpdatePolicy.rollback(s, builtin, usable)) && "1.0.0-beta.2".equals(s.active) && s.bad.contains("1.0.0-beta.3"), "rolled back to known-good");
+        check(UpdatePolicy.refuse(s, builtin, "1.0.0-beta.3") != null, "a failed version is never installed again");
+        UpdatePolicy.State crash = new UpdatePolicy.State();
+        crash.active = "1.0.0-beta.2";
+        crash.trialVersion = "1.0.0-beta.2";
+        check("1.0.0-beta.2".equals(UpdatePolicy.launch(crash, builtin, usable, 9000)) && crash.active == null, "an unfinished trial at launch rolls back to the built-in game");
+        UpdatePolicy.State newer = new UpdatePolicy.State();
+        newer.active = "1.0.0-beta.2";
+        newer.knownGood = "1.0.0-beta.2";
+        UpdatePolicy.launch(newer, "1.0.0", usable, 1);
+        check(newer.active == null, "a newer built-in game wins over an older installed bundle");
+        UpdatePolicy.State missing = new UpdatePolicy.State();
+        missing.active = "1.0.0-beta.9";
+        UpdatePolicy.launch(missing, builtin, usable, 1);
+        check(missing.active == null, "a missing bundle folder falls back to the built-in game");
+        security();
+    }
+
+    /** Security review: the shell's own Ed25519 check, request binding to the signed release, install status (#4). */
+    private static void security() throws Exception {
+        // Signed with the public development seed (tools/release/sign.mjs DEV_KEY_SEED_TEXT), as the release tooling does.
+        byte[] seed = java.security.MessageDigest.getInstance("SHA-256").digest("agent-empire/dev-release-key/v1: public test key, never trusted by a release build".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        byte[] pkcs8 = new byte[48];
+        byte[] prefix = {0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20};
+        System.arraycopy(prefix, 0, pkcs8, 0, 16);
+        System.arraycopy(seed, 0, pkcs8, 16, 32);
+        java.security.PrivateKey key = java.security.KeyFactory.getInstance("Ed25519").generatePrivate(new java.security.spec.PKCS8EncodedKeySpec(pkcs8));
+        byte[] msg = "{\"version\":\"1.0.1\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        java.security.Signature signer = java.security.Signature.getInstance("Ed25519");
+        signer.initSign(key);
+        signer.update(msg);
+        String sig = java.util.Base64.getEncoder().encodeToString(signer.sign());
+        check(Boolean.TRUE.equals(UpdatePolicy.verifyEd25519(msg, sig + "\n", UpdatePolicy.RELEASE_PUBLIC_KEY)), "Ed25519: the dev-signed release verifies against the pinned key");
+        byte[] tampered = msg.clone();
+        tampered[3] ^= 1;
+        check(Boolean.FALSE.equals(UpdatePolicy.verifyEd25519(tampered, sig, UpdatePolicy.RELEASE_PUBLIC_KEY)), "Ed25519: tampering fails");
+        check(Boolean.FALSE.equals(UpdatePolicy.verifyEd25519(msg, "garbage", UpdatePolicy.RELEASE_PUBLIC_KEY)), "Ed25519: garbage fails");
+        String url = "https://github.com/" + UpdatePolicy.RELEASE_REPO + "/releases/download/v1.0.1/agent-empire-game-1.0.1.zip", sha = repeat("a", 64);
+        check(UpdatePolicy.releaseMismatch("1.0.1", "v1.0.1", url, sha, "1.0.0", "1.0.1", url, sha, "1.0.0") == null, "request matches the signed release");
+        check(UpdatePolicy.releaseMismatch("1.0.1", "v1.0.1", url, sha, "1.0.0", "1.0.1", url, repeat("b", 64), "1.0.0") != null, "another sha256 is refused");
+        check(UpdatePolicy.releaseMismatch("1.0.2", null, url, sha, null, "1.0.1", url, sha, "1.0.0") != null, "another version is refused");
+        check(UpdatePolicy.releaseMismatch("1.0.1", "v1.0.1", url, sha, "1.1.0", "1.0.1", url, sha, "1.0.0") != null, "minShell above the app is refused");
+        check(UpdatePolicy.releaseChannelUrl("1.0.1").equals("https://github.com/" + UpdatePolicy.RELEASE_REPO + "/releases/download/v1.0.1/channel-beta.json"), "signed release URL");
+        String nonce = repeat("n", 48);
+        check(UpdatePolicy.installStatusAccepted(nonce, nonce) && !UpdatePolicy.installStatusAccepted(nonce, null) && !UpdatePolicy.installStatusAccepted(nonce, repeat("m", 48))
+            && !UpdatePolicy.installStatusAccepted(null, nonce) && !UpdatePolicy.installStatusAccepted(null, null), "install status needs this session's nonce");
+        check(UpdatePolicy.isSystemInstaller("com.google.android.packageinstaller", true) && UpdatePolicy.isSystemInstaller("com.android.packageinstaller", true)
+            && !UpdatePolicy.isSystemInstaller("com.google.android.packageinstaller", false) && !UpdatePolicy.isSystemInstaller("com.evil.app", true) && !UpdatePolicy.isSystemInstaller(null, true),
+            "only the system package installer may confirm");
     }
 
     /** secure.set per-key rules, the same as iOS BridgeProtocol.validate. */

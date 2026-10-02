@@ -10,6 +10,11 @@ in-app at https://appassets.androidplatform.net/. Two variants:
 
 Both are signed with a local development key kept under the ignored build/ folder (never an existing signing identity)
 and are for sideloaded testing, not Google Play. No global installs, SDK licenses or network access.
+
+Release builds (the release workflow, docs/RELEASING.md) can instead sign the release variant with the owner's upload
+key: --release-keystore FILE --key-alias NAME, with the passwords read from the environment variables
+ANDROID_KEYSTORE_PASSWORD and ANDROID_KEY_PASSWORD (never from the command line). --aab --bundletool JAR also builds
+a Play App Bundle (Agent-Empire-android-release.aab), signed with the same key when one is given.
 """
 import argparse
 import hashlib
@@ -24,7 +29,17 @@ parser.add_argument('--sdk', required=True, type=Path)
 parser.add_argument('--jdk', required=True, type=Path)
 parser.add_argument('--variant', choices=['release', 'debug', 'all'], default='all')
 parser.add_argument('--game', type=Path, help='built web client folder (default: <repo>/dist/public)')
+parser.add_argument('--release-keystore', type=Path, help='upload keystore for the release variant (passwords from env)')
+parser.add_argument('--key-alias', help='key alias in --release-keystore')
+parser.add_argument('--aab', action='store_true', help='also build a Play App Bundle of the release variant')
+parser.add_argument('--bundletool', type=Path, help='bundletool-all jar, required with --aab')
 args = parser.parse_args()
+if args.release_keystore and not (args.key_alias and os.environ.get('ANDROID_KEYSTORE_PASSWORD') and os.environ.get('ANDROID_KEY_PASSWORD')):
+    raise SystemExit('--release-keystore needs --key-alias and the ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_PASSWORD environment variables')
+if args.release_keystore and not args.release_keystore.is_file():
+    raise SystemExit(f'Missing release keystore: {args.release_keystore}')
+if args.aab and not (args.bundletool and args.bundletool.is_file()):
+    raise SystemExit('--aab needs --bundletool <bundletool-all.jar>')
 
 project = Path(__file__).resolve().parents[2]
 android = project / 'mobile/android'
@@ -44,6 +59,7 @@ for item in game.rglob('*'):
 tools = args.sdk.resolve() / 'build-tools/35.0.0'
 android_jar = args.sdk.resolve() / 'platforms/android-35/android.jar'
 java = args.jdk.resolve() / 'bin/java'
+jarsigner = args.jdk.resolve() / 'bin/jarsigner'
 javac = args.jdk.resolve() / 'bin/javac'
 keytool = args.jdk.resolve() / 'bin/keytool'
 for required in [java, javac, keytool, android_jar, tools / 'core-lambda-stubs.jar', tools / 'aapt2', tools / 'zipalign', tools / 'lib/d8.jar', tools / 'lib/apksigner.jar']:
@@ -71,7 +87,7 @@ game_bytes = sum(p.stat().st_size for p in (assets / 'game').rglob('*') if p.is_
 #    plus every staged game file being reachable with a known MIME type.
 tests = build / 'test-classes'
 tests.mkdir()
-policies = [source / f'java/com/agentempire/mobile/{name}.java' for name in ('AssetPolicy', 'ServerPolicy', 'BridgePolicy')]
+policies = [source / f'java/com/agentempire/mobile/{name}.java' for name in ('AssetPolicy', 'ServerPolicy', 'BridgePolicy', 'UpdatePolicy')]
 run(javac, '-d', tests, *policies, android / 'tests/PolicyTest.java')
 run(java, '-cp', tests, 'com.agentempire.mobile.PolicyTest', assets / 'game')
 
@@ -115,7 +131,11 @@ for variant in variants:
     aligned = out / 'aligned.apk'
     run(tools / 'zipalign', '-f', '-p', '4', unsigned, aligned)
     apk = release_dir / f'Agent-Empire-android-{variant}.apk'
-    run(java, '-jar', tools / 'lib/apksigner.jar', 'sign', '--ks', keystore, '--ks-pass', 'pass:android', '--key-pass', 'pass:android', '--out', apk, aligned)
+    if variant == 'release' and args.release_keystore:
+        run(java, '-jar', tools / 'lib/apksigner.jar', 'sign', '--ks', args.release_keystore.resolve(), '--ks-key-alias', args.key_alias,
+            '--ks-pass', 'env:ANDROID_KEYSTORE_PASSWORD', '--key-pass', 'env:ANDROID_KEY_PASSWORD', '--out', apk, aligned)
+    else:
+        run(java, '-jar', tools / 'lib/apksigner.jar', 'sign', '--ks', keystore, '--ks-pass', 'pass:android', '--key-pass', 'pass:android', '--out', apk, aligned)
     run(java, '-jar', tools / 'lib/apksigner.jar', 'verify', '--verbose', apk)
     run(tools / 'zipalign', '-c', '-p', '4', apk)
     with zipfile.ZipFile(apk) as archive:
@@ -129,4 +149,39 @@ for variant in variants:
     digest = hashlib.sha256(apk.read_bytes()).hexdigest()
     apk.with_suffix('.apk.sha256').write_text(f'{digest}  {apk.name}\n')
     print(f'{variant} APK: {apk}\n  SHA256: {digest}\n  size: {apk.stat().st_size / 1e6:.1f} MB, game: {game_files} files, {game_bytes / 1e6:.1f} MB')
-print('Signed with a local development key for sideloaded testing only; not a store release.')
+
+    if variant == 'release' and args.aab:
+        # App Bundle: link the same resources in protobuf format, lay them out as the base module, let bundletool
+        # assemble the bundle, then sign it (Play re-signs installs with its app signing key).
+        proto = out / 'proto.zip'
+        run(tools / 'aapt2', 'link', '--proto-format', '-o', proto, '-I', android_jar, '--manifest', source / 'AndroidManifest.xml', '-A', assets, compiled)
+        module = out / 'base.zip'
+        with zipfile.ZipFile(proto) as linked, zipfile.ZipFile(module, 'w', zipfile.ZIP_DEFLATED) as base:
+            for info in linked.infolist():
+                if info.is_dir():
+                    continue
+                name = 'manifest/AndroidManifest.xml' if info.filename == 'AndroidManifest.xml' else info.filename
+                base.writestr(name, linked.read(info.filename))
+            for file in sorted(dex.glob('*.dex')):
+                base.write(file, f'dex/{file.name}')
+        aab = release_dir / 'Agent-Empire-android-release.aab'
+        if aab.exists():
+            aab.unlink()
+        run(java, '-jar', args.bundletool.resolve(), 'build-bundle', f'--modules={module}', f'--output={aab}')
+        run(java, '-jar', args.bundletool.resolve(), 'validate', f'--bundle={aab}')
+        if args.release_keystore:
+            run(jarsigner, '-keystore', args.release_keystore.resolve(), '-storepass:env', 'ANDROID_KEYSTORE_PASSWORD', '-keypass:env', 'ANDROID_KEY_PASSWORD',
+                '-sigalg', 'SHA256withRSA', '-digestalg', 'SHA-256', aab, args.key_alias)
+            run(jarsigner, '-verify', aab)
+        with zipfile.ZipFile(aab) as archive:
+            names = set(archive.namelist())
+            for required in ['base/manifest/AndroidManifest.xml', 'base/dex/classes.dex', 'base/assets/game/index.html', 'base/resources.pb']:
+                if required not in names:
+                    raise SystemExit(f'{aab.name} is missing {required}')
+        digest = hashlib.sha256(aab.read_bytes()).hexdigest()
+        aab.with_suffix('.aab.sha256').write_text(f'{digest}  {aab.name}\n')
+        print(f'release AAB: {aab}\n  SHA256: {digest}\n  signed: {"upload key" if args.release_keystore else "NO (unsigned; Play rejects it)"}')
+if args.release_keystore:
+    print('Release variant signed with the provided upload key; the debug variant uses the local development key.')
+else:
+    print('Signed with a local development key for sideloaded testing only; not a store release.')

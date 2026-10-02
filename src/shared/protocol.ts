@@ -480,6 +480,8 @@ export type ServerMsg =
       invites: boolean;
       /** The running server's version; a change after a reconnect means the office was upgraded. */
       version: string;
+      /** The server's release version (package.json), for the apps' "your server runs vX" notice (REL-05). */
+      appVersion?: string;
       upgrade: UpgradeState;
       services: ServicesState;
       /** Pictures on the walls. */

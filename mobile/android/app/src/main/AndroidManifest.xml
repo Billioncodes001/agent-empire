@@ -1,7 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.agentempire.mobile" android:versionCode="3" android:versionName="0.3.0">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.agentempire.mobile" android:versionCode="10000301" android:versionName="1.0.0-beta.1">
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- In-app updates of a sideloaded app: the downloaded APK (sha256-checked against the signed channel) is handed to
+         the system installer, which asks the player. Play installs never use it; they open the Play listing. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:glEsVersion="0x00030000" android:required="true" />
     <!-- The bundled game is served from APK assets at https://appassets.androidplatform.net (no server page is loaded).
@@ -34,5 +37,7 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- App-update install status from PackageInstaller only (explicit, non-exported, nonce-checked). -->
+        <receiver android:name=".InstallStatusReceiver" android:exported="false" />
     </application>
 </manifest>

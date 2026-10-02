@@ -806,6 +806,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
       chat: chat.slice(-50),
       invites: team.available,
       version: upgrader.version,
+      appVersion: upgrader.packageVersion,
       upgrade: upgrader.state,
       services: servicesState(),
       decor: decor.list(),
