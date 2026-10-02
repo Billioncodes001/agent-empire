@@ -1,6 +1,7 @@
 // Host-side checks for the iOS app's pure policies (no simulator needed):
 //   mobile/ios/Checks/run.sh
 // Compiles HostPolicy.swift and GameSchemeHandler.swift for macOS with this file and exits non-zero on failure.
+import CryptoKit
 import Foundation
 
 var failures = 0
@@ -228,6 +229,26 @@ s3.launch() // it never reported booting
 check(s3.servingRoot()?.lastPathComponent == "1.0.0-beta.2" && s3.takeRolledBack() == "1.0.0-beta.5", "updates: an unfinished trial rolls back at launch")
 check(GameSchemeHandler.file(for: URL(string: "empire-app://game/index.html")!, root: s3.servingRoot()!) != nil
       && GameSchemeHandler.file(for: URL(string: "empire-app://game/../state.json")!, root: s3.servingRoot()!) == nil, "updates: the scheme handler serves the active bundle with the same rules")
+
+// MARK: Security review: the shell's own Ed25519 check and request binding
+
+do {
+    // A key pair whose public half is not pinned: signatures by it must fail against the pinned key.
+    let other = Curve25519.Signing.PrivateKey()
+    let msg = Data("{\"version\":\"1.0.1\"}".utf8)
+    let sig = try other.signature(for: msg).base64EncodedString()
+    check(UpdatePolicy.verifyEd25519(msg, signatureBase64: sig, publicKeyBase64: other.publicKey.rawRepresentation.base64EncodedString()), "security: Ed25519 verifies with CryptoKit")
+    check(!UpdatePolicy.verifyEd25519(msg, signatureBase64: sig), "security: another key's signature fails against the pinned key")
+    check(!UpdatePolicy.verifyEd25519(Data("tampered".utf8), signatureBase64: sig, publicKeyBase64: other.publicKey.rawRepresentation.base64EncodedString()), "security: tampering fails")
+    check(!UpdatePolicy.verifyEd25519(msg, signatureBase64: "garbage"), "security: garbage fails")
+    let url = "\(repoURL)/releases/download/v1.0.1/agent-empire-game-1.0.1.zip", sha = String(repeating: "a", count: 64)
+    let doc: [String: Any] = ["schema": 1, "version": "1.0.1", "tag": "v1.0.1", "game": ["url": url, "sha256": sha, "minShell": "1.0.0"]]
+    check(UpdatePolicy.releaseMismatch(doc, version: "1.0.1", url: url, sha256: sha, shellVersion: "1.0.0") == nil, "security: a request matching the signed release")
+    check(UpdatePolicy.releaseMismatch(doc, version: "1.0.1", url: url, sha256: String(repeating: "b", count: 64), shellVersion: "1.0.0") != nil, "security: another sha256 refused")
+    check(UpdatePolicy.releaseMismatch(doc, version: "1.0.2", url: url, sha256: sha, shellVersion: "1.0.0") != nil, "security: another version refused")
+    check(UpdatePolicy.releaseMismatch(doc, version: "1.0.1", url: url, sha256: sha, shellVersion: "0.9.0") != nil, "security: minShell above the app refused")
+    check(UpdatePolicy.releaseChannelURL("1.0.1") == "\(repoURL)/releases/download/v1.0.1/channel-beta.json", "security: signed release URL")
+} catch { check(false, "security checks threw \(error)") }
 
 print(failures == 0 ? "All checks passed" : "\(failures) check(s) failed")
 exit(failures == 0 ? 0 : 1)

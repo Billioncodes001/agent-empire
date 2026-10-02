@@ -87,6 +87,8 @@ final class GameViewController: UIViewController, WKNavigationDelegate, WKUIDele
     init(root: URL) {
         self.root = root
         updater = GameUpdater.standard(builtinRoot: root)
+        let info = Bundle.main.infoDictionary ?? [:]
+        updater.shellVersion = UpdatePolicy.shellVersion(marketing: info["CFBundleShortVersionString"] as? String, build: info["CFBundleVersion"] as? String)
         // A pending bundle switches in now (a trial until the page reports booting); an unfinished trial rolls back.
         updater.launch()
         super.init(nibName: nil, bundle: nil)
