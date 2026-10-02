@@ -30,11 +30,25 @@ function fixtureRoot(): string {
     mkdirSync(path.dirname(path.join(root, target.file)), { recursive: true });
     copyFileSync(path.join(ROOT, target.file), path.join(root, target.file));
   }
-  for (const file of ['src/shared/release-key.ts', 'tools/release/config.json', 'src/cloud/schema.ts']) {
+  // Every file that pins the key (the shells list theirs in config.json) comes along, so the gate sees them all.
+  const pinned: string[] = JSON.parse(readFileSync(path.join(ROOT, 'tools/release/config.json'), 'utf8')).pinnedKeyFiles ?? [];
+  for (const file of new Set(['src/shared/release-key.ts', 'tools/release/config.json', 'src/cloud/schema.ts', ...pinned])) {
     mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
     copyFileSync(path.join(ROOT, file), path.join(root, file));
   }
   return root;
+}
+
+/** What the owner does by hand: swap the release key line (never the dev one) in every pinned shell file. */
+function pinInShells(root: string, key: string) {
+  const pinned: string[] = JSON.parse(readFileSync(path.join(root, 'tools/release/config.json'), 'utf8')).pinnedKeyFiles ?? [];
+  for (const file of pinned.filter((f) => f !== 'src/shared/release-key.ts')) {
+    const full = path.join(root, file);
+    const lines = readFileSync(full, 'utf8').split('\n').map((line) =>
+      /RELEASE_PUBLIC_KEY|releasePublicKey/.test(line) && !/DEV_RELEASE_PUBLIC_KEY\s*=|devReleasePublicKey\s*=/.test(line) ? line.replace(DEV_RELEASE_PUBLIC_KEY, key) : line,
+    );
+    writeFileSync(full, lines.join('\n'));
+  }
 }
 
 test('version codes are deterministic, monotonic and within Play limits', () => {
@@ -156,6 +170,9 @@ test('the pinned key file holds the development placeholder, and the release gat
   const ownerPub = publicKeyBase64(owner);
   const keyFile = path.join(root, 'src/shared/release-key.ts');
   writeFileSync(keyFile, readFileSync(keyFile, 'utf8').replace(`export const RELEASE_PUBLIC_KEY = '${DEV_RELEASE_PUBLIC_KEY}';`, `export const RELEASE_PUBLIC_KEY = '${ownerPub}';`));
+  // Until every shell pins the owner key too, the gate refuses the release.
+  assert.match(checkPinnedKey({ root, signingKey: ownerPem }).join('\n'), /does not pin RELEASE_PUBLIC_KEY/);
+  pinInShells(root, ownerPub);
   assert.deepEqual(checkPinnedKey({ root, signingKey: ownerPem }), []);
   const other = generateKeyPairSync('ed25519').privateKey.export({ format: 'pem', type: 'pkcs8' }).toString();
   assert.match(checkPinnedKey({ root, signingKey: other }).join('\n'), /is not the pinned RELEASE_PUBLIC_KEY/);
