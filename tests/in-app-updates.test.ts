@@ -55,6 +55,18 @@ test('channel: a valid file parses; the release key is the dev key in this tree'
   assert.deepEqual(parsed.shell.ios, { version: '1.0.0-beta.2' });
 });
 
+test('release key: every shell pins the same key, and tools/release/config.json lists each copy for the release gate', async () => {
+  const { readFileSync } = await import('node:fs');
+  const config = JSON.parse(readFileSync('tools/release/config.json', 'utf8'));
+  assert.deepEqual(config.pinnedKeyFiles, ['src/shared/release-key.ts', 'desktop/update-store.cjs', 'mobile/android/app/src/main/java/com/agentempire/mobile/UpdatePolicy.java', 'mobile/ios/AgentEmpire/UpdatePolicy.swift']);
+  for (const file of config.pinnedKeyFiles) {
+    const text = readFileSync(file, 'utf8');
+    assert.ok(text.includes(RELEASE_PUBLIC_KEY), `${file} pins RELEASE_PUBLIC_KEY`);
+    assert.ok(text.includes(DEV_RELEASE_PUBLIC_KEY), `${file} knows the development key`);
+  }
+  assert.equal(config.repository, RELEASE_REPO);
+});
+
 test('channel: anything unexpected makes the whole file untrusted', () => {
   const base = () => channelJson({ version: '1.0.0-beta.2' });
   const cases: [string, (c: any) => void][] = [

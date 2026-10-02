@@ -80,9 +80,15 @@ final class GameViewController: UIViewController, WKNavigationDelegate, WKUIDele
     /// Why the last session ended; shown once by the setup's sign-in step after the reload.
     private var signedOutReason: String?
     private var deviceFlowTask: Task<Void, Never>?
+    /// In-app game updates (REL-04): installed bundles, the 20 s rollback timer.
+    private let updater: GameUpdater
+    private var trialTimer: Timer?
 
     init(root: URL) {
         self.root = root
+        updater = GameUpdater.standard(builtinRoot: root)
+        // A pending bundle switches in now (a trial until the page reports booting); an unfinished trial rolls back.
+        updater.launch()
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -110,7 +116,8 @@ final class GameViewController: UIViewController, WKNavigationDelegate, WKUIDele
 
     override func loadView() {
         let config = WKWebViewConfiguration()
-        config.setURLSchemeHandler(GameSchemeHandler(root: root), forURLScheme: GameSchemeHandler.scheme)
+        let updater = self.updater, builtin = root
+        config.setURLSchemeHandler(GameSchemeHandler(rootProvider: { updater.servingRoot() ?? builtin }), forURLScheme: GameSchemeHandler.scheme)
         config.websiteDataStore = .default() // keeps the player's profile and settings between launches
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []
@@ -163,7 +170,53 @@ final class GameViewController: UIViewController, WKNavigationDelegate, WKUIDele
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        armTrial()
         webView?.load(URLRequest(url: GameSchemeHandler.startURL))
+    }
+
+    // MARK: In-app updates (REL-04)
+
+    /// While a new bundle is on trial, roll back if the page hasn't reported booting 20 s after it started.
+    private func armTrial() {
+        trialTimer?.invalidate()
+        guard let remaining = updater.trialRemaining else { return }
+        trialTimer = Timer.scheduledTimer(withTimeInterval: remaining + 0.05, repeats: false) { [weak self] _ in
+            guard let self, self.updater.checkTrial() else { return }
+            NSLog("AgentEmpire: the updated game did not report booting within 20 s; rolled back")
+            self.refreshConfig()
+            self.webView?.load(URLRequest(url: GameSchemeHandler.startURL))
+        }
+    }
+
+    /// iOS TestFlight builds carry a sandbox receipt; Debug builds are development installs.
+    private var installSource: String {
+        #if DEBUG
+        return "development"
+        #else
+        return Bundle.main.appStoreReceiptURL?.lastPathComponent == "sandboxReceipt" ? "testflight" : "appstore"
+        #endif
+    }
+
+    private func nativeInfo() -> [String: Any] {
+        let info = Bundle.main.infoDictionary ?? [:]
+        var out: [String: Any] = [
+            "platform": "ios",
+            "shellVersion": UpdatePolicy.shellVersion(marketing: info["CFBundleShortVersionString"] as? String, build: info["CFBundleVersion"] as? String) ?? NSNull(),
+            "installedGame": updater.installedGame ?? NSNull(),
+            "builtinGame": updater.builtinVersion ?? NSNull(),
+            "pendingGame": updater.pendingGame ?? NSNull(),
+            "canInstallGame": true,
+            "canAutoUpdate": false,
+            "installSource": installSource,
+        ]
+        if let back = updater.takeRolledBack() { out["rolledBack"] = back }
+        return out
+    }
+
+    private func message(_ error: Error, _ fallback: String) -> String {
+        if let failure = error as? GameUpdater.Failure { return failure.description }
+        if (error as? URLError) != nil { return "GitHub could not be reached." }
+        return fallback
     }
 
     override var prefersStatusBarHidden: Bool { true }
@@ -175,6 +228,7 @@ final class GameViewController: UIViewController, WKNavigationDelegate, WKUIDele
 
     func tearDown() {
         deviceFlowTask?.cancel()
+        trialTimer?.invalidate()
         guard let webView else { return }
         webView.configuration.userContentController.removeAllScriptMessageHandlers()
         webView.configuration.userContentController.removeAllUserScripts()
@@ -247,6 +301,57 @@ final class GameViewController: UIViewController, WKNavigationDelegate, WKUIDele
             let reason = (try? BridgeProtocol.reason(request.params).get()) ?? "unauthorized"
             resolve(id, true)
             signOut(reason: reason)
+        case .updateFetch:
+            switch BridgeProtocol.updateFetch(request.params) {
+            case .failure(let f): reject(id, f.message)
+            case .success(let args):
+                Task { @MainActor [weak self, updater] in
+                    do {
+                        let r = try await updater.fetch(args.url, etag: args.etag)
+                        self?.resolve(id, ["status": r.status, "body": String(decoding: r.body, as: UTF8.self), "etag": r.etag ?? NSNull()])
+                    } catch {
+                        self?.reject(id, self?.message(error, "The download failed.") ?? "The download failed.")
+                    }
+                }
+            }
+        case .updateInstallGame:
+            switch BridgeProtocol.installGame(request.params) {
+            case .failure(let f): reject(id, f.message)
+            case .success(let args):
+                Task { @MainActor [weak self, updater] in
+                    do {
+                        let version = try await updater.installGame(url: args.url, sha256: args.sha256, version: args.version)
+                        self?.resolve(id, ["version": version])
+                    } catch {
+                        self?.reject(id, self?.message(error, "The update could not be installed.") ?? "The update could not be installed.")
+                    }
+                }
+            }
+        case .updateActivate:
+            guard updater.activate() else { return reject(id, "No update is waiting.") }
+            resolve(id, true)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                self.armTrial()
+                self.refreshConfig()
+                self.webView?.load(URLRequest(url: GameSchemeHandler.startURL))
+            }
+        case .updateBootOk:
+            updater.bootOk()
+            trialTimer?.invalidate()
+            resolve(id, true)
+        case .updateNativeInfo:
+            resolve(id, nativeInfo())
+        case .updateOpenNative:
+            switch BridgeProtocol.storeURL(request.params) {
+            case .failure(let f): reject(id, f.message)
+            case .success(let url):
+                if touches.gate.consume() {
+                    UIApplication.shared.open(url)
+                    resolve(id, ["action": "store"])
+                } else {
+                    offerExternal(url) { opened in opened ? self.resolve(id, ["action": "store"]) : self.reject(id, "Not opened.") }
+                }
+            }
         case .openExternal:
             switch BridgeProtocol.externalURL(request.params) {
             case .failure(let f): reject(id, f.message)
