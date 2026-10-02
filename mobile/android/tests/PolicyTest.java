@@ -182,6 +182,59 @@ public final class PolicyTest {
         UpdatePolicy.launch(missing, builtin, usable, 1);
         check(missing.active == null, "a missing bundle folder falls back to the built-in game");
         security();
+        ed25519();
+    }
+
+    private static byte[] hex(String s) {
+        byte[] out = new byte[s.length() / 2];
+        for (int i = 0; i < out.length; i++) out[i] = (byte) Integer.parseInt(s.substring(2 * i, 2 * i + 2), 16);
+        return out;
+    }
+
+    /** The shell's own verifier (Ed25519.java): RFC 8032 vectors, agreement with the JDK, and malformed input. */
+    private static void ed25519() throws Exception {
+        byte[] pk1 = hex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a");
+        byte[] sig1 = hex("e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b");
+        check(Ed25519.verify(pk1, new byte[0], sig1), "Ed25519: RFC 8032 test 1 verifies");
+        byte[] pk2 = hex("3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c");
+        byte[] sig2 = hex("92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00");
+        check(Ed25519.verify(pk2, new byte[] {0x72}, sig2), "Ed25519: RFC 8032 test 2 verifies");
+        check(!Ed25519.verify(pk2, new byte[] {0x73}, sig2), "Ed25519: another message fails");
+        check(!Ed25519.verify(pk1, new byte[] {0x72}, sig2), "Ed25519: another key fails");
+        // s + L encodes the same scalar mod L; RFC 8032 requires rejecting s >= L (signature malleability).
+        java.math.BigInteger l = java.math.BigInteger.ONE.shiftLeft(252).add(new java.math.BigInteger("27742317777372353535851937790883648493"));
+        byte[] sBytes = new byte[32];
+        System.arraycopy(sig2, 32, sBytes, 0, 32);
+        byte[] be = new byte[32];
+        for (int i = 0; i < 32; i++) be[i] = sBytes[31 - i];
+        byte[] big = new java.math.BigInteger(1, be).add(l).toByteArray();
+        byte[] malleable = sig2.clone();
+        for (int i = 0; i < 32; i++) malleable[32 + i] = i < big.length ? big[big.length - 1 - i] : 0;
+        check(!Ed25519.verify(pk2, new byte[] {0x72}, malleable), "Ed25519: s >= L is refused");
+        check(!Ed25519.verify(new byte[31], new byte[0], sig1) && !Ed25519.verify(pk1, new byte[0], new byte[63]), "Ed25519: wrong lengths are refused");
+        byte[] notOnCurve = pk1.clone();
+        notOnCurve[0] = 2; // y = 2 has no x on the curve
+        for (int i = 1; i < 32; i++) notOnCurve[i] = 0;
+        check(!Ed25519.verify(notOnCurve, new byte[0], sig1), "Ed25519: a key that is not a curve point is refused");
+        // Agreement with the JDK's signer over random keys and messages.
+        java.security.KeyPairGenerator gen = java.security.KeyPairGenerator.getInstance("Ed25519");
+        java.util.Random random = new java.util.Random(7);
+        int agreed = 0;
+        for (int i = 0; i < 40; i++) {
+            java.security.KeyPair pair = gen.generateKeyPair();
+            byte[] spki = pair.getPublic().getEncoded();
+            byte[] raw = java.util.Arrays.copyOfRange(spki, spki.length - 32, spki.length);
+            byte[] message = new byte[random.nextInt(300)];
+            random.nextBytes(message);
+            java.security.Signature signer = java.security.Signature.getInstance("Ed25519");
+            signer.initSign(pair.getPrivate());
+            signer.update(message);
+            byte[] signature = signer.sign();
+            byte[] flipped = signature.clone();
+            flipped[random.nextInt(64)] ^= (byte) (1 << random.nextInt(8));
+            if (Ed25519.verify(raw, message, signature) && !Ed25519.verify(raw, message, flipped)) agreed++;
+        }
+        check(agreed == 40, "Ed25519: agrees with the JDK on 40 random signatures and their bit-flipped copies (" + agreed + "/40)");
     }
 
     /** Security review: the shell's own Ed25519 check, request binding to the signed release, install status (#4). */
@@ -214,8 +267,8 @@ public final class PolicyTest {
         for (java.security.Provider p : software) java.security.Security.removeProvider(p.getName());
         java.security.Security.insertProviderAt(new FakeKeystoreProvider(), 1);
         try {
-            Boolean genuine = UpdatePolicy.verifyEd25519(msg, sig, UpdatePolicy.RELEASE_PUBLIC_KEY);
-            check(genuine == null, "Ed25519: with only Android Keystore's Ed25519 the native check is unavailable (null), never a refusal of a genuine release (got " + genuine + ")");
+            check(UpdatePolicy.verifyEd25519(msg, sig, UpdatePolicy.RELEASE_PUBLIC_KEY), "Ed25519: with only Android Keystore's Ed25519 the shell still verifies a genuine release itself");
+            check(!UpdatePolicy.verifyEd25519(tampered, sig, UpdatePolicy.RELEASE_PUBLIC_KEY), "Ed25519: with only Android Keystore's Ed25519 tampering is still refused");
         } finally {
             java.security.Security.removeProvider("AndroidKeyStore");
             for (java.security.Provider p : software) java.security.Security.insertProviderAt(p, java.util.Arrays.asList(installed).indexOf(p) + 1);

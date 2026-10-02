@@ -158,48 +158,21 @@ public final class UpdatePolicy {
 
     // ---- the shell's own check of the signed release (defense in depth) ----------------------------------------
 
-    private static final byte[] SPKI_ED25519_PREFIX = {0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00};
-
     /**
-     * Ed25519 over `message` with a raw 32-byte base64 public key (java.security, Android 13 / API 33+ and any JDK 15+).
-     * TRUE or FALSE; null when this platform has no Ed25519 (Android 8 to 12), in which case the caller relies on the
-     * page's WebCrypto check plus the pinned-repository and sha256 rules, and logs that the native check was skipped.
-     * Android Keystore's "Ed25519" KeyFactory/Signature (the first ones an Android 13+ app process finds) only handle
-     * keys kept in the Keystore and cannot import the pinned key, so they are not used: with no other provider (as on
-     * Android 15, whose Conscrypt has no Ed25519) this is null too, never a refusal of a genuine release.
+     * Ed25519 over `message` with a raw 32-byte base64 public key, using the shell's own verifier (Ed25519.java) so the
+     * check runs on every Android version: java.security has no usable Ed25519 below Android 13, and from 13 the first
+     * one found is Android Keystore's, which cannot import the pinned key (seen on Android 15, whose Conscrypt has none).
+     * Any malformed input is a refusal.
      */
-    public static Boolean verifyEd25519(byte[] message, String signatureBase64, String publicKeyBase64) {
+    public static boolean verifyEd25519(byte[] message, String signatureBase64, String publicKeyBase64) {
         byte[] sig, raw;
         try {
             sig = java.util.Base64.getDecoder().decode(signatureBase64 == null ? "" : signatureBase64.trim());
-            raw = java.util.Base64.getDecoder().decode(publicKeyBase64);
+            raw = java.util.Base64.getDecoder().decode(publicKeyBase64 == null ? "" : publicKeyBase64);
         } catch (IllegalArgumentException malformed) {
-            return Boolean.FALSE;
+            return false;
         }
-        if (sig.length != 64 || raw.length != 32) return Boolean.FALSE;
-        byte[] der = new byte[SPKI_ED25519_PREFIX.length + 32];
-        System.arraycopy(SPKI_ED25519_PREFIX, 0, der, 0, SPKI_ED25519_PREFIX.length);
-        System.arraycopy(raw, 0, der, SPKI_ED25519_PREFIX.length, 32);
-        // The first software provider that can import the raw key and verify with it.
-        for (java.security.Provider provider : java.security.Security.getProviders()) {
-            if (provider.getName().startsWith("AndroidKeyStore")) continue;
-            if (provider.getService("KeyFactory", "Ed25519") == null || provider.getService("Signature", "Ed25519") == null) continue;
-            java.security.Signature verifier;
-            try {
-                java.security.PublicKey key = java.security.KeyFactory.getInstance("Ed25519", provider).generatePublic(new java.security.spec.X509EncodedKeySpec(der));
-                verifier = java.security.Signature.getInstance("Ed25519", provider);
-                verifier.initVerify(key);
-            } catch (Exception cannotUseThisProvider) {
-                continue;
-            }
-            try {
-                verifier.update(message);
-                return verifier.verify(sig);
-            } catch (Exception bad) {
-                return Boolean.FALSE;
-            }
-        }
-        return null;
+        return Ed25519.verify(raw, message, sig);
     }
 
     /** The signed channel file inside the release tagged v<version> (every release publishes channel-beta.json). */
