@@ -178,17 +178,25 @@ try {
           return stage.top >= body.top - 1 && stage.bottom <= body.bottom + 1 && stage.height >= 150;
         });
         check(`phone ${size.width}x${size.height}: the founder preview fits inside the card`, fit);
+        // The options column itself scrolls (the card body no longer does): scrolled to its end, the last suit is on screen.
+        const reach = await s.page.evaluate(() => {
+          const opts = document.querySelector('.charsel-opts')!;
+          opts.scrollTop = opts.scrollHeight;
+          const body = document.querySelector('.charsel .body')!.getBoundingClientRect();
+          const suits = document.querySelectorAll('.charsel [role=radiogroup][aria-label="Character model"] [role=radio]');
+          const last = suits[suits.length - 1].getBoundingClientRect();
+          return last.top >= body.top - 1 && last.bottom <= body.bottom + 1;
+        });
         const last = s.page.locator('.charsel [role=radiogroup][aria-label="Character model"] [role=radio]').last();
-        await last.scrollIntoViewIfNeeded();
         await last.click();
-        check(`phone ${size.width}x${size.height}: the last suit can be reached and chosen`, (await last.getAttribute('aria-checked')) === 'true');
+        check(`phone ${size.width}x${size.height}: scrolling the options brings the last suit on screen, and it can be chosen`, reach && (await last.getAttribute('aria-checked')) === 'true');
         if (size.width === 874) await s.page.screenshot({ path: resolve(out, '06b-character-select-phone-874x402.jpg'), quality: 82 });
         // Keyboard open, as the Android app sees it (the view shrinks to ~113px above an iPhone landscape keyboard while
         // the field has focus; keyboard.ts then sets html.ae-kb): the name field and Continue stay usable. The field was
         // clipped to a sliver and Return did nothing on the simulator.
         await s.page.focus('.charsel input[aria-label="Your name"]');
         await s.page.setViewportSize({ width: size.width, height: 113 });
-        await s.page.waitForTimeout(700);
+        await s.page.waitForFunction(() => document.documentElement.classList.contains('ae-kb'), undefined, { timeout: 5000 }).catch(() => {});
         const typing = await s.page.evaluate(() => {
           const box = (sel: string) => document.querySelector(sel)!.getBoundingClientRect();
           const body = box('.charsel .body'), input = box('.charsel input[aria-label="Your name"]'), save = box('.charsel button[type=submit]');
@@ -197,6 +205,23 @@ try {
         });
         check(`phone ${size.width}x${size.height}: with the keyboard open the name field and Continue are fully visible`, typing.ok, JSON.stringify(typing));
         await s.page.setViewportSize({ width: size.width, height: size.height });
+      } finally {
+        await s.context.close();
+      }
+    }
+    // 1c. A tablet with its keyboard open keeps the whole founder card (title and suits); only short landscape trims it.
+    {
+      const s = await open(browser, { width: 1024, height: 768, touch: true, style: null });
+      try {
+        await s.page.waitForSelector('#modal-root .charsel', { timeout: 120_000 });
+        await s.page.focus('.charsel input[aria-label="Your name"]');
+        await s.page.setViewportSize({ width: 1024, height: 420 });
+        await s.page.waitForFunction(() => document.documentElement.classList.contains('ae-kb'), undefined, { timeout: 5000 }).catch(() => {});
+        const kept = await s.page.evaluate(() => {
+          const shown = (sel: string) => { const e = document.querySelector(sel) as HTMLElement | null; return !!e && e.offsetParent !== null; };
+          return { kb: document.documentElement.classList.contains('ae-kb'), title: shown('.charsel header h2'), suits: shown('.charsel [role=radiogroup][aria-label="Character model"]') };
+        });
+        check('tablet 1024x768 with the keyboard open keeps the founder title and suits', kept.kb && kept.title && kept.suits, JSON.stringify(kept));
       } finally {
         await s.context.close();
       }
