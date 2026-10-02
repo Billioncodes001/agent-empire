@@ -1,0 +1,10 @@
+10-02 14:32:20.789 I/AgentEmpire( 5712): debug: update downloads from http://10.0.2.2:4721
+10-02 14:36:57.504 W/AgentEmpire( 5712): No software Ed25519 provider on this device: the shell's own release signature check is skipped
+10-02 14:45:01.301 W/AgentEmpire( 5712): No software Ed25519 provider on this device: the shell's own release signature check is skipped
+10-02 14:49:26.440 W/AgentEmpire( 5712): No software Ed25519 provider on this device: the shell's own release signature check is skipped
+10-02 14:51:49.402 W/AgentEmpire( 5712): App update not installed: INSTALL_FAILED_ABORTED: User rejected permissions
+10-02 14:58:21.741 W/AgentEmpire( 5712): No software Ed25519 provider on this device: the shell's own release signature check is skipped
+10-02 15:00:31.919 W/AgentEmpire( 5712): The updated game did not report booting within 20 s; rolled back
+10-02 15:06:47.544 W/AgentEmpire( 5712): No software Ed25519 provider on this device: the shell's own release signature check is skipped
+10-02 15:08:00.752 W/AgentEmpire( 5712): The updated game did not report booting within 20 s; rolled back
+10-02 15:16:40.898 W/AgentEmpire( 5712): No software Ed25519 provider on this device: the shell's own release signature check is skipped

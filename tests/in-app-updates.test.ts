@@ -10,7 +10,7 @@ import { ChannelError, channelUrls, newestPrereleaseTag, parseChannel, releaseAs
 import { verifyChannel, verifyEd25519 } from '../src/client/update/verify';
 import { fetchChannel, SourceError, type Fetcher, type KeyValue } from '../src/client/update/source';
 import { decide, nativeOffer } from '../src/client/update/decide';
-import { promptGate } from '../src/client/update/gate';
+import { noticeGate, promptGate } from '../src/client/update/gate';
 import { parseNativeInfo, updateBridge, type NativeInfo, type UpdateBridge } from '../src/client/update/bridge';
 import { UpdateService } from '../src/client/update/service';
 import { commitCoordinatorUpdate, coordinatorDecision, COORDINATOR_MANIFEST_PATH, readInstalledCoordinator } from '../src/client/update/coordinator';
@@ -266,6 +266,13 @@ test('gate: never during a modal, typing, a jump, loading or in the background',
   assert.equal(promptGate({ ...calm, boot: 'forced' }), 'show');
   for (const k of ['modalOpen', 'typing', 'airborne', 'hidden'] as const) assert.equal(promptGate({ ...calm, [k]: true }), 'wait', k);
   for (const boot of ['loading', 'setup', undefined]) assert.equal(promptGate({ ...calm, boot }), 'wait', String(boot));
+});
+
+test('notice gate: a rollback notice waits for the splash to finish, not for typing or a jump', () => {
+  for (const boot of ['loading', 'setup', undefined]) assert.equal(noticeGate({ boot, hidden: false }), 'wait', `behind the loading screen (${boot})`);
+  assert.equal(noticeGate({ boot: 'ready', hidden: true }), 'wait', 'backgrounded');
+  assert.equal(noticeGate({ boot: 'ready', hidden: false }), 'show');
+  assert.equal(noticeGate({ boot: 'forced', hidden: false }), 'show');
 });
 
 // ---- bridge -------------------------------------------------------------------------------------------------------------

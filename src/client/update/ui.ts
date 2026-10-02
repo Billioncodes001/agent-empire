@@ -7,11 +7,13 @@
  */
 import { h, modalOpen, onModalChange, openModal, timeAgo, toast, type Modal } from '../ui/dom';
 import { setMenuUpdateEntry } from '../ui/game-menu';
-import { promptGate, isTextEntry } from './gate';
+import { noticeGate, promptGate, isTextEntry } from './gate';
 import type { UpdateService, UpdateState } from './service';
 import type { Channel } from './channel';
 
 const DISMISSED_KEY = 'agent-empire.update.dismissed';
+/** One-off update notices stay up longer than an ordinary toast. */
+const NOTICE_MS = 12_000;
 const PLATFORM_LABEL: Record<string, string> = { ios: 'iPhone and iPad app', android: 'Android app', desktop: 'desktop app' };
 
 function sessionGet(key: string) {
@@ -97,15 +99,31 @@ export function mountUpdateUi(service: UpdateService, opts: UpdateUiOptions = {}
     document.getElementById('toasts')?.append(toastEl);
   };
 
-  const consider = () => {
+  let noticeWait: ReturnType<typeof setInterval> | null = null;
+  // One-off notices wait until the splash is gone, then stay up long enough to read.
+  const showNotices = () => {
+    if (noticeGate({ boot: document.documentElement.dataset.boot, hidden: document.visibilityState === 'hidden' }) !== 'show') return false;
     const s = service.state;
     if (s.info?.installPending && !installPendingShown) {
       installPendingShown = true;
-      toast(`The app update to ${s.info.installPending} didn’t finish installing. Tap Update again to finish installing.`, 'warn');
+      toast(`The app update to ${s.info.installPending} didn’t finish installing. Tap Update again to finish installing.`, 'warn', NOTICE_MS);
     }
     if (s.info?.rolledBack && !rolledBackShown) {
       rolledBackShown = true;
-      toast(`The update to ${s.info.rolledBack} didn’t start, so the app went back to ${s.info.installedGame ?? s.info.builtinGame ?? 'the previous version'}.`, 'warn');
+      toast(`The update to ${s.info.rolledBack} didn’t start, so the app went back to ${s.info.installedGame ?? s.info.builtinGame ?? 'the previous version'}.`, 'warn', NOTICE_MS);
+    }
+    return true;
+  };
+
+  const consider = () => {
+    const s = service.state;
+    const notices = (s.info?.installPending && !installPendingShown) || (s.info?.rolledBack && !rolledBackShown);
+    if (notices && !noticeWait && !showNotices()) {
+      noticeWait = setInterval(() => {
+        if (!showNotices()) return;
+        clearInterval(noticeWait!);
+        noticeWait = null;
+      }, 500);
     }
     const key = offerKey(s);
     if (!key || sessionGet(DISMISSED_KEY) === key || dialog) {
