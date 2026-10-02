@@ -23,6 +23,8 @@ interface StoredItem {
   queueTaskId?: string;
   /** Runs alongside the item before it (LIFE-04). Absent on items saved before LIFE-04: they run in order. */
   parallel?: true;
+  /** Its queue task was observed finishing with outcome 'done' (so later items may start once it is cleared). */
+  finishedOk?: true;
 }
 
 interface StoredJob {
@@ -182,6 +184,8 @@ export class Consultancy {
               continue;
             }
             this.queueIssues.delete(key);
+            // Remember a successful finish, so a later item still counts it once the queue forgets the task.
+            if (observed.status === 'done' && observed.outcome === 'done' && !item.finishedOk) { item.finishedOk = true; changed = true; }
             continue;
           }
           const existing = queueState.tasks.find((task) => task.jobKey === item.jobKey);
@@ -198,9 +202,18 @@ export class Consultancy {
             this.queueIssues.set(key, `Waiting for ${missing.id} to reach the queue first.`);
             continue;
           }
+          // A prerequisite that finished successfully and was then cleared from the queue is satisfied. One that vanished
+          // without ever being seen to finish needs the CEO: never wait on it forever.
+          const gone = prerequisites.filter((dep) => !queueState.tasks.some((task) => task.id === dep.queueTaskId));
+          const lost = gone.find((dep) => !dep.finishedOk);
+          if (lost) {
+            this.queueIssues.set(key, `${lost.id} (“${lost.title}”) left the queue without finishing, so this item will not start. Review the job and re-plan it.`);
+            continue;
+          }
+          const waitFor = prerequisites.filter((dep) => !gone.includes(dep)).map((dep) => dep.queueTaskId!);
           let addError: string | undefined;
           try {
-            addError = this.queue.add(item.prompt, job.decidedBy ?? job.createdBy, item.title, undefined, item.jobKey, prerequisites.map((dep) => dep.queueTaskId!));
+            addError = this.queue.add(item.prompt, job.decidedBy ?? job.createdBy, item.title, undefined, item.jobKey, waitFor);
           } catch (error) {
             addError = (error as Error).message;
           }
@@ -273,6 +286,8 @@ export class Consultancy {
     if (queueFailure) return { ...item, status: 'needs_attention', attention: queueFailure, _weight: statusWeight('needs_attention') };
     const task = findTask(state?.tasks ?? [], item);
     const key = this.itemKey(job.id, item.id);
+    // Finished successfully, then cleared from the queue: still delivered work, not a problem.
+    if (!task && item.finishedOk) return { ...item, status: 'awaiting_review', _weight: statusWeight('awaiting_review') };
     if (!task) {
       const reason = this.queueIssues.get(key) ?? (item.queueTaskId ? 'Previously observed queue task is missing; automatic requeue is blocked.' : 'Task is not visible in the queue.');
       return { ...item, status: 'needs_attention', attention: reason, _weight: statusWeight('needs_attention') };
@@ -418,9 +433,11 @@ function parseStoredJob(value: unknown, index: number): StoredJob {
 
 function parseStoredItem(value: unknown, label: string): StoredItem {
   const raw = asObject(value, label);
-  rejectUnknownKeys(raw, ['id', 'title', 'prompt', 'jobKey', 'queueTaskId', 'parallel'], label);
+  rejectUnknownKeys(raw, ['id', 'title', 'prompt', 'jobKey', 'queueTaskId', 'parallel', 'finishedOk'], label);
   if (raw.parallel !== undefined && raw.parallel !== true) throw new Error(`${label} parallel must be true when present`);
+  if (raw.finishedOk !== undefined && (raw.finishedOk !== true || raw.queueTaskId === undefined)) throw new Error(`${label} finishedOk is invalid`);
   return {
+    ...(raw.finishedOk === true ? { finishedOk: true as const } : {}),
     ...(raw.parallel === true ? { parallel: true as const } : {}),
     id: cleanBounded(raw.id, `${label} id`, 100),
     title: cleanBounded(raw.title, `${label} title`, MAX_TASK_TITLE),

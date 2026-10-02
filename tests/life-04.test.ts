@@ -11,45 +11,65 @@ import { projectWaitingOn, withWaitingOn } from '../src/server/waiting';
 import { MAX_DEPENDENCIES, blockedLabel, heldLabel, validateDependencies, findCycle } from '../src/shared/dependencies';
 import { planRoutine, amenityFor } from '../src/client/world/routines';
 import type { QueueState, QueueTask, WorkerInfo } from '../src/shared/protocol';
+import { execFileSync } from 'node:child_process';
+import { Worktrees } from '../src/server/worktrees';
+import { workerTaskLine } from '../src/shared/dependencies';
 
-interface Spawned { desk: string; persona?: Persona }
+interface Spawned { desk: string; prompt: string; persona?: Persona; continues?: { branch: string; title: string } }
+type KillResult = { note?: string; error?: string };
 
-function office(opts: { desks?: number } = {}) {
+function office(opts: { desks?: number; worktrees?: boolean; branches?: Set<string>; kill?: (id: string) => Promise<KillResult> } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'life04-'));
   const workers: WorkerInfo[] = [];
   const spawned: Spawned[] = [];
   const kills: string[] = [];
+  const busy = new Set<string>();
+  let desks = opts.desks ?? 4;
+  let paused: string | undefined;
   let n = 0;
   let queue!: TaskQueue;
   const make = (deskId: string, name: string, color = '#5bc0eb'): WorkerInfo =>
     ({ id: `w${++n}`, kind: 'agent', deskId, name, color, status: 'working', processState: 'running', acked: true, createdBy: 't', createdAt: 0, cols: 80, rows: 24, viewers: [] });
+  const sendHome = (id: string) => {
+    const i = workers.findIndex((w) => w.id === id);
+    if (i >= 0) workers.splice(i, 1);
+    queue.onWorkerGone(id);
+  };
   const fake = {
-    workstationCapacity: () => opts.desks ?? 4,
+    workstationCapacity: () => desks,
     list: () => workers,
     deskOccupied: (id: string) => workers.some((w) => w.deskId === id),
-    spawn: (desk: string, _by: string, _p: string, _wt: boolean, _k?: 'agent', _q?: boolean, _o?: unknown, persona?: Persona) => {
-      spawned.push({ desk, persona });
+    spawn: (desk: string, _by: string, prompt: string, _wt: boolean, _k?: 'agent', _q?: boolean, _o?: unknown, persona?: Persona, continues?: { branch: string; title: string }) => {
+      spawned.push({ desk, prompt, persona, continues });
       const w = make(desk, persona?.name ?? `Worker${n + 1}`, persona?.color);
+      if (opts.worktrees) w.worktree = { path: `wt/${w.id}`, branch: `office/${w.id}`, base: 'abc', ...(continues ? { continues } : {}) };
       workers.push(w);
       return w;
     },
-    kill: async (id: string) => {
+    kill: (id: string) => {
       kills.push(id);
-      const i = workers.findIndex((w) => w.id === id);
-      if (i >= 0) workers.splice(i, 1);
-      queue.onWorkerGone(id);
-      return {};
+      if (opts.kill) return opts.kill(id);
+      sendHome(id);
+      return Promise.resolve({});
     },
+    workerBusy: (id: string) => busy.has(id),
+    branchExists: (b: string) => opts.branches?.has(b) ?? false,
   };
   const toasts: string[] = [];
-  queue = new TaskQueue(dir, fake, false, { update() {}, toast: (t) => { toasts.push(t); }, claimIssue: async () => undefined, refreshGitHub() {}, hiringPaused: () => undefined });
+  queue = new TaskQueue(dir, fake, !!opts.worktrees, { update() {}, toast: (t) => { toasts.push(t); }, claimIssue: async () => undefined, refreshGitHub() {}, hiringPaused: () => paused });
   const setStatus = (id: string, status: WorkerInfo['status']) => { const w = workers.find((x) => x.id === id)!; w.status = status; queue.onWorker({ ...w }); };
   const task = (title: string) => queue.state().tasks.find((t) => t.title === title)!;
+  const reserved = () => (queue as unknown as { reserved: Map<string, unknown> }).reserved.size;
   const close = () => { queue.shutdown(); rmSync(dir, { recursive: true, force: true }); };
-  return { dir, workers, spawned, kills, toasts, get queue() { return queue; }, setStatus, task, close };
+  return {
+    dir, workers, spawned, kills, toasts, busy, sendHome, reserved, setStatus, task, close,
+    get queue() { return queue; },
+    setDesks(d: number) { desks = d; },
+    pause(why: string | undefined) { paused = why; },
+  };
 }
 
-const settle = () => new Promise((r) => setImmediate(r));
+const settle = async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r)); };
 
 test('a task never starts before its dependency finishes, and later independent tasks still run', () => {
   const o = office();
@@ -118,38 +138,177 @@ test('a failed dependency holds its dependent: never auto-run, retry or remove b
   } finally { o.close(); }
 });
 
-test('continuity: an unblocked task continues at the desk (and as the person) that finished its dependency', async () => {
+
+/** X keeps desk-1 busy, A runs at desk-2, B depends on A. */
+function chain(o: ReturnType<typeof office>) {
+  o.queue.add('x', 'ceo', 'X');
+  o.queue.add('a', 'ceo', 'A');
+  const a = o.task('A');
+  o.queue.add('b', 'ceo', 'B', undefined, undefined, [a.id]);
+  const aw = o.workers.find((w) => w.id === a.workerId)!;
+  assert.equal(aw.deskId, 'desk-2');
+  return aw;
+}
+
+test('continuity: the dependency desk is preferred when it is free', () => {
   const o = office();
   try {
-    o.queue.add('a', 'ceo', 'A');
-    const a = o.task('A');
-    o.queue.add('b', 'ceo', 'B', undefined, undefined, [a.id]);
-    const first = o.workers[0];
-    assert.equal(first.deskId, 'desk-1');
-    first.name = 'Byte';
-    o.setStatus(first.id, 'done');
-    // desk-2..4 are free, but B waits for desk-1 while its finished worker is sent home.
-    assert.deepEqual(o.kills, [first.id]);
+    const aw = chain(o);
+    o.setStatus(aw.id, 'done');
+    // A free funded desk (desk-3) exists, so nothing is sent home and B starts at once.
+    assert.deepEqual(o.kills, []);
+    assert.equal(o.task('B').status, 'running');
+    assert.equal(o.spawned.at(-1)?.desk, 'desk-3');
+  } finally { o.close(); }
+  const p = office();
+  try {
+    const aw = chain(p);
+    p.queue.setLimit(0);
+    p.setStatus(aw.id, 'done');
+    p.sendHome(aw.id); // A's worker has left: its desk-2 is free and preferred over desk-3.
+    p.queue.setLimit(3);
+    assert.equal(p.task('B').status, 'running');
+    assert.equal(p.spawned.at(-1)?.desk, 'desk-2');
+  } finally { p.close(); }
+});
+
+test('continuity sends the dependency worker home only when no desk is free, and only a done one', async () => {
+  const o = office({ desks: 2 });
+  try {
+    const aw = chain(o);
+    o.setStatus(aw.id, 'done');
+    assert.deepEqual(o.kills, [aw.id]);
     await settle();
     assert.equal(o.task('B').status, 'running');
-    assert.deepEqual(o.spawned.at(-1), { desk: 'desk-1', persona: { name: 'Byte', color: '#5bc0eb' } });
-    assert.equal(o.task('B').deskId, 'desk-1');
+    assert.equal(o.spawned.at(-1)?.desk, 'desk-2');
+    assert.equal(o.reserved(), 0);
+  } finally { o.close(); }
+  for (const blocker of ['offline', 'viewers', 'busy'] as const) {
+    const p = office({ desks: 2 });
+    try {
+      const aw = chain(p);
+      if (blocker === 'viewers') aw.viewers = ['CEO'];
+      if (blocker === 'busy') p.busy.add(aw.id);
+      p.setStatus(aw.id, blocker === 'offline' ? 'offline' : 'done');
+      assert.equal(p.reserved(), 0, `${blocker}: no desk is reserved`);
+      if (blocker !== 'offline') assert.deepEqual(p.kills, [], `${blocker}: never sent home`);
+    } finally { p.close(); }
+  }
+});
+
+test('a send-home that fails without awaiting, or rejects, is bounded: no retry storm, the task uses another desk', async () => {
+  for (const mode of ['error', 'reject', 'throw'] as const) {
+    const o = office({
+      desks: 2,
+      kill: () => {
+        if (mode === 'throw') throw new Error('boom');
+        return mode === 'reject' ? Promise.reject(new Error('boom')) : Promise.resolve({ error: 'This worker is publishing a sync artifact; wait for it to finish' });
+      },
+    });
+    try {
+      const aw = chain(o);
+      o.setStatus(aw.id, 'done');
+      await settle();
+      for (let i = 0; i < 20; i++) o.queue.pump();
+      await settle();
+      assert.equal(o.kills.length, 1, `${mode}: one attempt, then backoff`);
+      assert.equal(o.toasts.filter((t) => /publishing|boom/.test(t)).length, 1, `${mode}: one toast`);
+      assert.equal(o.task('B').status, 'queued');
+      assert.equal(o.reserved(), 0);
+      o.setDesks(3);
+      o.queue.pump();
+      assert.equal(o.task('B').status, 'running', `${mode}: B seats at another free desk`);
+      assert.equal(o.spawned.at(-1)?.desk, 'desk-3');
+      assert.equal(o.kills.length, 1);
+    } finally { o.close(); }
+  }
+});
+
+test('a reservation is released when the worker limit or a hiring pause blocks the reserved task', async () => {
+  for (const block of ['limit', 'paused'] as const) {
+    let finish!: () => void;
+    const o = office({ desks: 2, kill: () => new Promise<KillResult>((r) => { finish = () => r({}); }) });
+    try {
+      const aw = chain(o);
+      o.setStatus(aw.id, 'done');
+      assert.equal(o.reserved(), 1);
+      if (block === 'limit') o.queue.setLimit(1); else o.pause('Budget spent');
+      // The send-home completes while the queue cannot seat B.
+      const i = o.workers.indexOf(aw); o.workers.splice(i, 1);
+      finish(); await settle();
+      o.queue.onWorkerGone(aw.id);
+      assert.equal(o.reserved(), 0, `${block}: reservation released`);
+      assert.equal(o.task('B').status, 'queued');
+      if (block === 'limit') o.queue.setLimit(3); else { o.pause(undefined); o.queue.pump(); }
+      assert.equal(o.task('B').status, 'running');
+      assert.equal(o.spawned.at(-1)?.desk, 'desk-2', `${block}: still prefers the dependency desk`);
+    } finally { o.close(); }
+  }
+});
+
+test('a kept reservation on a desk that is no longer funded is dropped', async () => {
+  let finish!: () => void;
+  const o = office({ desks: 2, kill: () => new Promise<KillResult>((r) => { finish = () => r({}); }) });
+  try {
+    const aw = chain(o);
+    o.setStatus(aw.id, 'done');
+    assert.equal(o.reserved(), 1);
+    o.setDesks(1);
+    o.workers.splice(o.workers.indexOf(aw), 1);
+    finish(); await settle();
+    o.queue.onWorkerGone(aw.id);
+    assert.equal(o.reserved(), 0);
+    assert.equal(o.task('B').status, 'queued', 'no funded desk: B waits, never at desk-2');
+    assert.equal(o.spawned.length, 2, 'nothing else was seated');
   } finally { o.close(); }
 });
 
-test('continuity never holds a runnable task when the dependency desk is being watched', () => {
-  const o = office();
+test('identity: the predecessor name is reused only when the worktree starts from its branch', () => {
+  for (const exists of [true, false]) {
+    const o = office({ worktrees: true, branches: new Set(exists ? ['office/w1'] : []) });
+    try {
+      o.queue.add('a', 'ceo', 'Schema');
+      const a = o.task('Schema');
+      o.queue.add('b', 'ceo', 'API', undefined, undefined, [a.id]);
+      o.workers[0].name = 'Byte';
+      o.setStatus(o.workers[0].id, 'done');
+      const s = o.spawned.at(-1)!;
+      assert.equal(o.task('API').status, 'running');
+      if (exists) {
+        assert.deepEqual(s.continues, { branch: 'office/w1', title: 'Schema' });
+        assert.deepEqual(s.persona, { name: 'Byte', color: '#5bc0eb' });
+        assert.match(s.prompt, /This task continues “Schema” \(branch office\/w1\): your worktree starts from that branch\./);
+      } else {
+        assert.equal(s.continues, undefined);
+        assert.equal(s.persona, undefined);
+        assert.match(s.prompt, /This task follows “Schema” \(branch office\/w1\)\. Its branch is no longer available, so your worktree starts from the project’s current HEAD\./);
+      }
+    } finally { o.close(); }
+  }
+  assert.deepEqual(workerTaskLine({ task: { name: 'API', summary: 'Writing routes' }, worktree: { path: 'p', branch: 'b', base: 'c', continues: { branch: 'x', title: 'Schema' } } }),
+    { name: 'API', summary: 'continues “Schema” · Writing routes' });
+  assert.deepEqual(workerTaskLine({ task: { name: 'API', summary: 'Writing routes' }, worktree: { path: 'p', branch: 'b', base: 'c' } }), { name: 'API', summary: 'Writing routes' });
+});
+
+test('worktrees start from a dependency branch when it exists, and reject unsafe names', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'life04-git-'));
   try {
-    o.queue.add('a', 'ceo', 'A');
-    const a = o.task('A');
-    o.queue.add('b', 'ceo', 'B', undefined, undefined, [a.id]);
-    o.workers[0].viewers = ['CEO'];
-    o.setStatus(o.workers[0].id, 'done');
-    assert.deepEqual(o.kills, []);
-    assert.equal(o.task('B').status, 'running');
-    assert.equal(o.spawned.at(-1)?.desk, 'desk-2');
-    assert.equal(o.spawned.at(-1)?.persona, undefined);
-  } finally { o.close(); }
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
+    git('init', '-q', '-b', 'main');
+    git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'root');
+    git('checkout', '-q', '-b', 'office/byte-1');
+    git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'schema');
+    const tip = git('rev-parse', 'HEAD');
+    git('checkout', '-q', 'main');
+    const trees = new Worktrees(dir);
+    assert.equal(trees.hasBranch('office/byte-1'), true);
+    assert.equal(trees.hasBranch('office/missing'), false);
+    assert.equal(trees.hasBranch('--output=x'), false);
+    const made = trees.create('next-1', 'office/byte-1');
+    assert.equal(typeof made, 'object');
+    assert.equal((made as { base: string }).base, tip, 'the new branch starts at the predecessor branch tip');
+    assert.match(String(trees.create('next-2', '-x')), /invalid branch/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('waitingOn: set for the idle/done worker whose dependent is blocked by another running worker, cleared after', () => {
@@ -284,4 +443,35 @@ test('queue panel text: blocked tasks read "Waiting on <dependency title>"', () 
   assert.equal(blockedLabel({}, tasks), '');
   assert.equal(heldLabel({ status: 'done', outcome: 'failed', error: 'dependency zz did not finish' }, tasks), 'Held — dependency zz (removed) did not finish. Retry or remove it.');
   assert.equal(heldLabel({ status: 'done', outcome: 'failed', error: 'spawn failed' }, tasks), '');
+});
+
+test('a consultancy item whose finished predecessor was cleared still starts; a lost predecessor needs attention', () => {
+  for (const finished of [true, false]) {
+    const dir = mkdtempSync(path.join(tmpdir(), 'life04-gone-'));
+    try {
+      const port = fakeQueuePort();
+      let refuse = true;
+      const add = port.add.bind(port);
+      port.add = (...args: Parameters<typeof add>) => (args[2] === 'Two' && refuse ? 'Queue is full' : add(...args));
+      const c = new Consultancy(dir, port);
+      const job = c.create({ requestId: 'r1', client: 'Acme', title: 'Shop', brief: 'b', tasks: [{ title: 'One', prompt: 'p' }, { title: 'Two', prompt: 'p' }] }, 'ceo');
+      c.approve(job.id, 'ceo');
+      assert.equal(port.tasks.length, 1, 'item 2 was refused the first time');
+      if (finished) { Object.assign(port.tasks[0], { status: 'done', outcome: 'done' }); c.reconcile(); }
+      port.tasks.splice(0, 1); // cleared (or removed) from the queue
+      refuse = false;
+      c.reconcile();
+      const items = c.snapshot().jobs[0].items;
+      if (finished) {
+        assert.equal(port.tasks.length, 1);
+        assert.deepEqual(port.adds.at(-1), { title: 'Two', dependsOn: [] });
+        assert.equal(items[0].status, 'awaiting_review');
+        assert.equal(items[1].status, 'queued');
+      } else {
+        assert.equal(port.tasks.length, 0, 'never dispatched against a lost dependency');
+        assert.equal(items[1].status, 'needs_attention');
+        assert.match(items[1].attention ?? '', /item-1 \(“One”\) left the queue without finishing/);
+      }
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
 });
