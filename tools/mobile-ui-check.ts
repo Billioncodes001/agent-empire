@@ -488,8 +488,10 @@ async function lightingCheck(browser: Browser, scenario: 'normal' | 'transient' 
   const label = `lighting ${scenario}`;
   const context = await browser.newContext({ viewport: { width: 874, height: 402 }, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
   await context.addInitScript({ content: 'window.__name = (f) => f;' });
+  // The CEO in the taupe skirt suit (style 5): the chest sample below measures lighting, and a black or navy suit
+  // is legitimately near-black there even when perfectly lit.
   await context.addInitScript(() => {
-    localStorage.setItem('agent-office.profile', JSON.stringify({ name: 'Fixture CEO', color: '#32685c', look: { skin: 4, hair: 0, style: 0 } }));
+    localStorage.setItem('agent-office.profile', JSON.stringify({ name: 'Fixture CEO', color: '#32685c', look: { skin: 4, hair: 0, style: 5 } }));
     localStorage.setItem('agent-empire.execution.offered', '1');
   });
   // GLTFLoader decodes embedded images with createImageBitmap; failing it reproduces the iOS texture failure.

@@ -14,6 +14,7 @@ import type { ServiceOwner } from './services.js';
 import { TaskNamer, fallbackTask } from './tasks.js';
 import { bookGrowth, newTracker, restoreTracker, scanTracker, switchTranscript, trackerUsage, type Ledger, type UsageTracker } from './usage.js';
 import { writeJsonAtomic } from './persistence.js';
+import { sanitizeOutfit, type Outfit } from '../shared/outfit.js';
 
 type HeadlessTerminal = InstanceType<typeof headless.Terminal>;
 
@@ -187,7 +188,7 @@ export class WorkerManager {
     return false;
   }
 
-  spawn(deskId: string, by: string, prompt?: string, worktree = false, kind: WorkerKind = 'agent', queueOwned = false): WorkerInfo | string {
+  spawn(deskId: string, by: string, prompt?: string, worktree = false, kind: WorkerKind = 'agent', queueOwned = false, outfit?: Outfit): WorkerInfo | string {
     const executionBlocked = this.executionBlocker();
     if (executionBlocked) return executionBlocked;
     if (!fundedDesk(deskId, this.capacity())) return 'Build and furnish this workstation before employing a worker';
@@ -223,6 +224,7 @@ export class WorkerManager {
       rows: 30,
       viewers: [],
       activity: prompt ? truncate(prompt, 80) : undefined,
+      outfit: sanitizeOutfit(outfit),
     };
     const w = newWorker(info, newTracker());
     w.queueOwned = queueOwned;
@@ -880,6 +882,7 @@ process.stdin.on('end', () => {
       activity: info.activity,
       task: info.task,
       pr: info.pr,
+      outfit: info.outfit,
       tracker: info.kind === 'agent' ? tracker : undefined,
       processState: info.processState,
       processPid: this.workers.get(info.id)?.processPid,
@@ -923,6 +926,7 @@ process.stdin.on('end', () => {
           task: validTask(s.task),
           pr: s.pr && typeof s.pr.number === 'number' && typeof s.pr.url === 'string' ? { number: s.pr.number, url: s.pr.url } : undefined,
           usage: tracker.transcript ? trackerUsage(tracker) : undefined,
+          outfit: sanitizeOutfit(s.outfit),
           cols: 100,
           rows: 30,
           viewers: [],

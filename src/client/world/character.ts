@@ -1,6 +1,7 @@
 import { Human, type HumanActivity, type VehiclePose } from './human';
 import * as THREE from 'three';
 import { SKIN_TONES, type Look } from '../../shared/avatar';
+import { ceoAvatar, sameOutfit, type Outfit } from '../../shared/outfit';
 import type { WorkerTask } from '../../shared/protocol';
 import { cardSprite, disposeSprite, textSprite } from './toon';
 
@@ -21,16 +22,25 @@ export function reachCurve(p: number): number {
   return 1 - u * u * (3 - 2 * u);
 }
 
-/** Adult, skinned avatar; profile style chooses one of the two licensed human rigs. */
+/** The suit a profile wears: the CEO catalog entry its look's style selects. */
+export const profileOutfit = (look: Look): Outfit => ({ avatar: ceoAvatar(look.style) });
+
+/** Adult, skinned avatar in corporate attire: a profile's suit, or an explicit outfit (chief of staff, staff). */
 export class Person {
   readonly root = new THREE.Group();
   private human: Human;
   private label: THREE.Sprite | null = null;
   private look: Look;
+  private outfit: Outfit;
+  /** Set when the outfit was given explicitly; a look change then never re-dresses the person. */
+  private fixedOutfit: boolean;
   pose: Pose = 'stand';
-  constructor(private name: string, color: string, look: Look) {
-    this.look={...look};this.human=new Human(look.style);this.root.add(this.human.root);this.setLabel(name,false);
+  constructor(private name: string, color: string, look: Look, outfit?: Outfit) {
+    this.look={...look};this.fixedOutfit=!!outfit;this.outfit={...(outfit??profileOutfit(look))};
+    this.human=new Human(this.outfit);this.root.add(this.human.root);this.setLabel(name,false);
   }
+  /** The avatar and colours being worn. */
+  get wearing():Outfit{return {...this.outfit};}
   get ready(){return this.human.ready;}
   /** Loaded with every texture decoded; see Human.materialsReady. */
   get materialsReady(){return this.human.materialsReady;}
@@ -39,8 +49,15 @@ export class Person {
   setColor(color:string) { this.root.userData.accent=color; }
   get skinColor(){return SKIN_TONES[this.look.skin];}
   setLook(look:Look){
-    if(look.style%2!==this.look.style%2){this.root.remove(this.human.root);this.human.dispose();this.human=new Human(look.style);this.root.add(this.human.root);}
     this.look={...look};
+    if(!this.fixedOutfit)this.dress(profileOutfit(look));
+  }
+  /** Re-dresses the person (an explicit outfit sticks across later look changes). */
+  setOutfit(outfit:Outfit){this.fixedOutfit=true;this.dress(outfit);}
+  private dress(outfit:Outfit){
+    if(sameOutfit(outfit,this.outfit))return;
+    this.outfit={...outfit};
+    this.root.remove(this.human.root);this.human.dispose();this.human=new Human(this.outfit);this.root.add(this.human.root);
   }
   setLabel(name:string, muted:boolean|null){
     const visible=this.label?.visible??true;
@@ -106,11 +123,27 @@ export class Worker {
   /** Body state, set by the routine controller (worker-life.ts) from the worker's real server state. */
   readonly motion: { speed: number; seated: boolean; activity: HumanActivity; detail: boolean; transition: string | null; progress: number } =
     { speed: 0, seated: true, activity: 'none', detail: true, transition: null, progress: 0 };
-  constructor(name: string, color: string) {
-    this.human=new Human(name.length);
+  private outfit: Outfit;
+  constructor(name: string, color: string, outfit: Outfit) {
+    this.outfit = { ...outfit };
+    this.human = new Human(this.outfit);
     this.root.add(this.human.root);
     this.root.userData.accent=color;
     this.setName(name);
+  }
+
+  /** Re-dresses the worker when its saved outfit changes. */
+  setOutfit(outfit: Outfit) {
+    if (sameOutfit(outfit, this.outfit)) return;
+    this.outfit = { ...outfit };
+    this.root.remove(this.human.root);
+    this.human.dispose();
+    this.human = new Human(this.outfit);
+    this.root.add(this.human.root);
+  }
+
+  get wearing(): Outfit {
+    return { ...this.outfit };
   }
 
   setName(name: string) {

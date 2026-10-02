@@ -26,6 +26,7 @@ import { RELAY_LOGIN, relayRequest, relayUpgrade, signInPage, stoppedPage, tunne
 import type { ChatLine, ClientMsg, PeerInfo, ProjectInfo, ServerMsg, ServicesState } from '../shared/protocol.js';
 import { SPAWN } from '../shared/layout.js';
 import { lookFromSeed, sanitizeLook } from '../shared/avatar.js';
+import { sanitizeOutfit } from '../shared/outfit.js';
 import { Continuity } from './continuity.js';
 import { SyncArtifacts } from './sync-artifacts.js';
 import { acquireHostLock } from './host-lock.js';
@@ -38,6 +39,8 @@ const MIME: Record<string, string> = {
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.glb': 'model/gltf-binary',
   '.ico': 'image/x-icon',
   '.json': 'application/json',
   '.webmanifest': 'application/manifest+json',
@@ -910,7 +913,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
       }
       case 'worker.spawn': {
         const kind = msg.kind === 'shell' ? 'shell' : 'agent';
-        const r = workers.spawn(str(msg.deskId, 32), who, str(msg.prompt, 20000) || undefined, msg.worktree === true, kind);
+        const r = workers.spawn(str(msg.deskId, 32), who, str(msg.prompt, 20000) || undefined, msg.worktree === true, kind, false, sanitizeOutfit(msg.outfit));
         if (typeof r === 'string') sendTo(c, { t: 'toast', text: r, level: 'warn' });
         else broadcast({ t: 'toast', text: kind === 'shell' ? `${who} opened a shell at a desk` : `${who} hired ${r.name}${r.prompt ? ' with a task' : ''}`, level: 'info' });
         break;

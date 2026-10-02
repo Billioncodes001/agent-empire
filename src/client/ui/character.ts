@@ -1,14 +1,15 @@
 import * as THREE from 'three';
 
 import { randomLook, type Look } from '../../shared/avatar';
+import { CEO_AVATARS, avatarDef, ceoAvatar, type Outfit } from '../../shared/outfit';
 import { AVATAR_COLORS, saveProfile, store, type Profile } from '../state';
 import { Person } from '../world/character';
 import { toonUnique } from '../world/toon';
 import { autoFocus } from '../keyboard';
 import { h, openModal } from './dom';
 
-/** A turntable with your character on it, drawn with its own small renderer. */
-class Preview {
+/** A turntable with a character on it, drawn with its own small renderer (also used by the hire dialog's outfit picker). */
+export class Preview {
   readonly person: Person;
   private renderer: THREE.WebGLRenderer;
 
@@ -24,6 +25,7 @@ class Preview {
   constructor(
     private canvas: HTMLCanvasElement,
     p: Profile,
+    outfit?: Outfit,
   ) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -47,7 +49,7 @@ class Preview {
     rug.material.userData.outlineParameters = { visible: false };
     this.scene.add(rug);
 
-    this.person = new Person(p.name, p.color, p.look);
+    this.person = new Person(p.name, p.color, p.look, outfit);
     this.person.showLabel(false);
     this.scene.add(this.person.root);
     this.camera.position.set(0, 1.35, 4.6);
@@ -153,11 +155,18 @@ export function openCharacter(first: boolean, onSave: (p: Profile) => void) {
   };
 
   const paint = () => {
-    const { style } = pick.look;
+    // The CEO's suit: `style` indexes CEO_AVATARS (shared/outfit.ts).
+    const chosen = ceoAvatar(pick.look.style);
     styleRow.replaceChildren(
-      ...['Founder · Joe', 'Founder · Marta'].map((name, i) =>
-        h('button.btn', { type: 'button', role: 'radio', 'aria-checked': String(i === style % 2), class: i === style % 2 ? 'on' : '', onclick: () => change({ style: i }) }, name),
-      ),
+      ...CEO_AVATARS.map((id, i) => {
+        const def = avatarDef(id), on = id === chosen;
+        return h(
+          'button.btn.suit-opt',
+          { type: 'button', role: 'radio', 'aria-checked': String(on), class: on ? 'on' : '', title: def.label, onclick: () => change({ style: i }) },
+          h('span.suit-chip', { style: `--suit:${def.swatch.suit};--shirt:${def.swatch.shirt};--tie:${def.swatch.tie ?? def.swatch.shirt}`, 'aria-hidden': 'true' }),
+          def.label,
+        );
+      }),
     );
     shirtRow.replaceChildren(...AVATAR_COLORS.map((c) => swatch(c, `Profile accent ${c}`, c === pick.color, () => change({}, c))));
   };
@@ -181,7 +190,7 @@ export function openCharacter(first: boolean, onSave: (p: Profile) => void) {
         {},
         h('label', {}, 'Your name'),
         input,
-        h('label', {}, 'Character model'),
+        h('label', {}, 'CEO suit'),
         styleRow,
         h('label', {}, 'Profile accent'),
         shirtRow,

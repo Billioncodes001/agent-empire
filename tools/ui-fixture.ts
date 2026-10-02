@@ -6,6 +6,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { randomBytes } from 'node:crypto';
 import { initialEmpire, MANAGER_NAMES, type SupervisionState } from '../src/shared/empire.js';
 import type { ServerMsg, WorkerInfo, QueueTask } from '../src/shared/protocol.js';
+import { sanitizeOutfit } from '../src/shared/outfit.js';
 
 const port = Number(process.env.FIXTURE_PORT || 4613);
 if (!Number.isInteger(port) || port < 1024 || port > 65535 || port === 4610) throw new Error('Use an isolated fixture port (not 4610).');
@@ -51,9 +52,23 @@ function snapshot() {
   if (scenario === 'missing') delete state.supervision;
   return { state, worker, task };
 }
+// Synthetic desk staff for attire checks: FIXTURE_WORKERS=n seats n extra idle workers in default attire, and a hire
+// from the desk dialog seats one more with the chosen outfit. They are display-only: no process, no provider.
+const extraWorkers = new Map<string, WorkerInfo>();
+const FIXTURE_NAMES = ['Bea', 'Cyrus', 'Dana', 'Eli', 'Fatima', 'Gus', 'Hana', 'Ivo', 'Jun', 'Kai', 'Lena'];
+function seatFixtureWorker(deskId: string, outfit?: unknown): WorkerInfo {
+  const n = extraWorkers.size;
+  const w: WorkerInfo = { id: `fixture-staff-${n + 1}`, kind: 'agent', deskId, name: `${FIXTURE_NAMES[n % FIXTURE_NAMES.length]} · fixture`, color: '#8ecae6', status: 'working',
+    processState: 'running', acked: true, createdBy: 'Fixture', createdAt: Date.now(), cols: 90, rows: 25, viewers: [], outfit: sanitizeOutfit(outfit),
+    task: { name: 'Synthetic desk', summary: 'Display-only fixture worker — nothing runs' } };
+  extraWorkers.set(w.id, w);
+  return w;
+}
+for (let i = 0; i < Math.min(18, Number(process.env.FIXTURE_WORKERS) || 0); i++) seatFixtureWorker(`desk-${i + 2}`);
 function publish(ws: WebSocket) {
   const {state, worker, task} = snapshot();
   send(ws, { t: 'worker.update', worker });
+  for (const w of extraWorkers.values()) send(ws, { t: 'worker.update', worker: w });
   send(ws, { t: 'queue', state: { tasks: [task], maxWorkers: 1 } });
   send(ws, { t: 'empire', state });
 }
@@ -150,6 +165,11 @@ sockets.on('connection', ws => {
     if (msg.t === 'worker.attach') send(ws, { t: 'term.snapshot', workerId: 'fixture-chief', cols: 90, rows: 25, data: 'SYNTHETIC TERMINAL — no commands execute.\r\nType to test keyboard routing: ' });
     else if (msg.t === 'term.input' && typeof msg.data === 'string') send(ws, { t: 'term.data', workerId: 'fixture-chief', data: msg.data.replace(/\r/g, '\r\n') });
     else if (msg.t === 'ping') send(ws, { t: 'pong', at: msg.at });
+    else if (msg.t === 'worker.spawn' && typeof msg.deskId === 'string' && /^desk-([2-9]|1[0-9]|20)$/.test(msg.deskId) && msg.kind !== 'shell' && ![...extraWorkers.values()].some((w) => w.deskId === msg.deskId)) {
+      const w = seatFixtureWorker(msg.deskId, msg.outfit);
+      for (const client of sockets.clients) send(client, { t: 'worker.update', worker: w });
+      send(ws, { t: 'toast', level: 'info', text: `Fixture only: ${w.name} sat down for display; no agent runs.` });
+    }
     else if (!['move', 'act', 'profile', 'term.resize', 'worker.detach'].includes(msg.t)) send(ws, { t: 'toast', level: 'info', text: 'Fixture only: this action does not change real data.' });
   });
 });
