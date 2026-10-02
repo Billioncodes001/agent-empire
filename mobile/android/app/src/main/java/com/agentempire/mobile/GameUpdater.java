@@ -425,7 +425,14 @@ final class GameUpdater {
                 markInstallPending(version);
                 Intent status = new Intent(INSTALL_ACTION).setClass(activity, InstallStatusReceiver.class).putExtra(InstallStatusReceiver.EXTRA_NONCE, installNonce);
                 int flags = PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= 31 ? PendingIntent.FLAG_MUTABLE : 0);
-                session.commit(PendingIntent.getBroadcast(activity, id, status, flags).getIntentSender());
+                // The marker goes down before commit so the installer's answer can never arrive first; if commit
+                // itself throws, nothing is installing, so take it back up rather than nag on the next launch.
+                try {
+                    session.commit(PendingIntent.getBroadcast(activity, id, status, flags).getIntentSender());
+                } catch (RuntimeException e) {
+                    clearInstallPending(activity);
+                    throw e;
+                }
             }
             return "installer";
         } catch (java.security.NoSuchAlgorithmException impossible) {
