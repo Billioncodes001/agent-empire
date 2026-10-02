@@ -166,6 +166,66 @@ try {
       check('no console errors or missing assets (character select → game)', !s.errors.length, s.errors.slice(0, 5).join(' · '));
       await s.context.close();
     }
+    // 1b. Character select at phone landscape heights: the preview fits inside the card and every suit can be scrolled
+    //     into view and chosen (the preview was a fixed 360px and clipped the last suits on an iPhone 18 Pro, 874x402).
+    for (const size of [{ width: 874, height: 402 }, { width: 812, height: 375 }, { width: 667, height: 375 }]) {
+      const s = await open(browser, { ...size, touch: true, style: null });
+      try {
+        await s.page.waitForSelector('#modal-root .charsel', { timeout: 120_000 });
+        const fit = await s.page.evaluate(() => {
+          const body = document.querySelector('.charsel .body')!.getBoundingClientRect();
+          const stage = document.querySelector('.charsel-stage')!.getBoundingClientRect();
+          return stage.top >= body.top - 1 && stage.bottom <= body.bottom + 1 && stage.height >= 150;
+        });
+        check(`phone ${size.width}x${size.height}: the founder preview fits inside the card`, fit);
+        // The options column itself scrolls (the card body no longer does): scrolled to its end, the last suit is on screen.
+        const reach = await s.page.evaluate(() => {
+          const opts = document.querySelector('.charsel-opts')!;
+          opts.scrollTop = opts.scrollHeight;
+          const body = document.querySelector('.charsel .body')!.getBoundingClientRect();
+          const suits = document.querySelectorAll('.charsel [role=radiogroup][aria-label="Character model"] [role=radio]');
+          const last = suits[suits.length - 1].getBoundingClientRect();
+          return last.top >= body.top - 1 && last.bottom <= body.bottom + 1;
+        });
+        const last = s.page.locator('.charsel [role=radiogroup][aria-label="Character model"] [role=radio]').last();
+        await last.click();
+        check(`phone ${size.width}x${size.height}: scrolling the options brings the last suit on screen, and it can be chosen`, reach && (await last.getAttribute('aria-checked')) === 'true');
+        if (size.width === 874) await s.page.screenshot({ path: resolve(out, '06b-character-select-phone-874x402.jpg'), quality: 82 });
+        // Keyboard open, as the Android app sees it (the view shrinks to ~113px above an iPhone landscape keyboard while
+        // the field has focus; keyboard.ts then sets html.ae-kb): the name field and Continue stay usable. The field was
+        // clipped to a sliver and Return did nothing on the simulator.
+        await s.page.focus('.charsel input[aria-label="Your name"]');
+        await s.page.setViewportSize({ width: size.width, height: 113 });
+        await s.page.waitForFunction(() => document.documentElement.classList.contains('ae-kb'), undefined, { timeout: 5000 }).catch(() => {});
+        const typing = await s.page.evaluate(() => {
+          const box = (sel: string) => document.querySelector(sel)!.getBoundingClientRect();
+          const body = box('.charsel .body'), input = box('.charsel input[aria-label="Your name"]'), save = box('.charsel button[type=submit]');
+          const kb = document.documentElement.classList.contains('ae-kb');
+          return { ok: kb && input.top >= body.top - 1 && input.bottom <= body.bottom + 1 && input.height >= 36 && save.bottom <= innerHeight + 1, kb, body: [body.top, body.bottom], input: [input.top, input.bottom], save: save.bottom };
+        });
+        check(`phone ${size.width}x${size.height}: with the keyboard open the name field and Continue are fully visible`, typing.ok, JSON.stringify(typing));
+        await s.page.setViewportSize({ width: size.width, height: size.height });
+      } finally {
+        await s.context.close();
+      }
+    }
+    // 1c. A tablet with its keyboard open keeps the whole founder card (title and suits); only short landscape trims it.
+    {
+      const s = await open(browser, { width: 1024, height: 768, touch: true, style: null });
+      try {
+        await s.page.waitForSelector('#modal-root .charsel', { timeout: 120_000 });
+        await s.page.focus('.charsel input[aria-label="Your name"]');
+        await s.page.setViewportSize({ width: 1024, height: 420 });
+        await s.page.waitForFunction(() => document.documentElement.classList.contains('ae-kb'), undefined, { timeout: 5000 }).catch(() => {});
+        const kept = await s.page.evaluate(() => {
+          const shown = (sel: string) => { const e = document.querySelector(sel) as HTMLElement | null; return !!e && e.offsetParent !== null; };
+          return { kb: document.documentElement.classList.contains('ae-kb'), title: shown('.charsel header h2'), suits: shown('.charsel [role=radiogroup][aria-label="Character model"]') };
+        });
+        check('tablet 1024x768 with the keyboard open keeps the founder title and suits', kept.kb && kept.title && kept.suits, JSON.stringify(kept));
+      } finally {
+        await s.context.close();
+      }
+    }
     // 2. In game on desktop with a male CEO: the CEO, the chief of staff and a desk of workers in default attire,
     //    then a hire with a customised outfit.
     {
