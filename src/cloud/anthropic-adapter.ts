@@ -8,6 +8,7 @@ import { safeExecutionError } from '../server/execution-errors.js';
 import { COMMIT } from '../server/execution-validation.js';
 import { GitHubClient, GitHubError } from './store.js';
 import { AnthropicManaged, type ProviderCredentials } from '../server/providers/anthropic-managed.js';
+import { provisionAnthropicExecution, type ProvisionResult, type WorkerModel } from './provisioning.js';
 import { DispatchFailure, type DispatchRequest, type ProviderAdapter, type ProviderObservation } from './provider.js';
 import { utcDay, type CloudExecution, type EventCursorState } from './schema.js';
 
@@ -16,6 +17,7 @@ const MAX_EVENT_PAGES = 5;
 export class AnthropicCloudAdapter implements ProviderAdapter {
   readonly provider = 'anthropic' as const;
   readonly canDispatch: boolean;
+  readonly canProvision: boolean;
   private client: AnthropicManaged;
   private now: () => number;
   /** One read-only definition check per coordinator run and execution config. */
@@ -27,6 +29,7 @@ export class AnthropicCloudAdapter implements ProviderAdapter {
     this.client = new AnthropicManaged(options.fetch ?? fetch, options.timeoutMs ?? 15_000);
     this.github = new GitHubClient(credentials.githubToken, { ...(options.fetch ? { fetch: options.fetch } : {}), timeoutMs: options.timeoutMs ?? 15_000 });
     this.canDispatch = !!credentials.apiKey && !!credentials.githubToken;
+    this.canProvision = !!credentials.apiKey;
     this.now = options.now ?? Date.now;
   }
 
@@ -60,6 +63,9 @@ export class AnthropicCloudAdapter implements ProviderAdapter {
       throw new DispatchFailure(true, `${safeExecutionError(error).message} The session may have been accepted; inspect the provider Console for task ${request.jobId}.`);
     }
   }
+
+  /** Control-plane lookups and creates only; no session. Needs only the Anthropic key. */
+  provision(model: WorkerModel): Promise<ProvisionResult> { return provisionAnthropicExecution(this.client, this.credentials.apiKey, model); }
 
   async observe(sessionId: string, cursor: EventCursorState): Promise<{ observation: ProviderObservation; cursor: EventCursorState }> {
     let next = { ...cursor };

@@ -6,12 +6,13 @@ import './setup.css';
 import type { Native, ShellInfo } from '../native';
 import { BridgeError } from '../native';
 import {
-  blockers, CLOUD_STEPS, DEFAULT_LIMITS, dollars, LIMIT_BOUNDS, linkedProviders, MAX_REPOS, parseCents, progress, PROVIDER_NAMES, reduce, repoKey,
-  STATE_REPO_NAME, validateProviderKey, type Action, type ProviderId, type RepoRef, type SetupState, type Step,
+  actionsEstimate, blockers, CLOUD_STEPS, DEFAULT_LIMITS, dollars, INTERVALS, LIMIT_BOUNDS, linkedProviders, MAX_REPOS, parseCents, progress, PROVIDER_NAMES, reduce, repoKey,
+  STATE_REPO_NAME, validateProjectToken, validateProviderKey, type Action, type ProviderId, type RepoRef, type SetupState, type Step,
 } from './model';
+import { PROJECT_TOKEN_GUIDANCE } from '../../cloud/installer';
 import { defaultDeviceName, LoginFailure, parseServerAddress, revokeDevice, signInToServer, type ServerSession } from './server-login';
 import { GitHubClient, GitHubError, type RepoListing } from './github';
-import { CloudSetupError, createEmpire, CREATE_STEPS, githubCloudSetup, pendingWorkflow, readiness, sodiumSealer, type CreateStep, type StateRepo, type WorkflowSource } from './cloud-setup';
+import { CloudSetupError, createEmpire, CREATE_STEPS, executionPlan, type CreateStep, type StateRepo } from './cloud-setup';
 import { GITHUB_NEW_STATE_REPO_URL, GITHUB_SCOPES, GITHUB_TOKEN_URL, PROVIDER_KEY_URLS } from './config';
 import { dismissKeyboard, isTouchDevice, trackKeyboard } from '../keyboard';
 
@@ -93,13 +94,14 @@ export interface SetupDeps {
   shell: ShellInfo | null;
   clientId: string;
   fetchImpl?: typeof fetch;
-  workflow?: WorkflowSource;
+  /** The coordinator bundle to install; defaults to the copy shipped with this build (checked against its manifest). */
+  coordinator?: () => Promise<string>;
   /** App: a device session was signed in and stored; start the game with it. */
   onServerSession(session: ServerSession): void;
   /** Web: continue to the server's own cookie sign-in page. */
   onWebServer(host: string): void;
-  /** Cloud: the Empire's state repository is ready. */
-  onCloudCreated(repo: StateRepo): void;
+  /** Cloud: the Empire's state repository is ready; open it with this GitHub token. */
+  onCloudCreated(repo: StateRepo, github: { token: string; login: string }): void;
 }
 
 const prefersReduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -139,7 +141,6 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
   document.body.append(root);
   trackKeyboard();
   const fetchImpl = deps.fetchImpl ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
-  const workflow = deps.workflow ?? pendingWorkflow;
 
   let state = initial;
   let busy = false;
@@ -301,8 +302,8 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
     },
 
     mode() {
-      const card = (mode: 'cloud' | 'server', opts: { ico: string; badge: string; title: string; points: string[]; limits: Child; cta: string }) => {
-        const btn = el('button', { type: 'button', class: `su-card su-card-${mode}`, 'aria-describedby': `su-card-${mode}-d`, onclick: () => dispatch({ type: 'chooseMode', mode }) },
+      const card = (mode: 'cloud' | 'server' | 'local', opts: { ico: string; badge: string; title: string; points: string[]; limits: Child; cta: string; onclick?: (btn: HTMLButtonElement) => void }) => {
+        const btn: HTMLButtonElement = el('button', { type: 'button', class: `su-card su-card-${mode}`, 'aria-describedby': `su-card-${mode}-d`, onclick: () => (opts.onclick ? opts.onclick(btn) : mode !== 'local' && dispatch({ type: 'chooseMode', mode })) },
           el('span', { class: 'su-card-top' }, icon(opts.ico, 'su-card-ico'), el('span', { class: 'su-badge', text: opts.badge })),
           el('span', { class: 'su-card-title', text: opts.title }),
           el('span', { class: 'su-card-points', id: `su-card-${mode}-d` }, ...opts.points.map((p) => el('span', { class: 'su-point' }, icon(ICONS.check, 'su-point-ico'), p)), el('span', { class: 'su-card-limits' }, opts.limits)),
@@ -331,11 +332,51 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
         limits: [el('strong', { text: 'Needs: ' }), 'a server you run with Agent Empire installed.'].reduce((f, n) => (f.append(n), f), document.createDocumentFragment()),
         cta: 'Connect a server',
       });
+      // Desktop only: the shell can run the Empire on this computer (bundled server on loopback, app.runLocal).
+      const localErr = el('p', { class: 'su-error', role: 'alert', hidden: true });
+      const local = deps.shell?.platform === 'desktop' && deps.shell.localAvailable
+        ? card('local', {
+            ico: ICONS.server,
+            badge: 'This computer',
+            title: 'Run on this computer',
+            points: ['Full capabilities while the app is open', 'Uses this computer’s CLI agent logins', 'No server or cloud account needed'],
+            limits: [el('strong', { text: 'Limits: ' }), 'local workers stop when you quit the app.'].reduce((f, n) => (f.append(n), f), document.createDocumentFragment()),
+            cta: 'Run here',
+            onclick: (btn) => void runLocal(btn),
+          })
+        : null;
+      async function runLocal(btn: HTMLButtonElement) {
+        if (busy) return;
+        busy = true;
+        btn.setAttribute('aria-busy', 'true');
+        btn.classList.add('is-busy');
+        localErr.hidden = true;
+        live.textContent = 'Waiting for the desktop app to start your Empire on this computer…';
+        try {
+          const session = await deps.native.runLocal();
+          busy = false;
+          live.textContent = 'Your Empire is running on this computer. Opening it.';
+          deps.onServerSession({ host: session.host, token: session.token, deviceId: session.deviceId });
+        } catch (err) {
+          busy = false;
+          btn.removeAttribute('aria-busy');
+          btn.classList.remove('is-busy');
+          const msg = err instanceof Error ? err.message : '';
+          if (/^cancelled:/.test(msg)) {
+            live.textContent = 'Running on this computer was cancelled. Nothing was started.';
+            return; // the player said no in the native dialog: stay here quietly
+          }
+          localErr.hidden = false;
+          localErr.replaceChildren(icon(ICONS.warn, 'su-inline-ico'), msg || 'Your Empire couldn’t start on this computer.');
+        }
+      }
       const { panel, heading } = frame({
         eyebrow: 'Choose one · you can change it later',
         title: STEP_TITLES.mode,
-        lede: 'Either way your Empire keeps working when you close the app, and reopening shows where it is now. Only “Shut down Empire” in the game stops it.',
-        body: [el('div', { class: 'su-cards' }, cloud, server)],
+        lede: local
+          ? 'Cloud and server keep working when you close the app; on this computer it runs while the app is open. Only “Shut down Empire” in the game stops it.'
+          : 'Either way your Empire keeps working when you close the app, and reopening shows where it is now. Only “Shut down Empire” in the game stops it.',
+        body: [localErr, el('div', { class: `su-cards${local ? ' su-cards-3' : ''}` }, cloud, server, local)],
         wide: true,
         backInHead: true,
       });
@@ -480,7 +521,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
         } catch {
           stored = false;
         }
-        dispatch({ type: 'githubLinked', login: user.login, token, via });
+        dispatch({ type: 'githubLinked', login: user.login, token, via, plan: user.plan ?? null });
         if (!stored) live.textContent = 'Linked. This browser keeps the GitHub token only until the page closes.';
         render();
       }
@@ -616,7 +657,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
     providers() {
       const next = primary('Set limits', () => dispatch({ type: 'next' }));
       const errs: Partial<Record<ProviderId, HTMLElement>> = {};
-      const rows = (Object.keys(PROVIDER_NAMES) as ProviderId[]).map((id) => {
+      const rows: HTMLElement[] = (Object.keys(PROVIDER_NAMES) as ProviderId[]).map((id) => {
         const input = el('input', {
           id: `su-key-${id}`, class: 'su-input su-mono', type: 'password', autocomplete: 'off', autocapitalize: 'off', spellcheck: false,
           placeholder: id === 'anthropic' ? 'sk-ant-…' : 'sk-…', value: state.providers[id],
@@ -639,8 +680,25 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
           errs[id]!,
         );
       });
+      const pt = el('input', {
+        id: 'su-project-token', class: 'su-input su-mono', type: 'password', autocomplete: 'off', autocapitalize: 'off', spellcheck: false,
+        placeholder: 'github_pat_…', value: state.projectToken,
+        oninput: () => dispatch({ type: 'setProjectToken', value: pt.value }),
+      });
+      const ptErr = el('p', { class: 'su-field-error', id: 'su-project-token-e', 'aria-live': 'polite' });
+      pt.setAttribute('aria-describedby', ptErr.id);
+      const projectRow = el('div', { class: 'su-provider' },
+        el('div', { class: 'su-provider-head' }, icon(ICONS.github, 'su-inline-ico'), el('label', { for: pt.id, text: 'Project access token (optional now)' }), external('Create one', GITHUB_TOKEN_URL)),
+        el('div', { class: 'su-row' }, pt),
+        ptErr,
+        el('details', { class: 'su-details' }, el('summary', { text: 'What this token is for and how to scope it' }),
+          el('p', { class: 'su-note', text: 'Agents clone your project and push their work to a new branch with this token. Without it, jobs can’t reach your projects; you can add it later by running setup again.' }),
+          el('ol', { class: 'su-howto' }, ...PROJECT_TOKEN_GUIDANCE.map((t) => el('li', { text: t })))),
+      );
+      rows.push(projectRow);
       refresh = () => {
         for (const id of Object.keys(errs) as ProviderId[]) errs[id]!.textContent = validateProviderKey(id, state.providers[id]) ?? '';
+        ptErr.textContent = validateProjectToken(state.projectToken) ?? '';
         next.disabled = blockers(state).length > 0;
       };
       const { panel, heading } = frame({
@@ -672,8 +730,25 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
         return field(label, el('span', { class: 'su-money-wrap' }, el('span', { class: 'su-money-sign', 'aria-hidden': 'true', text: '$' }), input), hint);
       };
       const approve = el('input', { type: 'checkbox', id: 'su-approve', class: 'su-switch', role: 'switch', checked: state.limits.approveEachJob, onchange: () => dispatch({ type: 'setLimits', patch: { approveEachJob: approve.checked } }) });
+      const estimate = el('p', { class: 'su-note su-estimate', 'aria-live': 'polite' });
+      const schedule = el('div', { class: 'su-segment', role: 'radiogroup', 'aria-labelledby': 'su-interval-l' },
+        ...INTERVALS.map((m) => {
+          const id = `su-interval-${m}`;
+          const radio = el('input', { type: 'radio', name: 'su-interval', id, value: String(m), checked: state.interval === m, onchange: () => dispatch({ type: 'setInterval', interval: m }) });
+          return el('label', { class: 'su-seg', for: id }, radio, el('span', { text: m === 60 ? 'Hourly' : `${m} min` }));
+        }));
+      const paintEstimate = () => {
+        const e = actionsEstimate(state.interval, state.github.plan);
+        const plan = state.github.plan ? state.github.plan.replace(/^\w/, (c) => c.toUpperCase()) : null;
+        const over = (e.share ?? 0) > 1;
+        estimate.classList.toggle('is-over', over);
+        estimate.textContent = `About ${e.minutes.toLocaleString()} GitHub Actions minutes a month for scheduled runs` +
+          (e.included ? `, ${Math.round((e.share ?? 0) * 100)}% of the ${e.included.toLocaleString()} included on GitHub ${plan} for private repositories.${over ? ' Minutes beyond that are billed to your GitHub account; choose a longer interval to stay inside it.' : ''}` : plan ? ` (your plan: ${plan}; check its included minutes in GitHub billing).` : '. GitHub Free includes 2,000 a month for private repositories, Pro 3,000.') +
+          ' Each run bills at least a minute; waking it from the app adds runs. Figures are estimates.';
+      };
       refresh = () => {
         n.textContent = String(state.limits.maxConcurrent);
+        paintEstimate();
         const list = blockers(state);
         errors.replaceChildren(...list.map((t) => el('li', { text: t })));
         next.disabled = list.length > 0;
@@ -688,6 +763,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
             money('perJob', 'Allowance per job', `Default ${'$' + DEFAULT_LIMITS.perJob}`),
             money('daily', 'Daily allowance', 'Across all jobs, per UTC day'),
           ),
+          el('div', { class: 'su-field su-schedule' }, el('span', { class: 'su-label', id: 'su-interval-l', text: 'How often your coordinator checks for work' }), schedule, estimate),
           el('label', { class: 'su-toggle', for: 'su-approve' }, approve, el('span', { class: 'su-toggle-text' }, el('strong', { text: 'Ask me before each job starts' }), el('span', { text: 'Recommended. Changes always arrive as pull requests for you to review.' }))),
           errors,
           el('p', { class: 'su-note', text: 'Provider usage is measured between requests, so a job can overshoot its allowance slightly. Also set a monthly limit in your provider’s console.' }),
@@ -716,7 +792,9 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
             row('Projects', s.repos.map((r) => `${r.owner}/${r.name}`).join(', ')),
             row('AI providers', linkedProviders(s.providers).map((id) => PROVIDER_NAMES[id]).join(' and ') + ' · key encrypted, never shown again'),
             row('Limits', `${s.limits.maxConcurrent} job${s.limits.maxConcurrent === 1 ? '' : 's'} at once · ${per === null ? '?' : dollars(per)} per job · ${day === null ? '?' : dollars(day)} per day${s.limits.approveEachJob ? ' · you approve each job' : ''}`),
-            row('App closed', 'Your Empire keeps working. It checks for work every 5–15 minutes in GitHub Actions. Only “Shut down Empire” in the game stops it.'),
+            row('Jobs run', executionPlan({ projects: s.repos, providers: s.providers }).note),
+            row('Project token', s.projectToken.trim() ? 'fine-grained token · encrypted, never shown again' : 'not added: jobs can’t reach your projects until you add one (run setup again)'),
+            row('App closed', `Your Empire keeps working. Its coordinator runs ${s.interval === 60 ? 'hourly' : `every ${s.interval} minutes`} in GitHub Actions (about ${actionsEstimate(s.interval).minutes.toLocaleString()} Actions minutes a month), sooner when the app wakes it. Only “Shut down Empire” in the game stops it.`),
             row('Costs', 'GitHub Actions minutes are billed to your GitHub account; API usage to your AI provider. Agent Empire charges nothing.'),
           ),
           el('label', { class: 'su-accept', for: 'su-accept' }, accept, el('span', { text: 'I understand these costs are billed to my own GitHub and AI provider accounts.' })),
@@ -738,10 +816,11 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
       const retry = primary('Try again', () => void run());
       retry.hidden = true;
       const other = el('button', { type: 'button', class: 'su-btn su-ghost', hidden: true, onclick: () => !busy && dispatch({ type: 'changeMode' }) }, 'Choose another way');
-      const mark = (step: CreateStep, s: 'running' | 'done' | 'failed') => {
+      const mark = (step: CreateStep, s: 'running' | 'done' | 'skipped' | 'failed', detail?: string) => {
         const li = items.get(step)!;
-        li.className = `su-prog is-${s}`;
-        li.querySelector('.su-prog-state')!.textContent = ` — ${s === 'running' ? 'in progress' : s}`;
+        li.className = `su-prog is-${s === 'skipped' ? 'done' : s}`;
+        const skipped = detail && !/^already/.test(detail) ? `skipped (${detail})` : `already done${detail ? ` (${detail.replace(/^already /, '')})` : ''}`;
+        li.querySelector('.su-prog-state')!.textContent = ` — ${s === 'running' ? 'in progress' : s === 'skipped' ? skipped : s === 'done' && detail && step === 'execution' ? `done (${detail})` : s}`;
       };
       async function run() {
         if (busy || !state.github.token || !state.github.login) return;
@@ -749,26 +828,34 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
         retry.hidden = true;
         other.hidden = true;
         result.replaceChildren();
-        const gh = new GitHubClient(state.github.token, fetchImpl);
+        const token = state.github.token;
+        const login = state.github.login;
         try {
           const repo = await createEmpire(
-            { login: state.github.login, projects: state.repos, providers: state.providers, limits: state.limits, platform: deps.shell?.platform ?? 'web' },
-            githubCloudSetup(gh, sodiumSealer, workflow),
-            readiness(sodiumSealer, workflow),
-            (step, s) => mark(step, s),
+            { login, projects: state.repos, providers: state.providers, projectToken: state.projectToken, limits: state.limits, interval: state.interval, platform: deps.shell?.platform ?? 'web' },
+            token,
+            { fetch: fetchImpl, ...(deps.coordinator ? { bundle: deps.coordinator } : {}) },
+            (step, s, detail) => mark(step, s, detail),
           );
           dispatch({ type: 'forgetSecrets' });
           await Promise.allSettled([deps.native.secureSet('state.repo', `${repo.owner}/${repo.name}`), deps.native.secureSet('mode', 'cloud')]);
-          result.replaceChildren(el('p', { class: 'su-success' }, icon(ICONS.check, 'su-inline-ico'), `Your Empire has a home: ${repo.owner}/${repo.name}.`));
+          result.replaceChildren(el('p', { class: 'su-success' }, icon(ICONS.check, 'su-inline-ico'), repo.alreadyInstalled ? `Your Empire was already in ${repo.owner}/${repo.name}; it was kept as it is and its coordinator is up to date.` : `Your Empire has a home: ${repo.owner}/${repo.name}. Nothing has been started or charged.`));
+          const executionNote = {
+            requested: 'Your coordinator sets up your Anthropic agent and environment on its first run (within your schedule). Cloud Empire shows when execution is ready; until then new jobs are refused, not charged.',
+            already_requested: 'Execution setup is already waiting for your coordinator’s next run.',
+            already_configured: 'Execution is already set up; jobs run where they did before.',
+            no_anthropic_key: 'No Anthropic key: jobs can’t run yet. OpenAI-only Empires can’t run jobs until the OpenAI adapter exists.',
+          }[repo.execution ?? 'requested'];
+          result.append(el('p', { class: 'su-note', text: executionNote }));
           busy = false;
-          setTimeout(() => deps.onCloudCreated(repo), reduced ? 0 : 900);
+          setTimeout(() => deps.onCloudCreated(repo, { token, login }), reduced ? 0 : 900);
         } catch (err) {
           busy = false;
           const e = err instanceof CloudSetupError ? err : new CloudSetupError('Something went wrong.', 'github');
           if (e.step) mark(e.step, 'failed');
           result.replaceChildren(el('p', { class: 'su-error', role: 'alert' }, icon(ICONS.warn, 'su-inline-ico'), e.message));
           if (e.reasons.length) result.append(el('ul', { class: 'su-error-list' }, ...e.reasons.map((r) => el('li', { text: r }))));
-          if (e.code === 'not_ready') result.append(el('p', { class: 'su-note', text: 'Your answers are kept on this screen. Your API keys stay in memory only and are forgotten when you leave setup.' }));
+          result.append(el('p', { class: 'su-note', text: e.code === 'not_ready' ? 'Your answers are kept on this screen. Your API keys stay in memory only and are forgotten when you leave setup.' : 'Finished steps are kept: “Try again” continues where it stopped. Nothing paid was started.' }));
           retry.hidden = e.code === 'not_ready';
           other.hidden = false;
         }
@@ -812,35 +899,105 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
   };
 }
 
-/** Cloud mode is set up, but the cloud view (CLOUD-04) is not built yet: say so plainly. */
-export function mountCloudPending(opts: { repo?: string; native: Native; onChangeSetup(): void }): HTMLElement {
+/**
+ * Cloud mode on a device that has no GitHub sign-in (a browser after the page closed, or an app whose token was
+ * removed): sign in again to open the Empire. The state repository is checked to be visible and private before the
+ * game opens. Nothing on GitHub changes here.
+ */
+export function mountCloudUnlock(opts: {
+  repo?: string;
+  native: Native;
+  clientId: string;
+  fetchImpl?: typeof fetch;
+  notice?: string;
+  onUnlocked(session: { token: string; login: string; repo: string }): void;
+  onChangeSetup(): void;
+}): HTMLElement {
   const reduced = prefersReduced();
+  const fetchImpl = opts.fetchImpl ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
   const root = el('div', { id: 'setup', class: `su${reduced ? ' su-reduced' : ''}${saveData() ? ' su-lite' : ''}` });
-  const repoUrl = opts.repo && /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(opts.repo) ? `https://github.com/${opts.repo}` : null;
+  const errors = el('p', { class: 'su-error', role: 'alert', hidden: true });
+  const show = (msg: string | null) => {
+    errors.hidden = !msg;
+    errors.replaceChildren(...(msg ? [icon(ICONS.warn, 'su-inline-ico'), msg] : []));
+  };
+  const repoInput = el('input', { id: 'su-unlock-repo', class: 'su-input su-mono', type: 'text', autocomplete: 'off', autocapitalize: 'off', spellcheck: false, placeholder: `you/${STATE_REPO_NAME}`, value: opts.repo ?? '' });
+  const tokenInput = el('input', { id: 'su-unlock-token', class: 'su-input su-mono', type: 'password', autocomplete: 'off', autocapitalize: 'off', spellcheck: false, placeholder: 'github_pat_…' });
+  const open = el('button', { type: 'submit', class: 'su-btn su-primary' }, el('span', { class: 'su-btn-label', text: 'Open my Empire' }), icon(ICONS.arrow, 'su-btn-ico'));
+  let busy = false;
+  async function unlock(token: string) {
+    if (busy) return;
+    busy = true;
+    open.disabled = true;
+    show(null);
+    try {
+      const user = await new GitHubClient(token, fetchImpl).user();
+      const wanted = repoInput.value.trim() || `${user.login}/${STATE_REPO_NAME}`;
+      const m = /^([A-Za-z0-9-]{1,39})\/([A-Za-z0-9._-]{1,100})$/.exec(wanted);
+      if (!m) throw new GitHubError('Enter the state repository as owner/name.', 0);
+      const repo = await new GitHubClient(token, fetchImpl).getRepo(m[1], m[2]);
+      if (!repo) throw new GitHubError(`${wanted} wasn’t found, or this token can’t see it. Give the token access to it.`, 404);
+      if (!repo.private) throw new GitHubError(`${wanted} is public. Make it private on GitHub before opening your Empire.`, 0);
+      try {
+        await opts.native.secureSet('github.token', token);
+        await opts.native.secureSet('github.login', user.login);
+      } catch {
+        // A browser keeps the token only in memory, until the page closes.
+      }
+      await Promise.allSettled([opts.native.secureSet('state.repo', `${repo.owner}/${repo.name}`), opts.native.secureSet('mode', 'cloud')]);
+      opts.onUnlocked({ token, login: user.login, repo: `${repo.owner}/${repo.name}` });
+    } catch (err) {
+      busy = false;
+      open.disabled = false;
+      show(err instanceof GitHubError || err instanceof BridgeError ? err.message : 'That didn’t work. Check the token and try again.');
+    }
+  }
+  const form = el('form', {
+    class: 'su-form', novalidate: true,
+    onsubmit: (e: Event) => {
+      e.preventDefault();
+      const token = tokenInput.value.trim();
+      if (!token) return show('Paste a GitHub token first.'), tokenInput.focus();
+      void unlock(token);
+    },
+  },
+    el('div', { class: 'su-field' }, el('label', { class: 'su-label', for: repoInput.id, text: 'State repository' }), repoInput),
+    el('div', { class: 'su-field' }, el('label', { class: 'su-label', for: tokenInput.id, text: 'GitHub token' }), tokenInput,
+      el('span', { class: 'su-hint', text: opts.native.available ? 'Kept in this device’s secure storage.' : 'This browser keeps it in memory only, until the page closes.' })),
+  );
+  const deviceFlow = opts.native.available && opts.clientId
+    ? el('button', {
+        type: 'button', class: 'su-btn su-ghost su-gh',
+        onclick: async () => {
+          try {
+            const r = await opts.native.githubDeviceFlow({ clientId: opts.clientId, scopes: ['repo', 'workflow'] });
+            await unlock(r.token);
+          } catch (err) {
+            show(err instanceof BridgeError && /cancel/i.test(err.message) ? 'GitHub sign-in was cancelled.' : err instanceof Error ? err.message : 'GitHub sign-in didn’t finish.');
+          }
+        },
+      }, icon(ICONS.github, 'su-btn-ico'), 'Sign in with GitHub')
+    : null;
   const change = el('button', {
     type: 'button', class: 'su-btn su-ghost',
     onclick: () => {
-      if (!confirm('Change setup? This forgets the cloud setup on this device. Your state repository on GitHub is not changed or deleted.')) return;
+      if (!confirm('Set up again? This forgets the cloud setup on this device only. Your Empire keeps running in your GitHub; nothing there is changed or deleted.')) return;
       opts.onChangeSetup();
     },
-  }, 'Change setup');
-  const heading = el('h1', { class: 'su-title', tabindex: '-1', text: 'Your Empire is being set up' });
+  }, 'Set up again');
+  const heading = el('h1', { class: 'su-title', tabindex: '-1', text: 'Open your Empire' });
   root.append(
     skyline(saveData()),
     el('div', { class: 'su-shell su-shell-center' },
       el('section', { class: 'su-panel su-pending', 'aria-labelledby': 'su-title' },
-        el('header', { class: 'su-head' }, el('p', { class: 'su-eyebrow', text: 'Cloud mode' }), heading),
-        el('div', { class: 'su-body' },
-          el('p', { class: 'su-lede', text: 'Cloud view coming in the next update. Your Empire’s home is in your GitHub; this app can’t show the city from it yet, so it shows nothing rather than pretend.' }),
-          opts.repo ? el('p', { class: 'su-note' }, 'State repository: ', el('span', { class: 'su-mono', text: opts.repo })) : null,
-        ),
-        el('footer', { class: 'su-foot' }, change, el('span', { class: 'su-foot-gap' }),
-          repoUrl
-            ? el('button', { type: 'button', class: 'su-btn su-primary', onclick: () => (opts.native.available ? void opts.native.openExternal(repoUrl).catch(() => {}) : void window.open(repoUrl, '_blank', 'noopener,noreferrer')) }, 'Open on GitHub')
-            : null),
+        el('header', { class: 'su-head' }, el('p', { class: 'su-eyebrow', text: 'Cloud mode' }), heading,
+          el('p', { class: 'su-lede', text: opts.notice ?? 'Your Empire keeps running in your GitHub. Sign in to see where it is now.' })),
+        el('div', { class: 'su-body' }, errors, deviceFlow, form),
+        el('footer', { class: 'su-foot' }, change, el('span', { class: 'su-foot-gap' }), open),
       ),
     ),
   );
+  open.addEventListener('click', () => form.requestSubmit());
   heading.id = 'su-title';
   document.body.append(root);
   heading.focus({ preventScroll: true });

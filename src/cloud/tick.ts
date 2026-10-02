@@ -21,9 +21,11 @@
  */
 import { advanceEconomy, applyEmpireAction, rewardAcceptedJob, settleCapMs, syncManagers, syncWorkforce } from './economy.js';
 import { intentIdFromPath, parseIntent, sortIntents, IntentError, type CloudIntent } from './intents.js';
-import { DispatchFailure, type ProviderAdapter, type ProviderObservation } from './provider.js';
+import { DispatchFailure, ProvisionError, type ProviderAdapter, type ProviderObservation, type ProvisionResult } from './provider.js';
+import { SITES } from '../shared/empire.js';
+import { DEFAULT_WORKER_MODEL, WORKER_ENVIRONMENT, workerModelLabel } from './worker-spec.js';
 import {
-  clone, FINAL_STATUSES, holdsSlot, LIMITS, parseStateFiles, promptHash, promptPreview, PROMPT_STATUSES, REVIEW_STATUSES, serializeState, sessionLive, SLOT_STATUSES, STATE_FILES, utcDay,
+  clone, PROVISION_RETRY_MS, FINAL_STATUSES, holdsSlot, LIMITS, parseStateFiles, promptHash, promptPreview, PROMPT_STATUSES, REVIEW_STATUSES, serializeState, sessionLive, SLOT_STATUSES, STATE_FILES, utcDay,
   type CloudJob, type CloudState, type EventCursorState, type JournalKind, type SpendEntry, type StopReason,
 } from './schema.js';
 import { updateWithRetry, type FileChange, type RetryOptions, type StateSnapshot, type StateStore, type WorkflowControl } from './store.js';
@@ -113,7 +115,15 @@ function applyOne(state: CloudState, intent: CloudIntent, ctx: TickContext): { o
         reject('task_id_conflict', 'That job ID already belongs to a different submission. Never replace an uncertain job with a new ID.');
       }
       if (input.configRevision !== meta.configRevision) reject('setup_changed', 'Limits or execution settings changed after this job was confirmed. Review the current limits and submit again.');
-      if (!meta.execution) reject('execution_not_configured', 'Cloud execution is not configured for this Empire.');
+      if (!meta.execution) reject('execution_not_configured', meta.provisioning
+        ? 'Cloud execution is still being set up (the coordinator creates your Anthropic agent and environment first). Submit the job again once Cloud Empire shows execution as ready.'
+        : 'Cloud execution is not configured for this Empire, so the job was not queued and nothing was charged. Set it up under Cloud Empire → Limits.');
+      if (meta.provisioning) reject('execution_provisioning', 'Execution settings are being replaced. Submit the job again once Cloud Empire shows execution as ready.');
+      if (input.site) {
+        const sector = state.empire.sectors.find(s => s.id === input.site);
+        // A job for a site that is not in the city would credit a building that does not exist.
+        if (!sector?.built) reject('site_not_built', `${SITES.find(s => s.id === input.site)?.name ?? 'That sector'} is not built in your city, so its job was not queued and nothing was charged. Found or build it first.`);
+      }
       if (state.jobs.jobs.filter(job => job.status === 'queued').length >= LIMITS.queuedJobs) reject('queue_full', `At most ${LIMITS.queuedJobs} jobs can wait in the queue. Let some start or cancel them first.`);
       if (state.jobs.jobs.filter(job => job.status === 'awaiting_review').length >= LIMITS.unreviewedJobs) reject('review_backlog', `${LIMITS.unreviewedJobs} finished jobs are waiting for your review. Review them before submitting more.`);
       const execution = meta.execution!;
@@ -194,8 +204,20 @@ function applyOne(state: CloudState, intent: CloudIntent, ctx: TickContext): { o
     case 'configure': {
       if (intent.configRevision !== meta.configRevision) reject('setup_changed', 'Settings changed since you opened them. Review and try again.');
       if (state.jobs.jobs.some(job => job.status === 'queued' || holdsSlot(job))) reject('active_cloud_jobs', 'Cancel or finish queued and active jobs before changing the repository or provider references.');
+      // Manually entered IDs win over automatic setup: a pending or failed request is withdrawn, so it can neither
+      // keep new jobs blocked nor later overwrite these IDs.
+      const withdrawn = meta.provisioning;
+      delete meta.provisioning; delete meta.executionProfile;
       meta.execution = intent.execution; meta.configRevision++;
-      journal(state, ctx, 'limits', `Execution set to ${intent.execution.repository.owner}/${intent.execution.repository.name} (${intent.execution.repository.baseBranch}) on Anthropic Managed Agents.`, { intentId: intent.id });
+      journal(state, ctx, 'limits', `Execution set to ${intent.execution.repository.owner}/${intent.execution.repository.name} (${intent.execution.repository.baseBranch}) on Anthropic Managed Agents, with the IDs you entered.${withdrawn ? ` The ${withdrawn.status} automatic setup request was withdrawn.` : ''}`, { intentId: intent.id });
+      return { outcome: 'applied' };
+    }
+    case 'provision': {
+      if (intent.configRevision !== meta.configRevision) reject('setup_changed', 'Settings changed since you opened them. Review and try again.');
+      if (state.jobs.jobs.some(job => job.status === 'queued' || holdsSlot(job))) reject('active_cloud_jobs', 'Cancel or finish queued and active jobs before changing where jobs run.');
+      const model = intent.model ?? DEFAULT_WORKER_MODEL;
+      meta.provisioning = { provider: 'anthropic', repository: clone(intent.repository), status: 'pending', model, requestedAt: ctx.now, attempts: 0 };
+      journal(state, ctx, 'limits', `Automatic execution setup requested for ${intent.repository.owner}/${intent.repository.name} (${intent.repository.baseBranch}) with ${workerModelLabel(model)}. The coordinator finds or creates your Anthropic agent and environment; this starts no session.${meta.execution ? ' When it finishes it replaces the current execution settings.' : ''}`, { intentId: intent.id });
       return { outcome: 'applied' };
     }
     case 'empire_action': {
@@ -248,6 +270,56 @@ export function applyIntents(input: CloudState, files: IntentFile[], ctx: TickCo
     }
   }
   return { state, consumed: parsed.map(item => item.path), outcomes };
+}
+
+// ---------------------------------------------------------------- phase: execution provisioning
+
+export type ProvisionOutcome =
+  | { key: string; ok: true; result: ProvisionResult }
+  | { key: string; ok: false; attempted: boolean; retryable: boolean; message: string };
+/** Identifies one request: a withdrawn or replaced request never receives an older outcome. */
+const provisionKey = (state: CloudState) => { const p = state.meta.provisioning; return JSON.stringify(p ? [p.repository, p.model ?? DEFAULT_WORKER_MODEL, p.requestedAt] : null); };
+
+/** A pending request is tried on the next run; a retryable failure again after an hour. */
+export function provisioningDue(state: CloudState, now: number): boolean {
+  const p = state.meta.provisioning;
+  if (!p) return false;
+  if (p.status === 'pending') return true;
+  return !!p.retryable && (p.lastAttemptAt === undefined || now - p.lastAttemptAt >= PROVISION_RETRY_MS);
+}
+
+/** Control-plane calls only (lookups, and creation of an agent and environment); never a session. */
+export async function attemptProvisioning(state: CloudState, provider: ProviderAdapter): Promise<ProvisionOutcome> {
+  const key = provisionKey(state);
+  if (!provider.canProvision) return { key, ok: false, attempted: false, retryable: true, message: 'Waiting for an Anthropic API key: the ANTHROPIC_API_KEY Actions secret is not set in the state repository. Run setup again with an Anthropic key. OpenAI-only Empires can’t run jobs until the OpenAI adapter exists.' };
+  try { return { key, ok: true, result: await provider.provision(state.meta.provisioning?.model ?? DEFAULT_WORKER_MODEL) }; }
+  catch (error) {
+    return error instanceof ProvisionError
+      ? { key, ok: false, attempted: true, retryable: error.retryable, message: error.message }
+      : { key, ok: false, attempted: true, retryable: true, message: 'Execution setup failed unexpectedly. No agent session was started.' };
+  }
+}
+
+export function recordProvisioning(input: CloudState, outcome: ProvisionOutcome, ctx: TickContext): CloudState {
+  const state = clone(input);
+  const p = state.meta.provisioning;
+  if (!p || provisionKey(state) !== outcome.key) return state; // the request changed meanwhile
+  const repo = `${p.repository.owner}/${p.repository.name} (${p.repository.baseBranch})`;
+  if (outcome.ok) {
+    const { agentId, environmentId, agentCreated, environmentCreated } = outcome.result;
+    state.meta.execution = { provider: 'anthropic', repository: clone(p.repository), anthropic: { agentId, environmentId } };
+    state.meta.executionProfile = { model: outcome.result.model, networking: WORKER_ENVIRONMENT.config.networking.type };
+    delete state.meta.provisioning;
+    state.meta.configRevision++;
+    journal(state, ctx, 'limits', `Execution ready for ${repo}: Anthropic agent ${agentId} (${agentCreated ? 'created' : 'reused'}) (${workerModelLabel(outcome.result.model)}) and cloud environment ${environmentId} (${environmentCreated ? 'created' : 'reused'}, ${WORKER_ENVIRONMENT.config.networking.type} networking). No session was started and nothing was charged; jobs you submit now run there.`);
+    return state;
+  }
+  const changed = p.status !== 'failed' || p.message !== outcome.message;
+  p.status = 'failed'; p.message = outcome.message.slice(0, 2000); p.retryable = outcome.retryable;
+  if (outcome.attempted) { p.attempts++; p.lastAttemptAt = ctx.now; }
+  else p.lastAttemptAt ??= ctx.now;
+  if (changed) journal(state, ctx, 'warning', `Execution setup for ${repo} did not finish: ${outcome.message}${outcome.retryable ? ' The coordinator tries again within the hour.' : ' Fix it, then choose “Set up automatically” under Cloud Empire → Limits.'}`);
+  return state;
 }
 
 // ---------------------------------------------------------------- provider sessions
@@ -581,12 +653,15 @@ export interface TickReport {
   migrated: string[];
   commits: number;
   intentsTruncated: boolean;
+  /** Automatic execution setup attempted this run. */
+  provisioning?: 'ready' | 'failed' | 'waiting_for_key';
 }
 
 export async function runCoordinatorTick(deps: CoordinatorDeps): Promise<TickReport> {
   const log = deps.log ?? (() => {});
   const ctx1: TickContext = { now: deps.now(), runId: deps.runId };
   let observations: ProviderResult[] | undefined;
+  let provisionOutcome: ProvisionOutcome | undefined;
   let migrated: string[] = [];
   let commits = 0;
 
@@ -600,6 +675,11 @@ export async function runCoordinatorTick(deps: CoordinatorDeps): Promise<TickRep
     state = recordObservations(state, observations, ctx1);
     const intents = applyIntents(state, intentFilesOf(snapshot), ctx1);
     state = intents.state;
+    // Free control-plane calls, once per tick (a commit retry reuses the outcome), before dispatch planning.
+    if (provisioningDue(state, ctx1.now)) {
+      if (!provisionOutcome || provisionOutcome.key !== provisionKey(state)) provisionOutcome = await attemptProvisioning(state, deps.provider);
+      state = recordProvisioning(state, provisionOutcome, ctx1);
+    }
     const plan = planDispatch(state, ctx1, deps.provider.canDispatch);
     state = plan.state;
     const lifecycle = lifecycleStep(state, ctx1);
@@ -617,6 +697,7 @@ export async function runCoordinatorTick(deps: CoordinatorDeps): Promise<TickRep
   }, deps.retry);
   if (phase1.changed) commits++;
   let state = phase1.value.state;
+  if (provisionOutcome) log(`execution setup: ${provisionOutcome.ok ? `ready (agent ${provisionOutcome.result.agentCreated ? 'created' : 'reused'}, environment ${provisionOutcome.result.environmentCreated ? 'created' : 'reused'})` : `not finished (${provisionOutcome.attempted ? 'provider refused or unreachable' : 'no Anthropic key'})`}`);
   log(`phase 1 ${phase1.changed ? `commit ${phase1.sha.slice(0, 12)} after ${phase1.attempts} attempt(s)` : 'nothing to commit'}: ${phase1.value.outcomes.length} intent(s), ${observations?.length ?? 0} session(s) observed, ${phase1.value.planned.length} planned`);
 
   // Mutating provider calls: only for intentions now durable in the state branch.
@@ -683,6 +764,7 @@ export async function runCoordinatorTick(deps: CoordinatorDeps): Promise<TickRep
     migrated,
     commits,
     intentsTruncated: phase1.value.truncated,
+    ...(provisionOutcome ? { provisioning: provisionOutcome.ok ? 'ready' as const : provisionOutcome.attempted ? 'failed' as const : 'waiting_for_key' as const } : {}),
   };
 }
 

@@ -5,6 +5,8 @@
  */
 import type { ExecutionTask } from '../shared/execution.js';
 import type { CloudExecution, EventCursorState } from './schema.js';
+import type { ProvisionResult, WorkerModel } from './provisioning.js';
+export { ProvisionError, type ProvisionResult } from './provisioning.js';
 
 export interface ProviderObservation {
   sessionId: string;
@@ -34,6 +36,13 @@ export interface ProviderAdapter {
   readonly provider: 'anthropic';
   /** False when credentials are missing; the coordinator then dispatches nothing. */
   readonly canDispatch: boolean;
+  /** True when the provider key is configured, so the agent and environment can be looked up or created. */
+  readonly canProvision: boolean;
+  /**
+   * Finds or creates the agent and cloud environment jobs run on (src/cloud/provisioning.ts). Never
+   * starts a session. Throws ProvisionError with a user-safe message.
+   */
+  provision(model: WorkerModel): Promise<ProvisionResult>;
   dispatch(request: DispatchRequest): Promise<{ sourceCommit: string; observation: ProviderObservation }>;
   /** Reads status/usage events after `cursor`, then the session. Never persists model text. */
   observe(sessionId: string, cursor: EventCursorState): Promise<{ observation: ProviderObservation; cursor: EventCursorState }>;
@@ -51,8 +60,10 @@ export interface ProviderAdapter {
 export class UnavailableProvider implements ProviderAdapter {
   readonly provider = 'anthropic' as const;
   readonly canDispatch = false;
+  readonly canProvision = false;
   constructor(private reason = 'No provider API key is configured in the state repository secrets.') {}
   async dispatch(): Promise<never> { throw new DispatchFailure(false, this.reason); }
+  async provision(): Promise<never> { throw new Error(this.reason); }
   async observe(): Promise<never> { throw new Error(this.reason); }
   async interrupt(): Promise<never> { throw new Error(this.reason); }
   async archive(): Promise<never> { throw new Error(this.reason); }

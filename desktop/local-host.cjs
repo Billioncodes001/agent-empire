@@ -24,4 +24,16 @@ async function startLocalHost({project, runtimeDir, credentials, port:preferredP
   const port=host.server.address().port;config.port=port;
   return {origin:`http://127.0.0.1:${port}`,password,shutdown:host.shutdown,project,port,hasLocalWorkers:()=>host.workers.list().some(w=>w.processState==='running'||w.processState==='unknown')};
 }
-module.exports={startLocalHost};
+/**
+ * Signs the bundled game into the local host with a device token (APP-01), using the in-memory office password.
+ * The password changes every launch, which invalidates earlier device tokens, so this runs once per launch and
+ * the token is kept in memory only.
+ */
+async function localDeviceSession(host, deviceName, fetchImpl=fetch) {
+  const response=await fetchImpl(host.origin+'/api/device/login',{method:'POST',headers:{'content-type':'application/json',accept:'application/json'},body:JSON.stringify({password:host.password,deviceName:String(deviceName||'This computer').slice(0,64)}),redirect:'error'});
+  const body=response.ok?await response.json().catch(()=>null):null;
+  if(!body||typeof body.token!=='string'||!/^[A-Za-z0-9_-]{16,256}$/.test(body.token)||typeof body.deviceId!=='string'||!/^[A-Za-z0-9_-]{1,128}$/.test(body.deviceId))
+    throw new Error('The Empire on this computer could not sign the app in.');
+  return {host:host.origin,token:body.token,deviceId:body.deviceId};
+}
+module.exports={startLocalHost,localDeviceSession};

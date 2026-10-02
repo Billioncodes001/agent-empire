@@ -32,6 +32,8 @@ export class Person {
     this.look={...look};this.human=new Human(look.style);this.root.add(this.human.root);this.setLabel(name,false);
   }
   get ready(){return this.human.ready;}
+  /** Loaded with every texture decoded; see Human.materialsReady. */
+  get materialsReady(){return this.human.materialsReady;}
   /** The clip or procedural state the body is showing (airborne, landing, walk_neutral…), for headless checks. */
   get motion(){return this.human.root.userData.motion as string|undefined;}
   setColor(color:string) { this.root.userData.accent=color; }

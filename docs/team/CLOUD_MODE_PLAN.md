@@ -68,3 +68,25 @@ The bundled game detects a shell by `window.AGENT_EMPIRE_APP.platform` (`'ios' |
 Transport: iOS uses `webkit.messageHandlers.empire.postMessage`. Android uses a single `@JavascriptInterface` object that is exposed only to the bundled origin `https://appassets.androidplatform.net` and checks the origin on every call. Electron uses `contextBridge` through the preload script. Nothing else is exposed. Provider API keys pass through the page only during setup, on their way to sealed-box encryption. They are never given to `secure.set`.
 
 APP-03 (iOS) and APP-04 (Android) keep the bundled game, secure storage and landscape full-screen. Their first screen becomes the CLOUD-03 mode choice. They gain a minimal native bridge (secure get/set/delete, GitHub device flow, sign-out) and expose nothing else.
+
+### Desktop additions (APP-05 round 2)
+
+| Item | Contract |
+| --- | --- |
+| Transport | `window.empireDesktop.postMessage(request)`, exposed by the Electron preload through `contextBridge`, only for the top frame of the app origin |
+| Origin | `empire-app://game`, the same origin as the iOS app (already in the server's `APP_ORIGINS`) |
+| `app.runLocal()` | Desktop only. No parameters from the page. The shell shows its native confirmation, starts the bundled server on loopback, signs in natively, stores `mode=local`, and resolves `{mode: 'local', host, token, deviceId}`. The page adopts that session (as in server mode, platform `desktop`) and opens the game without a reload. A rejection whose message starts with `cancelled:` means the player declined: the page stays on the mode choice quietly. Other rejections are shown. The page calls it with a long timeout (10 minutes) because the player reads a native dialog first. The page refuses an answer whose `host` is not a loopback origin |
+| `AGENT_EMPIRE_APP.localAvailable` | Desktop only. When `true`, the setup's mode choice shows a third card, "Run on this computer" (full capabilities while the app is open; local workers stop when you quit; uses this computer's CLI agent logins). Phones and the web never show it |
+| `mode: 'local'` | Accepted in the injected config and in secure storage on desktop only, and treated like server mode with a session. Without a session it returns to the mode choice |
+
+## Execution defaults (owner decisions, 2026-10-02)
+
+Automatic execution setup (the coordinator finds or creates the Anthropic agent and environment; [cloud-exec-setup](reports/cloud-exec-setup.md)) uses these defaults. All three can be changed under Cloud Empire → Limits.
+
+| Decision | Default | How it is shown |
+|---|---|---|
+| Worker model | **Claude Sonnet 5** (`claude-sonnet-5`). Opus 5.5 (`claude-opus-5-5`) and Fable 5.1 (`claude-fable-5-1`) stay selectable. Each model gets its own agent, so changing the model never edits an agent a running session may use | Setup review ("Jobs run … with Claude Sonnet 5"), Limits (model select with list prices), Status once ready |
+| Tool approval | **Always allow inside the sandbox** (the Managed Agents toolset default) | Setup review, Status and Limits: "approves its own tool use inside the sandbox" |
+| Environment networking | **Unrestricted** (full outbound internet, minus Anthropic's safety blocklist) | Setup review, Status and Limits: "full internet access … can also fetch untrusted content … your keys never enter it". An existing environment named `agent-empire-worker` with other networking is reported, never silently reused |
+
+Manually entered IDs (Limits → Use existing IDs) withdraw any automatic setup request. "Set up automatically" replaces the current settings once it finishes, and says so.

@@ -23,7 +23,7 @@ export type SecureKey = (typeof SECURE_KEYS)[number];
 /** Keys that hold credentials: a browser without a shell never persists these. */
 export const SECRET_KEYS: ReadonlySet<SecureKey> = new Set(['server.token', 'github.token']);
 
-export type BridgeMethod = 'secure.get' | 'secure.set' | 'secure.delete' | 'github.deviceFlow' | 'app.signedOut' | 'app.openExternal';
+export type BridgeMethod = 'secure.get' | 'secure.set' | 'secure.delete' | 'github.deviceFlow' | 'app.signedOut' | 'app.openExternal' | 'app.runLocal';
 export interface BridgeRequest {
   id: string;
   method: BridgeMethod;
@@ -45,6 +45,14 @@ export interface DeviceFlowResult {
   login: string | null;
 }
 
+/** Desktop only: the Empire running on this computer, signed in to its bundled loopback server. */
+export interface LocalSession {
+  mode: 'local';
+  host: string;
+  token: string;
+  deviceId: string;
+}
+
 /** The typed API the setup flow and the game use. */
 export interface Native {
   /** The shell's platform, or null in a plain browser. */
@@ -57,6 +65,11 @@ export interface Native {
   githubDeviceFlow(opts: { clientId: string; scopes: string[] }): Promise<DeviceFlowResult>;
   signedOut(reason: SignedOutReason): Promise<void>;
   openExternal(url: string): Promise<void>;
+  /**
+   * Desktop only: the shell confirms with a native dialog, starts its bundled server on loopback, signs in and stores
+   * mode=local. Takes no parameters from the page. Rejects with a message starting `cancelled:` when the player says no.
+   */
+  runLocal(): Promise<LocalSession>;
 }
 
 type Win = Record<string, unknown>;
@@ -65,7 +78,7 @@ interface Transport {
 }
 
 /** Default timeouts. The device flow waits for the player on GitHub, whose device codes last 15 minutes. */
-export const TIMEOUTS = { default: 15_000, deviceFlow: 16 * 60_000 } as const;
+export const TIMEOUTS = { default: 15_000, deviceFlow: 16 * 60_000, runLocal: 10 * 60_000 } as const;
 const MAX_VALUE = 8192;
 const GITHUB_SCOPES = new Set(['repo', 'workflow', 'read:user']);
 const CLIENT_ID = /^[A-Za-z0-9._-]{1,64}$/;
@@ -75,7 +88,10 @@ const isKey = (k: unknown): k is SecureKey => SECURE_KEYS.includes(k as SecureKe
 /** Injected shell info, read without requiring a signed-in session. */
 export interface ShellInfo {
   platform: AppPlatform;
-  mode?: 'cloud' | 'server';
+  /** `local` (the Empire runs on this computer) exists on desktop only. */
+  mode?: 'cloud' | 'server' | 'local';
+  /** Desktop only: this computer can run the Empire itself (app.runLocal). */
+  localAvailable?: boolean;
   deviceName?: string;
   signedOut?: SignedOutReason;
 }
@@ -85,7 +101,8 @@ export function parseShellInfo(raw: unknown): ShellInfo | null {
   const r = raw as Record<string, unknown>;
   if (!PLATFORMS.includes(r.platform as AppPlatform)) return null;
   const info: ShellInfo = { platform: r.platform as AppPlatform };
-  if (r.mode === 'cloud' || r.mode === 'server') info.mode = r.mode;
+  if (r.mode === 'cloud' || r.mode === 'server' || (r.mode === 'local' && info.platform === 'desktop')) info.mode = r.mode;
+  if (r.localAvailable === true && info.platform === 'desktop') info.localAvailable = true;
   if (typeof r.deviceName === 'string' && r.deviceName.trim()) info.deviceName = r.deviceName.trim().slice(0, 64);
   if (r.signedOut === 'user' || r.signedOut === 'revoked' || r.signedOut === 'unauthorized') info.signedOut = r.signedOut;
   return info;
@@ -200,6 +217,20 @@ export class NativeBridge implements Native {
   async openExternal(url: string) {
     await this.call('app.openExternal', { url: checkExternal(url) });
   }
+  async runLocal(): Promise<LocalSession> {
+    if (this.platform !== 'desktop') throw new BridgeError('Running on this computer needs the desktop app.', 'unavailable');
+    // The player reads a native dialog (and may pick a folder) before this answers, so the timeout is long.
+    const r = await this.call<Record<string, unknown> | null>('app.runLocal', {}, TIMEOUTS.runLocal);
+    if (!r || r.mode !== 'local' || typeof r.host !== 'string' || typeof r.token !== 'string' || typeof r.deviceId !== 'string' || !r.token || !r.deviceId)
+      throw new BridgeError('The desktop app returned an unexpected answer.', 'invalid');
+    let loopback = false;
+    try {
+      const u = new URL(r.host);
+      loopback = (u.protocol === 'http:' || u.protocol === 'https:') && ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname) && !u.username && !u.password && (u.pathname === '/' || u.pathname === '') && !u.search && !u.hash;
+    } catch {}
+    if (!loopback) throw new BridgeError('The desktop app returned a server that is not on this computer.', 'invalid');
+    return { mode: 'local', host: r.host, token: r.token, deviceId: r.deviceId };
+  }
 }
 
 function assertKey(key: unknown): asserts key is SecureKey {
@@ -263,6 +294,9 @@ export function webNative(storage: Pick<Storage, 'getItem' | 'setItem' | 'remove
       throw new BridgeError('GitHub sign-in needs the Agent Empire app. In a browser, paste a token instead.', 'unavailable');
     },
     async signedOut() {},
+    async runLocal() {
+      throw new BridgeError('Running on this computer needs the desktop app.', 'unavailable');
+    },
     async openExternal(url) {
       const href = checkExternal(url);
       (open ?? ((u: string) => void window.open(u, '_blank', 'noopener,noreferrer')))(href);

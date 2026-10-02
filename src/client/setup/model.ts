@@ -26,6 +26,22 @@ export interface Limits {
   daily: string;
   approveEachJob: boolean;
 }
+/** How often the coordinator runs on its schedule (minutes). 30 is the default; see actionsEstimate. */
+export const INTERVALS = [15, 20, 30, 60] as const;
+export type Interval = (typeof INTERVALS)[number];
+export const DEFAULT_INTERVAL: Interval = 30;
+
+/**
+ * GitHub's published included Actions minutes per month for private repositories, by plan. From the coordinator report
+ * (written from memory, UNVERIFIED): recheck against github.com/pricing before release. Unknown plans show no figure.
+ */
+export const PLAN_MINUTES: Record<string, number> = { free: 2000, pro: 3000, team: 3000 };
+export function actionsEstimate(interval: number, plan?: string | null) {
+  const runs = Math.round((30 * 24 * 60) / interval);
+  const included = plan ? PLAN_MINUTES[plan.toLowerCase()] : undefined;
+  return { runs, minutes: runs, included, share: included ? runs / included : undefined };
+}
+
 export const LIMIT_BOUNDS = { maxConcurrent: 10, perJobCents: 100_000, dailyCents: 10_000_000 };
 export const DEFAULT_LIMITS: Limits = { maxConcurrent: 1, perJob: '5.00', daily: '20.00', approveEachJob: true };
 
@@ -35,11 +51,14 @@ export interface SetupState {
   /** A one-line explanation carried into the setup, e.g. why the device was signed out. */
   notice?: string;
   server: { address: string };
-  github: { login?: string; token?: string; via?: 'device' | 'token' };
+  github: { login?: string; token?: string; via?: 'device' | 'token'; plan?: string | null };
   repos: RepoRef[];
   /** In memory only, on their way to sealed-box encryption. Cleared whenever the cloud path is left. */
   providers: Record<ProviderId, string>;
+  /** Fine-grained token for the project repositories (PROJECT_GITHUB_TOKEN). In memory only, like the API keys. */
+  projectToken: string;
   limits: Limits;
+  interval: Interval;
   acceptedCosts: boolean;
 }
 
@@ -49,11 +68,13 @@ export type Action =
   | { type: 'back' }
   | { type: 'next' }
   | { type: 'setAddress'; address: string }
-  | { type: 'githubLinked'; login: string; token: string; via: 'device' | 'token' }
+  | { type: 'githubLinked'; login: string; token: string; via: 'device' | 'token'; plan?: string | null }
   | { type: 'githubUnlinked' }
   | { type: 'toggleRepo'; repo: RepoRef }
   | { type: 'setProvider'; id: ProviderId; value: string }
   | { type: 'setLimits'; patch: Partial<Limits> }
+  | { type: 'setProjectToken'; value: string }
+  | { type: 'setInterval'; interval: number }
   | { type: 'acceptCosts'; value: boolean }
   | { type: 'forgetSecrets' }
   /** Back to the mode choice from anywhere, forgetting what the cloud path collected. */
@@ -68,7 +89,9 @@ export function initialState(opts: { step?: Step; mode?: Mode; notice?: string; 
     github: {},
     repos: [],
     providers: { anthropic: '', openai: '' },
+    projectToken: '',
     limits: { ...DEFAULT_LIMITS },
+    interval: DEFAULT_INTERVAL,
     acceptedCosts: false,
   };
 }
@@ -111,10 +134,21 @@ export function validateProviderKey(id: ProviderId, value: string): string | nul
   return null;
 }
 
-export function validateProviders(p: Record<ProviderId, string>): string[] {
+export function validateProviders(p: Record<ProviderId, string>, projectToken = ''): string[] {
   const errors = (Object.keys(p) as ProviderId[]).map((id) => validateProviderKey(id, p[id])).filter((e): e is string => !!e);
   if (!p.anthropic.trim() && !p.openai.trim()) errors.unshift('Add at least one API key: Anthropic, OpenAI or both.');
+  const pt = validateProjectToken(projectToken);
+  if (pt) errors.push(pt);
   return errors;
+}
+
+/** The project token is optional at setup, but when given it must be a fine-grained token (the installer refuses others). */
+export function validateProjectToken(value: string): string | null {
+  const v = value.trim();
+  if (!v) return null;
+  if (/\s/.test(v)) return 'A token has no spaces or line breaks.';
+  if (!/^github_pat_[A-Za-z0-9_]{20,300}$/.test(v)) return 'Use a fine-grained token (it starts with github_pat_). Classic tokens grant too much access.';
+  return null;
 }
 export const linkedProviders = (p: Record<ProviderId, string>) => (Object.keys(p) as ProviderId[]).filter((id) => p[id].trim());
 
@@ -131,7 +165,7 @@ export function blockers(s: SetupState): string[] {
       if (!s.repos.length) return ['Choose at least one project repository.'];
       return s.repos.length > MAX_REPOS ? [`Choose at most ${MAX_REPOS} repositories.`] : [];
     case 'providers':
-      return validateProviders(s.providers);
+      return validateProviders(s.providers, s.projectToken);
     case 'limits':
       return validateLimits(s.limits);
     case 'review':
@@ -147,7 +181,7 @@ const cloudIndex = (step: Step) => CLOUD_STEPS.indexOf(step);
 
 /** Leaving the cloud path forgets everything sensitive it collected. */
 function withoutCloudSecrets(s: SetupState): SetupState {
-  return { ...s, github: {}, repos: [], providers: { anthropic: '', openai: '' }, acceptedCosts: false };
+  return { ...s, github: {}, repos: [], providers: { anthropic: '', openai: '' }, projectToken: '', acceptedCosts: false };
 }
 
 export function reduce(s: SetupState, a: Action): SetupState {
@@ -177,7 +211,7 @@ export function reduce(s: SetupState, a: Action): SetupState {
     case 'githubLinked':
       if (!a.login || !a.token) return s;
       // A different account invalidates the repositories chosen for the previous one.
-      return { ...s, github: { login: a.login, token: a.token, via: a.via }, repos: s.github.login === a.login ? s.repos : [] };
+      return { ...s, github: { login: a.login, token: a.token, via: a.via, plan: a.plan ?? null }, repos: s.github.login === a.login ? s.repos : [] };
     case 'githubUnlinked':
       return { ...s, github: {}, repos: [] };
     case 'toggleRepo': {
@@ -194,10 +228,14 @@ export function reduce(s: SetupState, a: Action): SetupState {
       limits.maxConcurrent = Math.max(1, Math.min(LIMIT_BOUNDS.maxConcurrent, Math.round(Number(limits.maxConcurrent) || 1)));
       return { ...s, limits };
     }
+    case 'setProjectToken':
+      return { ...s, projectToken: a.value.slice(0, 400) };
+    case 'setInterval':
+      return (INTERVALS as readonly number[]).includes(a.interval) ? { ...s, interval: a.interval as Interval } : s;
     case 'acceptCosts':
       return { ...s, acceptedCosts: a.value };
     case 'forgetSecrets':
-      return { ...s, providers: { anthropic: '', openai: '' } };
+      return { ...s, providers: { anthropic: '', openai: '' }, projectToken: '' };
     case 'changeMode':
       return s.step === 'welcome' || s.step === 'mode' ? s : { ...withoutCloudSecrets(s), step: 'mode', notice: undefined };
   }

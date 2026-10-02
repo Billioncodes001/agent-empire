@@ -34,6 +34,12 @@ build = android / 'build/portable'
 game = (args.game or project / 'dist/public').resolve()
 if not (game / 'index.html').is_file():
     raise SystemExit(f'Missing built game client: {game}/index.html\nRun `npm run build:client` first (it writes dist/public).')
+# A fixture client (vite --mode fixture, fake GitHub API) must never be packaged.
+for item in game.rglob('*'):
+    if item.suffix.lower() in ('.js', '.mjs', '.html', '.json') and item.is_file():
+        text = item.read_text(encoding='utf-8', errors='replace')
+        if '__AGENT_EMPIRE_FIXTURE_BUILD__' in text or 'VITE_AGENT_EMPIRE_FAKE_GITHUB_API' in text:
+            raise SystemExit(f'{item} is from a fixture build that talks to a fake GitHub.\nRun `npm run build:client` first.')
 
 tools = args.sdk.resolve() / 'build-tools/35.0.0'
 android_jar = args.sdk.resolve() / 'platforms/android-35/android.jar'
