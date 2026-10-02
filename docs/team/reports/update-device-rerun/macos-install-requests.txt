@@ -1,0 +1,7 @@
+GET /Billioncodes001/agent-empire/releases/download/v1.0.0-beta.2/channel-beta.json
+GET /Billioncodes001/agent-empire/releases/download/v1.0.0-beta.2/channel-beta.json.sig
+GET /__assets/v1.0.0-beta.2/channel-beta.json
+GET /__assets/v1.0.0-beta.2/channel-beta.json.sig
+GET /Billioncodes001/agent-empire/releases/download/v1.0.0-beta.2/agent-empire-game-1.0.0-beta.2.zip
+GET /__assets/v1.0.0-beta.2/agent-empire-game-1.0.0-beta.2.zip
+GET /__fixture?since=32

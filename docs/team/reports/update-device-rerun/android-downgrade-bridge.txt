@@ -1,0 +1,3 @@
+page https://appassets.androidplatform.net/
+update.installGame {"url":"https://github.com/Billioncodes001/agent-empire/releases/download/v0.1.1/agent-empire-game-0.1.1.zip","sha256":"41a4e667bbc3e597387518afc8d75a9539ed06eb86f958200581954b114fe6fa","version":"0.1.1"}
+-> {"ok":false,"value":"Version 0.1.1 is not newer than what this app has."}

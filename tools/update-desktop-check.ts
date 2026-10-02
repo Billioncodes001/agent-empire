@@ -146,7 +146,7 @@ async function main() {
   await page.locator('.update-modal .btn.primary', { hasText: 'Update game' }).click();
   await page.locator('.update-modal .btn.primary', { hasText: 'Restart now' }).waitFor({ timeout: 180_000 });
   const installReqs = (await fx(mark)).requests;
-  writeFileSync(resolve(out, 'macos-install-requests.log'), `${installReqs.join('\n')}\n`);
+  writeFileSync(resolve(out, 'macos-install-requests.txt'), `${installReqs.join('\n')}\n`);
   ok(installReqs.some((r) => r.includes(`/download/v${good}/channel-beta.json.sig`)) && installReqs.some((r) => r.includes(`agent-empire-game-${good}.zip`)), 'the shell verified the release channel (v<GOOD>/channel-beta.json.sig) before downloading the zip');
   ok(existsSync(resolve(userData, `game-bundles/${good}/index.html`)) && state().pending === good, `downloaded, sha256-checked and unpacked into game-bundles/${good} (pending)`);
   await shot(page, 'macos-04-installed');
@@ -209,7 +209,7 @@ main()
   .finally(() => {
     proc.kill();
     const shellLog = logs.join('');
-    writeFileSync(resolve(out, 'macos-shell.log'), shellLog);
+    writeFileSync(resolve(out, 'macos-shell.txt'), shellLog);
     console.log(shellLog.split('\n').filter((l) => /update|Update|rolled|fixture/i.test(l)).slice(-12).join('\n'));
     console.log(failures.length ? `${failures.length} failed` : 'All desktop device checks passed');
     process.exit(failures.length ? 1 : 0);
