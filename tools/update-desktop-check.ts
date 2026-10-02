@@ -23,6 +23,7 @@ import { resolve } from 'node:path';
 
 const fixture = process.env.FIXTURE_URL || 'http://127.0.0.1:4718';
 const updates = process.env.UPDATE_FIXTURE_URL || 'http://127.0.0.1:4721';
+if ([fixture, updates].some((url) => /:4610\b/.test(url))) throw new Error('Refusing the protected 4610 session; use the UI and update fixtures.');
 const userData = resolve(process.env.USER_DATA || '');
 if (!process.env.USER_DATA) throw new Error('Set USER_DATA to an isolated scratch folder.');
 const app = resolve(import.meta.dirname, '../release/Agent Empire-darwin-arm64/Agent Empire.app/Contents/MacOS/Agent Empire');

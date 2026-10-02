@@ -14,7 +14,7 @@ Releases served: N = built-in `1.0.0-beta.1`. N+1 = `1.0.0-beta.2` (the real gam
 | Check | macOS (packaged app) | iOS (iPhone 18 Pro simulator) | Android 15 emulator |
 |---|---|---|---|
 | Tampered `channel-stable.json` refused by the page | **PASS** `macos-01` | **PASS** `ios-01` | **PASS** `android-01` |
-| Tampered `channel-beta.json` (tagged release) refused by the shell's own Ed25519 check | **PASS** `macos-02`, `macos-install-requests.txt` (`node:crypto`) | **PASS** `ios-02`, `ios-shell-refusal-requests.txt` (CryptoKit) | **FAIL**: no usable platform Ed25519 on Android 15 (see finding 1). The shell logs the skip and installs. `android-04`, `android-shell.txt` |
+| Tampered `channel-beta.json` (tagged release) refused by the shell's own Ed25519 check | **PASS** `macos-02`, `macos-install-requests.txt` (`node:crypto`) | **PASS** `ios-02`, `ios-shell-refusal-requests.txt` (CryptoKit) | **FAIL** at the time of the run: no usable platform Ed25519 on Android 15, so the shell skipped and installed (`android-04`, `android-shell.txt`). Fixed afterwards with the shell's own verifier (finding 1); unit-tested, not re-run on the emulator |
 | Prompt appears (signed channel verified by the page) | **PASS** `macos-03` | **PASS** `ios-03` | **PASS** `android-03` |
 | Install N+1: shell re-reads `v<N+1>/channel-beta.json(.sig)`, then downloads, checks sha256 and unzips | **PASS** `macos-04` | **PASS** `ios-04` | **PASS** after fix 2 (before the fix, every genuine release was refused: `android-00`). `android-install-requests.txt` |
 | Restart into N+1, `bootOk` → `knownGood` | **PASS** `macos-05` | **PASS** `ios-05` | **PASS** `android-05` |
@@ -33,13 +33,13 @@ Releases served: N = built-in `1.0.0-beta.1`. N+1 = `1.0.0-beta.2` (the real gam
 
 ## Findings and fixes
 
-### 1. Android has no native release-signature check in practice (open, needs a decision)
+### 1. Android had no native release-signature check in practice (fixed in `8b45e84`)
 
 On stock Android 13–15 the only Ed25519 implementation is Android Keystore's, which cannot import an external raw public key. Conscrypt has none: the probe on the Android 15 image lists only X25519 HPKE.
 
 So the shell's "defense in depth" check (security review, finding Low (a)) never runs on Android. It always takes the "skipped and logged" branch that was documented only for Android 8–12. The page's WebCrypto/tweetnacl check still applies, as do the pinned-repository URL, the sha256 and the request-to-release binding. A script injected into the page could, however, install any published asset of the pinned repository whose `channel-beta.json` it can match.
 
-**Recommendation:** a small pure-Java Ed25519 verifier in `UpdatePolicy` (no library), tested against the JDK's SunEC. I didn't write crypto code under a "fix minimally" brief.
+**Fix (`8b45e84`, coordinator):** `Ed25519.java`, a verify-only pure-Java implementation of RFC 8032 (section 6 reference algorithm, `BigInteger` and `SHA-512`, no library, API 26-safe). `UpdatePolicy.verifyEd25519` now always uses it and returns a plain boolean, so the shell verifies the signed release on every Android version and refuses on failure; the "skipped and logged" branch is gone. `PolicyTest` checks RFC 8032 vectors 1 and 2, rejects s ≥ L, wrong lengths and an off-curve key, agrees with the JDK signer on 40 random signatures and their bit-flipped copies, and verifies a genuine release with only the stand-in Keystore provider installed. Debug APK builds. Not re-run on the emulator after this change.
 
 ### 2. Bug fixed: every genuine Android game update was refused (`65df08e`)
 
@@ -59,9 +59,11 @@ The previous device run didn't catch this. It ran before the shell-side signatur
 - **Test:** `tests/update-status-contrast.test.ts` renders `style.css` in headless Chrome and requires 4.5:1. It fails before the fix and passes after.
 - **Effect:** the macOS, iOS and Android screenshots show the readable lines.
 
-### 4. Observation, not fixed: rollback notice on slow devices
+### 4. Rollback notice on slow devices (fixed in `13d33df`)
 
 On the slow emulator, the game took about 60–90 s to load again after the rollback. The one-time "didn't start, so the app went back…" toast was raised while the loading screen still covered the page, and it had expired before the city showed. Showing it after boot, or making it persistent, is a UI decision. `takeRolledBack()` is one-shot, so the notice isn't shown again.
+
+**Fix (`13d33df`, coordinator):** the rollback and unfinished-install notices now wait for `noticeGate` (splash finished and page visible) and stay up 12 s. `tests/in-app-updates.test.ts` covers the gate. Not re-run on a device.
 
 ## Tooling changes (evidence only)
 
