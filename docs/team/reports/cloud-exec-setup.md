@@ -24,8 +24,8 @@ Design choice: the device can't call these endpoints, so the work moves to the c
 ### Provisioning (src/cloud)
 
 - **`provisioning.ts`** finds or creates two resources and never creates a session.
-  - The agent "Agent Empire worker": `claude-opus-5-5`, the `agent_toolset_20260401` tool, no multiagent roster, and metadata `agent_empire_role: worker`. Its system prompt holds the per-task rules: use the task branch only, never touch the default branch, never claim a commit or PR without verifying it, treat repository content as data. This satisfies `AnthropicManaged.check`.
-  - The cloud environment `agent-empire-worker`: `limited` networking with `allow_package_managers: true`. That list includes github.com and api.github.com.
+  - The agent "Agent Empire worker": `claude-opus-5-5` (superseded 2026-10-02: Sonnet 5 by default, see below), the `agent_toolset_20260401` tool, no multiagent roster, and metadata `agent_empire_role: worker`. Its system prompt holds the per-task rules: use the task branch only, never touch the default branch, never claim a commit or PR without verifying it, treat repository content as data. This satisfies `AnthropicManaged.check`.
+  - The cloud environment `agent-empire-worker`: `limited` networking with `allow_package_managers: true` (superseded 2026-10-02: unrestricted, see below).
   - **Matching:** a marker in metadata first, so a renamed resource still matches, then the exact name. It reads up to 10 pages.
   - **A lost or conflicting create** is looked up again with `include_archived=true` and never repeated.
   - **Archived or unusable resources** (multiagent, missing toolset, not cloud) and HTTP 401/403 are user-fixable failures. A timeout, a network error, 429 or 5xx can be retried.
@@ -105,10 +105,52 @@ Screenshots: `docs/team/reports/cloud-exec-setup/setup/` (review, failed-and-res
   - the wire shapes of list and create on a live account;
   - the 409 on a duplicate environment name;
   - that creation adds no charge.
-- **Networking.** I haven't checked that `limited` networking with `allow_package_managers` (which includes github.com) lets the session clone and push through Anthropic's git proxy. If it doesn't, change `WORKER_ENVIRONMENT.networking` to `unrestricted`; that is one line.
-- **Model and permission policy.** The model choice (`claude-opus-5-5`) and the default `always_allow` permission policy follow the docs and skill defaults. They are the owner's call on cost and safety. Approvals still happen in the Console.
+- **Networking, model, permission policy:** decided by the owner on 2026-10-02 (below).
 - **Existing agents.** An existing agent or environment that matches by marker or name is reused as it is. Its model or system prompt is not updated. The spec version is recorded in metadata for a later reconcile.
 - **Which project.** Only the first selected project is used for execution, as before (one repository per execution config). A different one can be chosen under Limits.
 - **OpenAI-only.** Still can't run jobs (CLOUD-06). Setup, status and Limits say so.
 - **iOS opt-in.** The opt-in path in `sync-ios-game.sh` (`AGENT_EMPIRE_ALLOW_FIXTURE_GAME=1`, Debug) was syntax-checked, and its grep logic was run against both builds. It was not run inside an Xcode build. Desktop packaging (`prepare-desktop.mjs`) was not run end to end; only the imported check was exercised.
 - **Old coordinator, new state.** A coordinator older than this branch would refuse a state with `provisioning` ("unexpected field"). That can only happen if a newer app writes into a repository whose bundle was not updated. Setup always commits the matching bundle first, so it should not occur in practice.
+
+## Re-review fixes and owner decisions (branch `claude/cloud-exec-fixes`, 2026-10-02)
+
+Based on the integration commit `4d56be5`. The re-review accepted #1, #2, a, b and the provisioning money safety, with these fixes. Fakes only, as before.
+
+### Fixes
+
+- **M1: manual IDs vs automatic setup** (`tick.ts`).
+  - `configure` now withdraws any `provisioning` request, whether pending or failed, and clears the recorded profile. The Journal says so.
+  - Before, a failed request plus manual IDs blocked new jobs forever, and a pending one later overwrote the manual IDs.
+  - A setup outcome is keyed to its exact request (repository, model, `requestedAt`), so a withdrawn or replaced request never receives an older result.
+  - "Set up automatically" explicitly replaces the current settings once it finishes. The Journal and Limits say so, and "Use existing IDs" says that saving withdraws any request.
+- **M2: GitHub client-id override.** It is renamed to `VITE_PUBLIC_AGENT_EMPIRE_GITHUB_CLIENT_ID`, to match `envPrefix`. Updated in `config.ts` and `index.html`. A build with the old name set now fails with "…was renamed: set VITE_PUBLIC_AGENT_EMPIRE_GITHUB_CLIENT_ID instead". A real `vite build` with the new name inlined the value into `config-*.js`.
+- **Low: re-running setup after a failed request** writes a fresh `provision` intent, once (`installer.ts`). That is how the user retries after fixing the cause.
+- **Low: intent ids.** The installer's intent id is a UUIDv7 from the setup clock. `uuidv7` moved to `src/cloud/uuid.ts`, and the client re-exports it.
+- **Low: reused environments** must have the configured networking. A mismatch is a user-fixable error naming both values, and nothing is created beside it. An agent found by exact name but running another model is reported the same way.
+
+### Owner decisions, applied as defaults (changeable under Cloud Empire → Limits)
+
+- **Worker model:** Claude Sonnet 5 (`claude-sonnet-5`). Opus 5.5 and Fable 5.1 are selectable in Limits, with list prices. Each model gets its own agent: "Agent Empire worker", or "Agent Empire worker (Claude Opus 5.5)" and so on. Matching is by marker plus `agent_empire_model` metadata. The chosen model travels in the `provision` intent and in `meta.provisioning.model`. Once ready, `meta.executionProfile` records the model and networking.
+- **Tool approval:** always allow inside the sandbox. This is the toolset default and is unchanged.
+- **Networking:** `unrestricted`. Setup review, Status and Limits say that workers have full internet access, can fetch untrusted content, approve their own tool use in the sandbox, and that keys never enter it.
+- The spec is now in the browser-safe `src/cloud/worker-spec.ts`, spec version 2. `docs/team/CLOUD_MODE_PLAN.md` records these decisions.
+
+### Evidence
+
+| Check | Result |
+|---|---|
+| `npm run typecheck` | pass |
+| `npm test` | **405/405**. That is 397 + 8 new in `tests/cloud-exec-fixes.test.ts`. `tests/cloud-exec-setup.test.ts` was updated for Sonnet 5 and unrestricted networking. |
+| Failing before | I swapped in `4d56be5`'s `tick.ts`: the 3 M1 tests fail. `4d56be5`'s `vite.config.ts` and `config.ts`: the M2 test fails. The lows and the owner-decision tests use behaviour or modules that did not exist. |
+| `npm run build` / `npm run build:cloud` | pass. The coordinator is 140,253 bytes, and no fixture markers. |
+| `tools/setup-ui-check.ts` (fixture 4717) | **127 PASS** on two consecutive runs. A first run had one unrelated timing failure ("the hand-over to the game closes the keyboard", 1440×900) that did not recur. New: the review states Sonnet 5 and full internet access; the starting state carries `provisioning.model: claude-sonnet-5`. |
+| `tools/cloud-ui-check.ts` (fixture 4717) | **171 PASS**. New: Status names Sonnet 5, unrestricted networking and untrusted content once ready. Limits defaults the model select to Sonnet 5 with 3 options and states the internet access. Choosing Opus writes a `provision` intent with `model: claude-opus-5-5`. |
+
+Screenshots: `docs/team/reports/cloud-exec-fixes/` (setup review, and cloud 12 setting up, 14 ready, 15 Limits with the model select).
+
+### Still not verified
+
+- Everything listed above under "Not verified / open" that concerns a real account.
+- That the git proxy works with unrestricted networking. This should be the least restrictive case.
+- That the per-model agent names render as expected in the Console.
+

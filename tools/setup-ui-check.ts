@@ -210,6 +210,7 @@ async function run() {
       const estimate = await page.locator('.su-panel:not(.su-leave) .su-review').innerText();
       ok(/every 15 minutes/.test(estimate) && /2,880 Actions minutes a month/.test(estimate), `${tag} review shows the chosen schedule and its Actions minutes`);
       ok(/Jobs run[\s\S]*first run creates \(or reuses\) an Anthropic agent[\s\S]*not a billed item and starts no session/.test(estimate), `${tag} review says where jobs run and that execution setup is free and starts nothing`);
+      ok(/with Claude Sonnet 5/.test(estimate) && /full internet access/.test(estimate) && /untrusted content/.test(estimate), `${tag} review states the owner defaults: Sonnet 5 and full internet access in the sandbox`);
       await press(page, size.touch, 'label[for="su-accept"]');
       // The first attempt fails at the secrets step (a GitHub 502); "Try again" must resume, not start over.
       gh.failures.push({ method: 'PUT', path: /\/actions\/secrets\/ANTHROPIC_API_KEY$/, status: 502, times: 1 });
@@ -233,7 +234,7 @@ async function run() {
       ok(!!files['state/meta.json'] && !!files['.github/workflows/agent-empire.yml'] && (files['coordinator/agent-empire-coordinator.mjs'] ?? '').includes('runCoordinatorTick'), `${tag} state, workflow and the shipped coordinator bundle are committed`);
       ok(/cron: '\*\/15 \* \* \* \*'/.test(files['.github/workflows/agent-empire.yml'] ?? ''), `${tag} the workflow uses the chosen 15-minute schedule`);
       ok(!writes.some((w) => /dispatches|actions\/workflows/.test(w)) && !Object.keys(files).some((f) => f.startsWith('intents/')) && JSON.parse(files['state/jobs.json']).jobs.length === 0, `${tag} setup starts nothing: no run, no intent, no job`);
-      ok(JSON.parse(files['state/meta.json']).provisioning?.status === 'pending' && anthropicCalls.length === 0, `${tag} execution setup is requested in the starting state; the device never calls Anthropic`);
+      ok(JSON.parse(files['state/meta.json']).provisioning?.status === 'pending' && JSON.parse(files['state/meta.json']).provisioning?.model === 'claude-sonnet-5' && anthropicCalls.length === 0, `${tag} execution setup is requested in the starting state; the device never calls Anthropic`);
       const secrets = [...gh.repos.get('octo-founder/agent-empire-state')!.secrets.values()];
       ok(secrets.length === 1 && !JSON.stringify(gh.requests.map((r) => r.body ?? null)).includes('sk-ant-FAKE'), `${tag} the key went only as a sealed box`);
       const log = await page.evaluate(() => (window as unknown as { __bridgeLog: { method: string; key?: string }[] }).__bridgeLog);

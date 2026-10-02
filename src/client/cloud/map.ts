@@ -3,6 +3,10 @@
  * "as recorded by the coordinator at the snapshot time", and the status view says how old that is.
  */
 import { holdsSlot, REVIEW_STATUSES, utcDay, type CloudJob, type CloudJobStatus, type CloudState } from '../../cloud/schema';
+import { DEFAULT_WORKER_MODEL, workerModelLabel } from '../../cloud/worker-spec';
+
+/** Owner decision 2026-10-02, shown wherever execution is described. */
+export const SANDBOX_NOTE = 'Workers run in an Anthropic cloud sandbox with full internet access: they can install packages and can also fetch untrusted content. They approve their own tool use inside the sandbox; your keys never enter it.';
 import type { SectorState } from '../../shared/empire';
 import type { QueueState, QueueTask, Usage, UsageState } from '../../shared/protocol';
 import type { Snapshot } from './repo';
@@ -184,13 +188,13 @@ export function executionStatus(state: CloudState): ExecutionStatus {
       };
     return {
       kind: 'setting_up', tone: 'active', label: 'Being set up', canSubmit: false,
-      detail: `Your coordinator creates (or reuses) the Anthropic agent “Agent Empire worker” and a cloud environment for ${repo} on its next run. That is not a billed item and starts no session. New jobs are refused, not charged, until it is ready.${ex ? ` Until then the previous settings (${ex.repository.owner}/${ex.repository.name}) stay recorded.` : ''}`,
+      detail: `Your coordinator creates (or reuses) an Anthropic agent with ${workerModelLabel(p.model ?? DEFAULT_WORKER_MODEL)} and a cloud environment for ${repo} on its next run. That is not a billed item and starts no session. New jobs are refused, not charged, until it is ready.${ex ? ` When it finishes it replaces the current settings (${ex.repository.owner}/${ex.repository.name}).` : ''}`,
     };
   }
   if (ex)
     return {
       kind: 'ready', tone: 'idle', label: `${ex.repository.owner}/${ex.repository.name}`, canSubmit: true,
-      detail: `Anthropic Managed Agents (agent ${ex.anthropic.agentId}, environment ${ex.anthropic.environmentId}) on ${ex.repository.baseBranch}. Work arrives as branches and pull requests.`,
+      detail: `Anthropic Managed Agents (agent ${ex.anthropic.agentId}, environment ${ex.anthropic.environmentId}) on ${ex.repository.baseBranch}. ${state.meta.executionProfile ? `Set up automatically: ${workerModelLabel(state.meta.executionProfile.model)}, ${state.meta.executionProfile.networking} networking. ${SANDBOX_NOTE}` : 'IDs entered by hand: the model and networking are whatever that agent and environment use.'} Work arrives as branches and pull requests.`,
     };
   return {
     kind: 'none', tone: 'attention', label: 'Not set up', canSubmit: false,

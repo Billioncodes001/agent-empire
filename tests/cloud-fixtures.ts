@@ -29,13 +29,15 @@ export class FakeProvider implements ProviderAdapter {
   /** Next provision outcomes: 'retryable' | 'fatal' failures, otherwise success (created once, then reused). */
   provisionFails: ('retryable' | 'fatal')[] = [];
   provisioned = false;
-  async provision() {
+  models: string[] = [];
+  async provision(model: string = 'claude-sonnet-5') {
     this.calls.push('provision');
+    this.models.push(model);
     const fail = this.provisionFails.shift();
     if (fail) throw new ProvisionError(fail === 'fatal' ? 'Anthropic rejected the key.' : 'The provider response timed out.', fail === 'retryable');
     const created = !this.provisioned;
     this.provisioned = true;
-    return { agentId: 'agent_provisioned1', environmentId: 'env_provisioned1', agentCreated: created, environmentCreated: created };
+    return { agentId: 'agent_provisioned1', environmentId: 'env_provisioned1', agentCreated: created, environmentCreated: created, model: model as any };
   }
   sessionFor(jobId: string) { return [...this.sessions.entries()].find(([, s]) => s.jobId === jobId)?.[0]; }
   finish(jobId: string, stopReason: Session['stopReason'] = 'end_turn', cost = 40) {

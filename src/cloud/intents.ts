@@ -8,6 +8,7 @@ import { ExecutionError } from '../server/execution-errors.js';
 import { TASK_ID, validateSubmit } from '../server/execution-validation.js';
 import { INTENT_PATH, validateExecution, validateLimits, validateProvisionRepository, type CloudExecution, type CloudLimits } from './schema.js';
 import type { ExecutionConfig } from '../shared/execution.js';
+import { isWorkerModel, type WorkerModel } from './worker-spec.js';
 
 export const MAX_INTENT_BYTES = 64 * 1024;
 
@@ -25,7 +26,7 @@ export type CloudIntent = IntentBase & (
   | { kind: 'limits'; limits: CloudLimits; configRevision: number }
   | { kind: 'configure'; execution: CloudExecution; configRevision: number }
   /** Ask the coordinator to find or create the Anthropic agent and environment for this project (free; no session). */
-  | { kind: 'provision'; repository: ExecutionConfig['repository']; configRevision: number }
+  | { kind: 'provision'; repository: ExecutionConfig['repository']; model?: WorkerModel; configRevision: number }
   | { kind: 'empire_action'; action: EmpireAction }
 );
 export type IntentKind = CloudIntent['kind'];
@@ -64,7 +65,7 @@ export function parseIntent(path: string, text: string): CloudIntent {
   if (text.length > MAX_INTENT_BYTES) throw bad('Intent file is larger than 64 KiB.');
   let value: unknown;
   try { value = JSON.parse(text); } catch { throw bad('Intent file is not valid JSON.'); }
-  const base = rec(value, ['schemaVersion', 'id', 'createdAt', 'kind', 'job', 'jobId', 'decision', 'note', 'resolution', 'sessionId', 'limits', 'configRevision', 'execution', 'repository', 'action']);
+  const base = rec(value, ['schemaVersion', 'id', 'createdAt', 'kind', 'job', 'jobId', 'decision', 'note', 'resolution', 'sessionId', 'limits', 'configRevision', 'execution', 'repository', 'model', 'action']);
   if (base.schemaVersion !== 1) throw bad('Unsupported intent schemaVersion.');
   if (typeof base.id !== 'string' || !TASK_ID.test(base.id)) throw bad('Intent id must be a UUID.');
   if (base.id.toLowerCase() !== fileId.toLowerCase()) throw bad('Intent id does not match its file name.');
@@ -116,10 +117,11 @@ export function parseIntent(path: string, text: string): CloudIntent {
       return { ...common, kind: 'configure', execution, configRevision: configRevision(base.configRevision) };
     }
     case 'provision': {
-      allow(['repository', 'configRevision']);
+      allow(['repository', 'model', 'configRevision']);
+      if (base.model !== undefined && !isWorkerModel(base.model)) throw bad('Unsupported worker model.');
       let repository: ExecutionConfig['repository'];
       try { repository = validateProvisionRepository(base.repository); } catch { throw bad('The project repository must be an owner, a name and a base branch.'); }
-      return { ...common, kind: 'provision', repository, configRevision: configRevision(base.configRevision) };
+      return { ...common, kind: 'provision', repository, ...(base.model ? { model: base.model as WorkerModel } : {}), configRevision: configRevision(base.configRevision) };
     }
     case 'empire_action': {
       allow(['action']);

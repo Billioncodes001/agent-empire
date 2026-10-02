@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import nacl from 'tweetnacl';
 import { AnthropicManaged } from '../src/server/providers/anthropic-managed';
-import { provisionAnthropicExecution, ProvisionError, WORKER_AGENT, WORKER_ENVIRONMENT, WORKER_MARKER } from '../src/cloud/provisioning';
+import { provisionAnthropicExecution, ProvisionError, WORKER_ENVIRONMENT, WORKER_MARKER } from '../src/cloud/provisioning';
 import { AnthropicCloudAdapter } from '../src/cloud/anthropic-adapter';
 import { providerFromEnv } from '../src/cloud/cli';
 import { initialCloudState, parseStateFiles, PROVISION_RETRY_MS, serializeState } from '../src/cloud/schema';
@@ -72,10 +72,10 @@ function fakeAnthropic(opts: { agents?: any[]; environments?: any[]; status?: nu
 
 const KEY = 'sk-ant-' + 'k'.repeat(40);
 
-test('provisioning: creates the worker agent and a limited cloud environment once, with the beta header, and never a session', async () => {
+test('provisioning: creates the worker agent (Sonnet 5 by default) and an unrestricted cloud environment once, with the beta header, and never a session', async () => {
   const api = fakeAnthropic();
   const result = await provisionAnthropicExecution(new AnthropicManaged(api.fetchImpl), KEY);
-  assert.deepEqual(result, { agentId: 'agent_created0001', environmentId: 'env_created0002', agentCreated: true, environmentCreated: true });
+  assert.deepEqual(result, { agentId: 'agent_created0001', environmentId: 'env_created0002', agentCreated: true, environmentCreated: true, model: 'claude-sonnet-5' });
   assert.deepEqual(api.calls.map((c) => `${c.method} ${c.path.split('?')[0]}`), ['GET /v1/agents', 'POST /v1/agents', 'GET /v1/environments', 'POST /v1/environments']);
   for (const c of api.calls) {
     assert.equal(c.headers.get('anthropic-beta'), 'managed-agents-2026-04-01');
@@ -84,8 +84,10 @@ test('provisioning: creates the worker agent and a limited cloud environment onc
     assert.doesNotMatch(JSON.stringify(c.body ?? {}), /sk-ant-/, 'the key is never in a body');
   }
   const agent = api.calls[1].body;
-  assert.equal(agent.name, WORKER_AGENT.name);
-  assert.equal(agent.model, 'claude-opus-5-5');
+  assert.equal(agent.name, 'Agent Empire worker');
+  assert.equal(agent.model, 'claude-sonnet-5', 'owner decision 2026-10-02');
+  assert.equal(agent.metadata.agent_empire_model, 'claude-sonnet-5');
+  assert.equal(agent.tools[0].default_config, undefined, 'tool approval stays the toolset default (always allow in the sandbox)');
   assert.deepEqual(agent.tools, [{ type: 'agent_toolset_20260401' }], 'satisfies AnthropicManaged.check');
   assert.equal(agent.multiagent, undefined);
   assert.match(agent.system, /Never commit to, push to, merge into or rewrite the default branch/);
@@ -93,23 +95,23 @@ test('provisioning: creates the worker agent and a limited cloud environment onc
   const env = api.calls[3].body;
   assert.deepEqual(env.config, WORKER_ENVIRONMENT.config);
   assert.equal(env.config.type, 'cloud');
-  assert.equal(env.config.networking.type, 'limited');
+  assert.deepEqual(env.config.networking, { type: 'unrestricted' }, 'owner decision 2026-10-02');
   // Second run: both are found and reused, nothing is created.
   const again = await provisionAnthropicExecution(new AnthropicManaged(api.fetchImpl), KEY);
-  assert.deepEqual(again, { agentId: 'agent_created0001', environmentId: 'env_created0002', agentCreated: false, environmentCreated: false });
+  assert.deepEqual(again, { agentId: 'agent_created0001', environmentId: 'env_created0002', agentCreated: false, environmentCreated: false, model: 'claude-sonnet-5' });
   assert.equal(api.calls.filter((c) => c.method === 'POST').length, 2, 'idempotent');
 });
 
 test('provisioning: reuses by marker (even renamed) or exact name across pages; a lost create response is found, not repeated', async () => {
-  const usable = { tools: [{ type: 'agent_toolset_20260401' }], multiagent: null, archived_at: null };
+  const usable = { tools: [{ type: 'agent_toolset_20260401' }], multiagent: null, archived_at: null, model: { id: 'claude-sonnet-5' } };
   const filler = Array.from({ length: 5 }, (_, i) => ({ id: `agent_other${String(i).padStart(4, '0')}`, name: `Other ${i}`, ...usable }));
   const api = fakeAnthropic({
     pageSize: 2,
     agents: [...filler, { id: 'agent_renamed0001', name: 'My worker', metadata: { [WORKER_MARKER.key]: WORKER_MARKER.agent }, ...usable }],
-    environments: [{ id: 'env_byname0001', name: WORKER_ENVIRONMENT.name, config: { type: 'cloud' }, archived_at: null }],
+    environments: [{ id: 'env_byname0001', name: WORKER_ENVIRONMENT.name, config: { type: 'cloud', networking: { type: 'unrestricted' } }, archived_at: null }],
   });
   const result = await provisionAnthropicExecution(new AnthropicManaged(api.fetchImpl), KEY);
-  assert.deepEqual(result, { agentId: 'agent_renamed0001', environmentId: 'env_byname0001', agentCreated: false, environmentCreated: false });
+  assert.deepEqual(result, { agentId: 'agent_renamed0001', environmentId: 'env_byname0001', agentCreated: false, environmentCreated: false, model: 'claude-sonnet-5' });
   assert.ok(!api.calls.some((c) => c.method === 'POST'));
   const lost = fakeAnthropic({ loseCreate: 'agent' });
   const after = await provisionAnthropicExecution(new AnthropicManaged(lost.fetchImpl), KEY);
@@ -120,9 +122,9 @@ test('provisioning: reuses by marker (even renamed) or exact name across pages; 
 });
 
 test('provisioning: unusable or archived resources and a rejected key are user-fixable failures; a timeout is retryable', async () => {
-  const multi = fakeAnthropic({ agents: [{ id: 'agent_multi00001', name: WORKER_AGENT.name, tools: [{ type: 'agent_toolset_20260401' }], multiagent: { type: 'coordinator', agents: [] }, archived_at: null }] });
+  const multi = fakeAnthropic({ agents: [{ id: 'agent_multi00001', name: 'Agent Empire worker', model: 'claude-sonnet-5', tools: [{ type: 'agent_toolset_20260401' }], multiagent: { type: 'coordinator', agents: [] }, archived_at: null }] });
   await assert.rejects(provisionAnthropicExecution(new AnthropicManaged(multi.fetchImpl), KEY), (e: unknown) => e instanceof ProvisionError && !e.retryable && /multiagent/.test(e.message));
-  const archived = fakeAnthropic({ environments: [{ id: 'env_archived0001', name: WORKER_ENVIRONMENT.name, config: { type: 'cloud' }, archived_at: '2026-09-01T00:00:00Z' }] });
+  const archived = fakeAnthropic({ environments: [{ id: 'env_archived0001', name: WORKER_ENVIRONMENT.name, config: { type: 'cloud', networking: { type: 'unrestricted' } }, archived_at: '2026-09-01T00:00:00Z' }] });
   await assert.rejects(provisionAnthropicExecution(new AnthropicManaged(archived.fetchImpl), KEY), (e: unknown) => e instanceof ProvisionError && !e.retryable && /archived/.test(e.message));
   const denied = fakeAnthropic({ status: 401 });
   await assert.rejects(provisionAnthropicExecution(new AnthropicManaged(denied.fetchImpl), KEY), (e: unknown) => e instanceof ProvisionError && !e.retryable && /HTTP 401/.test(e.message) && /No agent session was started/.test(e.message) && !e.message.includes(KEY));
@@ -228,7 +230,7 @@ test('coordinator: a job for a site that is not built is refused; founding first
 test('schema: provisioning round-trips, is refused when malformed, and never holds a secret field', () => {
   const state = initialCloudState(T0, { provision: REPO });
   const files = serializeState(state);
-  assert.deepEqual(parseStateFiles(files, T0).state.meta.provisioning, { provider: 'anthropic', repository: REPO, status: 'pending', requestedAt: T0, attempts: 0 });
+  assert.deepEqual(parseStateFiles(files, T0).state.meta.provisioning, { provider: 'anthropic', repository: REPO, status: 'pending', model: 'claude-sonnet-5', requestedAt: T0, attempts: 0 });
   const meta = JSON.parse(files['state/meta.json']);
   for (const bad of [{ ...meta.provisioning, apiKey: 'x' }, { ...meta.provisioning, status: 'ok' }, { ...meta.provisioning, repository: { owner: 'x' } }])
     assert.throws(() => parseStateFiles({ ...files, 'state/meta.json': JSON.stringify({ ...meta, provisioning: bad }) }, T0));

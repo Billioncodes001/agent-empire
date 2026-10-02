@@ -8,7 +8,7 @@ import { safeExecutionError } from '../server/execution-errors.js';
 import { COMMIT } from '../server/execution-validation.js';
 import { GitHubClient, GitHubError } from './store.js';
 import { AnthropicManaged, type ProviderCredentials } from '../server/providers/anthropic-managed.js';
-import { provisionAnthropicExecution, type ProvisionResult } from './provisioning.js';
+import { provisionAnthropicExecution, type ProvisionResult, type WorkerModel } from './provisioning.js';
 import { DispatchFailure, type DispatchRequest, type ProviderAdapter, type ProviderObservation } from './provider.js';
 import { utcDay, type CloudExecution, type EventCursorState } from './schema.js';
 
@@ -65,7 +65,7 @@ export class AnthropicCloudAdapter implements ProviderAdapter {
   }
 
   /** Control-plane lookups and creates only; no session. Needs only the Anthropic key. */
-  provision(): Promise<ProvisionResult> { return provisionAnthropicExecution(this.client, this.credentials.apiKey); }
+  provision(model: WorkerModel): Promise<ProvisionResult> { return provisionAnthropicExecution(this.client, this.credentials.apiKey, model); }
 
   async observe(sessionId: string, cursor: EventCursorState): Promise<{ observation: ProviderObservation; cursor: EventCursorState }> {
     let next = { ...cursor };
