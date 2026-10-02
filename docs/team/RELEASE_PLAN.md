@@ -55,7 +55,7 @@ Actions are pinned to full commit SHAs. Secrets are used only in the steps that 
   "shell": {
     "macos":   { "version": "1.0.0-beta.2", "url": "…", "auto": true },
     "windows": { "version": "1.0.0-beta.2", "url": "…", "auto": true },
-    "android": { "version": "1.0.0-beta.2", "versionCode": 10000002, "url": "…apk", "play": "https://play.google.com/store/apps/details?id=com.agentempire.mobile" },
+    "android": { "version": "1.0.0-beta.2", "versionCode": 10000302, "url": "…apk", "play": "https://play.google.com/store/apps/details?id=com.agentempire.mobile" },
     "ios":     { "version": "1.0.0-beta.2", "testflight": "…", "appStore": "…" }
   },
   "coordinator": { "url": "…mjs", "sha256": "…", "schema": 1 },
@@ -64,6 +64,22 @@ Actions are pinned to full commit SHAs. Secrets are used only in the steps that 
 ```
 
 The file is signed with the same Ed25519 key (`channel-<channel>.json.sig`). Apps fetch the file and its signature from `https://github.com/<owner>/<repo>/releases/latest/download/…` (stable), or from the newest pre-release for beta. They check the signature against the pinned public key before trusting anything in it.
+
+### As implemented (REL-01/REL-02, `tools/release/`)
+
+- **Pinned public key:** `src/shared/release-key.ts` exports `RELEASE_PUBLIC_KEY`: the base64 of the **raw 32-byte Ed25519 public key** (tweetnacl `sign.detached.verify`, CryptoKit `Curve25519.Signing.PublicKey(rawRepresentation:)`). Both constants there must stay single-quoted string literals. Native shells pin the same string; list each shell file that pins it in `tools/release/config.json` `pinnedKeyFiles`, and the release gate (`node tools/release/sign.mjs check-key`) fails unless every listed file contains it.
+- **Development key:** until the owner pastes their key, `RELEASE_PUBLIC_KEY` equals `DEV_RELEASE_PUBLIC_KEY`, whose private half is derived from a public seed (`devPrivateKey()` in `tools/release/sign.mjs`; `sign.mjs sign --dev`). Tests and fixtures sign with it. `RELEASE_KEY_IS_DEVELOPMENT` is true in such a build. A tagged release fails while the pinned key is the development key, or when `GAME_SIGNING_KEY` is not its private half.
+- **Signatures:** `<file>.sig` holds the base64 of the 64-byte Ed25519 signature over the file's exact bytes, plus a trailing newline. Verifiers should trim whitespace.
+- **versionCode:** `MAJOR*10^7 + MINOR*10^5 + PATCH*10^3 + rank`, where rank is `alpha.N`=100+N, `beta.N`=300+N, `rc.N`=600+N (N ≤ 199) and a final release is 999. So `1.0.0-beta.1` is 10000301 and `1.0.0` is 10000999. iOS `CURRENT_PROJECT_VERSION` uses the same number; `MARKETING_VERSION` is the numeric `X.Y.Z`.
+- **Channels:** a prerelease writes `channel-beta.json`. A final release writes `channel-stable.json` and also `channel-beta.json`, so beta users are offered it too.
+- **Fields beyond the example above** (additive; clients must ignore unknown fields):
+  - top level: `tag`, `releasePage` (the GitHub release page).
+  - `game`: `bytes`, `manifest` and `manifestSig` (URLs of `game-manifest.json` and its `.sig`). `game-manifest.json` holds `schema, name, version, file, bytes, sha256, files, entry, minShell, commit`. `minShell` comes from `tools/release/config.json`.
+  - `shell.macos` / `shell.windows`: `url` is the release page (users pick a download). `downloads.<arch>` has `dmg`/`zip` entries of `{ name, url, sha256 }` and `signed`. `auto` is true only when every macOS build is signed and notarized. `shell.macos.feed.<arch>` is then the URL of a Squirrel.Mac static feed `desktop-update-darwin-<arch>.json` (Electron `autoUpdater`, `serverType: 'json'`), else `null`. Windows `auto` is always false for now: there is no Squirrel/NSIS installer yet.
+  - `shell.android`: `name`, `sha256` (check it before opening the installer) and `signed` (false for the labelled debug-signed APK). `play` is set only when the release was uploaded to Play.
+  - `shell.ios`: `testflight` and `appStore` come from `tools/release/config.json` (null until the owner fills them in).
+  - A platform whose build is missing is `null`.
+- **Asset names:** `agent-empire-game-<v>.zip`, `game-manifest.json(.sig)`, `agent-empire-coordinator.mjs`, `Agent-Empire-<v>-macos-<arm64|x64>[-unsigned].{zip,dmg}`, `Agent-Empire-<v>-windows-x64[-unsigned].zip`, `Agent-Empire-<v>-android[-debug-signed].apk`, `Agent-Empire-<v>-android.aab` (only when upload-key signed), `channel-<channel>.json(.sig)`, `desktop-update-darwin-<arch>.json` (only when signed), `SHA256SUMS`.
 
 ## In-app updates
 

@@ -7,7 +7,7 @@ pw.txt
 
 artifacts/
 
-release/
+/release/
 
 # iOS: bundled game copied from dist/public by tools/sync-ios-game.sh
 mobile/ios/AgentEmpire/Game/
