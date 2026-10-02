@@ -7,17 +7,19 @@
  * The page talks to the shell only through window.empireDesktop (preload.cjs) under the bridge contract in
  * docs/team/CLOUD_MODE_PLAN.md; every request is checked here with bridge-policy.cjs.
  */
-const { app, BrowserWindow, Menu, ipcMain, dialog, shell, session, safeStorage, protocol, net, clipboard } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, dialog, shell, session, safeStorage, protocol, net, clipboard, autoUpdater } = require('electron');
 const path = require('node:path');
 const os = require('node:os');
 const { pathToFileURL } = require('node:url');
 const { readFileSync, writeFileSync, existsSync, mkdirSync } = require('node:fs');
+const { execFile } = require('node:child_process');
 const policy = require('./bridge-policy.cjs');
 const { createHandler } = require('./app-protocol.cjs');
 const { createSecureStore } = require('./secure-store.cjs');
 const { runDeviceFlow } = require('./device-flow.cjs');
 const { createVault } = require('./credential-vault.cjs');
 const { startLocalHost, localDeviceSession } = require('./local-host.cjs');
+const updates = require('./update-store.cjs');
 
 process.env.PATH = ['/opt/homebrew/bin', '/usr/local/bin', process.env.PATH].filter(Boolean).join(path.delimiter);
 // An explicit --user-data-dir (isolated test profiles) moves everything, including the single-instance lock.
@@ -40,6 +42,9 @@ let lastGesture = 0;
 let deviceFlow; // {controller, info, window}
 let credentialsWindow;
 let busy = false, syncTimer;
+let bundles; // in-app game updates (update-store.cjs)
+let trialTimer;
+let updateFixture; // development only: a loopback stand-in for GitHub releases (see setUpUpdates)
 
 /* ---------- small persisted settings (not secret) ---------- */
 const configPath = () => path.join(app.getPath('userData'), 'connection.json');
@@ -130,6 +135,44 @@ async function handleBridge(request) {
       return true;
     case 'app.openExternal':
       return openExternal(request.params.url);
+    case 'update.fetch': {
+      const r = await updates.download(request.params.url, { etag: request.params.etag, maxBytes: updates.MAX_TEXT_BYTES, fixture: updateFixture });
+      return { status: r.status, body: r.body.toString('utf8'), etag: r.etag };
+    }
+    case 'update.installGame':
+      return bundles.install(request.params, async (url) => {
+        const r = await updates.download(url, { fixture: updateFixture });
+        if (r.status !== 200) throw new Error(`GitHub answered ${r.status} for the update.`);
+        return r.body;
+      });
+    case 'update.activate':
+      if (!bundles.activate()) throw new Error('No update is waiting.');
+      // Answer first, then restart the game into the new bundle (a trial until it reports booting).
+      setTimeout(() => {
+        armTrial();
+        if (win && !win.isDestroyed()) void win.loadURL(GAME_URL).catch(() => {});
+      }, 50);
+      return true;
+    case 'update.bootOk':
+      bundles.bootOk();
+      clearTimeout(trialTimer);
+      return true;
+    case 'update.nativeInfo': {
+      const rolledBack = bundles.takeRolledBack();
+      return {
+        platform: 'desktop',
+        shellVersion: app.getVersion(),
+        os: process.platform === 'darwin' ? 'macos' : process.platform === 'win32' ? 'windows' : 'linux',
+        installedGame: bundles.installedGame(),
+        builtinGame: bundles.builtinVersion,
+        pendingGame: bundles.state.pending,
+        canInstallGame: true,
+        canAutoUpdate: await canAutoUpdate(),
+        ...(rolledBack ? { rolledBack } : {}),
+      };
+    }
+    case 'update.openNative':
+      return openNativeUpdate(request.params);
     case 'app.runLocal': {
       const outcome = await confirmAndStartLocal();
       if (outcome === 'cancelled') throw new Error('cancelled: Running on this computer was cancelled. Nothing was started.');
@@ -165,6 +208,80 @@ async function openExternal(url) {
   lastGesture = 0; // one gesture opens one page
   await shell.openExternal(url);
   return true;
+}
+
+/* ---------- in-app updates (REL-04) ---------- */
+/**
+ * The bundle store, the 20 s rollback timer and the optional development fixture. The fixture
+ * (--empire-update-fixture=http://127.0.0.1:<port>) is honoured only while the pinned release key is the public dev key
+ * (src/shared/release-key.ts isDevKey), so a release build never downloads from anywhere but GitHub.
+ */
+async function setUpUpdates() {
+  bundles = updates.createBundleStore({ root: path.join(app.getPath('userData'), 'game-bundles'), builtinRoot: path.join(__dirname, 'runtime', 'public') });
+  const launched = bundles.launch();
+  if (launched) console.warn(`Game update ${launched.rolledBack} rolled back: ${launched.reason}`);
+  const fixture = app.commandLine.getSwitchValue('empire-update-fixture');
+  if (fixture) {
+    let devKey = false;
+    try {
+      devKey = (await import(pathToFileURL(path.join(__dirname, 'runtime', 'server', 'shared', 'release-key.js')).href)).isDevKey === true;
+    } catch {}
+    if (devKey) {
+      updateFixture = updates.fixtureMapper(fixture);
+      console.warn(`Update fixture: release downloads come from ${updateFixture.origin} (development key only).`);
+    } else console.warn('Ignoring --empire-update-fixture: this build pins a release key.');
+  }
+}
+
+function armTrial() {
+  clearTimeout(trialTimer);
+  const trial = bundles.state.trial;
+  if (!trial) return;
+  trialTimer = setTimeout(() => {
+    if (bundles.checkTrial()) {
+      console.warn('The updated game did not report booting within 20 s; rolled back.');
+      void reloadGame();
+    }
+  }, Math.max(0, trial.startedAt + updates.BOOT_TIMEOUT_MS - Date.now()) + 50);
+}
+
+let autoUpdateCapable;
+/** Squirrel.Mac needs a Developer ID-signed, packaged app; Windows builds have no Squirrel installer yet. */
+function canAutoUpdate() {
+  if (autoUpdateCapable !== undefined) return Promise.resolve(autoUpdateCapable);
+  if (process.platform !== 'darwin' || !app.isPackaged) return Promise.resolve((autoUpdateCapable = false));
+  const bundle = path.resolve(process.execPath, '..', '..', '..');
+  return new Promise((resolve) =>
+    execFile('codesign', ['-dv', '--verbose=2', bundle], { timeout: 10_000 }, (_error, _out, err) => resolve((autoUpdateCapable = /Authority=Developer ID Application/.test(String(err))))),
+  );
+}
+
+let autoUpdating = false;
+async function openNativeUpdate({ version, url, feed }) {
+  if (feed && (await canAutoUpdate())) {
+    if (!autoUpdating) {
+      autoUpdating = true;
+      autoUpdater.removeAllListeners();
+      autoUpdater.on('error', async (error) => {
+        autoUpdating = false;
+        const choice = await dialog.showMessageBox(win, { type: 'warning', buttons: ['Cancel', 'Open download'], defaultId: 1, cancelId: 0, message: 'The app couldn’t update itself', detail: `${error.message}
+
+You can download version ${version} instead.` });
+        if (choice.response === 1 && url) await shell.openExternal(url);
+      });
+      autoUpdater.on('update-downloaded', async () => {
+        autoUpdating = false;
+        const choice = await dialog.showMessageBox(win, { type: 'info', buttons: ['Later', 'Restart now'], defaultId: 1, cancelId: 0, message: `Agent Empire ${version} is ready`, detail: 'Restart the app to finish updating. Your Empire is not changed.' });
+        if (choice.response === 1) autoUpdater.quitAndInstall();
+      });
+      autoUpdater.setFeedURL({ url: feed });
+      autoUpdater.checkForUpdates();
+    }
+    return { action: 'auto-update' };
+  }
+  if (!url) throw new Error('This update has no download for this computer.');
+  await openExternal(url);
+  return { action: 'opened' };
 }
 
 /* ---------- GitHub device flow (main process; the page never sees the device code exchange) ---------- */
@@ -508,8 +625,10 @@ if (!ownsInstance) app.quit();
 else
   app.whenReady().then(async () => {
     syncEngine = await import('./runtime/device-sync.js');
+    await setUpUpdates();
     const ses = session.fromPartition(PARTITION);
-    ses.protocol.handle(policy.APP_SCHEME, createHandler(path.join(__dirname, 'runtime', 'public')));
+    // The active installed game bundle, else the one built into the app (always the final fallback).
+    ses.protocol.handle(policy.APP_SCHEME, createHandler(() => bundles.servingRoot()));
     ses.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
     ses.setPermissionCheckHandler(() => false);
     store = createSecureStore(path.join(app.getPath('userData'), 'app-session.enc'), safeStorage);
@@ -572,6 +691,7 @@ else
 
     migrateFromLauncher();
     createGameWindow();
+    armTrial(); // a bundle switched at this launch is on trial until the page reports booting
     await reloadGame();
     startSyncTimer();
     app.on('activate', () => {

@@ -3,6 +3,7 @@
  * public (src/shared/release-key.ts): anything signed here proves nothing outside development builds.
  */
 import { createHash } from 'node:crypto';
+import { crc32, deflateRawSync } from 'node:zlib';
 import nacl from 'tweetnacl';
 import { DEV_RELEASE_KEY_SEED_TEXT, DEV_RELEASE_PUBLIC_KEY } from '../src/shared/release-key';
 import { RELEASE_REPO } from '../src/client/update/channel';
@@ -41,4 +42,50 @@ export function channelJson(opts: { channel?: 'stable' | 'beta'; version: string
 export function signedChannel(opts: Parameters<typeof channelJson>[0], secretKey?: Uint8Array) {
   const text = `${JSON.stringify(channelJson(opts), null, 2)}\n`;
   return { text, sig: sign(text, secretKey) };
+}
+
+/** One file in a test zip. `mode` sets unix permissions/type (e.g. 0o120777 for a symlink). */
+export interface ZipFile { name: string; data?: string | Buffer; mode?: number; deflate?: boolean; encrypted?: boolean }
+
+/** A minimal zip writer (store or deflate) for fixtures, including deliberately hostile entries. */
+export function makeZip(files: ZipFile[]): Buffer {
+  const locals: Buffer[] = [];
+  const centrals: Buffer[] = [];
+  let offset = 0;
+  for (const f of files) {
+    const name = Buffer.from(f.name, 'utf8');
+    const raw = Buffer.isBuffer(f.data) ? f.data : Buffer.from(f.data ?? '', 'utf8');
+    const deflate = f.deflate ?? raw.length > 64;
+    const body = deflate ? deflateRawSync(raw) : raw;
+    const crc = crc32(raw);
+    const flags = f.encrypted ? 1 : 0;
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(flags, 6); local.writeUInt16LE(deflate ? 8 : 0, 8);
+    local.writeUInt32LE(crc, 14); local.writeUInt32LE(body.length, 18); local.writeUInt32LE(raw.length, 22); local.writeUInt16LE(name.length, 26);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0); central.writeUInt16LE((3 << 8) | 20, 4); central.writeUInt16LE(20, 6); central.writeUInt16LE(flags, 8); central.writeUInt16LE(deflate ? 8 : 0, 10);
+    central.writeUInt32LE(crc, 16); central.writeUInt32LE(body.length, 20); central.writeUInt32LE(raw.length, 24); central.writeUInt16LE(name.length, 28);
+    const mode = f.mode ?? (f.name.endsWith('/') ? 0o040755 : 0o100644);
+    central.writeUInt32LE((mode << 16) >>> 0, 38); central.writeUInt32LE(offset, 42);
+    locals.push(local, name, body);
+    centrals.push(central, name);
+    offset += local.length + name.length + body.length;
+  }
+  const cd = Buffer.concat(centrals);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(files.length, 8); end.writeUInt16LE(files.length, 10); end.writeUInt32LE(cd.length, 12); end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, cd, end]);
+}
+
+/** A tiny game bundle zip for `version` (index.html reports booting unless `broken`). */
+export function gameZip(version: string, opts: { broken?: boolean } = {}) {
+  const html = opts.broken
+    ? `<!doctype html><title>broken ${version}</title><script>throw new Error('broken bundle')</script>`
+    : `<!doctype html><html><head><title>Agent Empire ${version}</title></head><body>game ${version}</body></html>`;
+  return makeZip([
+    { name: 'index.html', data: html },
+    { name: 'game-version.json', data: JSON.stringify({ version }) },
+    { name: 'assets/', mode: 0o040755 },
+    { name: 'assets/main.js', data: `console.log(${JSON.stringify(version)});`.repeat(10) },
+  ]);
 }

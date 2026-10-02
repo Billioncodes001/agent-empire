@@ -8,7 +8,14 @@ const APP_HOST = 'game';
 /** The bundled game's origin. The server already allows it (src/server/server.ts APP_ORIGINS, shared with iOS). */
 const APP_ORIGIN = `${APP_SCHEME}://${APP_HOST}`;
 
-const METHODS = Object.freeze(['secure.get', 'secure.set', 'secure.delete', 'github.deviceFlow', 'app.signedOut', 'app.openExternal', 'app.runLocal']);
+const METHODS = Object.freeze(['secure.get', 'secure.set', 'secure.delete', 'github.deviceFlow', 'app.signedOut', 'app.openExternal', 'app.runLocal',
+  // In-app updates (docs/team/RELEASE_PLAN.md, REL-04): see update-store.cjs.
+  'update.fetch', 'update.installGame', 'update.activate', 'update.bootOk', 'update.nativeInfo', 'update.openNative']);
+/** Releases come only from this repository (src/client/update/channel.ts RELEASE_REPO; Android and iOS pin the same). */
+const RELEASE_REPO = 'Billioncodes001/agent-empire';
+const RELEASES_API = `https://api.github.com/repos/${RELEASE_REPO}/releases?per_page=20`;
+/** Hosts GitHub redirects a release download to. Nothing else is followed. */
+const ASSET_REDIRECT_HOSTS = Object.freeze(['objects.githubusercontent.com', 'release-assets.githubusercontent.com']);
 /** Stored modes. 'local' is desktop-only: the bundled server on this computer ("Run on this computer"). */
 const MODES = Object.freeze(['cloud', 'server', 'local']);
 /**
@@ -34,7 +41,71 @@ const GITHUB_LOGIN = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
 const STATE_REPO = /^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/;
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]']);
 
+const SEMVER = /^(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})(?:-((?:0|[1-9]\d{0,8}|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d{0,8}|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?$/;
+const SHA256 = /^[0-9a-f]{64}$/;
+const SEGMENT = /^[A-Za-z0-9._+-]{1,128}$/;
+
 const isKey = (key) => typeof key === 'string' && KEYS.includes(key);
+const isSemver = (v) => typeof v === 'string' && v.length <= 64 && SEMVER.test(v);
+const isSha256 = (v) => typeof v === 'string' && SHA256.test(v);
+
+/** SemVer 2.0 precedence (same as src/client/update/semver.ts). Both must be valid. */
+function compareSemver(a, b) {
+  const parse = (v) => {
+    const m = SEMVER.exec(v);
+    if (!m) throw new Error(`Not a version: ${v}`);
+    return { n: [Number(m[1]), Number(m[2]), Number(m[3])], pre: m[4] ? m[4].split('.').map((p) => (/^\d+$/.test(p) ? Number(p) : p)) : [] };
+  };
+  const x = parse(a), y = parse(b);
+  for (let i = 0; i < 3; i++) if (x.n[i] !== y.n[i]) return x.n[i] - y.n[i];
+  if (!x.pre.length || !y.pre.length) return (x.pre.length ? -1 : 0) + (y.pre.length ? 1 : 0);
+  for (let i = 0; i < Math.max(x.pre.length, y.pre.length); i++) {
+    const p = x.pre[i], q = y.pre[i];
+    if (p === undefined) return -1;
+    if (q === undefined) return 1;
+    if (p === q) continue;
+    if (typeof p === 'number' && typeof q === 'number') return p - q;
+    if (typeof p === 'number') return -1;
+    if (typeof q === 'number') return 1;
+    return p < q ? -1 : 1;
+  }
+  return 0;
+}
+
+/**
+ * A release asset of RELEASE_REPO: https://github.com/<repo>/releases/download/<tag>/<file> or
+ * .../releases/latest/download/<file>. Returns {tag, file} (tag null for latest) or null. No query, port or userinfo.
+ */
+function releaseAsset(input) {
+  if (typeof input !== 'string' || input.length > 512) return null;
+  let u;
+  try {
+    u = new URL(input);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== 'https:' || u.hostname !== 'github.com' || u.port || u.username || u.password || u.search || u.hash) return null;
+  const parts = u.pathname.split('/');
+  const [owner, repo] = RELEASE_REPO.toLowerCase().split('/');
+  if (parts[1]?.toLowerCase() !== owner || parts[2]?.toLowerCase() !== repo || parts[3] !== 'releases') return null;
+  const ok = (seg) => !!seg && SEGMENT.test(seg) && seg !== '.' && seg !== '..';
+  if (parts.length === 7 && parts[4] === 'download' && ok(parts[5]) && ok(parts[6])) return { tag: parts[5], file: parts[6] };
+  if (parts.length === 7 && parts[4] === 'latest' && parts[5] === 'download' && ok(parts[6])) return { tag: null, file: parts[6] };
+  return null;
+}
+
+/** update.fetch: a release asset, or the releases listing used to find the newest pre-release. */
+const isUpdateFetchUrl = (url) => url === RELEASES_API || releaseAsset(url) !== null;
+
+/** A redirect GitHub may send a release download to (https, its asset hosts only). */
+function isAssetRedirect(input) {
+  try {
+    const u = new URL(input);
+    return u.protocol === 'https:' && ASSET_REDIRECT_HOSTS.includes(u.hostname) && !u.port && !u.username && !u.password;
+  } catch {
+    return false;
+  }
+}
 const isMethod = (method) => typeof method === 'string' && METHODS.includes(method);
 const isDeviceToken = (token) => typeof token === 'string' && DEVICE_TOKEN.test(token);
 
@@ -174,6 +245,38 @@ function parseRequest(raw) {
       const url = externalUrl(p.url);
       return url ? { id, method: raw.method, params: { url } } : fail('Only https links can be opened.');
     }
+    case 'update.fetch': {
+      if (typeof p.url !== 'string' || !isUpdateFetchUrl(p.url)) return fail('That address is not an Agent Empire release.');
+      const etag = typeof p.etag === 'string' && p.etag.length <= 200 && /^[\x21-\x7e]+$/.test(p.etag) ? p.etag : undefined;
+      return { id, method: raw.method, params: etag ? { url: p.url, etag } : { url: p.url } };
+    }
+    case 'update.installGame': {
+      const a = releaseAsset(p.url);
+      if (!a || a.tag === null) return fail('That update is not an Agent Empire release.');
+      if (!isSha256(p.sha256)) return fail('Malformed sha256.');
+      if (!isSemver(p.version)) return fail('Malformed version.');
+      return { id, method: raw.method, params: { url: p.url, sha256: p.sha256, version: p.version } };
+    }
+    case 'update.activate':
+    case 'update.bootOk':
+    case 'update.nativeInfo':
+      return { id, method: raw.method, params: {} };
+    case 'update.openNative': {
+      if (!isSemver(p.version)) return fail('Malformed version.');
+      const out = { version: p.version };
+      if (p.url !== undefined) {
+        const a = releaseAsset(p.url);
+        if (!a || a.tag === null) return fail('That download is not an Agent Empire release.');
+        out.url = p.url;
+      }
+      if (p.feed !== undefined) {
+        const a = releaseAsset(p.feed);
+        if (!a || a.tag === null) return fail('That update feed is not an Agent Empire release.');
+        out.feed = p.feed;
+      }
+      if (!out.url && !out.feed) return fail('Nothing to open.');
+      return { id, method: raw.method, params: out };
+    }
   }
   return fail('Unknown method.');
 }
@@ -204,4 +307,5 @@ module.exports = {
   APP_SCHEME, APP_HOST, APP_ORIGIN, METHODS, MODES, PAGE_MODES, KEYS, SESSION_KEYS, GITHUB_SCOPES, SIGN_OUT_REASONS, MAX_VALUE_LENGTH, GESTURE_WINDOW_MS,
   isKey, isMethod, isDeviceToken, isClientId, serverOrigin, invalidValue, scopes, externalUrl, isVerificationUrl, gestureAllows, isAppUrl,
   parseRequest, configFor, shouldResumeLocal,
+  RELEASE_REPO, RELEASES_API, ASSET_REDIRECT_HOSTS, isSemver, isSha256, compareSemver, releaseAsset, isUpdateFetchUrl, isAssetRedirect,
 };
