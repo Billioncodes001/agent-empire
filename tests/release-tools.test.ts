@@ -412,15 +412,15 @@ test('release workflow: SHA-pinned actions, least privilege, secrets only where 
   assert.match(text, /^concurrency:\n {2}group: release-\$\{\{ github\.ref \}\}\n {2}cancel-in-progress: false$/m);
   // Every job declares its permissions; only the publish job can write.
   const jobs = text.slice(text.indexOf('\njobs:\n')).split(/\n(?= {2}[a-z][\w-]*:\n)/).slice(1);
-  assert.deepEqual(jobs.map(job => job.split(':')[0].trim()), ['verify', 'game', 'desktop-macos', 'desktop-windows', 'android', 'play', 'ios', 'assemble', 'publish']);
+  assert.deepEqual(jobs.map(job => job.split(':')[0].trim()), ['verify', 'game', 'desktop-macos', 'desktop-windows', 'android', 'ios', 'assemble', 'publish', 'play']);
   for (const job of jobs) assert.match(job, /\n {4}permissions:\n {6}contents: (read|write)\n/, job.split('\n')[0]);
   assert.deepEqual(jobs.filter(job => /contents: write/.test(job)).map(job => job.split(':')[0].trim()), ['publish']);
-  assert.match(jobs.find(job => job.startsWith('  publish:'))!, /if: always\(\) && needs\.assemble\.result == 'success' && needs\.verify\.outputs\.release == 'true'/);
+  assert.match(jobs.find(job => job.startsWith('  publish:'))!, /\n {4}needs: \[verify, assemble\]\n {4}if: needs\.verify\.outputs\.release == 'true'\n/);
   assert.doesNotMatch(jobs.find(job => job.startsWith('  publish:'))!, /secrets\./);
   // Secret values only reach step env/with blocks; job-level env only carries HAS_* presence flags.
   for (const [i, line] of lines.entries()) {
     if (!line.includes('secrets.')) continue;
-    if (/^ {6}HAS_[A-Z_]+: \$\{\{ (secrets\.[A-Z0-9_]+ != '' && )*secrets\.[A-Z0-9_]+ != ''( && vars\.[A-Z_]+ != '')* \}\}$/.test(line)) continue;
+    if (/^ {6}HAS_[A-Z_]+: \$\{\{ needs\.verify\.outputs\.release == 'true' && (secrets\.[A-Z0-9_]+ != '' && )*secrets\.[A-Z0-9_]+ != ''( && vars\.[A-Z_]+ != '')* \}\}$/.test(line)) continue;
     assert.match(line, /^ {10}[\w-]+: \$\{\{ secrets\.[A-Z0-9_]+ \}\}$/, `line ${i + 1}: ${line}`);
   }
   // Untrusted refs are passed through env, never interpolated into scripts.
@@ -428,4 +428,67 @@ test('release workflow: SHA-pinned actions, least privilege, secrets only where 
   // The release is gated on the tag rule, the version check and the key check.
   for (const step of ['version.mjs tag-check "$TAG" --sha "$GITHUB_SHA" --main origin/main', 'version.mjs check', 'sign.mjs check-key', 'check-no-fixture.mjs dist/public', 'npm test', 'npm run typecheck', 'npm run build:cloud'])
     assert.ok(text.includes(step), step);
+});
+
+/** Jobs of release.yml as { name, job, header (job-level lines), steps (each step's text) }. */
+function workflowJobs() {
+  const text = readFileSync(path.join(ROOT, '.github/workflows/release.yml'), 'utf8');
+  return text.slice(text.indexOf('\njobs:\n')).split(/\n(?= {2}[a-z][\w-]*:\n)/).slice(1).map(job => {
+    const [header, ...steps] = job.split(/\n(?= {6}- )/);
+    return { name: job.split(':')[0].trim(), job, header, steps };
+  });
+}
+const RELEASE_ENV_ON_TAG = "    environment: ${{ needs.verify.outputs.release == 'true' && 'release' || '' }}";
+
+test('signing secrets: only jobs in the release environment, only on tag runs, never on a dry run', () => {
+  const jobs = workflowJobs();
+  const releaseOnly = (j: { header: string }) => /\n {4}if: needs\.verify\.outputs\.release == 'true'\n/.test(j.header) && /\n {4}environment: release\n/.test(j.header);
+  assert.deepEqual(jobs.filter(j => j.job.includes('secrets.')).map(j => j.name), ['game', 'desktop-macos', 'desktop-windows', 'android', 'ios', 'assemble', 'play']);
+  for (const j of jobs) {
+    const env = j.header.split('\n').filter(line => line.startsWith('    environment:'));
+    if (!j.job.includes('secrets.')) {
+      // verify never joins the environment; publish (no secrets, only GITHUB_TOKEN) is gated by it.
+      if (j.name === 'publish') assert.ok(releaseOnly(j), 'publish runs only on a tag, in the release environment');
+      else assert.deepEqual(env, [], `${j.name} must not join the release environment`);
+      continue;
+    }
+    // A job that references a signing secret joins `release`: literally (tag-only job) or only when the run is a tag.
+    assert.ok(env.length === 1 && (env[0] === RELEASE_ENV_ON_TAG || releaseOnly(j)), `${j.name} references secrets without environment: release`);
+    // Presence flags are false outside a tag run, whatever secrets exist.
+    for (const line of j.header.split('\n').filter(l => l.includes('secrets.')))
+      assert.match(line, /^ {6}HAS_[A-Z_]+: \$\{\{ needs\.verify\.outputs\.release == 'true' && /, `${j.name}: ${line}`);
+    // Every step that receives a secret runs only on a tag (RELEASE) or behind a release-gated HAS_* flag.
+    for (const step of j.steps.filter(st => st.includes('secrets.'))) {
+      if (releaseOnly(j)) continue;
+      const cond = /\n {8}if: (.*)/.exec(step)?.[1] ?? '';
+      assert.match(cond, /env\.RELEASE == 'true'|env\.HAS_[A-Z_]+ == 'true'/, `${j.name} step without a release gate: ${step.split('\n')[0]}`);
+      assert.doesNotMatch(cond, /\|\|/, `${j.name}: an OR condition could open the step on a dry run`);
+    }
+  }
+});
+
+test('dry runs sign with --dev; production signing only on tag runs; Play waits for verified signatures', () => {
+  const jobs = workflowJobs();
+  for (const name of ['game', 'assemble']) {
+    const j = jobs.find(x => x.name === name)!;
+    const signs = j.steps.filter(st => /sign\.mjs sign /.test(st));
+    assert.equal(signs.length, 2, name);
+    const dev = signs.find(st => st.includes('sign.mjs sign --dev'))!;
+    const prod = signs.find(st => !st.includes('--dev'))!;
+    assert.match(dev, /\n {8}if: env\.RELEASE != 'true'\n/, `${name}: the dry-run path signs with --dev`);
+    assert.doesNotMatch(dev, /secrets\./);
+    assert.match(prod, /\n {8}if: env\.RELEASE == 'true'\n/, `${name}: production signing only on a tag run`);
+    assert.match(prod, /sign\.mjs check-key/);
+  }
+  // Dry runs build unsigned apps: each signing step has a secret-free twin selected by the same release-gated flag.
+  for (const [name, flag] of [['desktop-macos', 'HAS_APPLE_SIGNING'], ['desktop-windows', 'HAS_WINDOWS_CERT'], ['android', 'HAS_ANDROID_KEYSTORE']] as const) {
+    const j = jobs.find(x => x.name === name)!;
+    assert.ok(j.steps.some(st => st.includes(`if: env.${flag} != 'true'`) && !st.includes('secrets.')), `${name} has an unsigned path`);
+  }
+  const play = jobs.find(x => x.name === 'play')!;
+  assert.match(play.header, /\n {4}needs: \[verify, assemble\]\n/);
+  assert.match(play.job, /name: release-bundle/);
+  assert.match(play.job, /sha256sum -c -/);
+  assert.doesNotMatch(jobs.find(x => x.name === 'assemble')!.header, /play/);
+  assert.equal(jobs.find(x => x.name === 'verify')!.job.includes('secrets.'), false);
 });
