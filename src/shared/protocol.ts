@@ -62,6 +62,22 @@ export interface WorkerInfo {
   usage?: Usage;
   /** Attire chosen when it was hired; absent means the stable default from shared/outfit.ts (workerOutfit). */
   outfit?: Outfit;
+  /**
+   * LIFE-04, projected by the server (never persisted with the worker): this idle or finished worker's last task has
+   * a dependent task that another worker's running task still blocks. `id`/`name` are the BLOCKING worker's and
+   * `taskId` is the dependent task. Cleared as soon as the dependent task is seated or the blocker finishes.
+   */
+  waitingOn?: WaitingOn;
+}
+
+/** Who an idle/done worker is waiting on (LIFE-04). */
+export interface WaitingOn {
+  /** The blocking worker's id. */
+  id: string;
+  /** The blocking worker's name, for the name card ("Waiting on Bea — at the coffee bar"). */
+  name: string;
+  /** The dependent queue task that is waiting. */
+  taskId: string;
 }
 
 /** Tokens and what they cost, summed over a Claude Code session or the whole office. */
@@ -198,6 +214,12 @@ export interface QueueTask {
   error?: string;
   /** The pull request that closes the issue, or was opened from the worker's branch. */
   pr?: { number: number; url: string; state: string; title: string };
+  /** LIFE-04: queue task ids that must finish with outcome 'done' before this one may be seated (at most 8). */
+  dependsOn?: string[];
+  /** LIFE-04: the unfinished dependency ids while the task waits; absent once nothing blocks it. */
+  blockedBy?: string[];
+  /** The desk the task was seated at, so a task continuing it can prefer the same desk. */
+  deskId?: string;
 }
 
 export interface QueueState {

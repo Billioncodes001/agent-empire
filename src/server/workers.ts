@@ -188,7 +188,11 @@ export class WorkerManager {
     return false;
   }
 
-  spawn(deskId: string, by: string, prompt?: string, worktree = false, kind: WorkerKind = 'agent', queueOwned = false, outfit?: Outfit): WorkerInfo | string {
+  /**
+   * `persona` (LIFE-04 continuity) asks for the name and colour of the worker that finished this task's dependency at
+   * this desk, so the same person continues the project. The name is used only when nobody else currently has it.
+   */
+  spawn(deskId: string, by: string, prompt?: string, worktree = false, kind: WorkerKind = 'agent', queueOwned = false, outfit?: Outfit, persona?: { name: string; color?: string }): WorkerInfo | string {
     const executionBlocked = this.executionBlocker();
     if (executionBlocked) return executionBlocked;
     if (!fundedDesk(deskId, this.capacity())) return 'Build and furnish this workstation before employing a worker';
@@ -199,7 +203,9 @@ export class WorkerManager {
       if (paused) return paused;
     }
     const used = new Set([...this.workers.values()].map((w) => w.info.name.replace(/ 🐚$/, '')));
-    const name = NAMES.find((n) => !used.has(n)) ?? `Worker ${this.workers.size + 1}`;
+    // Only a roster name: it also names the worktree branch, so free text never reaches git.
+    const wanted = kind === 'agent' && persona && NAMES.includes(persona.name) ? persona.name : undefined;
+    const name = wanted && !used.has(wanted) ? wanted : NAMES.find((n) => !used.has(n)) ?? `Worker ${this.workers.size + 1}`;
     const id = randomBytes(6).toString('hex');
     let wt: WorkerInfo['worktree'];
     if (worktree) {
@@ -212,7 +218,7 @@ export class WorkerManager {
       kind,
       deskId,
       name: kind === 'shell' ? `${name} 🐚` : name,
-      color: kind === 'shell' ? '#8d99ae' : COLORS[Math.floor(Math.random() * COLORS.length)],
+      color: kind === 'shell' ? '#8d99ae' : persona?.color && /^#[0-9a-f]{6}$/i.test(persona.color) ? persona.color : COLORS[Math.floor(Math.random() * COLORS.length)],
       status: 'starting',
       processState: 'unknown',
       acked: true,

@@ -2,7 +2,9 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { GhPull, QueueState, QueueTask, WorkerInfo, WorkerStatus } from '../shared/protocol.js';
+import type { Outfit } from '../shared/outfit.js';
 import { DESKS, DESK_BY_ID } from '../shared/layout.js';
+import { MAX_DEPENDENCIES, dependencyState, findCycle, heldDependencyError, validateDependencies } from '../shared/dependencies.js';
 import { writeJsonAtomic } from './persistence.js';
 
 /** What the queue needs from the worker manager. Narrow on purpose, so a smoke test can fake it. */
@@ -10,7 +12,8 @@ export interface QueueWorkers {
   list(): WorkerInfo[];
   workstationCapacity?(): number;
   deskOccupied(deskId: string): boolean;
-  spawn(deskId: string, by: string, prompt: string, worktree: boolean, kind?: 'agent', queueOwned?: boolean): WorkerInfo | string;
+  /** `persona` keeps the same person on a project: the name and look of the worker that finished the dependency. */
+  spawn(deskId: string, by: string, prompt: string, worktree: boolean, kind?: 'agent', queueOwned?: boolean, outfit?: Outfit, persona?: Persona): WorkerInfo | string;
   claimQueueWorker?(id: string): void;
   /** Resolves with a line about what became of the worker's worktree. */
   kill(id: string): Promise<{ note?: string; error?: string }>;
@@ -27,6 +30,20 @@ export interface QueueEvents {
   hiringPaused(): string | undefined;
   /** Current manager ownership can reject superseded startup tasks, including legacy keys. */
   retryAllowed?(task: QueueTask): string | undefined;
+}
+
+/** Who continues a project at a desk (LIFE-04 continuity). */
+export interface Persona {
+  name: string;
+  color?: string;
+}
+
+/** A desk kept for a task that continues a dependency, while that dependency's finished worker is sent home. */
+interface Reservation {
+  desk: string;
+  workerId: string;
+  persona?: Persona;
+  outfit?: Outfit;
 }
 
 export const DEFAULT_MAX_WORKERS = 3;
@@ -57,6 +74,8 @@ export class TaskQueue {
   private lastStatus = new Map<string, WorkerStatus>();
   private releasedWorkers = new Set<string>();
   private recycling = new Set<string>();
+  /** Task id → the desk it continues at, kept while the desk's finished worker is sent home. In memory only. */
+  private reserved = new Map<string, Reservation>();
   private storageError?: string;
 
   constructor(
@@ -83,15 +102,23 @@ export class TaskQueue {
   }
   get recoveryError() { return this.storageError; }
 
-  add(prompt: string, by: string, title?: string, issue?: number, jobKey?: string): string | undefined {
+  /**
+   * Adds a task. `dependsOn` names existing queue task ids (at most 8, no cycles) that must finish with outcome
+   * 'done' first; until then the task stays queued with `blockedBy`.
+   */
+  add(prompt: string, by: string, title?: string, issue?: number, jobKey?: string, dependsOn?: readonly string[]): string | undefined {
     if (this.storageError) return this.storageError;
     if (jobKey && this.tasks.some(t => t.jobKey === jobKey)) return;
     const clean = prompt.replace(/\r\n?/g, '\n').trim();
     if (!clean) return 'Empty task';
     if (issue !== undefined && this.tasks.some((t) => t.issue === issue && t.status !== 'done')) return `Issue #${issue} is already on the queue`;
     if (this.tasks.filter((t) => t.status !== 'done').length >= MAX_TASKS) return `The queue is full (${MAX_TASKS} tasks)`;
+    let id = randomBytes(6).toString('hex');
+    while (this.tasks.some((t) => t.id === id)) id = randomBytes(6).toString('hex');
+    const deps = validateDependencies(id, dependsOn, this.tasks);
+    if ('error' in deps) return deps.error;
     const task: QueueTask = {
-      id: randomBytes(6).toString('hex'),
+      id,
       jobKey,
       issue,
       title: (title?.trim() || firstLine(clean)).slice(0, 120),
@@ -100,8 +127,10 @@ export class TaskQueue {
       addedAt: Date.now(),
       status: 'queued',
       attempt: 1,
+      ...(deps.ok.length ? { dependsOn: deps.ok } : {}),
     };
     this.tasks.push(task);
+    this.refreshDependencies();
     if (!this.changed()) return this.storageError;
     this.pump();
     return undefined;
@@ -112,9 +141,12 @@ export class TaskQueue {
     const t = this.tasks.find((x) => x.id === taskId);
     if (!t) return 'No such task';
     if (t.status === 'running') return `${t.workerName ?? 'Its worker'} is on it — send the worker home to stop it`;
+    const dependent = this.tasks.find((x) => x.status === 'queued' && x.dependsOn?.includes(t.id));
+    if (dependent) return `${label(dependent)} is waiting on this task — remove that one first`;
     const blocked = this.recoveryBlocker(t);
     if (blocked) return blocked;
     this.tasks.splice(this.tasks.indexOf(t), 1);
+    this.reserved.delete(t.id);
     if (!this.changed()) return this.storageError;
     this.pump();
     return undefined;
@@ -145,9 +177,14 @@ export class TaskQueue {
     const blocked = this.recoveryBlocker(t);
     if (blocked) return blocked;
     if (t.issue !== undefined && this.tasks.some((x) => x !== t && x.issue === t.issue && x.status !== 'done')) return `Issue #${t.issue} is already on the queue`;
+    // A dependency the CEO removed no longer gates the task; one that failed must be retried (or removed) first.
+    const deps = (t.dependsOn ?? []).filter((id) => this.tasks.some((x) => x.id === id));
+    const failed = deps.map((id) => this.tasks.find((x) => x.id === id)!).find((d) => d.status === 'done' && d.outcome !== 'done');
+    if (failed) return `Dependency ${label(failed)} did not finish — retry or remove it first`;
     this.tasks.splice(this.tasks.indexOf(t), 1);
-    const fresh: QueueTask = { id: t.id, jobKey: t.jobKey, issue: t.issue, title: t.title, prompt: t.prompt, addedBy: t.addedBy, addedAt: Date.now(), status: 'queued', attempt: (t.attempt ?? 1) + 1 };
+    const fresh: QueueTask = { id: t.id, jobKey: t.jobKey, issue: t.issue, title: t.title, prompt: t.prompt, addedBy: t.addedBy, addedAt: Date.now(), status: 'queued', attempt: (t.attempt ?? 1) + 1, ...(deps.length ? { dependsOn: deps } : {}) };
     this.tasks.push(fresh);
+    this.refreshDependencies();
     if (!this.changed()) return this.storageError;
     this.pump();
     return undefined;
@@ -157,8 +194,10 @@ export class TaskQueue {
   clear() {
     if (this.storageError) return;
     const before = this.tasks.length;
-    this.tasks = this.tasks.filter((t) => t.status !== 'done' || this.recoveryBlocker(t));
-    if (this.tasks.some(t => t.status === 'done')) this.events.toast('Kept task history for running or unknown workers. Confirm their processes stopped before clearing.', 'warn');
+    // A finished dependency of a task still on the queue stays, so that task is not held for a missing dependency.
+    const needed = new Set(this.tasks.filter((t) => t.status !== 'done').flatMap((t) => t.dependsOn ?? []));
+    this.tasks = this.tasks.filter((t) => t.status !== 'done' || needed.has(t.id) || this.recoveryBlocker(t));
+    if (this.tasks.some(t => t.status === 'done' && !needed.has(t.id))) this.events.toast('Kept task history for running or unknown workers. Confirm their processes stopped before clearing.', 'warn');
     if (this.tasks.length !== before) this.changed();
   }
 
@@ -248,6 +287,7 @@ export class TaskQueue {
       do {
         this.again = false;
         this.reconcile();
+        if (!this.storageError && this.refreshDependencies()) this.changed();
         if (!this.storageError && !this.pauseOnStart) this.seat();
       } while (this.again);
     } finally {
@@ -293,32 +333,130 @@ export class TaskQueue {
   }
 
   private capacity() { return this.workers.workstationCapacity?.() ?? DESKS.length; }
-  private freeDesk(): string | undefined {
-    for (let i = 1; i <= this.capacity(); i++) if (!this.workers.deskOccupied(`desk-${i}`)) return `desk-${i}`;
+  /** The first free funded desk that no other task has reserved for its continuation. */
+  private freeDesk(forTask?: string): string | undefined {
+    for (let i = 1; i <= this.capacity(); i++) {
+      const desk = `desk-${i}`;
+      if (!this.workers.deskOccupied(desk) && !this.reservedForOther(desk, forTask)) return desk;
+    }
     return undefined;
+  }
+
+  private reservedForOther(desk: string, taskId?: string): boolean {
+    for (const [id, r] of this.reserved) if (r.desk === desk && id !== taskId) return true;
+    return false;
+  }
+
+  private fundedDesk(desk: string): boolean {
+    const n = Number(/^desk-(\d+)$/.exec(desk)?.[1]);
+    return Number.isInteger(n) && n >= 1 && n <= this.capacity();
+  }
+
+  /** A worker the queue hired whose task is finished and whom nobody is watching: safe to send home for its desk. */
+  private recyclable(w: WorkerInfo): boolean {
+    return FINISHED.has(w.status) && w.viewers.length === 0 && (w.processState === 'running' || w.processState === 'stopped') && !this.recycling.has(w.id)
+      && this.tasks.some((t) => t.status === 'done' && t.workerId === w.id);
+  }
+
+  /** Starts sending a finished queue worker home. Its desk frees once the process is confirmed stopped. */
+  private sendHome(w: WorkerInfo, onFailed?: () => void) {
+    this.recycling.add(w.id);
+    void this.workers.kill(w.id).then(({ note, error }) => {
+      this.recycling.delete(w.id);
+      if (note) this.events.toast(note, 'info');
+      if (error) {
+        this.events.toast(error, 'warn');
+        onFailed?.();
+      }
+    });
+  }
+
+  /**
+   * LIFE-04 continuity: a task that unblocks continues at the desk of the worker that finished its dependency, as the
+   * same person (name, colour and attire), if that desk is free. When the desk is still held by that finished worker,
+   * the worker is sent home first and the desk is kept for this task ('wait'). Returns undefined to use any desk.
+   */
+  private continuity(t: QueueTask): Reservation | 'wait' | undefined {
+    const kept = this.reserved.get(t.id);
+    if (kept) {
+      if (!this.workers.deskOccupied(kept.desk)) return kept;
+      if (this.recycling.has(kept.workerId)) return 'wait';
+      // The send-home failed or someone else sat down there: never hold a runnable task for it.
+      this.reserved.delete(t.id);
+      return undefined;
+    }
+    if (!t.dependsOn?.length) return undefined;
+    const byId = new Map(this.workers.list().map((w) => [w.id, w]));
+    for (const depId of t.dependsOn) {
+      const dep = this.tasks.find((x) => x.id === depId);
+      if (!dep || dep.status !== 'done' || dep.outcome !== 'done') continue;
+      const w = dep.workerId ? byId.get(dep.workerId) : undefined;
+      const desk = w?.deskId ?? dep.deskId;
+      if (!desk || !this.fundedDesk(desk) || this.reservedForOther(desk, t.id)) continue;
+      const persona = w ? { name: w.name, color: w.color } : dep.workerName ? { name: dep.workerName } : undefined;
+      const plan: Reservation = { desk, workerId: w?.id ?? '', persona, outfit: w?.outfit };
+      if (!this.workers.deskOccupied(desk)) return plan;
+      if (w && w.deskId === desk && this.recyclable(w)) {
+        this.reserved.set(t.id, plan);
+        this.sendHome(w, () => {
+          this.reserved.delete(t.id);
+          this.pump();
+        });
+        return 'wait';
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Keeps every queued task's `blockedBy` current and holds a task whose dependency finished without success (or
+   * vanished). Repeats until stable so a hold propagates down a chain. Returns true when anything changed.
+   */
+  private refreshDependencies(): boolean {
+    let changed = false;
+    for (let pass = 0; pass <= this.tasks.length; pass++) {
+      let again = false;
+      for (const t of this.tasks) {
+        if (t.status !== 'queued' || !t.dependsOn?.length) {
+          if (t.blockedBy) { t.blockedBy = undefined; changed = true; }
+          continue;
+        }
+        const s = dependencyState(t, this.tasks);
+        if (s.kind === 'held') {
+          t.status = 'done';
+          t.outcome = 'failed';
+          t.error = heldDependencyError(s.dependencyId);
+          t.finishedAt = Date.now();
+          t.blockedBy = undefined;
+          this.reserved.delete(t.id);
+          this.events.toast(`📋 ${label(t)} is held: ${t.error}. Retry or remove it from the queue.`, 'warn');
+          changed = again = true;
+          continue;
+        }
+        const next = s.kind === 'blocked' ? s.blockedBy : undefined;
+        if ((t.blockedBy ?? []).join() !== (next ?? []).join()) { t.blockedBy = next; changed = true; }
+      }
+      if (!again) break;
+    }
+    return changed;
   }
 
   /**
    * No desk is free: send home a worker the queue hired whose task is finished (nobody is looking at
    * its terminal), and return its desk. Workers with a linked PR go first — their work is delivered.
    */
-  private recycleDesk(): string | undefined {
+  private recycleDesk(forTask?: string): string | undefined {
     const byId = new Map(this.workers.list().map((w) => [w.id, w]));
     const candidates = this.tasks
       .filter((t) => t.status === 'done' && t.workerId && byId.has(t.workerId))
       .map((t) => ({ t, w: byId.get(t.workerId!)! }))
-      .filter(({ w }) => FINISHED.has(w.status) && w.viewers.length === 0 && (w.processState === 'running' || w.processState === 'stopped') && !this.recycling.has(w.id))
+      // A desk kept for another task's continuation is not up for grabs.
+      .filter(({ w }) => this.recyclable(w) && !this.reservedForOther(w.deskId, forTask))
       .sort((a, b) => Number(!!b.t.pr) - Number(!!a.t.pr) || (a.t.finishedAt ?? 0) - (b.t.finishedAt ?? 0));
     const pick = candidates[0];
     if (!pick) return undefined;
-    this.recycling.add(pick.w.id);
-    const done = this.workers.kill(pick.w.id);
-    void done.then(({ note, error }) => {
-      this.recycling.delete(pick.w.id);
-      if (note) this.events.toast(note, 'info');
-      if (error) this.events.toast(error, 'warn');
-    });
-    return this.freeDesk();
+    this.sendHome(pick.w);
+    return this.freeDesk(forTask);
   }
 
   private seat() {
@@ -337,17 +475,27 @@ export class TaskQueue {
         if (t.error !== sibling) { t.error = sibling; if (!this.changed()) break; }
         continue;
       }
+      // An unfinished dependency keeps the task queued; it never takes a desk or a worker slot. Later tasks still run.
+      if (t.blockedBy?.length || dependencyState(t, this.tasks).kind !== 'ready') continue;
       if (this.busy() >= this.maxWorkers) break;
       // A spent budget holds the queue instead of failing every task; the pump seats them once hiring resumes.
       if (this.events.hiringPaused()) break;
-      const desk = this.freeDesk() ?? this.recycleDesk();
+      const next = this.continuity(t);
+      if (next === 'wait') continue;
+      const desk = next?.desk ?? this.freeDesk(t.id) ?? this.recycleDesk(t.id);
       if (!desk) break;
+      const persona = next?.desk === desk ? next.persona : undefined;
+      const outfit = next?.desk === desk ? next.outfit : undefined;
+      this.reserved.delete(t.id);
       // Journal the launch before entering WorkerManager. An interrupted unlinked launch is
       // unknown, never automatically queued again, even if the second file was never written.
       t.status = 'running';
       t.startedAt = Date.now();
       if (!this.changed()) break;
-      const r = this.workers.spawn(desk, `${t.addedBy} (queue)`, t.prompt + (this.useWorktree ? WORKTREE_NOTE : ''), this.useWorktree, 'agent', true);
+      const prompt = t.prompt + (this.useWorktree ? WORKTREE_NOTE : '');
+      const r = persona
+        ? this.workers.spawn(desk, `${t.addedBy} (queue)`, prompt, this.useWorktree, 'agent', true, outfit, persona)
+        : this.workers.spawn(desk, `${t.addedBy} (queue)`, prompt, this.useWorktree, 'agent', true);
       changed = true;
       if (typeof r === 'string') {
         t.status = 'done';
@@ -360,6 +508,7 @@ export class TaskQueue {
       t.status = 'running';
       t.workerId = r.id;
       t.workerName = r.name;
+      t.deskId = r.deskId;
       t.branch = r.worktree?.branch;
       t.startedAt = Date.now();
       t.error = undefined;
@@ -403,6 +552,8 @@ export class TaskQueue {
       if (typeof saved.maxWorkers === 'number' && Number.isFinite(saved.maxWorkers)) this.maxWorkers = Math.max(0, Math.min(this.capacity(), Math.floor(saved.maxWorkers)));
       for (const s of saved.tasks ?? []) {
         if (typeof s.id !== 'string' || typeof s.prompt !== 'string' || typeof s.title !== 'string' || this.tasks.some(t => t.id === s.id)) throw new Error('Invalid or duplicate saved task');
+        const dependsOn = s.dependsOn === undefined ? undefined : savedIds(s.dependsOn, MAX_DEPENDENCIES);
+        if (dependsOn === null || dependsOn?.includes(s.id)) throw new Error(`Invalid dependencies on saved task ${s.id}`);
         const t: QueueTask = {
           id: s.id,
           jobKey: typeof s.jobKey === 'string' ? s.jobKey : undefined,
@@ -422,6 +573,8 @@ export class TaskQueue {
           outcome: s.outcome,
           error: s.error,
           pr: s.pr,
+          ...(dependsOn?.length ? { dependsOn } : {}),
+          ...(typeof s.deskId === 'string' && /^desk-\d+$/.test(s.deskId) ? { deskId: s.deskId } : {}),
         };
         // A restart interrupts queue ownership; the old process may still exist and must be checked.
         if (t.status === 'running') {
@@ -433,6 +586,10 @@ export class TaskQueue {
         }
         this.tasks.push(t);
       }
+      const cycle = findCycle(new Map(this.tasks.map((t) => [t.id, t.dependsOn ?? []])));
+      if (cycle) throw new Error(`Saved task dependencies form a cycle through ${cycle}`);
+      // blockedBy is derived: recompute it (and any hold) from the restored graph rather than trusting the file.
+      this.refreshDependencies();
       this.persist();
     } catch (error) {
       throw new Error(`Cannot restore queue.json; preserve the file and restore a valid backup. ${(error as Error).message}`);
@@ -442,6 +599,17 @@ export class TaskQueue {
 
 function label(t: QueueTask): string {
   return t.issue !== undefined ? `#${t.issue}` : `“${t.title.length > 40 ? `${t.title.slice(0, 39)}…` : t.title}”`;
+}
+
+/** A saved id list: undefined when absent, null when malformed. */
+function savedIds(value: unknown, max: number): string[] | null {
+  if (!Array.isArray(value) || value.length > max) return null;
+  const ids: string[] = [];
+  for (const id of value) {
+    if (typeof id !== 'string' || !id) return null;
+    if (!ids.includes(id)) ids.push(id);
+  }
+  return ids;
 }
 
 function firstLine(s: string): string {
