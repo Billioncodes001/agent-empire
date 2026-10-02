@@ -109,7 +109,7 @@ function releasePage(input) {
   return parts.length === 6 && parts[1]?.toLowerCase() === owner && parts[2]?.toLowerCase() === repo && parts[3] === 'releases' && parts[4] === 'tag' && !!parts[5] && SEGMENT.test(parts[5]) && parts[5] !== '..';
 }
 
-/** A release's download folder https://github.com/<repo>/releases/download/<tag> (a Squirrel.Windows feed). */
+/** A release's download folder: .../releases/download/<tag> or .../releases/latest/download (a Squirrel.Windows feed). */
 function releaseFolder(input) {
   if (typeof input !== 'string' || input.length > 512) return false;
   let u;
@@ -121,7 +121,9 @@ function releaseFolder(input) {
   if (u.protocol !== 'https:' || u.hostname !== 'github.com' || u.port || u.username || u.password || u.search || u.hash) return false;
   const parts = u.pathname.split('/');
   const [owner, repo] = RELEASE_REPO.toLowerCase().split('/');
-  return parts.length === 6 && parts[1]?.toLowerCase() === owner && parts[2]?.toLowerCase() === repo && parts[3] === 'releases' && parts[4] === 'download' && !!parts[5] && SEGMENT.test(parts[5]) && parts[5] !== '..';
+  if (parts.length !== 6 || parts[1]?.toLowerCase() !== owner || parts[2]?.toLowerCase() !== repo || parts[3] !== 'releases') return false;
+  if (parts[4] === 'latest') return parts[5] === 'download';
+  return parts[4] === 'download' && !!parts[5] && SEGMENT.test(parts[5]) && parts[5] !== '..';
 }
 
 /** update.fetch: a release asset, or the releases listing used to find the newest pre-release. */

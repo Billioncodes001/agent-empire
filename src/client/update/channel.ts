@@ -105,12 +105,16 @@ export function releaseAsset(url: unknown): { tag: string | null; file: string }
 }
 
 /**
- * A release's download folder https://github.com/<repo>/releases/download/<tag> (a Squirrel.Windows feed: the updater
- * reads <folder>/RELEASES and the .nupkg files next to it). Returns the tag or null.
+ * A release's download folder (a Squirrel.Windows feed: the updater reads <folder>/RELEASES and the .nupkg files next
+ * to it): https://github.com/<repo>/releases/download/<tag> (beta) or .../releases/latest/download (stable).
+ * Returns the tag ('latest' for the latter) or null.
  */
 export function releaseFolder(url: unknown): string | null {
   const parts = releasePath(url);
-  return parts && parts.length === 6 && parts[4] === 'download' && okSegment(parts[5]) ? parts[5] : null;
+  if (!parts || parts.length !== 6) return null;
+  if (parts[4] === 'download' && okSegment(parts[5])) return parts[5];
+  if (parts[4] === 'latest' && parts[5] === 'download') return 'latest';
+  return null;
 }
 
 /** The release page https://github.com/<repo>/releases/tag/<tag>; returns the tag or null. */

@@ -21,6 +21,23 @@ const { createVault } = require('./credential-vault.cjs');
 const { startLocalHost, localDeviceSession } = require('./local-host.cjs');
 const updates = require('./update-store.cjs');
 
+// Squirrel.Windows (electron-winstaller, installer id AgentEmpire) starts the app with --squirrel-* once per install,
+// update, uninstall and obsolete version: maintain the shortcuts with its Update.exe and quit at once, before any
+// window or server starts (the standard electron-squirrel-startup handling, without the dependency).
+const squirrelEvent = process.platform === 'win32' ? updates.squirrelEvent(process.argv) : null;
+const squirrelOnly = !!squirrelEvent && squirrelEvent !== 'firstrun';
+if (squirrelOnly) {
+  const exe = path.basename(process.execPath);
+  const args = squirrelEvent === 'install' || squirrelEvent === 'updated' ? ['--createShortcut', exe] : squirrelEvent === 'uninstall' ? ['--removeShortcut', exe] : null;
+  if (args)
+    try {
+      require('node:child_process').spawn(updates.squirrelUpdateExe(process.execPath), args, { detached: true, stdio: 'ignore' }).unref();
+    } catch (error) {
+      console.warn('Squirrel shortcut update failed:', error.message);
+    }
+  setTimeout(() => app.quit(), 1000);
+}
+
 process.env.PATH = ['/opt/homebrew/bin', '/usr/local/bin', process.env.PATH].filter(Boolean).join(path.delimiter);
 // An explicit --user-data-dir (isolated test profiles) moves everything, including the single-instance lock.
 if (app.commandLine.hasSwitch('user-data-dir')) app.setPath('userData', path.resolve(app.commandLine.getSwitchValue('user-data-dir')));
@@ -632,23 +649,9 @@ function createGameWindow() {
 }
 
 app.setName('Agent Empire');
-// Squirrel.Windows runs the app with --squirrel-* once per install, update and uninstall: maintain the shortcuts with
-// its Update.exe and quit at once (the standard electron-squirrel-startup handling, without the dependency).
-const squirrelEvent = process.platform === 'win32' ? updates.squirrelEvent(process.argv) : null;
-if (squirrelEvent && squirrelEvent !== 'firstrun') {
-  const exe = path.basename(process.execPath);
-  const args = squirrelEvent === 'install' || squirrelEvent === 'updated' ? [`--createShortcut=${exe}`] : squirrelEvent === 'uninstall' ? [`--removeShortcut=${exe}`] : null;
-  if (args)
-    try {
-      require('node:child_process').spawn(updates.squirrelUpdateExe(process.execPath), args, { detached: true, stdio: 'ignore' }).unref();
-    } catch (error) {
-      console.warn('Squirrel shortcut update failed:', error.message);
-    }
-  setTimeout(() => app.quit(), 1000);
-}
-const ownsInstance = !squirrelEvent || squirrelEvent === 'firstrun' ? app.requestSingleInstanceLock() : false;
+const ownsInstance = !squirrelOnly && app.requestSingleInstanceLock();
 if (!ownsInstance) {
-  if (!squirrelEvent || squirrelEvent === 'firstrun') app.quit();
+  if (!squirrelOnly) app.quit();
 } else
   app.whenReady().then(async () => {
     syncEngine = await import('./runtime/device-sync.js');

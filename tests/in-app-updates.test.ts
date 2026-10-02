@@ -246,6 +246,8 @@ test('offer: native paths per platform', () => {
   const win = info({ platform: 'desktop', os: 'windows', arch: 'x64', canAutoUpdate: true });
   assert.deepEqual(nativeOffer(squirrel, win), { version: '1.0.0-beta.2', params: { version: '1.0.0-beta.2', url: `https://github.com/${RELEASE_REPO}/releases/tag/v1.0.0-beta.2`, feed: `https://github.com/${RELEASE_REPO}/releases/download/v1.0.0-beta.2` }, how: 'auto' }, 'a Squirrel.Windows install updates itself');
   assert.equal(nativeOffer(squirrel, { ...win, canAutoUpdate: false })?.how, 'download', 'not a Squirrel install: the release page');
+  const stableFeed = parseChannel(JSON.stringify({ ...channelJson({ version: '1.0.0' }), shell: { windows: { version: '1.0.0', url: `https://github.com/${RELEASE_REPO}/releases/tag/v1.0.0`, auto: true, feed: `https://github.com/${RELEASE_REPO}/releases/latest/download` } } }), 'stable');
+  assert.equal(stableFeed.shell.windows?.feed?.x64, `https://github.com/${RELEASE_REPO}/releases/latest/download`, 'stable Squirrel.Windows feed folder');
   assert.equal(nativeOffer(c, info({ shellVersion: '1.0.0-beta.2' })), null);
   assert.equal(nativeOffer(c, info({ platform: 'desktop', os: 'linux' })), null);
 });

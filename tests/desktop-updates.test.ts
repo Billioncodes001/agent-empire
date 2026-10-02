@@ -60,6 +60,10 @@ test('desktop native updates: Squirrel events, Update.exe and feed options', () 
   assert.equal(updates.squirrelUpdateExe(path.join(path.sep, 'Users', 'u', 'AppData', 'Local', 'AgentEmpire', 'app-1.0.0', 'Agent Empire.exe')), path.join(path.sep, 'Users', 'u', 'AppData', 'Local', 'AgentEmpire', 'Update.exe'));
   const folder = `https://github.com/${policy.RELEASE_REPO}/releases/download/v1.0.1`;
   assert.deepEqual(updates.autoUpdateFeed('win32', `${folder}/RELEASES`), { url: folder });
+  const stableFolder = `https://github.com/${policy.RELEASE_REPO}/releases/latest/download`;
+  assert.equal(policy.parseRequest({ id: 'n3', method: 'update.openNative', params: { version: '1.0.1', url: `https://github.com/${policy.RELEASE_REPO}/releases/tag/v1.0.1`, feed: stableFolder } }).params.feed, stableFolder);
+  const main = readFileSync(path.resolve(import.meta.dirname, '../desktop/main.cjs'), 'utf8');
+  assert.ok(main.indexOf('updates.squirrelEvent(process.argv)') < main.indexOf('protocol.registerSchemesAsPrivileged'), 'Squirrel events are handled before anything else starts');
   assert.deepEqual(updates.autoUpdateFeed('darwin', asset('1.0.1', 'desktop-update-darwin-arm64.json')), { url: asset('1.0.1', 'desktop-update-darwin-arm64.json'), serverType: 'json' });
   assert.deepEqual(policy.parseRequest({ id: 'n1', method: 'update.openNative', params: { version: '1.0.1', url: `https://github.com/${policy.RELEASE_REPO}/releases/tag/v1.0.1`, feed: folder } }).params, { version: '1.0.1', url: `https://github.com/${policy.RELEASE_REPO}/releases/tag/v1.0.1`, feed: folder });
   assert.ok(policy.parseRequest({ id: 'n2', method: 'update.openNative', params: { version: '1.0.1', url: 'https://github.com/evil/x/releases/tag/v1.0.1' } }).error);
