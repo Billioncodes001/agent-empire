@@ -7,17 +7,36 @@
  * The page talks to the shell only through window.empireDesktop (preload.cjs) under the bridge contract in
  * docs/team/CLOUD_MODE_PLAN.md; every request is checked here with bridge-policy.cjs.
  */
-const { app, BrowserWindow, Menu, ipcMain, dialog, shell, session, safeStorage, protocol, net, clipboard } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, dialog, shell, session, safeStorage, protocol, net, clipboard, autoUpdater } = require('electron');
 const path = require('node:path');
 const os = require('node:os');
 const { pathToFileURL } = require('node:url');
 const { readFileSync, writeFileSync, existsSync, mkdirSync } = require('node:fs');
+const { execFile } = require('node:child_process');
 const policy = require('./bridge-policy.cjs');
 const { createHandler } = require('./app-protocol.cjs');
 const { createSecureStore } = require('./secure-store.cjs');
 const { runDeviceFlow } = require('./device-flow.cjs');
 const { createVault } = require('./credential-vault.cjs');
 const { startLocalHost, localDeviceSession } = require('./local-host.cjs');
+const updates = require('./update-store.cjs');
+
+// Squirrel.Windows (electron-winstaller, installer id AgentEmpire) starts the app with --squirrel-* once per install,
+// update, uninstall and obsolete version: maintain the shortcuts with its Update.exe and quit at once, before any
+// window or server starts (the standard electron-squirrel-startup handling, without the dependency).
+const squirrelEvent = process.platform === 'win32' ? updates.squirrelEvent(process.argv) : null;
+const squirrelOnly = !!squirrelEvent && squirrelEvent !== 'firstrun';
+if (squirrelOnly) {
+  const exe = path.basename(process.execPath);
+  const args = squirrelEvent === 'install' || squirrelEvent === 'updated' ? ['--createShortcut', exe] : squirrelEvent === 'uninstall' ? ['--removeShortcut', exe] : null;
+  if (args)
+    try {
+      require('node:child_process').spawn(updates.squirrelUpdateExe(process.execPath), args, { detached: true, stdio: 'ignore' }).unref();
+    } catch (error) {
+      console.warn('Squirrel shortcut update failed:', error.message);
+    }
+  setTimeout(() => app.quit(), 1000);
+}
 
 process.env.PATH = ['/opt/homebrew/bin', '/usr/local/bin', process.env.PATH].filter(Boolean).join(path.delimiter);
 // An explicit --user-data-dir (isolated test profiles) moves everything, including the single-instance lock.
@@ -40,6 +59,9 @@ let lastGesture = 0;
 let deviceFlow; // {controller, info, window}
 let credentialsWindow;
 let busy = false, syncTimer;
+let bundles; // in-app game updates (update-store.cjs)
+let trialTimer;
+let updateFixture; // development only: a loopback stand-in for GitHub releases (see setUpUpdates)
 
 /* ---------- small persisted settings (not secret) ---------- */
 const configPath = () => path.join(app.getPath('userData'), 'connection.json');
@@ -130,6 +152,45 @@ async function handleBridge(request) {
       return true;
     case 'app.openExternal':
       return openExternal(request.params.url);
+    case 'update.fetch': {
+      const r = await updates.download(request.params.url, { etag: request.params.etag, maxBytes: updates.MAX_TEXT_BYTES, fixture: updateFixture });
+      return { status: r.status, body: r.body.toString('utf8'), etag: r.etag };
+    }
+    case 'update.installGame':
+      return bundles.install(request.params, async (url) => {
+        const r = await updates.download(url, { fixture: updateFixture });
+        if (r.status !== 200) throw new Error(`GitHub answered ${r.status} for the update.`);
+        return r.body;
+      });
+    case 'update.activate':
+      if (!bundles.activate()) throw new Error('No update is waiting.');
+      // Answer first, then restart the game into the new bundle (a trial until it reports booting).
+      setTimeout(() => {
+        armTrial();
+        if (win && !win.isDestroyed()) void win.loadURL(GAME_URL).catch(() => {});
+      }, 50);
+      return true;
+    case 'update.bootOk':
+      bundles.bootOk();
+      clearTimeout(trialTimer);
+      return true;
+    case 'update.nativeInfo': {
+      const rolledBack = bundles.takeRolledBack();
+      return {
+        platform: 'desktop',
+        shellVersion: app.getVersion(),
+        os: process.platform === 'darwin' ? 'macos' : process.platform === 'win32' ? 'windows' : 'linux',
+        arch: process.arch === 'arm64' ? 'arm64' : 'x64',
+        installedGame: bundles.installedGame(),
+        builtinGame: bundles.builtinVersion,
+        pendingGame: bundles.state.pending,
+        canInstallGame: true,
+        canAutoUpdate: await canAutoUpdate(),
+        ...(rolledBack ? { rolledBack } : {}),
+      };
+    }
+    case 'update.openNative':
+      return openNativeUpdate(request.params);
     case 'app.runLocal': {
       const outcome = await confirmAndStartLocal();
       if (outcome === 'cancelled') throw new Error('cancelled: Running on this computer was cancelled. Nothing was started.');
@@ -165,6 +226,91 @@ async function openExternal(url) {
   lastGesture = 0; // one gesture opens one page
   await shell.openExternal(url);
   return true;
+}
+
+/* ---------- in-app updates (REL-04) ---------- */
+/**
+ * The bundle store, the 20 s rollback timer and the optional development fixture. The fixture
+ * (--empire-update-fixture=http://127.0.0.1:<port>) is honoured only while the pinned release key is the public dev key
+ * (update-store.cjs RELEASE_KEY_IS_DEVELOPMENT), so a release build never downloads from anywhere but GitHub.
+ */
+async function setUpUpdates() {
+  bundles = updates.createBundleStore({ root: path.join(app.getPath('userData'), 'game-bundles'), builtinRoot: path.join(__dirname, 'runtime', 'public') });
+  const launched = bundles.launch();
+  if (launched) console.warn(`Game update ${launched.rolledBack} rolled back: ${launched.reason}`);
+  const fixture = app.commandLine.getSwitchValue('empire-update-fixture');
+  if (fixture) {
+    if (updates.RELEASE_KEY_IS_DEVELOPMENT) {
+      updateFixture = updates.fixtureMapper(fixture);
+      console.warn(`Update fixture: release downloads come from ${updateFixture.origin} (development key only).`);
+    } else console.warn('Ignoring --empire-update-fixture: this build pins a release key.');
+  }
+}
+
+function armTrial() {
+  clearTimeout(trialTimer);
+  const trial = bundles.state.trial;
+  if (!trial) return;
+  trialTimer = setTimeout(() => {
+    if (bundles.checkTrial()) {
+      console.warn('The updated game did not report booting within 20 s; rolled back.');
+      void reloadGame();
+    }
+  }, Math.max(0, trial.startedAt + updates.BOOT_TIMEOUT_MS - Date.now()) + 50);
+}
+
+let autoUpdateCapable;
+/**
+ * Electron's built-in autoUpdater works only for a signed app: macOS (Squirrel.Mac) needs a packaged app signed with
+ * Developer ID; Windows (Squirrel.Windows, electron-winstaller) needs the app to run from its Squirrel install, where
+ * Update.exe sits next to the app folder.
+ */
+function canAutoUpdate() {
+  if (autoUpdateCapable !== undefined) return Promise.resolve(autoUpdateCapable);
+  if (!app.isPackaged) return Promise.resolve((autoUpdateCapable = false));
+  if (process.platform === 'win32') return Promise.resolve((autoUpdateCapable = existsSync(updates.squirrelUpdateExe(process.execPath))));
+  if (process.platform !== 'darwin') return Promise.resolve((autoUpdateCapable = false));
+  const bundle = path.resolve(process.execPath, '..', '..', '..');
+  return new Promise((resolve) =>
+    execFile('codesign', ['-dv', '--verbose=2', bundle], { timeout: 10_000 }, (_error, _out, err) => resolve((autoUpdateCapable = /Authority=Developer ID Application/.test(String(err))))),
+  );
+}
+
+/** 'idle' | 'downloading' | 'ready' (downloaded; the next openNative restarts into it). */
+let nativeUpdate = 'idle';
+/**
+ * update.openNative on desktop. A signed app updates itself with Electron's autoUpdater from the channel's feed: the
+ * call answers 'auto-update' once the update is downloaded, and the page then offers "Restart to update", which calls
+ * again ('restart'). Anything else (unsigned, no feed, an updater error) opens the release page in the browser.
+ */
+async function openNativeUpdate({ version, url, feed }) {
+  if (nativeUpdate === 'ready') {
+    setTimeout(() => autoUpdater.quitAndInstall(), 100);
+    return { action: 'restart' };
+  }
+  if (feed && (await canAutoUpdate())) {
+    if (nativeUpdate === 'downloading') throw new Error('The app update is already downloading.');
+    nativeUpdate = 'downloading';
+    try {
+      await new Promise((resolve, reject) => {
+        autoUpdater.removeAllListeners();
+        autoUpdater.once('error', reject);
+        autoUpdater.once('update-not-available', () => reject(new Error(`The update feed has no newer app than ${app.getVersion()}.`)));
+        autoUpdater.once('update-downloaded', resolve);
+        autoUpdater.setFeedURL(updates.autoUpdateFeed(process.platform, feed));
+        autoUpdater.checkForUpdates();
+      });
+      nativeUpdate = 'ready';
+      return { action: 'auto-update' };
+    } catch (error) {
+      nativeUpdate = 'idle';
+      console.warn(`The app could not update itself to ${version}: ${error.message}`);
+      // Fall through to the release page.
+    }
+  }
+  if (!url) throw new Error('This update has no download for this computer.');
+  await openExternal(url);
+  return { action: 'opened' };
 }
 
 /* ---------- GitHub device flow (main process; the page never sees the device code exchange) ---------- */
@@ -503,13 +649,16 @@ function createGameWindow() {
 }
 
 app.setName('Agent Empire');
-const ownsInstance = app.requestSingleInstanceLock();
-if (!ownsInstance) app.quit();
-else
+const ownsInstance = !squirrelOnly && app.requestSingleInstanceLock();
+if (!ownsInstance) {
+  if (!squirrelOnly) app.quit();
+} else
   app.whenReady().then(async () => {
     syncEngine = await import('./runtime/device-sync.js');
+    await setUpUpdates();
     const ses = session.fromPartition(PARTITION);
-    ses.protocol.handle(policy.APP_SCHEME, createHandler(path.join(__dirname, 'runtime', 'public')));
+    // The active installed game bundle, else the one built into the app (always the final fallback).
+    ses.protocol.handle(policy.APP_SCHEME, createHandler(() => bundles.servingRoot()));
     ses.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
     ses.setPermissionCheckHandler(() => false);
     store = createSecureStore(path.join(app.getPath('userData'), 'app-session.enc'), safeStorage);
@@ -572,6 +721,7 @@ else
 
     migrateFromLauncher();
     createGameWindow();
+    armTrial(); // a bundle switched at this launch is on trial until the page reports booting
     await reloadGame();
     startSyncTimer();
     app.on('activate', () => {

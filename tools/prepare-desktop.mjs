@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { assertNoFixtureBuild } from './check-no-fixture.mjs';
 
 // Every shell file the app loads. The Windows stage copies exactly these; tests/desktop-bridge.test.ts checks the list.
-const DESKTOP_FILES = ['package.json', 'main.cjs', 'preload.cjs', 'bridge-policy.cjs', 'app-protocol.cjs', 'secure-store.cjs', 'device-flow.cjs', 'local-host.cjs', 'credential-vault.cjs',
+const DESKTOP_FILES = ['package.json', 'main.cjs', 'preload.cjs', 'bridge-policy.cjs', 'app-protocol.cjs', 'update-store.cjs', 'secure-store.cjs', 'device-flow.cjs', 'local-host.cjs', 'credential-vault.cjs',
   'device.html', 'device.js', 'device-preload.cjs', 'credentials.html', 'credentials.js', 'credentials-preload.cjs', 'shell.css'];
 const project = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const allArgs = process.argv.slice(2);

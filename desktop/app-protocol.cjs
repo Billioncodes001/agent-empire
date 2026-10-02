@@ -104,11 +104,16 @@ function headersFor(type) {
   return headers;
 }
 
-/** The protocol.handle callback: (Request) => Response. */
+/**
+ * The protocol.handle callback: (Request) => Response. `root` is a folder, or a function returning the folder to serve
+ * now (in-app updates: the active installed bundle, else the built-in one; update-store.cjs). Each request resolves
+ * against one root with the same traversal, dotfile and MIME rules.
+ */
 function createHandler(root) {
+  const rootNow = typeof root === 'function' ? root : () => root;
   return async (request) => {
     if (request.method !== 'GET' && request.method !== 'HEAD') return new Response(null, { status: 405 });
-    const found = resolveAsset(root, request.url);
+    const found = resolveAsset(rootNow(), request.url);
     if (found.status !== 200) return new Response(null, { status: found.status, headers: { 'X-Content-Type-Options': 'nosniff' } });
     const body = request.method === 'HEAD' ? null : await fs.promises.readFile(found.file);
     return new Response(body, { status: 200, headers: { ...headersFor(found.type), 'Content-Length': String(found.size) } });

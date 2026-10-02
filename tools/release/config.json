@@ -5,5 +5,5 @@
   "playListing": "https://play.google.com/store/apps/details?id=com.agentempire.mobile",
   "iosTestFlight": null,
   "iosAppStore": null,
-  "pinnedKeyFiles": ["src/shared/release-key.ts"]
+  "pinnedKeyFiles": ["src/shared/release-key.ts", "desktop/update-store.cjs", "mobile/android/app/src/main/java/com/agentempire/mobile/UpdatePolicy.java", "mobile/ios/AgentEmpire/UpdatePolicy.swift"]
 }

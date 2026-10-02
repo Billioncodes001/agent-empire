@@ -49,6 +49,7 @@ import { Tower } from './tower';
 import { GRAPHICS, applyGraphics } from './graphics';
 import { openSettings } from './ui/settings';
 import { appPanel } from './ui/app-panel';
+import { startUpdates, updateSettingsSection } from './update';
 import { connectionView } from './ui/continuity';
 import { setupPwa } from './ui/pwa';
 import { maybeOfferExecutionSetup, openCloudTasks, openExecutionSetup } from './ui/execution';
@@ -240,6 +241,8 @@ if (cloudNet) {
     },
   });
 } else mountStatusStrip($('status-strip'), { openManagement: () => empireUI.openOperations(), openWorkers: () => openWorkersDialog(openWorkerTerminal) });
+// In-app updates (REL-03/05): the prompt waits for a calm moment (never mid-jump, typing or in a dialog).
+const updateService = startUpdates({ airborne: () => !player.grounded, cloudRepo: cloudNet?.repo ?? null });
 const traversal = new Traversal(player,me,office,city,()=>{
   if(!store.empire.delegated)net.send({t:'empire.action',action:{kind:'delegate',enabled:true}});
 }, (cue, at) => sound.carCue(cue, at));
@@ -373,6 +376,7 @@ net.onMessage((msg) => {
       renderProject();
       $('btn-team').classList.toggle('hidden', !store.invites);
       // Back from a restart on another version: this page's code is stale, so load the new one.
+      updateService.setServerVersion(msg.appVersion ?? msg.version);
       if (!bootVersion) bootVersion = msg.version;
       else if (msg.version !== bootVersion || restarting()) showUpgraded(msg.upgrade);
       upgradePhase = msg.upgrade.phase;
@@ -1206,9 +1210,15 @@ $('btn-settings').addEventListener('click', () =>
     },
     editProfile,
     () => sound.ding('done'),
-    appPanel(net),
+    combineSections(appPanel(net), updateSettingsSection(updateService)),
   ),
 );
+
+function combineSections(...sections: { el: HTMLElement; dispose(): void }[]) {
+  const el = document.createElement('div');
+  el.append(...sections.map((s) => s.el));
+  return { el, dispose: () => sections.forEach((s) => s.dispose()) };
+}
 
 function editProfile() {
   openCharacter(false, (p) => {

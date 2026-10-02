@@ -87,7 +87,7 @@ game_bytes = sum(p.stat().st_size for p in (assets / 'game').rglob('*') if p.is_
 #    plus every staged game file being reachable with a known MIME type.
 tests = build / 'test-classes'
 tests.mkdir()
-policies = [source / f'java/com/agentempire/mobile/{name}.java' for name in ('AssetPolicy', 'ServerPolicy', 'BridgePolicy')]
+policies = [source / f'java/com/agentempire/mobile/{name}.java' for name in ('AssetPolicy', 'ServerPolicy', 'BridgePolicy', 'UpdatePolicy')]
 run(javac, '-d', tests, *policies, android / 'tests/PolicyTest.java')
 run(java, '-cp', tests, 'com.agentempire.mobile.PolicyTest', assets / 'game')
 

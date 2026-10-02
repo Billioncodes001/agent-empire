@@ -9,12 +9,14 @@ import { appConfig, setSessionConfig } from './endpoint';
 import { dismissKeyboard } from './keyboard';
 import { native, shellInfo } from './native';
 import { decideLaunch, probeOwnOrigin, type LaunchDecision } from './setup/launch';
+import { reportBootOk } from './update/boot-ok';
 
 const splash = document.getElementById('splash');
 
 function startGame() {
   if (splash) splash.style.display = '';
-  void import('./main');
+  // The game module evaluated: this bundle boots (the shell keeps it instead of rolling back).
+  void import('./main').then(reportBootOk, (error) => console.error('The game failed to start', error));
 }
 
 /** Hands the cloud session to the game, then loads it. The token stays in memory (and the app's secure storage). */
@@ -46,6 +48,7 @@ async function showSetup(decision: Exclude<LaunchDecision, { kind: 'game' } | { 
   };
 
   if (decision.kind === 'cloud') {
+    reportBootOk();
     const root = mountCloudUnlock({
       repo: decision.repo,
       native: bridge,
@@ -60,6 +63,7 @@ async function showSetup(decision: Exclude<LaunchDecision, { kind: 'game' } | { 
     return;
   }
 
+  reportBootOk();
   const view = mountSetup(initialState({ step: decision.step, mode: decision.mode, notice: decision.notice, address: decision.address }), {
     native: bridge,
     shell,
