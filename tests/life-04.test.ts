@@ -263,6 +263,22 @@ test('a kept reservation on a desk that is no longer funded is dropped', async (
   } finally { o.close(); }
 });
 
+test('a reservation whose task is removed before seating frees the desk, and a gone worker leaves no backoff entry', async () => {
+  const o = office({ desks: 2, kill: () => new Promise<KillResult>(() => {}) });
+  try {
+    const aw = chain(o);
+    o.setStatus(aw.id, 'done');
+    assert.equal(o.reserved(), 1);
+    assert.equal(o.queue.remove(o.task('B').id), undefined);
+    o.queue.pump();
+    assert.equal(o.reserved(), 0, 'the removed task no longer holds its desk');
+    const failed = (o.queue as unknown as { sendHomeFailedAt: Map<string, number> }).sendHomeFailedAt;
+    failed.set(aw.id, Date.now());
+    o.queue.onWorkerGone(aw.id);
+    assert.equal(failed.has(aw.id), false, 'backoff entries do not outlive their worker');
+  } finally { o.close(); }
+});
+
 test('identity: the predecessor name is reused only when the worktree starts from its branch', () => {
   for (const exists of [true, false]) {
     const o = office({ worktrees: true, branches: new Set(exists ? ['office/w1'] : []) });

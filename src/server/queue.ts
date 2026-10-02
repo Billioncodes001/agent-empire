@@ -234,6 +234,7 @@ export class TaskQueue {
     // WorkerManager emits removal only after its process has been confirmed stopped.
     this.releasedWorkers.add(workerId);
     this.lastStatus.delete(workerId);
+    this.sendHomeFailedAt.delete(workerId);
     this.changed();
     this.pump();
   }
@@ -515,6 +516,9 @@ export class TaskQueue {
 
   private seat() {
     let changed = false;
+    // A reservation lives only while its task can still be seated: one whose task finished, failed or was removed
+    // before seating would otherwise keep its desk out of freeDesk for good.
+    for (const [id] of this.reserved) if (this.tasks.find((x) => x.id === id)?.status !== 'queued') this.reserved.delete(id);
     for (const t of this.tasks) {
       if (this.storageError) break;
       if (t.status !== 'queued') continue;
@@ -526,6 +530,7 @@ export class TaskQueue {
       }
       const sibling = this.managerSiblingBlocker(t.jobKey, t.id);
       if (sibling) {
+        this.reserved.delete(t.id);
         if (t.error !== sibling) { t.error = sibling; if (!this.changed()) break; }
         continue;
       }
