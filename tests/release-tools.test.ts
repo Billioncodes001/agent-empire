@@ -15,6 +15,8 @@ import { crc32, createZip, readZip } from '../tools/release/zip.mjs';
 import { packageGame } from '../tools/release/package-game.mjs';
 import { buildChannel, classifyAssets, coordinatorSchema, squirrelFeed } from '../tools/release/channel.mjs';
 import { serviceAccountAssertion, uploadBundle } from '../tools/release/play-upload.mjs';
+import { checkFeed, nugetVersion, nupkgName, parseReleases, SQUIRREL_ID } from '../tools/release/package-windows-installer.mjs';
+import { createHash } from 'node:crypto';
 import { DEV_RELEASE_PUBLIC_KEY, RELEASE_KEY_IS_DEVELOPMENT, RELEASE_PUBLIC_KEY } from '../src/shared/release-key';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
@@ -272,14 +274,68 @@ test('signed macOS builds get auto updates and Squirrel feeds; Play link only af
     `Agent-Empire-${V}-windows-x64.zip`, `Agent-Empire-${V}-android.apk`, `Agent-Empire-${V}-android.aab`]);
   const doc = buildChannel({ ...channelArgs(dir), playPublished: true });
   assert.equal(doc.shell.macos.auto, true);
-  assert.match(doc.shell.macos.feed.arm64, /desktop-update-darwin-arm64\.json$/);
+  assert.equal(doc.shell.macos.feed.arm64, `https://github.com/Billioncodes001/agent-empire/releases/download/v${V}/RELEASES-darwin-arm64.json`);
   assert.equal(doc.shell.windows.downloads.x64.signed, true);
+  // A zip without the Squirrel installer and feed cannot update in place.
   assert.equal(doc.shell.windows.auto, false);
+  assert.equal(doc.shell.windows.feed, null);
   assert.equal(doc.shell.android.signed, true);
   assert.equal(doc.shell.android.play, CONFIG.playListing);
   const feed = squirrelFeed({ version: V, url: doc.shell.macos.downloads.arm64.zip.url, notes: 'n', publishedAt: doc.publishedAt });
   assert.equal(feed.currentRelease, V);
   assert.equal(feed.releases[0].updateTo.url, doc.shell.macos.downloads.arm64.zip.url);
+});
+
+test('Squirrel.Windows: NuGet versions sort like ours, and the RELEASES feed must match the package', () => {
+  assert.equal(nugetVersion('1.0.0-beta.1'), '1.0.0-beta001');
+  assert.equal(nugetVersion('1.0.0-rc.12'), '1.0.0-rc012');
+  assert.equal(nugetVersion('2.3.4'), '2.3.4');
+  assert.equal(SQUIRREL_ID, 'AgentEmpire');
+  assert.equal(nupkgName('1.0.0-beta.1'), 'AgentEmpire-1.0.0-beta001-full.nupkg');
+  // NuGet 2 compares the prerelease label as a string: padding keeps beta.2 < beta.10 < rc.1.
+  const ordered = ['1.0.0-alpha.3', '1.0.0-beta.2', '1.0.0-beta.10', '1.0.0-beta.199', '1.0.0-rc.1'].map(v => nugetVersion(v).split('-')[1]);
+  assert.deepEqual([...ordered].sort(), ordered);
+  assert.throws(() => parseReleases('nonsense'), /Malformed/);
+  const dir = temp('feed');
+  const pkg = Buffer.from('nupkg bytes');
+  writeFileSync(path.join(dir, nupkgName(V)), pkg);
+  const sha1 = createHash('sha1').update(pkg).digest('hex').toUpperCase();
+  writeFileSync(path.join(dir, 'RELEASES'), `\uFEFF${sha1} ${nupkgName(V)} ${pkg.length}\r\n`);
+  assert.deepEqual(parseReleases(readFileSync(path.join(dir, 'RELEASES'), 'utf8')), [{ sha1, file: nupkgName(V), size: pkg.length }]);
+  assert.deepEqual(checkFeed(dir, V), []);
+  assert.match(checkFeed(dir, '1.0.0-beta.2').join('\n'), /should list only AgentEmpire-1\.0\.0-beta002-full\.nupkg/);
+  writeFileSync(path.join(dir, nupkgName(V)), 'tampered!!!');
+  assert.match(checkFeed(dir, V).join('\n'), /SHA1 does not match/);
+  assert.deepEqual(checkFeed(temp('nofeed'), V), ['RELEASES is missing']);
+});
+
+test('desktop update feeds: Squirrel.Windows folder and Squirrel.Mac JSON, latest/download for stable, per tag for beta', () => {
+  const S = '1.0.0';
+  const dir = temp('stable');
+  packageGame({ dist: fakeDist(), outDir: dir, version: S, commit: COMMIT, minShell: '1.0.0-beta.1' });
+  writeFileSync(path.join(dir, 'agent-empire-coordinator.mjs'), 'export const runCoordinatorTick = 1;');
+  for (const name of [`Agent-Empire-${S}-macos-arm64.zip`, `Agent-Empire-${S}-windows-x64.zip`, `Agent-Empire-${S}-windows-x64-Setup.exe`, nupkgName(S), 'RELEASES'])
+    writeFileSync(path.join(dir, name), name);
+  const args = { ...channelArgs(dir), version: S };
+  const stable = buildChannel({ ...args, channel: 'stable' });
+  const beta = buildChannel({ ...args, channel: 'beta' });
+  const repo = 'https://github.com/Billioncodes001/agent-empire/releases';
+  assert.equal(stable.shell.windows.auto, true);
+  assert.equal(stable.shell.windows.feed, `${repo}/latest/download`);
+  assert.equal(beta.shell.windows.feed, `${repo}/download/v${S}`);
+  assert.equal(stable.shell.macos.feed.arm64, `${repo}/latest/download/RELEASES-darwin-arm64.json`);
+  assert.equal(beta.shell.macos.feed.arm64, `${repo}/download/v${S}/RELEASES-darwin-arm64.json`);
+  assert.equal(stable.shell.windows.downloads.x64.setup.name, `Agent-Empire-${S}-windows-x64-Setup.exe`);
+  assert.equal(stable.shell.windows.downloads.x64.nupkg.url, `${repo}/download/v${S}/AgentEmpire-1.0.0-full.nupkg`);
+  // Unsigned installer: the feed exists but in-place updates stay off.
+  const unsigned = assetsDir([`Agent-Empire-${V}-windows-x64-unsigned.zip`, `Agent-Empire-${V}-windows-x64-Setup-unsigned.exe`, nupkgName(V), 'RELEASES']);
+  const doc = buildChannel(channelArgs(unsigned));
+  assert.equal(doc.shell.windows.auto, false);
+  assert.equal(doc.shell.windows.downloads.x64.signed, false);
+  assert.equal(doc.shell.windows.feed, `${repo}/download/v${V}`);
+  // An installer without its RELEASES feed is a download only.
+  const noFeed = assetsDir([`Agent-Empire-${V}-windows-x64-Setup.exe`]);
+  assert.equal(buildChannel(channelArgs(noFeed)).shell.windows.feed, null);
 });
 
 test('channel builder refuses inconsistent inputs', () => {

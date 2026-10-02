@@ -6,20 +6,29 @@
 //
 // Writes channel-<channel>.json for the version's channel (stable, or beta for any prerelease). A stable release
 // also writes channel-beta.json, so beta users are offered it too. It also writes the Squirrel.Mac static update
-// feeds desktop-update-darwin-<arch>.json for signed macOS zips. Sign the channel files afterwards:
+// feeds RELEASES-darwin-<arch>.json for signed macOS zips. Sign the channel files afterwards:
 //   node tools/release/sign.mjs sign <assets>/channel-*.json
 //
 // Asset names (the release workflow produces exactly these):
 //   agent-empire-game-<v>.zip, game-manifest.json(.sig)                    game bundle (package-game.mjs)
 //   agent-empire-coordinator.mjs                                           cloud coordinator bundle
 //   Agent-Empire-<v>-macos-<arm64|x64>[-unsigned].zip / .dmg               macOS app (zip = updater payload)
-//   Agent-Empire-<v>-windows-x64[-unsigned].zip                            Windows app
+//   Agent-Empire-<v>-windows-x64[-unsigned].zip                            Windows app (portable folder)
+//   Agent-Empire-<v>-windows-x64-Setup[-unsigned].exe, RELEASES,
+//   AgentEmpire-<nugetVersion>-full.nupkg                                  Squirrel.Windows installer + feed
+//
+// Desktop update feeds (Electron's built-in autoUpdater), in each channel file as shell.<os>.feed:
+//   stable channel: https://github.com/<repo>/releases/latest/download[/RELEASES-darwin-<arch>.json]
+//   beta channel:   https://github.com/<repo>/releases/download/<tag>[/RELEASES-darwin-<arch>.json]
+// Windows (Squirrel.Windows) takes the folder URL and reads <feed>/RELEASES; macOS (Squirrel.Mac, serverType 'json')
+// takes the per-arch JSON file URL.
 //   Agent-Empire-<v>-android[-debug-signed].apk, Agent-Empire-<v>-android.aab
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MANIFEST_NAME, gameZipName } from './package-game.mjs';
+import { nupkgName } from './package-windows-installer.mjs';
 import { parseVersion, readVersion, releaseChannel, ROOT, versionCode } from './version.mjs';
 
 export const COORDINATOR_NAME = 'agent-empire-coordinator.mjs';
@@ -49,6 +58,8 @@ export function classifyAssets(names, version) {
     if (zip || dmg) mac[arch] = { zip: zip?.name ?? null, dmg: dmg?.name ?? null, signed: !(zip?.m[1] || dmg?.m[1]) };
   }
   const win = one(new RegExp(`^Agent-Empire-${v}-windows-x64(-unsigned)?\\.zip$`), 'Windows zip');
+  const setup = one(new RegExp(`^Agent-Empire-${v}-windows-x64-Setup(-unsigned)?\\.exe$`), 'Windows installer');
+  const squirrel = setup && names.includes('RELEASES') && names.includes(nupkgName(version));
   const apk = one(new RegExp(`^Agent-Empire-${v}-android(-debug-signed)?\\.apk$`), 'Android APK');
   const aab = one(new RegExp(`^Agent-Empire-${v}-android\\.aab$`), 'Android AAB');
   return {
@@ -56,12 +67,15 @@ export function classifyAssets(names, version) {
     manifest: names.includes(MANIFEST_NAME) ? MANIFEST_NAME : null,
     coordinator: names.includes(COORDINATOR_NAME) ? COORDINATOR_NAME : null,
     mac,
-    windows: win ? { zip: win.name, signed: !win.m[1] } : null,
+    windows: win || setup ? {
+      zip: win?.name ?? null, setup: setup?.name ?? null, nupkg: squirrel ? nupkgName(version) : null,
+      signed: !(win?.m[1] || setup?.m[1]),
+    } : null,
     android: apk ? { apk: apk.name, aab: aab?.name ?? null, signed: !apk.m[1] } : null,
   };
 }
 
-/** The Squirrel.Mac "static file" JSON feed (Electron autoUpdater, serverType: 'json') for one signed zip. */
+/** The Squirrel.Mac static-storage feed (Electron autoUpdater with serverType "json"; Electron docs "Updating Applications", static storage RELEASES.json format) for one signed zip. */
 export function squirrelFeed({ version, url, notes, publishedAt }) {
   return { currentRelease: version, releases: [{ version, updateTo: { version, pub_date: publishedAt, notes, name: version, url } }] };
 }
@@ -79,6 +93,8 @@ export function buildChannel({ assetsDir, version, channel, repo, publishedAt, n
   const tag = `v${version}`;
   const download = name => `https://github.com/${repo}/releases/download/${tag}/${encodeURIComponent(name)}`;
   const page = `https://github.com/${repo}/releases/tag/${tag}`;
+  // Stable apps follow GitHub's "latest release" redirect; beta apps follow this exact tag (the channel file is the pointer).
+  const feedBase = channel === 'stable' ? `https://github.com/${repo}/releases/latest/download` : `https://github.com/${repo}/releases/download/${tag}`;
   const assets = classifyAssets(readdirSync(assetsDir), version);
   if (!assets.game || !assets.manifest) throw new Error(`${assetsDir} must contain ${gameZipName(version)} and ${MANIFEST_NAME}`);
   if (!assets.coordinator) throw new Error(`${assetsDir} must contain ${COORDINATOR_NAME}`);
@@ -93,10 +109,15 @@ export function buildChannel({ assetsDir, version, channel, repo, publishedAt, n
   const macos = macArchs.length ? {
     version, url: page, auto: macAuto,
     downloads: Object.fromEntries(macArchs.map(([arch, a]) => [arch, { ...(a.dmg ? { dmg: file(a.dmg) } : {}), ...(a.zip ? { zip: file(a.zip) } : {}), signed: a.signed }])),
-    feed: macAuto ? Object.fromEntries(macArchs.map(([arch]) => [arch, download(`desktop-update-darwin-${arch}.json`)])) : null,
+    feed: macAuto ? Object.fromEntries(macArchs.map(([arch]) => [arch, `${feedBase}/RELEASES-darwin-${arch}.json`])) : null,
   } : null;
-  // Windows has no in-place updater without a Squirrel/NSIS installer (see docs/team/reports/release-pipeline.md).
-  const windows = assets.windows ? { version, url: page, auto: false, downloads: { x64: { zip: file(assets.windows.zip), signed: assets.windows.signed } } } : null;
+  // Squirrel.Windows: in-place updates only from a signed installer build with its RELEASES feed.
+  const w = assets.windows;
+  const windows = w ? {
+    version, url: page, auto: Boolean(w.signed && w.nupkg),
+    downloads: { x64: { ...(w.setup ? { setup: file(w.setup) } : {}), ...(w.zip ? { zip: file(w.zip) } : {}), ...(w.nupkg ? { nupkg: file(w.nupkg) } : {}), signed: w.signed } },
+    feed: w.nupkg ? feedBase : null,
+  } : null;
   const android = assets.android ? {
     version, versionCode: versionCode(version), ...file(assets.android.apk), signed: assets.android.signed,
     play: playPublished ? config.playListing ?? null : null,
@@ -142,7 +163,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     }
     for (const [arch, entry] of Object.entries(doc.shell.macos?.downloads ?? {})) {
       if (!doc.shell.macos.auto || !entry.zip) continue;
-      const out = path.join(assetsDir, `desktop-update-darwin-${arch}.json`);
+      const out = path.join(assetsDir, `RELEASES-darwin-${arch}.json`);
       writeFileSync(out, JSON.stringify(squirrelFeed({ version, url: entry.zip.url, notes, publishedAt: doc.publishedAt }), null, 2) + '\n');
       console.log(`wrote ${out}`);
     }

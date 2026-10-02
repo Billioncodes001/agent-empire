@@ -94,7 +94,7 @@ Set them under Settings, then Secrets and variables, then Actions, or with `gh s
 | `IOS_DIST_CERT_P12` | secret | iOS archive and TestFlight upload (needs all `ASC_*`, `APPLE_TEAM_ID` and the two below) | base64 of an **Apple Distribution** certificate exported as .p12 |
 | `IOS_DIST_CERT_PASSWORD` | secret | (with the above) | its export password |
 | `IOS_PROVISIONING_PROFILE_B64` | secret | (with the above) | base64 of an **App Store** provisioning profile for `com.agentempire.mobile` |
-| `WINDOWS_CERT_P12` | secret | Windows Authenticode signing of `Agent Empire.exe` | base64 of an OV/EV code-signing certificate as .pfx |
+| `WINDOWS_CERT_P12` | secret | Windows Authenticode signing of `Agent Empire.exe` and the Squirrel installer; signed Windows builds also get in-place updates | base64 of an OV/EV code-signing certificate as .pfx |
 | `WINDOWS_CERT_PASSWORD` | secret | (with the above) | its .pfx password |
 | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` | secrets | Windows signing with Azure Artifact Signing (formerly Trusted Signing). Used when no .pfx is set | an Entra app registration granted **Artifact Signing Certificate Profile Signer** on the signing account |
 | `AZURE_SIGNING_ENDPOINT`, `AZURE_SIGNING_ACCOUNT`, `AZURE_SIGNING_PROFILE` | variables | (with the above) | the account's region endpoint (for example `https://eus.codesigning.azure.net/`), account name and certificate profile name |
@@ -136,7 +136,7 @@ Choose one of these:
   3. Create an app registration with a client secret and give it the signer role on the account.
   4. Set the three `AZURE_*` secrets and the three `AZURE_SIGNING_*` variables.
 
-Signing removes the "unknown publisher" warning. The Windows app still has no in-place updater, so it prompts and opens the download page (see `docs/team/reports/release-pipeline.md`).
+The release ships a Squirrel.Windows installer (`…-Setup.exe`), its update package (`AgentEmpire-<version>-full.nupkg`) and the `RELEASES` feed index. These are built with `electron-winstaller` and signed with the same certificate, or by Azure. Once signed, installed apps update in place through Electron's built-in updater. The feed is `https://github.com/<owner>/<repo>/releases/latest/download` for stable and `…/releases/download/<tag>` for beta. Unsigned builds still ship the installer, but the apps only prompt and open the download page.
 
 ### Android and Google Play
 
@@ -169,7 +169,9 @@ Sideloaded installs use the APK from the GitHub Release, and its sha256 is in th
 | `agent-empire-game-<v>.zip`, `game-manifest.json`, `game-manifest.json.sig` | over-the-air game bundle (deterministic zip of `dist/public`) and its signed manifest |
 | `agent-empire-coordinator.mjs` | cloud coordinator. A state repository gets it only when its user accepts the prompt |
 | `Agent-Empire-<v>-macos-<arm64\|x64>[-unsigned].dmg` / `.zip` | the zip is the in-place update payload |
-| `desktop-update-darwin-<arch>.json` | Squirrel.Mac feed. Only for signed and notarized builds |
+| `RELEASES-darwin-<arch>.json` | Squirrel.Mac feed (Electron's static `RELEASES.json` format; `serverType: 'json'`). Only for signed and notarized builds. Stable apps read `…/releases/latest/download/RELEASES-darwin-<arch>.json` |
+| `Agent-Empire-<v>-windows-x64-Setup[-unsigned].exe` | per-user installer (Squirrel.Windows) |
+| `AgentEmpire-<nugetVersion>-full.nupkg`, `RELEASES` | Squirrel.Windows update feed. Electron's autoUpdater reads `<release download URL>/RELEASES` |
 | `Agent-Empire-<v>-windows-x64[-unsigned].zip` | portable app folder |
 | `Agent-Empire-<v>-android[-debug-signed].apk`, `Agent-Empire-<v>-android.aab` | the AAB is only published when signed with the upload key |
 | `channel-beta.json(.sig)`, plus `channel-stable.json(.sig)` for final releases | the update channel the apps read |

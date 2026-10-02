@@ -127,21 +127,34 @@ The full table, with where each value comes from, is in `docs/RELEASING.md`.
 
 The plan named only the first iOS certificate secret. Its password and profile secrets are named `IOS_DIST_CERT_PASSWORD` and `IOS_PROVISIONING_PROFILE_B64`. The Azure names are this lane's choice.
 
-## Dependency decision needed (not added)
+## Desktop in-place updates (owner decision, 2026-10-02)
 
-**Windows in-place updates need an installer framework.** Electron's built-in `autoUpdater` on Windows needs a Squirrel.Windows installer, and electron-packager does not make one. So Windows `auto` is always `false`: the app prompts and opens the download.
+The owner chose `electron-winstaller` **5.4.4** (MIT). It is an exact-pinned devDependency in `desktop/package.json`, committed with its lockfile in its own commit. The packaged app does not ship it: packager prunes devDependencies, and the Windows stage copies only the shell files. The owner also kept the macOS bundle ID `com.agentempire.desktop`.
 
-| Option | Package | Version | License | Unpacked size | Note |
-|---|---|---|---|---|---|
-| Recommended | `electron-winstaller` | 5.4.4 | MIT | ~30 MB (bundles the Squirrel.Windows binaries) | Smallest change: keeps electron-packager and adds a Squirrel installer and `RELEASES` feed |
-| Alternative | `electron-builder` + `electron-updater` | 26.15.3 / 6.8.9 | MIT | 85 KB / 565 KB plus a large dependency tree | NSIS and DMG installers and its own updater on every platform. Replaces the packager flow |
+**Windows (Squirrel.Windows):**
+- `tools/release/package-windows-installer.mjs` runs `createWindowsInstaller` on the packaged app and publishes three assets:
+  - `Agent-Empire-<v>-windows-x64-Setup[-unsigned].exe`;
+  - `AgentEmpire-<nugetVersion>-full.nupkg`;
+  - `RELEASES`.
+- Before publishing, it checks that `RELEASES` lists exactly that package, with matching SHA1 and size.
+- The Squirrel ID is `AgentEmpire`. The NuGet version zero-pads the prerelease number (`1.0.0-beta.1` becomes `1.0.0-beta001`), because NuGet 2 compares prerelease labels as strings.
+- **Signing:**
+  - With a .pfx, Squirrel signs `Setup.exe` and the package executables through `signWithParams` (signtool, sha256, RFC 3161 timestamp).
+  - With Azure, the app exe is signed before packaging and `Setup.exe` after it.
+- The workflow runs the winstaller's 7-Zip selection script itself, because CI installs with `--ignore-scripts`.
+- The channel file's `shell.windows.feed` is `https://github.com/<repo>/releases/latest/download` for stable and `…/releases/download/<tag>` for beta. `auto` is true only for a signed installer that has its feed.
 
-macOS needed no new dependency: it uses the Squirrel.Mac static JSON feed plus the packager's bundled osx-sign and notarize.
+**macOS (Squirrel.Mac):**
+- The feed uses Electron's documented static-storage `RELEASES.json` format (`currentRelease` + `releases[].updateTo.url`, `serverType: 'json'`). It is published per architecture as `RELEASES-darwin-<arch>.json`, because release assets are flat. I renamed it from `desktop-update-darwin-<arch>.json`.
+- The `{"url": …}` format was not used, because it needs a server that can answer 204 when there is no update.
+- The file is produced only for signed and notarized builds. `shell.macos.feed.<arch>` uses the same stable (latest) and beta (per-tag) URL scheme.
+
+**Needed from the desktop shell (updater lane):** `desktop/main.cjs` must handle Squirrel.Windows' `--squirrel-install`, `--squirrel-updated`, `--squirrel-uninstall` and `--squirrel-obsolete` arguments. On those it creates or removes shortcuts through `..\Update.exe` and quits. It takes feed URLs only from the verified channel file.
 
 ## Verification
 
 - `npm run typecheck`: pass.
-- `npm test`: **421 pass**, 0 fail. That is 405 existing tests plus 16 in `tests/release-tools.test.ts`, which cover:
+- `npm test`: **423 pass**, 0 fail. That is 405 existing tests plus 18 in `tests/release-tools.test.ts`, which cover:
   - version mapping, ordering and Play limit;
   - invalid versions;
   - sync, check and drift detection on a copied tree;
@@ -151,6 +164,8 @@ macOS needed no new dependency: it uses the Squirrel.Mac static JSON feed plus t
   - zip CRC, unsafe paths and round trip;
   - game-bundle determinism (a different copy with different mtimes gives identical bytes) and refusals;
   - the beta, signed and stable channel builder and its refusals;
+  - the Squirrel.Windows NuGet version ordering and the `RELEASES` check;
+  - the Windows and macOS feed URLs (stable latest, beta per tag), and `auto` only when signed and fed;
   - the Play JWT and the API call sequence, with a fake fetch;
   - static workflow rules: every `uses:` is pinned to a 40-character SHA with a version comment, no PR triggers, per-job permissions, only `publish` can write, the placement of secrets, and the gates being present.
 - `npm run build` and `npm run build:cloud`: pass. `npm run version:check`: in sync across 7 files.
@@ -171,19 +186,19 @@ macOS needed no new dependency: it uses the Squirrel.Mac static JSON feed plus t
   - sdkmanager on ubuntu;
   - the iOS simulator build;
   - `xcodebuild -scheme AgentEmpire archive`. The project has no shared scheme and relies on xcodebuild creating one; adding a shared scheme is outside this lane.
+- **The Squirrel.Windows installer build:** `electron-winstaller` needs Windows (or mono and wine); it was not run here. Also unverified: Squirrel signing through `signWithParams`, Azure-signing `Setup.exe` afterwards, installing, updating, an exe name with a space, and the main-process Squirrel event handling, which is not written yet.
 - **The AAB path** (`--aab`: aapt2 `--proto-format`, bundletool, jarsigner). bundletool was not downloaded locally.
 - **macOS signing, notarization and stapling; the dmg; Windows signing; the Play upload; the TestFlight upload.** None ran without real credentials. The Play client is tested only against a fake fetch.
-- **The macOS bundle ID `com.agentempire.desktop`** set in `package-macos.mjs`. The packager default would have been `com.electron.agent-empire`. Changing it after the first signed release breaks in-place updates, so the owner should confirm it.
+- **Electron autoUpdater against the GitHub feeds:** not exercised. That includes the redirect from `latest/download` and Squirrel.Mac using the JSON feed.
 
 ## Handoffs
 
 - **Updater lane (REL-03/04):**
   - Read the key from `src/shared/release-key.ts`. Pin the same string in the desktop, Android and iOS shells, and add each pinning file to `tools/release/config.json` `pinnedKeyFiles`.
   - Treat `RELEASE_KEY_IS_DEVELOPMENT` as "never trust updates".
-  - Clients must ignore unknown channel fields. Use `shell.macos.feed.<arch>` for Squirrel.Mac and `shell.android.sha256` before installing an APK.
+  - Clients must ignore unknown channel fields. Use `shell.windows.feed` / `shell.macos.feed.<arch>` only when `auto` is true, and check `shell.android.sha256` before installing an APK.
+  - Handle the Squirrel.Windows launch arguments (above).
   - If the shells add files that the Windows stage must copy, extend `DESKTOP_FILES` in `tools/prepare-desktop.mjs`.
 - **Owner:**
   - Generate the signing key and paste the public key.
   - Set the secrets, following `docs/RELEASING.md`.
-  - Choose the Windows installer dependency.
-  - Confirm the macOS bundle ID.

@@ -75,11 +75,26 @@ The file is signed with the same Ed25519 key (`channel-<channel>.json.sig`). App
 - **Fields beyond the example above** (additive; clients must ignore unknown fields):
   - top level: `tag`, `releasePage` (the GitHub release page).
   - `game`: `bytes`, `manifest` and `manifestSig` (URLs of `game-manifest.json` and its `.sig`). `game-manifest.json` holds `schema, name, version, file, bytes, sha256, files, entry, minShell, commit`. `minShell` comes from `tools/release/config.json`.
-  - `shell.macos` / `shell.windows`: `url` is the release page (users pick a download). `downloads.<arch>` has `dmg`/`zip` entries of `{ name, url, sha256 }` and `signed`. `auto` is true only when every macOS build is signed and notarized. `shell.macos.feed.<arch>` is then the URL of a Squirrel.Mac static feed `desktop-update-darwin-<arch>.json` (Electron `autoUpdater`, `serverType: 'json'`), else `null`. Windows `auto` is always false for now: there is no Squirrel/NSIS installer yet.
+  - `shell.macos` / `shell.windows`: `url` is the release page (users pick a download). `downloads.<arch>` holds `{ name, url, sha256 }` entries and `signed`:
+    - macOS: `dmg` and `zip`.
+    - Windows: `setup`, `zip` and `nupkg`.
+  - `auto` is true only for a signed build that has its update feed: every macOS build signed and notarized, or a signed Windows Squirrel installer. Apps use `feed` only when `auto` is true; otherwise they prompt and open the release page.
+- **Desktop update feeds (Electron's built-in `autoUpdater`):**
+
+  | Platform | `feed` value | Stable channel | Beta channel | App call |
+  |---|---|---|---|---|
+  | Windows (Squirrel.Windows) | a folder URL | `https://github.com/<owner>/<repo>/releases/latest/download` | `https://github.com/<owner>/<repo>/releases/download/<tag>` | `autoUpdater.setFeedURL({ url: feed })` |
+  | macOS (Squirrel.Mac) | `feed.<arch>`, a JSON file URL | `…/releases/latest/download/RELEASES-darwin-<arch>.json` | `…/releases/download/<tag>/RELEASES-darwin-<arch>.json` | `autoUpdater.setFeedURL({ url: feed[process.arch], serverType: 'json' })` |
+
+  - **Windows:** Squirrel reads `<feed>/RELEASES`, then downloads `<feed>/AgentEmpire-<nugetVersion>-full.nupkg`. GitHub's `latest` only resolves to non-prerelease releases.
+  - **macOS:** the file uses Electron's documented static-storage `RELEASES.json` format, `{ "currentRelease": v, "releases": [{ "version": v, "updateTo": { version, pub_date, notes, name, url } }] }`, where `url` is the signed `.zip`. The `{"url": …}` reply format is not used, because it needs a server that answers 204 when there is no update.
+  - **Feed URLs:** apps take them from the verified channel file, never build them.
+  - **Main process:** the desktop main process must handle Squirrel.Windows' `--squirrel-install`, `--squirrel-updated`, `--squirrel-uninstall` and `--squirrel-obsolete` launch arguments: create or remove shortcuts with `Update.exe`, then quit.
+  - **Squirrel package:** its ID is `AgentEmpire` (install folder `%LocalAppData%\AgentEmpire`, which must never change). Its version is NuGet-style with a zero-padded prerelease (`1.0.0-beta.2` becomes `1.0.0-beta002`), so NuGet's string comparison orders betas correctly.
   - `shell.android`: `name`, `sha256` (check it before opening the installer) and `signed` (false for the labelled debug-signed APK). `play` is set only when the release was uploaded to Play.
   - `shell.ios`: `testflight` and `appStore` come from `tools/release/config.json` (null until the owner fills them in).
   - A platform whose build is missing is `null`.
-- **Asset names:** `agent-empire-game-<v>.zip`, `game-manifest.json(.sig)`, `agent-empire-coordinator.mjs`, `Agent-Empire-<v>-macos-<arm64|x64>[-unsigned].{zip,dmg}`, `Agent-Empire-<v>-windows-x64[-unsigned].zip`, `Agent-Empire-<v>-android[-debug-signed].apk`, `Agent-Empire-<v>-android.aab` (only when upload-key signed), `channel-<channel>.json(.sig)`, `desktop-update-darwin-<arch>.json` (only when signed), `SHA256SUMS`.
+- **Asset names:** `agent-empire-game-<v>.zip`, `game-manifest.json(.sig)`, `agent-empire-coordinator.mjs`, `Agent-Empire-<v>-macos-<arm64|x64>[-unsigned].{zip,dmg}`, `Agent-Empire-<v>-windows-x64[-unsigned].zip`, `Agent-Empire-<v>-windows-x64-Setup[-unsigned].exe`, `AgentEmpire-<nugetVersion>-full.nupkg`, `RELEASES` (Squirrel.Windows feed index), `Agent-Empire-<v>-android[-debug-signed].apk`, `Agent-Empire-<v>-android.aab` (only when upload-key signed), `channel-<channel>.json(.sig)`, `RELEASES-darwin-<arch>.json` (only when signed), `SHA256SUMS`.
 
 ## In-app updates
 
