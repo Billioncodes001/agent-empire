@@ -254,8 +254,8 @@ final class GameUpdater {
 
     /**
      * Defense in depth: reads the release's own signed channel (channel-beta.json in the v<version> release), verifies it
-     * with the pinned key and returns it. Without Ed25519 on this Android version (below 13) the native signature check
-     * is skipped and logged; the page has already verified the same file with WebCrypto.
+     * with the pinned key and returns it. Without a software Ed25519 provider (Android 8 to 12, and stock Android 13 to 15,
+     * where only Android Keystore offers Ed25519) the native signature check is skipped and logged; the page has already verified the same file with WebCrypto.
      */
     JSONObject signedRelease(String version) throws IOException {
         String url = UpdatePolicy.releaseChannelUrl(version);
@@ -263,7 +263,7 @@ final class GameUpdater {
         Fetched sig = fetch(url + ".sig", null, 4096, null);
         if (doc.status != 200 || sig.status != 200) throw new IOException("The signed release " + version + " could not be read.");
         Boolean ok = UpdatePolicy.verifyEd25519(doc.body, new String(sig.body, StandardCharsets.UTF_8), UpdatePolicy.RELEASE_PUBLIC_KEY);
-        if (ok == null) Log.w(TAG, "No Ed25519 on this Android version: the shell's own release signature check is skipped");
+        if (ok == null) Log.w(TAG, "No software Ed25519 provider on this device: the shell's own release signature check is skipped");
         else if (!ok) throw new IOException("The release's signature does not match this app's release key. Nothing was installed.");
         try {
             return new JSONObject(new String(doc.body, StandardCharsets.UTF_8));

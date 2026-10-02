@@ -1,0 +1,10 @@
+GET /Billioncodes001/agent-empire/releases/latest/download/channel-stable.json.sig
+GET /Billioncodes001/agent-empire/releases/latest/download/channel-stable.json
+GET /__assets/v1.0.0-beta.2/channel-stable.json
+GET /__assets/v1.0.0-beta.2/channel-stable.json.sig
+GET /Billioncodes001/agent-empire/releases/download/v1.0.0-beta.2/channel-beta.json
+GET /__assets/v1.0.0-beta.2/channel-beta.json
+GET /Billioncodes001/agent-empire/releases/download/v1.0.0-beta.2/channel-beta.json.sig
+GET /__assets/v1.0.0-beta.2/channel-beta.json.sig
+GET /__fixture?since=83
+GET /__fixture?since=83
