@@ -10,5 +10,9 @@
     "package": "electron-packager . 'Agent Empire' --out=../release --overwrite --ignore='^/node_modules/@electron/packager'",
     "package:windows": "node ../tools/prepare-desktop.mjs --platform=win32 --arch=x64"
   },
-  "devDependencies": { "electron": "44.4.5", "@electron/packager": "20.3.0" }
+  "devDependencies": {
+    "@electron/packager": "20.3.0",
+    "electron": "44.4.5",
+    "electron-winstaller": "5.4.4"
+  }
 }
