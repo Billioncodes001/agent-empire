@@ -55,6 +55,7 @@ function itemRow(item: Approval, selected: boolean, onSelect: () => void): HTMLE
       h('strong.inbox-row-title', {}, item.title),
       h('span.inbox-row-meta', {}, `${item.id} · ${EXECUTIVES[item.raisedBy].name} · ${item.status === 'pending' ? ago(item.createdAt) : `${item.status} ${ago(item.decidedAt ?? item.createdAt)}`}`),
       money ? h('span.inbox-row-money', {}, money) : null,
+      item.reopenable ? h('span.inbox-row-reopen', {}, 'Still held · Approve increase…') : null,
     ),
   );
 }
@@ -110,10 +111,17 @@ export function openInbox(focusId?: string) {
       h('p.inbox-detail-text', {}, item.detail),
       moneyFacts(item),
     ];
-    if (item.status !== 'pending') {
-      detail.replaceChildren(...head, h('p.inbox-decided', { 'data-status': item.status }, `${item.status === 'approved' ? '✓ Approved' : '✕ Declined'} by ${item.decidedBy ?? 'CEO'} · ${ago(item.decidedAt ?? item.createdAt)}`));
+    const verdict = { approved: '✓ Approved', rejected: '✕ Declined', resolved: '○ Resolved', pending: '' }[item.status];
+    const decidedLine = item.status !== 'pending'
+      ? h('p.inbox-decided', { 'data-status': item.status }, `${verdict} by ${item.decidedBy ?? 'CEO'} · ${ago(item.decidedAt ?? item.createdAt)}${item.note ? ` · ${item.note}` : ''}`)
+      : null;
+    // A declined budget increase stays approvable while its hold stands (review fix 1); everything else decided is final.
+    const reopen = item.status === 'rejected' && item.reopenable === true;
+    if (item.status !== 'pending' && !reopen) {
+      detail.replaceChildren(...head, decidedLine!);
       return;
     }
+    if (reopen) head.push(decidedLine!, h('p.setting-note', {}, 'The job is still held. You can still approve the increase.'));
     const fallback = defaultBudget(item);
     const input = h('input', { id: 'inbox-budget', type: 'number', inputmode: 'decimal', min: '1', max: String(MAX_APPROVAL_BUDGET_USD), step: '0.01', value: budgetDraft ?? (fallback !== undefined ? String(fallback) : ''), 'aria-describedby': 'inbox-budget-note' }) as HTMLInputElement;
     input.addEventListener('input', () => { budgetDraft = input.value; if (confirming) { confirming = null; render(); input.focus(); } });
@@ -173,7 +181,7 @@ export function openInbox(focusId?: string) {
       ...(error ? [h('p.inbox-error', { role: 'alert' }, error)] : []),
       confirm || h('div.inbox-actions', {},
         h('button.btn.primary', { type: 'button', disabled: busy, onclick: () => ask('approve') }, item.kind === 'budget_increase' ? 'Approve increase…' : 'Approve plan…'),
-        h('button.btn', { type: 'button', disabled: busy, onclick: () => ask('reject') }, 'Decline…')),
+        reopen ? null : h('button.btn', { type: 'button', disabled: busy, onclick: () => ask('reject') }, 'Decline…')),
       h('p.setting-note', {}, approveHint(item.id)),
     );
   };
@@ -199,6 +207,7 @@ export function openInbox(focusId?: string) {
     list.replaceChildren(...(pending.length ? pending.map((i) => itemRow(i, i.id === selected, () => select(i.id))) : [h('li.inbox-empty', {}, 'Nothing is waiting for you.')]));
     history.replaceChildren(...decided.map((i) => itemRow(i, i.id === selected, () => select(i.id))));
     historyBox.hidden = !decided.length;
+    if (decided.some((i) => i.reopenable)) historyBox.open = true;
     storageNote.textContent = state.storageError ?? '';
     storageNote.hidden = !state.storageError;
     if (keep) side.querySelector<HTMLElement>(`[data-approval="${CSS.escape(keep)}"]`)?.focus();
