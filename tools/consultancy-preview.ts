@@ -5,6 +5,7 @@ import path from 'node:path';
 import { startServer } from '../src/server/server.js';
 import { scryptSync } from 'node:crypto';
 import type { Config } from '../src/server/config.js';
+if (Number(process.env.PREVIEW_PORT) === 4610) throw new Error('Refusing the protected 4610 session; use an isolated preview port.');
 const dataDir = mkdtempSync(path.join(tmpdir(),'empire-founder-preview-'));
 writeFileSync(path.join(dataDir,'queue.json'),JSON.stringify({tasks:[],maxWorkers:0}));
 const cfg: Config = {dir:dataDir,dataDir,host:'127.0.0.1',port:Number(process.env.PREVIEW_PORT||4622),passwordGenerated:false,verifier:scryptSync('founder-preview',Buffer.alloc(16,2),32),salt:Buffer.alloc(16,2),secret:'isolated-founder-preview-only',claimed:true,markClaimed(){},agentCmd:'disabled-fixture',agentArgs:[],trustProxy:false,iceServers:[],budgetPause:false};
