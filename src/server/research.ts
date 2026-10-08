@@ -6,7 +6,7 @@ import {
   CONFIDENCES, FEASIBILITIES, MAX_QUESTION, RESEARCH_DIR, URL_RE, safeHttpsUrl,
   type Confidence, type Feasibility, type ResearchReport, type ResearchReportSummary, type ResearchSections, type ResearchState, type ResearchStatus, type ToolProposal,
 } from '../shared/research.js';
-import type { ArtifactResult } from './artifacts.js';
+import type { ParsedArtifact as ArtifactResult } from './artifacts.js';
 import { writeJsonAtomic } from './persistence.js';
 
 // ORG-05: the research executive. It is rule-based: it files the CEO's question as an internal consultancy job (which
