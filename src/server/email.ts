@@ -11,7 +11,8 @@ import { APPROVAL_KIND_LABEL, type Approval } from '../shared/approvals.js';
 import { approvalText } from './approvals.js';
 import { writeJsonAtomic } from './persistence.js';
 
-export interface MailMessage { from: string; to: string; subject: string; text: string }
+/** `fromName` (optional, sanitised and encoded) is the sender's display name; it defaults to "Agent Empire". */
+export interface MailMessage { from: string; to: string; subject: string; text: string; fromName?: string }
 export interface MailTransport { send(message: MailMessage): Promise<void> }
 export interface SmtpConfig { secure: boolean; host: string; port: number; user?: string; pass?: string }
 export interface EmailConfig { smtp: SmtpConfig; to: string; from: string }
@@ -28,11 +29,23 @@ export function emailConfig(env: NodeJS.ProcessEnv): EmailConfig | undefined {
   const to = env.AGENT_EMPIRE_NOTIFY_EMAIL?.trim();
   if (!raw && !to) return undefined;
   if (!raw || !to) throw new Error(USAGE);
-  let url: URL;
-  try { url = new URL(raw); } catch { throw new Error(`AGENT_EMPIRE_SMTP_URL is not a valid URL. ${USAGE}`); }
-  if (url.protocol !== 'smtp:' && url.protocol !== 'smtps:') throw new Error(`AGENT_EMPIRE_SMTP_URL must start with smtp:// or smtps://. ${USAGE}`);
-  if (!url.hostname) throw new Error(`AGENT_EMPIRE_SMTP_URL has no host. ${USAGE}`);
   if (!ADDRESS.test(to)) throw new Error('AGENT_EMPIRE_NOTIFY_EMAIL must be a single email address.');
+  const smtp = smtpConfigFromUrl(raw, USAGE);
+  const fromEnv = env.AGENT_EMPIRE_NOTIFY_FROM?.trim();
+  if (fromEnv && !ADDRESS.test(fromEnv)) throw new Error('AGENT_EMPIRE_NOTIFY_FROM must be a single email address.');
+  const from = fromEnv || (smtp.user && ADDRESS.test(smtp.user) ? smtp.user : to);
+  return { smtp, to, from };
+}
+
+/** Whether a string is one plain email address (no display name, no list, no CR/LF). */
+export const isEmailAddress = (s: string) => ADDRESS.test(s) && /\.[A-Za-z]{2,}$/.test(s);
+
+/** Parses AGENT_EMPIRE_SMTP_URL (ORG-03; reused by ORG-04a outreach). Errors never echo the URL, which holds a password. */
+export function smtpConfigFromUrl(raw: string, usage = USAGE): SmtpConfig {
+  let url: URL;
+  try { url = new URL(raw); } catch { throw new Error(`AGENT_EMPIRE_SMTP_URL is not a valid URL. ${usage}`); }
+  if (url.protocol !== 'smtp:' && url.protocol !== 'smtps:') throw new Error(`AGENT_EMPIRE_SMTP_URL must start with smtp:// or smtps://. ${usage}`);
+  if (!url.hostname) throw new Error(`AGENT_EMPIRE_SMTP_URL has no host. ${usage}`);
   const secure = url.protocol === 'smtps:';
   const port = url.port ? Number(url.port) : secure ? 465 : 587;
   let user: string | undefined;
@@ -40,12 +53,9 @@ export function emailConfig(env: NodeJS.ProcessEnv): EmailConfig | undefined {
   try {
     user = url.username ? decodeURIComponent(url.username) : undefined;
     pass = url.password ? decodeURIComponent(url.password) : undefined;
-  } catch { throw new Error(`AGENT_EMPIRE_SMTP_URL has badly encoded credentials. ${USAGE}`); }
-  const fromEnv = env.AGENT_EMPIRE_NOTIFY_FROM?.trim();
-  if (fromEnv && !ADDRESS.test(fromEnv)) throw new Error('AGENT_EMPIRE_NOTIFY_FROM must be a single email address.');
-  const from = fromEnv || (user && ADDRESS.test(user) ? user : to);
+  } catch { throw new Error(`AGENT_EMPIRE_SMTP_URL has badly encoded credentials. ${usage}`); }
   const host = url.hostname.replace(/^\[|\]$/g, '');
-  return { smtp: { secure, host, port, ...(user ? { user } : {}), ...(pass ? { pass } : {}) }, to, from };
+  return { secure, host, port, ...(user ? { user } : {}), ...(pass ? { pass } : {}) };
 }
 
 export const isLoopbackHost = (host: string) => host === 'localhost' || host === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
@@ -65,11 +75,18 @@ export function approvalEmail(item: Approval, addresses: { to: string; from: str
 const headerSafe = (s: string) => s.replace(/[\r\n]+/g, ' ').trim();
 const encodeHeader = (s: string) => (/^[\x20-\x7e]*$/.test(s) ? s : `=?UTF-8?B?${Buffer.from(s, 'utf8').toString('base64')}?=`);
 
+/** A display name as one safe phrase: CR/LF and quoting characters removed, quoted when ASCII, else an encoded word. */
+function displayName(name?: string): string {
+  if (name === undefined) return 'Agent Empire';
+  const clean = headerSafe(name).replace(/[\u0000-\u001f\u007f<>"\\]/g, '').trim().slice(0, 80) || 'Agent Empire';
+  return /^[\x20-\x7e]*$/.test(clean) ? `"${clean}"` : encodeHeader(clean);
+}
+
 /** RFC 5322 text with CRLF line endings, dot-stuffed for DATA (a line starting with "." gets one more). */
 export function renderMessage(m: MailMessage, now = new Date()): string {
   const domain = m.from.split('@')[1] ?? 'agent-empire.local';
   const headers = [
-    `From: Agent Empire <${m.from}>`,
+    `From: ${displayName(m.fromName)} <${m.from}>`,
     `To: <${m.to}>`,
     `Subject: ${encodeHeader(headerSafe(m.subject))}`,
     `Date: ${now.toUTCString()}`,
@@ -84,7 +101,13 @@ export function renderMessage(m: MailMessage, now = new Date()): string {
 
 // ---- SMTP client --------------------------------------------------------------------------------
 
-class SmtpError extends Error {}
+/**
+ * `uncertain`: the message text was written after DATA but no final reply arrived, so the server may have accepted
+ * it. Callers that must never send twice (ORG-04a outreach) treat that as "unknown", never as "not sent".
+ */
+export class SmtpError extends Error {
+  uncertain?: true;
+}
 
 /** Line-oriented reader over the current socket; swapped to the TLS socket after STARTTLS. */
 class Session {
@@ -178,6 +201,7 @@ async function smtpSend(cfg: SmtpConfig, m: MailMessage, opts: SmtpOptions): Pro
   let socket: net.Socket = cfg.secure ? tls.connect({ host: cfg.host, port: cfg.port, servername, ...opts.tls }) : opts.connect?.(cfg) ?? net.connect({ host: cfg.host, port: cfg.port });
   // A deadline for the whole conversation as well as for each silence.
   const deadline = setTimeout(() => socket.destroy(new SmtpError('SMTP timed out')), timeoutMs * 3);
+  let dataWritten = false;
   try {
     const session = new Session(socket, timeoutMs);
     await waitConnected(socket, cfg.secure, timeoutMs);
@@ -210,10 +234,15 @@ async function smtpSend(cfg: SmtpConfig, m: MailMessage, opts: SmtpOptions): Pro
     await session.command(`MAIL FROM:<${m.from}>`, [250], 'MAIL FROM');
     await session.command(`RCPT TO:<${m.to}>`, [250, 251], 'RCPT TO');
     await session.command('DATA', [354]);
+    dataWritten = true;
     await session.command(`${renderMessage(m)}\r\n.`, [250], 'end of DATA');
+    dataWritten = false;
     await session.command('QUIT', [221]).catch(() => undefined);
   } catch (error) {
-    throw error instanceof SmtpError ? error : new SmtpError('SMTP send failed');
+    const out = error instanceof SmtpError ? error : new SmtpError('SMTP send failed');
+    // A definite reply to the end of DATA (4xx/5xx) means not accepted; anything else after the text went out is unknown.
+    if (dataWritten && !/answered \d{3} to end of DATA/.test(out.message)) out.uncertain = true;
+    throw out;
   } finally {
     clearTimeout(deadline);
     socket.destroy();
