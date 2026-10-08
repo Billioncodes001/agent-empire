@@ -208,6 +208,25 @@ try {
       check(`${width}x900: the HUD tools fit on one row`, row.tops.length === 1, `rows at ${row.tops.join(', ')}`);
       check(`${width}x900: every HUD tool keeps an accessible name`, !row.unlabeled.length, row.unlabeled.join(','));
       await page.screenshot({ path: resolve(out, `07-hud-one-row-${width}x900.jpg`), quality: 82, clip: { x: 0, y: 0, width, height: 140 } });
+      // Re-review fix 2: every conditionally shown tool at once (in voice → Mute, Invite, Upgrade, counts, two-digit badges).
+      await page.evaluate(() => {
+        for (const id of ['btn-mute', 'btn-team', 'btn-upgrade', 'btn-inbox']) document.getElementById(id)?.classList.remove('hidden');
+        const set = (sel: string, text: string) => { const el = document.querySelector<HTMLElement>(sel); if (el) { el.textContent = text; el.classList.remove('hidden'); } };
+        set('#btn-inbox .svc-count', '12');
+        set('#btn-queue .svc-count', '12');
+        set('#btn-services .svc-count', '3');
+        set('#btn-voice > span', 'Leave voice');
+      });
+      await page.waitForTimeout(200);
+      const crowded = await page.evaluate(() => {
+        const c = document.querySelector<HTMLElement>('#hud .topbar .controls')!;
+        const box = c.getBoundingClientRect();
+        const btns = [...c.querySelectorAll<HTMLElement>(':scope > button')].filter((b) => b.getClientRects().length);
+        const clipped = btns.filter((b) => { const r = b.getBoundingClientRect(); return r.left < box.left - 0.5 || r.right > box.right + 0.5 || r.right > window.innerWidth; }).map((b) => b.id);
+        return { tops: [...new Set(btns.map((b) => Math.round(b.getBoundingClientRect().top)))], clipped, overflow: c.scrollWidth - c.clientWidth, spare: Math.round(parseFloat(getComputedStyle(c).maxWidth) - box.width), count: btns.length };
+      });
+      check(`${width}x900: with every conditional tool shown, still one row and nothing clipped`, crowded.tops.length === 1 && !crowded.clipped.length && crowded.overflow <= 1, `${crowded.count} tools, rows ${crowded.tops.join(',')}, clipped [${crowded.clipped.join(',')}], spare ${crowded.spare}px`);
+      await page.screenshot({ path: resolve(out, `08-hud-all-tools-${width}x900.jpg`), quality: 82, clip: { x: 0, y: 0, width, height: 140 } });
     } finally { await ctx.close(); }
   }
 } finally {

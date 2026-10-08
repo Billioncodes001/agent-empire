@@ -1317,3 +1317,6 @@ html.ae-touch #hud .topbar .controls > #btn-inbox > span:not(.svc-count):not(.in
   #hud .topbar .controls > #btn-voice > span, #hud .topbar .controls > #btn-share > span, #hud .topbar .controls > #btn-inbox > span:not(.svc-count):not(.inbox-glyph) { display: none; }
 }
 @media (max-width: 1360px) { #hud .topbar .controls > #btn-services > span:not(.svc-count) { display: none; } }
+/* ORG-03 re-review fix 2: at 1440 px and below Issues, PRs, Queue and Invite are icon buttons too (count badges, aria-label and title stay), so conditional tools never wrap the row. */
+@media (max-width: 1440px) { #hud .topbar .controls > #btn-issues > span:not(.svc-count), #hud .topbar .controls > #btn-pulls > span:not(.svc-count), #hud .topbar .controls > #btn-queue > span:not(.svc-count), #hud .topbar .controls > #btn-team > span, #hud .topbar .controls > #btn-services > span:not(.svc-count) { display: none; } }
+@media (max-width: 1360px) { #hud .topbar .controls { gap: 3px; padding: 5px; } #hud .topbar .controls > .btn { padding-left: 6px; padding-right: 6px; } #hud .topbar .controls .svc-count { margin-left: 3px; padding: 0 5px; } }
