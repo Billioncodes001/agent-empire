@@ -86,7 +86,8 @@ async function game(browser: Browser, size: { width: number; height: number; tou
 
     // Open the imported report.
     await card.locator('.research-row[data-status=imported]').evaluate((b) => (b as HTMLButtonElement).click());
-    const report = page.locator('.research-modal');
+    // Review fix 3: the report renders inside the card dialog (no second modal).
+    const report = card.locator('.research-report-view');
     await report.locator('.research-report').waitFor({ timeout: 5000 }).catch(() => undefined);
     const rtext = (await report.innerText().catch(() => '')).replace(/\s+/g, ' ');
     check(`${tag}: the report view says "Researched by Bea — not verified" and shows all four sections`, /Researched by Bea — not verified/i.test(rtext) && /Findings · 3 sources cited/i.test(rtext) && /What we can do now/i.test(rtext) && /What we can’t do yet and why/i.test(rtext) && /Proposed tools/i.test(rtext), rtext.slice(0, 200));
@@ -95,7 +96,28 @@ async function game(browser: Browser, size: { width: number; height: number; tou
     check(`${tag}: no HTML from the report is injected (no script, iframe or inline handlers)`, await report.evaluate((el) => !el.querySelector('script,iframe,img,[onerror],[onclick],[style]')));
     check(`${tag}: no horizontal overflow with the report open`, await noOverflow(page));
     await page.waitForTimeout(400);
+    if (size.height > size.width) {
+      // Portrait: the game asks to rotate (it plays in landscape). The layout-only shot hides that prompt to show the
+      // report's 375px layout underneath; it is not what a portrait player sees.
+      check(`${tag}: portrait shows the rotate prompt`, await page.locator('.rotate-hint').isVisible());
+      await page.evaluate(() => document.querySelectorAll<HTMLElement>('.rotate-hint').forEach((e) => { e.style.display = 'none'; }));
+    }
     await shot(page, '02-research-report', tag);
+    check(`${tag}: the report opens inside the card, not as a second dialog`, (await page.locator('#modal-root .backdrop').count()) === 1 && (await report.locator('.research-back').isVisible()));
+    // Esc steps back to the list, with focus on the report's row; the card stays open.
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(250);
+    const backState = await page.evaluate(() => ({ open: !!document.querySelector('.exec-modal[data-role=research]'), focus: (document.activeElement as HTMLElement | null)?.dataset.report ?? null, list: !(document.querySelector('.research-list-view') as HTMLElement | null)?.hidden }));
+    check(`${tag}: Esc returns to the list with focus on the report's row`, backState.open && backState.list && !!backState.focus, JSON.stringify(backState));
+    // Back button does the same.
+    await card.locator('.research-row[data-status=imported]').evaluate((b) => (b as HTMLButtonElement).click());
+    await report.locator('.research-report').waitFor({ timeout: 5000 }).catch(() => undefined);
+    await report.locator('.research-back').evaluate((b) => (b as HTMLButtonElement).click());
+    await page.waitForTimeout(200);
+    check(`${tag}: "Back to research" returns to the list`, await page.evaluate(() => (document.activeElement as HTMLElement | null)?.dataset.report !== undefined && !(document.querySelector('.research-list-view') as HTMLElement).hidden));
+    if (size.height > size.width) return; // portrait only re-shoots the report view
+    await card.locator('.research-row[data-status=imported]').evaluate((b) => (b as HTMLButtonElement).click());
+    await report.locator('.research-report').waitFor({ timeout: 5000 }).catch(() => undefined);
 
     if (decide) {
       // Tool proposal → inbox → approve; only the decision is recorded.
@@ -202,6 +224,7 @@ async function founderDesk(browser: Browser, size: { width: number; height: numb
 const browser = await chromium.launch({ channel: 'chrome', headless: true, args: ['--enable-webgl', '--ignore-gpu-blocklist', '--use-angle=metal'] });
 try {
   // Phone landscape first (looks only, reduced motion), then desktop decides.
+  await game(browser, { width: 375, height: 812, touch: true }, '375x812', false);
   await game(browser, { width: 874, height: 402, touch: true }, '874x402', false);
   await game(browser, { width: 1440, height: 900, touch: false }, '1440x900', true);
   await founderDesk(browser, { width: 874, height: 402, touch: true }, '874x402');

@@ -80,6 +80,8 @@ export function openExecutiveCard(role: ExecutiveRole, openQueue?: () => void) {
   const panel = role === 'research' ? researchPanel(() => modal.close()) : undefined;
   const modal = openModal(h('div.modal.exec-modal', { role: 'dialog', 'aria-labelledby': `exec-title-${role}`, 'aria-label': executiveTitle(role), 'data-role': role }, h('header', {}, h('small.empire-eyebrow', {}, 'Executive office'), close), slot, panel ? h('div.exec-body.research-body', {}, panel.el) : null), {
     onClose: () => { off(); panel?.dispose(); },
+    // ORG-05 review fix 3: Esc in a report steps back to the research list first.
+    onEscape: () => panel?.back() ?? false,
   });
   const off = store.on('org', render);
   close.addEventListener('click', () => modal.close());

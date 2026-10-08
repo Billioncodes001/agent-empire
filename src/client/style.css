@@ -1372,3 +1372,9 @@ html.ae-touch #hud .topbar .controls > #btn-inbox > span:not(.svc-count):not(.in
   .research-ask textarea { min-height: 44px; }
   .research-text { font-size: 13px; }
 }
+/* ORG-05 review fix 3: the report replaces the list inside the research card. */
+.exec-modal:has(.research-panel[data-view=report]) .exec-modal-body { display: none; }
+.exec-modal:has(.research-panel[data-view=report]) .research-body { border-top: 0; padding-top: 14px; }
+.research-back { margin-bottom: 10px; }
+.exec-modal h3.research-report-title { margin: 4px 0 8px; font-size: 18px; font-weight: 500; letter-spacing: 0; text-transform: none; color: #eef3ef; overflow-wrap: anywhere; }
+.research-report-title:focus { outline: none; }

@@ -3,7 +3,7 @@ import { MAX_QUESTION } from '../../shared/research';
 import { apiFetch } from '../endpoint';
 import { STATUS_LABEL, reportBody, reportFacts } from '../research-view';
 import { store } from '../state';
-import { h, openModal } from './dom';
+import { h } from './dom';
 import { openInbox } from './inbox';
 
 // ORG-05: the research card's panel in the game. It lists the real reports and tool proposals the server reports, lets
@@ -29,31 +29,15 @@ function reportRow(r: ResearchReportSummary, onOpen: () => void): HTMLElement {
       open ? h('span.research-row-tools', {}, `${open} tool proposal${open === 1 ? '' : 's'} to decide`) : r.tools.length ? h('span.research-row-tools.decided', {}, `${r.tools.length} tool proposal${r.tools.length === 1 ? '' : 's'} decided`) : null));
 }
 
-/** Opens one report as text, fetched from the server. */
-export async function openResearchReport(jobId: string) {
-  const close = h('button.btn.close', { type: 'button', 'aria-label': 'Close research report' }, '✕');
-  const slot = h('div.research-report-slot', {}, h('p.setting-note', {}, 'Loading the report…'));
-  const modal = openModal(h('div.modal.exec-modal.research-modal', { role: 'dialog', 'aria-labelledby': 'research-report-title' },
-    h('header', {}, h('div', {}, h('small.empire-eyebrow', {}, 'Research report'), h('h2', { id: 'research-report-title' }, 'Report')), close),
-    h('div.exec-body', {}, slot)));
-  close.addEventListener('click', () => modal.close());
-  close.focus();
-  try {
-    const res = await apiFetch(`/api/research/reports/${encodeURIComponent(jobId)}`);
-    const report = (await res.json()) as ResearchReport & { error?: string };
-    if (!res.ok) throw new Error(report.error || `The server answered ${res.status}.`);
-    modal.el.querySelector('#research-report-title')!.textContent = report.question;
-    const open = report.tools.some((t) => t.decision === 'pending')
-      ? h('button.btn.primary', { type: 'button', onclick: () => { modal.close(); openInbox(report.tools.find((t) => t.decision === 'pending')?.approvalId); } }, 'Decide tool proposals in the inbox')
-      : null;
-    slot.replaceChildren(reportBody(report), ...(open ? [open] : []));
-  } catch (e) {
-    slot.replaceChildren(h('p.inbox-error', { role: 'alert' }, (e as Error).message));
-  }
+async function fetchReport(jobId: string): Promise<ResearchReport> {
+  const res = await apiFetch(`/api/research/reports/${encodeURIComponent(jobId)}`);
+  const report = (await res.json()) as ResearchReport & { error?: string };
+  if (!res.ok) throw new Error(report.error || `The server answered ${res.status}.`);
+  return report;
 }
 
 /** The research executive's panel: ask, reports, tool proposals. Kept current while open; the form keeps its text. */
-export function researchPanel(onLeave?: () => void): { el: HTMLElement; dispose(): void } {
+export function researchPanel(onLeave?: () => void): { el: HTMLElement; dispose(): void; back(): boolean } {
   let requestId = newRequestId();
   const field = h('textarea', { id: 'research-question', rows: 2, maxlength: MAX_QUESTION, placeholder: 'e.g. Can we offer appointment booking for dental practices?', 'aria-describedby': 'research-ask-note' }) as HTMLTextAreaElement;
   const status = h('p.research-status', { role: 'status', 'aria-live': 'polite' });
@@ -91,16 +75,52 @@ export function researchPanel(onLeave?: () => void): { el: HTMLElement; dispose(
     const done = state.reports.filter((r) => r.status === 'imported').length;
     summary.textContent = `${done} report${done === 1 ? '' : 's'} · ${state.openProposals} open tool proposal${state.openProposals === 1 ? '' : 's'} · every report is the worker's work, not verified`;
     const keep = list.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.report : undefined;
-    list.replaceChildren(...(state.reports.length ? state.reports.map((r) => reportRow(r, () => void openResearchReport(r.jobId))) : [h('li.setting-note', {}, 'No research yet. Ask the first question above.')]));
+    list.replaceChildren(...(state.reports.length ? state.reports.map((r) => reportRow(r, () => void showReport(r.jobId))) : [h('li.setting-note', {}, 'No research yet. Ask the first question above.')]));
     if (keep) list.querySelector<HTMLElement>(`[data-report="${CSS.escape(keep)}"]`)?.focus();
   };
-  const el = h('section.research-panel', { 'aria-labelledby': 'research-panel-title' },
+  const listView = h('div.research-list-view', {},
     h('h3', { id: 'research-panel-title' }, 'Research'),
     form,
     h('h3', {}, 'Reports'),
     summary,
     list);
+  // Review fix 3: a report opens inside the card, with Back (and Esc) returning to the list on the report's row.
+  const reportView = h('div.research-report-view', { hidden: true, 'aria-live': 'polite' });
+  const el = h('section.research-panel', { 'aria-labelledby': 'research-panel-title', 'data-view': 'list' }, listView, reportView);
+  let openId: string | undefined;
+  const back = (): boolean => {
+    if (!openId) return false;
+    const id = openId;
+    openId = undefined;
+    el.dataset.view = 'list';
+    reportView.hidden = true;
+    reportView.replaceChildren();
+    listView.hidden = false;
+    list.querySelector<HTMLElement>(`[data-report="${CSS.escape(id)}"]`)?.focus();
+    return true;
+  };
+  async function showReport(jobId: string) {
+    openId = jobId;
+    el.dataset.view = 'report';
+    listView.hidden = true;
+    reportView.hidden = false;
+    const backBtn = h('button.btn.research-back', { type: 'button', onclick: () => back() }, '← Back to research');
+    const title = h('h3.research-report-title', { tabindex: -1, id: 'research-report-title' }, 'Loading the report…');
+    reportView.replaceChildren(backBtn, title);
+    backBtn.focus();
+    try {
+      const report = await fetchReport(jobId);
+      if (openId !== jobId) return;
+      title.textContent = report.question;
+      const pending = report.tools.find((t) => t.decision === 'pending');
+      reportView.replaceChildren(backBtn, title, reportBody(report),
+        ...(pending ? [h('button.btn.primary', { type: 'button', onclick: () => { onLeave?.(); openInbox(pending.approvalId); } }, 'Decide tool proposals in the inbox')] : []));
+      title.focus();
+    } catch (e) {
+      if (openId === jobId) reportView.replaceChildren(backBtn, h('p.inbox-error', { role: 'alert' }, (e as Error).message));
+    }
+  }
   const offs = (['research', 'cloud'] as const).map((t) => store.on(t, render));
   render();
-  return { el, dispose: () => offs.forEach((off) => off()) };
+  return { el, back, dispose: () => offs.forEach((off) => off()) };
 }
