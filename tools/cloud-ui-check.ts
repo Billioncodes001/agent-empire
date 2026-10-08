@@ -363,12 +363,22 @@ async function run() {
     await closeModals(page);
     await page.evaluate(() => (document.querySelector('#status-strip .status-chief') as HTMLButtonElement).click());
     await page.waitForSelector('.cloud-modal');
-    ok(/Not set up/.test(await page.locator('.cloud-modal').innerText()) && /OpenAI-only Empires can’t run jobs until the OpenAI adapter exists/.test(await page.locator('.cloud-modal').innerText()), 'no execution: status says jobs are refused and why');
+    ok(/Not set up/.test(await page.locator('.cloud-modal').innerText()) && /Anthropic, or OpenAI once it is verified/.test(await page.locator('.cloud-modal').innerText()), 'no execution: status says jobs are refused and why');
     await page.locator('.cloud-modal .empire-tab', { hasText: 'Limits' }).click();
     await page.fill('.cloud-modal input[aria-label="Project owner for automatic setup"]', 'fixture');
     await page.fill('.cloud-modal input[aria-label="Project repository for automatic setup"]', 'repo');
     ok((await page.locator('.cloud-modal select[aria-label="Worker model"]').inputValue()) === 'claude-sonnet-5' && (await page.locator('.cloud-modal select[aria-label="Worker model"] option').count()) === 3, 'no execution: the worker model defaults to Sonnet 5, with Opus and Fable selectable');
     ok(/full internet access/.test(await page.locator('.cloud-modal').innerText()), 'no execution: Limits states the sandbox has full internet access');
+    // CLOUD-06: choosing OpenAI swaps in the OpenAI models (unverified until first run) and the vault/gate disclosure.
+    ok((await page.locator('.cloud-modal select[aria-label="Execution provider"]').inputValue()) === 'anthropic', 'no execution: the provider defaults to Anthropic');
+    await page.locator('.cloud-modal select[aria-label="Execution provider"]').selectOption('openai');
+    const openaiModels = await page.locator('.cloud-modal select[aria-label="Worker model"] option').allInnerTexts();
+    const openaiText = await page.locator('.cloud-modal').innerText();
+    ok((await page.locator('.cloud-modal select[aria-label="Worker model"]').inputValue()) === 'gpt-6.1-sol' && openaiModels.length === 3 && openaiModels.every((t) => /unverified until first run/.test(t)), 'OpenAI: GPT-6.1 Sol by default; every OpenAI model marked unverified until first run');
+    ok(/refuses OpenAI jobs until the integration's first verified real run/.test(openaiText) && /OpenAI vault/.test(openaiText) && /about \$2\.90/.test(openaiText), 'OpenAI: Limits explains the verification gate, the vault copy and the estimate example');
+    mkdirSync(resolve('docs/team/reports/cloud-06'), { recursive: true });
+    await page.locator('.cloud-modal').screenshot({ path: resolve('docs/team/reports/cloud-06/desktop-1440x900-limits-openai.jpg'), type: 'jpeg', quality: 82 });
+    await page.locator('.cloud-modal select[aria-label="Execution provider"]').selectOption('anthropic');
     await page.locator('.cloud-modal select[aria-label="Worker model"]').selectOption('claude-opus-5-5');
     await shot(page, 'desktop-1440x900-15-limits-set-up-automatically');
     const mark = gh.requests.length;

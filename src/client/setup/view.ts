@@ -6,7 +6,7 @@ import './setup.css';
 import type { Native, ShellInfo } from '../native';
 import { BridgeError } from '../native';
 import {
-  actionsEstimate, blockers, CLOUD_STEPS, DEFAULT_LIMITS, dollars, INTERVALS, LIMIT_BOUNDS, linkedProviders, MAX_REPOS, parseCents, progress, PROVIDER_NAMES, reduce, repoKey, runProvider,
+  actionsEstimate, blockers, CLOUD_STEPS, DEFAULT_LIMITS, dollars, INTERVALS, LIMIT_BOUNDS, linkedProviders, MAX_REPOS, parseCents, PER_JOB_DEFAULT, progress, PROVIDER_NAMES, reduce, repoKey, runProvider,
   STATE_REPO_NAME, validateProjectToken, validateProviderKey, type Action, type ProviderId, type RepoRef, type SetupState, type Step,
 } from './model';
 import { PROJECT_TOKEN_GUIDANCE } from '../../cloud/installer';
@@ -776,7 +776,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
         body: [
           el('div', { class: 'su-limits' },
             el('div', { class: 'su-field' }, el('span', { class: 'su-label', id: 'su-conc-l', text: 'Jobs at once' }), stepper, el('span', { class: 'su-hint', text: `1 to ${LIMIT_BOUNDS.maxConcurrent}` })),
-            money('perJob', 'Allowance per job', `Default ${'$' + DEFAULT_LIMITS.perJob}`),
+            money('perJob', 'Allowance per job', `Default $${PER_JOB_DEFAULT[runProvider(state.providers, state.jobProvider) ?? 'anthropic']}`),
             money('daily', 'Daily allowance', 'Across all jobs, per UTC day'),
           ),
           el('div', { class: 'su-field su-schedule' }, el('span', { class: 'su-label', id: 'su-interval-l', text: 'How often your coordinator checks for work' }), schedule, estimate),

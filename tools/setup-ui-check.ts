@@ -123,10 +123,79 @@ const FAKE_DESKTOP = (password: string) => `
   } };
 `;
 
+/**
+ * CLOUD-06: the provider choice on the keys step, the OpenAI disclosures, the $3 OpenAI allowance default and the review
+ * text. Run alone with ONLY=openai (writes docs/team/reports/cloud-06/*.jpg) so the other setup screenshots are untouched.
+ */
+async function openaiFlow(browser: Awaited<ReturnType<typeof chromium.launch>>, size: (typeof sizes)[number]) {
+  const tag = `${size.w}x${size.h}`;
+  const dir = resolve(process.env.OPENAI_OUT || 'docs/team/reports/cloud-06');
+  mkdirSync(dir, { recursive: true });
+  const context = await browser.newContext({ viewport: { width: size.w, height: size.h }, hasTouch: size.touch, isMobile: size.touch, deviceScaleFactor: size.touch ? 1.5 : 1 });
+  await context.addInitScript({ content: 'window.__name = (f) => f;' });
+  await context.addInitScript({ content: FAKE_BRIDGE });
+  const page = await context.newPage();
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
+  const providerCalls: string[] = [];
+  page.on('request', (r) => { if (/(openai|anthropic)\.com$/.test(new URL(r.url()).hostname)) providerCalls.push(r.url()); });
+  await fakeGitHub(page, newGitHub());
+  await page.goto(base);
+  await page.waitForSelector('.su-hero-title');
+  const shot = async (name: string) => {
+    await page.waitForTimeout(450);
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth || document.querySelector('.su')!.scrollWidth > innerWidth);
+    ok(!overflow, `${tag} openai ${name}: no horizontal overflow`);
+    await page.screenshot({ path: resolve(dir, `${tag}-${name}.jpg`), type: 'jpeg', quality: 82, fullPage: true });
+  };
+  await press(page, size.touch, 'text=Set up my Empire');
+  await page.waitForSelector('.su-card-cloud');
+  await press(page, size.touch, '.su-card-cloud');
+  await press(page, size.touch, 'text=Sign in with GitHub');
+  await page.waitForSelector('.su-linked');
+  await press(page, size.touch, '.su-panel:not(.su-leave) .su-foot .su-primary');
+  await page.waitForSelector('.su-repo');
+  await press(page, size.touch, 'label[for="su-r-octo-founder-city-planner"]');
+  await press(page, size.touch, '.su-panel:not(.su-leave) .su-foot .su-primary');
+  await page.waitForSelector('.su-panel:not(.su-leave) #su-key-openai');
+  const visible = (sel: string) => page.locator(`.su-panel:not(.su-leave) ${sel}`).isVisible();
+  await page.fill('#su-key-openai', 'sk-proj-FAKE-fixture-only-0000000000000');
+  ok(!(await visible('#su-runon')), `${tag} one key: no provider choice`);
+  ok(await visible('#su-openai-note'), `${tag} OpenAI-only: the OpenAI disclosure is shown`);
+  await page.fill('#su-key-anthropic', 'sk-ant-FAKE-fixture-only-000000000000');
+  ok(await visible('#su-runon'), `${tag} both keys: the provider choice appears`);
+  ok(await page.locator('#su-runon-anthropic').isChecked(), `${tag} both keys: Anthropic is the default`);
+  ok(!(await visible('#su-openai-note')), `${tag} Anthropic chosen: no OpenAI disclosure`);
+  await page.fill('#su-project-token', 'github_pat_FAKEfixture0000000000000000000000');
+  await page.locator('#su-runon-anthropic').focus();
+  await page.keyboard.press('ArrowRight');
+  ok(await page.locator('#su-runon-openai').isChecked(), `${tag} the provider choice works from the keyboard`);
+  const note = await page.locator('.su-panel:not(.su-leave) #su-openai-note').innerText();
+  ok(/not yet verified/.test(note) && /OpenAI vault/.test(note) && /api\.github\.com/.test(note) && /Zero Data Retention/.test(note) && /US only/.test(note) && /hard monthly spend limit/.test(note), `${tag} the OpenAI disclosure covers verification, vault copy, ZDR, residency and the spend limit`);
+  await shot('01-providers-openai');
+  await press(page, size.touch, '.su-panel:not(.su-leave) .su-foot .su-primary');
+  await page.waitForSelector('#su-daily');
+  ok((await page.inputValue('#su-perJob')) === '3.00', `${tag} OpenAI: the per-job allowance defaults to $3`);
+  const limitsText = await page.locator('.su-panel:not(.su-leave)').innerText();
+  ok(/no per-job spending cap/.test(limitsText) && /\$2\.90/.test(limitsText) && /Default \$3\.00/.test(limitsText), `${tag} OpenAI limits explain estimates and show the $2.90 example`);
+  await shot('02-limits-openai');
+  await press(page, size.touch, '.su-panel:not(.su-leave) .su-foot .su-primary');
+  await page.waitForSelector('.su-panel:not(.su-leave) .su-review');
+  const review = await page.locator('.su-panel:not(.su-leave) .su-review').innerText();
+  ok(/OpenAI Agents API/.test(review) && /unverified until first run/.test(review) && /refuses OpenAI jobs until its first verified real run/.test(review), `${tag} review says jobs run on OpenAI and are refused until verified`);
+  await shot('03-review-openai');
+  ok(await page.evaluate(() => !document.documentElement.outerHTML.includes('sk-proj-FAKE')), `${tag} the OpenAI key is never written into the markup`);
+  ok(providerCalls.length === 0, `${tag} setup never calls OpenAI or Anthropic`);
+  ok(errors.length === 0, `${tag} OpenAI flow: no page errors (${errors.slice(0, 2).join(' | ')})`);
+  await context.close();
+}
+
 async function run() {
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
   for (const size of sizes) {
     const tag = `${size.w}x${size.h}`;
+    if (process.env.ONLY === 'openai') { await openaiFlow(browser, size); continue; }
     let textMode: unknown = null;
     let textGitHub: unknown = null;
     // ---- App (fake iOS bridge): the full cloud path, with the real installer against a fake GitHub ----
