@@ -64,3 +64,34 @@ All checks ran against isolated fixtures on ports 4771–4776 (`FIXTURE_RESEARCH
 - **Sources aren't checked.** The URLs are the worker's citations and the Empire doesn't fetch them. The UI says so.
 - **Report import timing.** Import needs the queue task to still be present with its branch. If a task is cleared before the 5 s reconcile, its report is not imported.
 - **Hint wording.** The desk hint reads "2 waiting for you". That's the existing generic executive hint.
+
+## Review fixes
+
+The review verdict was **accept with fixes**. Each fix below started with a test that failed before the fix.
+
+1. **Race when reading the report from the worktree.** A running worker could swap the file between the checks and the read. `research-artifact.ts` now:
+   - opens the file with `O_RDONLY | O_NOFOLLOW | O_NONBLOCK`;
+   - checks the opened file with `fstat`: it must be a regular file, within the size cap, and the same `dev/ino` the lstat walk approved, which also catches a swapped parent folder;
+   - reads at most cap + 1 bytes and always closes the file.
+
+   New test: a FIFO, a symlink to `/dev/zero`, a 1 MB file and a swapped parent folder, each swapped in after the checks through a test-only hook. All four are rejected in under 2 s.
+2. **Report lost when the task is cleared early.** The first time reconcile sees the task, it saves `{taskId, attempt, branch, worker}` with the report. If the task is gone later but consultancy recorded a successful finish (`finishedOk`), the report is imported from the saved branch through the committed-branch fallback. A task that vanished without a recorded finish is still never imported. Both cases are tested.
+3. **Report opened as a second dialog.** The report now opens inside the research card, with a "← Back to research" button. Both Back and Esc return to the list, with focus on the report's row; Esc steps back through a new `onEscape` hook in `openModal`. Screenshots `02-research-report-*` were re-shot at 1440×900, 874×402 and 375×812.
+   - The 375×812 shot is layout-only. A portrait player sees the existing "Rotate your device" prompt, and the check asserts that prompt is shown.
+
+**Minor fixes**
+- **Section order** is now enforced, matching the prompt. A report with sections out of order is rejected, and this is tested.
+- **Restored inbox backup.** If a tool proposal is still pending but its inbox item is unknown (for example, after `approvals.json` is restored from a backup), it is raised again, once. Tested.
+- **`{{jobId}}` regression test.** A plan without the token still has the original sha256 fingerprint. Plans with and without the token reload and replay idempotently.
+
+**Checks after the fixes**
+
+| Check | Result |
+|---|---|
+| typecheck | clean |
+| `npm test` | 675/675 |
+| build | ok |
+| research-ui-check | 65/65 |
+| inbox-ui-check | 47/47 |
+| org-ui-check | 32/32 |
+| mobile-ui-check | 411/411 |
