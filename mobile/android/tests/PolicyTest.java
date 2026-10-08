@@ -259,7 +259,7 @@ public final class PolicyTest {
         String devKey = "q7m8HRpNA8EClSZsC3KSzzInRy3LxrjPIXNU41+WLYU=";
         check(Boolean.TRUE.equals(UpdatePolicy.verifyEd25519(msg, sig + "\n", devKey)), "Ed25519: the dev-signed release verifies against the dev key");
         check(!UpdatePolicy.verifyEd25519(msg, sig, UpdatePolicy.RELEASE_PUBLIC_KEY), "Ed25519: a dev-signed release does not verify against the owner's release key");
-        check(UpdatePolicy.verifyTrusted(msg, sig, UpdatePolicy.TRUSTED_KEYS) == UpdatePolicy.DEV_KEY_TRUSTED, "Ed25519: the trusted set accepts a dev signature only in the debug variant (" + variant + ")");
+        check(UpdatePolicy.verifyTrusted(msg, sig, UpdatePolicy.TRUSTED_KEYS) == UpdatePolicy.DEV_KEY_TRUSTED, "Ed25519: the trusted set accepts a dev signature only in the debug variant (" + System.getProperty("ae.variant", "debug") + ")");
         check(!UpdatePolicy.verifyTrusted(msg, sig, java.util.Collections.singletonList(UpdatePolicy.RELEASE_PUBLIC_KEY)), "Ed25519: the release set refuses a dev signature");
         byte[] tampered = msg.clone();
         tampered[3] ^= 1;
