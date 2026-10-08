@@ -235,7 +235,8 @@ test('desktop release layout (shell files + runtime/server + runtime/public) car
     const dir = glob.split('/**')[0];
     cpSync(path.join(ROOT, dir), path.join(app, 'runtime/server', path.relative('src', dir)), { recursive: true });
   }
-  for (const built of ['dist/server', 'dist/public']) if (existsSync(path.join(ROOT, built))) cpSync(path.join(ROOT, built), path.join(app, 'runtime', `built-${path.basename(built)}`), { recursive: true });
+  // Built output is not copied here: a stale dist/ from an older checkout made this test fail or pass depending on what
+  // was built last. `npm run build` scans its own fresh dist/server and dist/public instead (package.json build:server).
   assert.deepEqual(devKeyFiles(app), []);
   assert.match(execFileSync('node', [path.join(ROOT, 'tools/release/sign.mjs'), 'check-trust', app]).toString(), /no development key trust/);
   // A development desktop build is caught.

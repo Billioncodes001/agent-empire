@@ -17,7 +17,7 @@
     "build": "npm run build:client && npm run build:server",
     "build:client": "vite build && vite build --config vite.cloud.config.ts && node tools/ship-coordinator.mjs && node tools/check-no-fixture.mjs dist/public",
     "build:client:fixture": "vite build --mode fixture && vite build --config vite.cloud.config.ts && node tools/ship-coordinator.mjs dist/public-fixture",
-    "build:server": "tsc -p tsconfig.server.json",
+    "build:server": "tsc -p tsconfig.server.json && node tools/release/sign.mjs check-trust dist/server",
     "build:cloud": "vite build --config vite.cloud.config.ts",
     "build:avatars": "tsx tools/avatars/build-avatars.ts",
     "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.client.json --noEmit && tsc -p tsconfig.cloud.json --noEmit",
