@@ -97,6 +97,7 @@ export function parseResearchReport(artifact: ArtifactResult): ParsedReport {
     current?.push(line);
   }
   for (const s of SECTIONS) if (!found.has(s.key)) return { ok: false, reason: `The required section "${s.label}" is missing.` };
+  if (order.some((key, i) => key !== SECTIONS[i].key)) return { ok: false, reason: `The sections are out of order: write ${SECTIONS.map((s) => s.label).join(", then ")}.` };
   const sections = Object.fromEntries(SECTIONS.map((s) => [s.key, found.get(s.key)!.join('\n').trim()])) as unknown as ResearchSections;
   for (const s of SECTIONS.slice(1, 3)) if (!sections[s.key]) return { ok: false, reason: `The section "${s.label}" is empty.` };
 
@@ -176,6 +177,8 @@ interface StoredReport {
   question: string;
   askedAt: number;
   askedBy: string;
+  /** Review fix 2: the queue task first seen for its item, so a task cleared before reconcile can still be imported. */
+  binding?: { taskId: string; attempt: number; branch?: string; worker?: string };
   /** The import of a finished task: taskId and attempt it was made from, and its result. */
   import?: {
     taskId: string;
@@ -290,8 +293,18 @@ export class ResearchDesk {
 
   private importIfDone(report: StoredReport, job: ConsultancyJob, queue: QueueState) {
     const item = job.items[0];
-    const task = item && queue.tasks.find((t) => t.jobKey === item.jobKey && (item.queueTaskId === undefined || t.id === item.queueTaskId));
-    if (!task || task.status !== 'done' || task.outcome !== 'done') return;
+    if (!item) return;
+    let task = queue.tasks.find((t) => t.jobKey === item.jobKey && (item.queueTaskId === undefined || t.id === item.queueTaskId));
+    if (task) {
+      const binding = { taskId: task.id, attempt: task.attempt ?? 0, ...(task.branch ? { branch: task.branch } : {}), ...(task.workerName ? { worker: task.workerName } : {}) };
+      if (JSON.stringify(report.binding) !== JSON.stringify(binding)) report.binding = binding;
+    } else {
+      // Cleared from the queue before this reconcile: import only a recorded successful finish, from the saved branch.
+      const b = report.binding;
+      if (!b?.branch || !item.finishedOk || (item.queueTaskId !== undefined && item.queueTaskId !== b.taskId)) return;
+      task = { id: b.taskId, attempt: b.attempt, branch: b.branch, workerName: b.worker, jobKey: item.jobKey, title: item.title, prompt: '', addedBy: '', addedAt: 0, status: 'done', outcome: 'done' };
+    }
+    if (task.status !== 'done' || task.outcome !== 'done') return;
     const attempt = task.attempt ?? 0;
     // Once accepted, a report is never re-imported. A rejected one is re-read only after a new attempt finishes.
     if (report.import && (report.import.ok || (report.import.taskId === task.id && report.import.attempt === attempt))) return;
@@ -307,7 +320,8 @@ export class ResearchDesk {
   private raiseTools(report: StoredReport) {
     if (!this.ports.raiseTool || !report.import?.ok) return;
     report.tools.forEach((tool, i) => {
-      if (tool.approvalId) return;
+      // Review minor: a pending proposal whose inbox item is unknown (approvals.json restored from a backup) is raised again.
+      if (tool.approvalId && !(tool.decision === 'pending' && this.ports.decision && !this.ports.decision(tool.approvalId))) return;
       const id = this.ports.raiseTool!({ source: `tool:${report.jobId}:${i + 1}`, jobId: report.jobId, tool, question: report.question });
       if (id) tool.approvalId = id;
     });
