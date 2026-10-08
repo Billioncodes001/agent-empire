@@ -3,6 +3,7 @@ import { ApprovalError, ApprovalInbox } from './approvals.js';
 import { EmailNotifier, NOT_CONFIGURED, emailConfig, smtpTransport, type MailTransport } from './email.js';
 import { TelegramBridge, telegramConfig, type TelegramConfig, type TelegramTransport } from './telegram.js';
 import { chiefCommands } from './chief-commands.js';
+import { Outreach, OutreachError, outreachConfig, type OutreachConfig } from './outreach.js';
 import { Empire } from './empire.js';
 import http from 'node:http';
 import https from 'node:https';
@@ -176,6 +177,8 @@ export interface ServerRuntime {
   telegram?: { config: TelegramConfig; transport?: TelegramTransport } | false;
   /** Explicit test injection (a fake transport); false prevents use of the host email environment. */
   email?: { transport: MailTransport; to: string; from: string } | false;
+  /** ORG-04a outreach: explicit config and (fake) transport for tests and previews; false disables host settings. */
+  outreach?: { config: OutreachConfig; transport?: MailTransport; now?: () => number; schedule?: (fn: () => void, ms: number) => () => void } | false;
   /** Packaged first-run desktops require an explicit execution choice before any local process. */
   requireExecutionSetup?: boolean;
 }
@@ -242,6 +245,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   let changes!: Changes;
   let consultancy: Consultancy | undefined;
   let inbox: ApprovalInbox | undefined;
+  let outreach: Outreach | undefined;
   let observing = false;
   const storageError = () => [workers?.recoveryError, queue?.recoveryError, consultancy?.recoveryError].filter(Boolean).join(' ') || undefined;
   const observeContinuity = () => {
@@ -365,9 +369,11 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     state: () => ({ ...queue.state(), storageError: queue.recoveryError }),
     // dependsOn carries LIFE-04's item order into the queue.
     add: (prompt, by, title, issue, jobKey, dependsOn) => queue.add(prompt, by, title, issue, jobKey, dependsOn),
-  }, () => { inbox?.reconcile(); publishOrg(); }, {
+  }, () => { inbox?.reconcile(); outreach?.reconcile(); publishOrg(); }, {
     estimate: (items) => estimateJob(items, historyFromTaskCosts(ledger.taskCosts(), phaseOfJobKey), { maxWorkers: queue.limit }),
     taskCost: (taskId) => ledger.taskCost(taskId),
+    // Round 2: a finished internal job whose artifact is missing or invalid needs attention, with the reason.
+    itemAttention: (jobId) => outreach?.itemAttention(jobId),
   });
   const office = consultancy;
   // ORG-03: the CEO approval inbox, reconciled from consultancy state and re-sent only when an item changes.
@@ -394,12 +400,29 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   inbox = new ApprovalInbox(cfg.dataDir, office, publishApprovals);
   approvalsSent = JSON.stringify([inbox.state().items, inbox.state().storageError]);
   email?.observe(inbox.state().items);
+  // ORG-04a: email outreach. Off (and saying why) unless the owner set the outreach and SMTP variables on this host.
+  {
+    const hostOff = runtime.outreach === false || (runtime.backgroundServices === false && !runtime.outreach);
+    const config = runtime.outreach ? runtime.outreach.config : outreachConfig(hostOff ? {} : process.env);
+    const transport = runtime.outreach ? runtime.outreach.transport : config.smtp && !config.problems.length ? smtpTransport(config.smtp) : undefined;
+    outreach = new Outreach(cfg.dataDir, {
+      projectDir: cfg.dir, office, queue: () => queue.state(), config, transport,
+      ...(runtime.outreach && runtime.outreach.now ? { now: runtime.outreach.now } : {}),
+      ...(runtime.outreach && runtime.outreach.schedule ? { schedule: runtime.outreach.schedule } : {}),
+      onChange: () => publishOrg(),
+    });
+    outreach.setInbox(inbox);
+    inbox.setExternal(outreach);
+    startupCleanup.push(() => outreach?.stop());
+  }
+  const outreachService = outreach!;
   // ORG-01: the executive roster is a pure projection, re-sent only when a summary or attention count changes.
   let orgSent = '';
   const currentOrg = () => projectOrg({
     now: Date.now(), supervision: empire.state.supervision, workers: workersForClients(), queue: queue.state(),
     jobs: (() => { try { return office.snapshot().jobs; } catch { return []; } })(), usage: ledger.state(),
     approvals: inbox?.state().items,
+    outreach: outreach?.summary(),
   });
   publishOrg = () => {
     if (!queue || !consultancy) return;
@@ -422,7 +445,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   const chief = chiefCommands(office, () => {
     const r = capacityReport();
     return `${r.workstations} funded workstations · ${r.workers} running workers · concurrency ${r.concurrency} · ${r.queued === null ? 'queue count unavailable' : `${r.queued} tasks queued`} · ${r.attention} workers need input.${r.blocker ? ` Waiting: ${r.blocker}` : ''} This coordinator requires the execution host to remain running.`;
-  }, inbox, () => { queue.pump(); publishApprovals(); });
+  }, inbox, () => { queue.pump(); publishApprovals(); }, outreachService);
   let telegram: TelegramBridge | undefined;
   let telegramError: string | undefined;
   try {
@@ -726,6 +749,32 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
         } catch (error) {
           if (error instanceof ApprovalError || error instanceof ConsultancyError) return send(res, error.status, { error: error.message });
           return send(res, 500, { error: 'The approval inbox could not complete this request.' });
+        }
+      }
+      if (p === '/api/outreach' || p.startsWith('/api/outreach/')) {
+        if (req.method !== 'GET' && !trusted()) return send(res, 403, { error: 'A same-origin Origin header is required' });
+        try {
+          if (p === '/api/outreach' && req.method === 'GET') { office.reconcile(); outreachService.reconcile(); return send(res, 200, outreachService.state()); }
+          if (req.method !== 'POST') return send(res, 404, { error: 'Unknown outreach endpoint.' });
+          let body: Record<string, unknown>;
+          try { const raw = await readBody(req, 1_200_000); body = raw.trim() ? JSON.parse(raw) : {}; }
+          catch { return send(res, 400, { error: 'Expected a JSON request.' }); }
+          if (!body || typeof body !== 'object' || Array.isArray(body)) return send(res, 400, { error: 'Expected a JSON request.' });
+          const done = (value: unknown) => { publishApprovals(); publishOrg(); return send(res, 200, value); };
+          if (p === '/api/outreach/leads/import') return done(outreachService.importCsv(body.csv, 'CEO'));
+          if (p === '/api/outreach/suppression') {
+            if (body.reason !== 'opt_out' && body.reason !== 'blocked') return send(res, 400, { error: 'reason must be opt_out or blocked' });
+            return done(outreachService.suppress(body.email, body.reason, 'CEO', typeof body.note === 'string' ? body.note : undefined));
+          }
+          if (p === '/api/outreach/campaigns') return done(outreachService.createCampaign(body, 'CEO'));
+          const lead = /^\/api\/outreach\/leads\/(L[1-9]\d{0,8})\/(accept|decline)$/.exec(p);
+          if (lead) return lead[2] === 'accept' ? done(outreachService.acceptLead(lead[1], 'CEO')) : (outreachService.rejectLead(lead[1]), done({ ok: true }));
+          const action = /^\/api\/outreach\/campaigns\/(C[1-9]\d{0,8})\/(pause|resume|cancel)$/.exec(p);
+          if (action) return done(action[2] === 'pause' ? outreachService.pause(action[1], 'CEO') : action[2] === 'resume' ? outreachService.resume(action[1], 'CEO') : outreachService.cancel(action[1], 'CEO'));
+          return send(res, 404, { error: 'Unknown outreach endpoint.' });
+        } catch (error) {
+          if (error instanceof OutreachError || error instanceof ConsultancyError) return send(res, error.status, { error: error.message });
+          return send(res, 500, { error: 'Outreach could not complete this request.' });
         }
       }
       if (p.startsWith('/api/execution/')) {
@@ -1248,7 +1297,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
 
   // Drop dead connections so ghosts don't linger in the office.
   empire.dispatchManagers(queue, 'Chief of staff');
-  const empireTimer = setInterval(() => { empire.tick(workers.list(), queue.state()); try { office.reconcile(); inbox?.reconcile(); } catch { /* Durable service exposes recovery errors through its snapshot. */ } }, 5000);
+  const empireTimer = setInterval(() => { empire.tick(workers.list(), queue.state()); try { office.reconcile(); inbox?.reconcile(); outreach?.reconcile(); } catch { /* Durable service exposes recovery errors through its snapshot. */ } }, 5000);
   const heartbeat = setInterval(() => {
     for (const c of clients.values()) {
       if ((c.ws as any).isAlive === false) {
@@ -1273,6 +1322,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   const shutdown = () => {
     telegram?.stop();
     email?.stop();
+    outreach?.stop();
     execution.stop();
     clearInterval(empireTimer);
     empire.flush();
@@ -1291,5 +1341,5 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     hookServer.close();
   };
 
-  return { server, shutdown, workers, publicDir, hookPort, execution, consultancy: office };
+  return { server, shutdown, workers, publicDir, hookPort, execution, consultancy: office, outreach: outreachService, inbox };
 }

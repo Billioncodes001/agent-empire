@@ -4,6 +4,7 @@ import { EXECUTIVE_ROLES, EXECUTIVES, NOT_STAFFED, type Executive, type Executiv
 import { heldDependencyId } from '../shared/dependencies.js';
 import type { QueueState, UsageState, WorkerInfo } from '../shared/protocol.js';
 import type { Approval } from '../shared/approvals.js';
+import type { OutreachSummary } from '../shared/outreach.js';
 
 /** Everything the executives read. All of it is existing runtime state; nothing is fetched or asked of a model. */
 export interface OrgInput {
@@ -15,6 +16,8 @@ export interface OrgInput {
   usage: UsageState;
   /** ORG-03: the approval inbox. When present, chief and finance attention count the pending items each raised. */
   approvals?: Approval[];
+  /** ORG-04a: email outreach (campaigns, leads, suppression). Absent on hosts without it. */
+  outreach?: OutreachSummary;
 }
 
 
@@ -83,10 +86,26 @@ function finance(input: OrgInput): Pick<Executive, 'summary' | 'attention'> {
   return { summary: parts.join(' · '), attention: holds };
 }
 
+/** ORG-04a: coordinates outreach, never writes it. Attention is the campaign sends waiting for the CEO's approval. */
+function marketingSales(input: OrgInput): Pick<Executive, 'summary' | 'attention'> {
+  const o = input.outreach;
+  const waiting = raised(input, 'marketing_sales') ?? 0;
+  if (!o) return { summary: 'Email outreach is not available on this host', attention: waiting };
+  const parts = [o.campaigns ? plural(o.campaigns, 'campaign') : 'No campaigns yet'];
+  if (o.sending) parts.push(`${o.sending} sending`);
+  if (o.drafting) parts.push(`${o.drafting} drafting`);
+  parts.push(plural(o.confirmedLeads, 'lead'));
+  if (o.proposedLeads) parts.push(`${o.proposedLeads} proposed to accept`);
+  if (waiting) parts.push(`${plural(waiting, 'send')} waiting for approval`);
+  if (!o.sendingEnabled) parts.push('sending not configured');
+  return { summary: parts.join(' · '), attention: waiting };
+}
+
 const COMPUTE: Partial<Record<ExecutiveRole, (input: OrgInput) => Pick<Executive, 'summary' | 'attention'>>> = {
   chief_of_staff: chiefOfStaff,
   operations,
   finance,
+  marketing_sales: marketingSales,
 };
 
 /** Pure: the executive roster as the real state shows it right now. */

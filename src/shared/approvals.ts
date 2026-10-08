@@ -2,8 +2,26 @@
 // state: a plan waiting for approval, or a job held because its provider spend reached the approved budget.
 
 import type { EstimateBasis, ExecutiveRole, Range } from './org.js';
+import type { OutreachExcluded } from './outreach.js';
 
-export type ApprovalKind = 'job_plan' | 'budget_increase';
+/** `external_action` (ORG-04a): something leaves the Empire, e.g. a campaign send. Approving acts on a frozen snapshot. */
+export type ApprovalKind = 'job_plan' | 'budget_increase' | 'external_action';
+
+/** The frozen campaign send an external_action approves: exactly this is sent, to exactly these recipients. */
+export interface OutreachApproval {
+  campaignId: string;
+  /** sha256 of the snapshot; any change raises a new item instead. */
+  snapshotHash: string;
+  channel: 'email';
+  from: string;
+  dailyCap: number;
+  intervalSec: number;
+  /** The exact message rendered for (at most) 2 sample recipients, footer included. */
+  samples: { to: string; subject: string; text: string }[];
+  recipients: string[];
+  excluded: OutreachExcluded;
+  draftedBy: string;
+}
 /** `resolved`: the hold an increase was raised for cleared without any recorded budget raise (no decision is implied). */
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'resolved';
 
@@ -40,6 +58,8 @@ export interface Approval {
   note?: string;
   /** A declined budget increase whose hold still stands: it can still be approved (review fix 1). */
   reopenable?: true;
+  /** external_action: the campaign send being approved. */
+  outreach?: OutreachApproval;
 }
 
 export interface ApprovalsState {
@@ -56,6 +76,7 @@ export const APPROVAL_ID_RE = /^A[1-9]\d{0,8}$/;
 export const APPROVAL_KIND_LABEL: Record<ApprovalKind, string> = {
   job_plan: 'Client plan',
   budget_increase: 'Budget increase',
+  external_action: 'Campaign send',
 };
 
 export const MAX_APPROVAL_BUDGET_USD = 100_000;

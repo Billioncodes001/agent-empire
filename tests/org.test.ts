@@ -42,12 +42,27 @@ test('the roster is stable, rule-based and honest about who is not staffed', () 
   assert.deepEqual(org.executives.map((e) => e.role), EXECUTIVE_ROLES);
   for (const e of org.executives) assert.equal(e.monitor, 'rule_based');
   assert.equal(exec(base(), 'operations').name, 'Morgan · Operations');
-  for (const role of ['marketing_sales', 'research'] as const) {
+  for (const role of ['research'] as const) {
     const e = exec(base(), role);
     assert.equal(e.active, false);
     assert.equal(e.summary, 'Not staffed yet');
     assert.equal(e.attention, 0);
   }
+});
+
+test('ORG-04a: marketing & sales is staffed (rule-based) and counts campaigns, leads and sends waiting for approval', () => {
+  const none = exec(base(), 'marketing_sales');
+  assert.equal(none.active, true);
+  assert.equal(none.summary, 'Email outreach is not available on this host');
+  const outreach = { campaigns: 2, sending: 1, drafting: 1, confirmedLeads: 14, proposedLeads: 3, suppressed: 2, sendingEnabled: true };
+  const approvals = [
+    { id: 'A1', kind: 'external_action', raisedBy: 'marketing_sales', status: 'pending' },
+    { id: 'A2', kind: 'job_plan', raisedBy: 'chief_of_staff', status: 'pending' },
+  ] as never;
+  const e = exec(base({ outreach, approvals }), 'marketing_sales');
+  assert.equal(e.summary, '2 campaigns · 1 sending · 1 drafting · 14 leads · 3 proposed to accept · 1 send waiting for approval');
+  assert.equal(e.attention, 1);
+  assert.match(exec(base({ outreach: { ...outreach, sendingEnabled: false, campaigns: 0, sending: 0, drafting: 0 } }), 'marketing_sales').summary, /^No campaigns yet · 14 leads · 3 proposed to accept · sending not configured$/);
 });
 
 test('chief of staff wraps supervision and counts plans waiting for approval', () => {

@@ -31,7 +31,7 @@ export const EXECUTIVES: Record<ExecutiveRole, { name: string; title: string; ac
   chief_of_staff: { name: 'Alex · Chief of staff', title: 'Chief of staff', active: true },
   operations: { name: 'Morgan · Operations', title: 'Operations', active: true },
   finance: { name: 'Priya · Finance', title: 'Finance', active: true },
-  marketing_sales: { name: 'Jordan · Marketing & sales', title: 'Marketing & sales', active: false },
+  marketing_sales: { name: 'Jordan · Marketing & sales', title: 'Marketing & sales', active: true },
   research: { name: 'Sam · Research', title: 'Research', active: false },
 };
 

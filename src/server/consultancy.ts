@@ -81,6 +81,11 @@ type QueuePort = {
 export interface ConsultancyOrgPorts {
   estimate?(items: PlannedItem[]): JobEstimate;
   taskCost?(taskId: string): number | undefined;
+  /**
+   * Round 2 internal jobs: why a finished item still needs attention (its artifact is missing or invalid), or
+   * undefined. Only asked for items whose queue task finished with outcome 'done'.
+   */
+  itemAttention?(jobId: string, itemId: string): string | undefined;
 }
 
 export class ConsultancyError extends Error {
@@ -111,7 +116,13 @@ export class Consultancy {
     return { revision: this.revision, jobs, storageError };
   }
 
-  create(input: unknown, actor: string): ConsultancyJob {
+  /** A fresh, unused job id. Internal jobs (Round 2) reserve one so the item prompt can name its artifact path. */
+  newJobId(): string {
+    return this.nextId('consultancy');
+  }
+
+  /** `options.id` (internal callers only, never HTTP): a job id from newJobId(), so prompts can name the artifact path. */
+  create(input: unknown, actor: string, options: { id?: string } = {}): ConsultancyJob {
     this.assertMutable();
     const cleanActor = cleanBounded(actor, 'actor', MAX_ACTOR);
     const clean = validateCreateInput(input);
@@ -122,7 +133,8 @@ export class Consultancy {
       throw new ConsultancyError(409, `Request ${clean.requestId} already exists with different content`);
     }
     const now = Date.now();
-    const jobId = this.nextId('consultancy');
+    if (options.id !== undefined && (!/^consultancy-[a-f0-9]{12}$/.test(options.id) || this.jobs.some((job) => job.id === options.id))) throw new ConsultancyError(409, 'The reserved job id is invalid or already used');
+    const jobId = options.id ?? this.nextId('consultancy');
     const items = clean.tasks.map((task, index) => {
       const itemId = `item-${index + 1}`;
       return { id: itemId, title: task.title, prompt: task.prompt, jobKey: `consultancy:${jobId}:${itemId}`, phase: task.phase ?? 'build', ...(task.parallel ? { parallel: true as const } : {}) };
@@ -399,16 +411,24 @@ export class Consultancy {
     const task = findTask(state?.tasks ?? [], item);
     const key = this.itemKey(job.id, item.id);
     // Finished successfully, then cleared from the queue: still delivered work, not a problem.
-    if (!task && item.finishedOk) return { ...item, status: 'awaiting_review', _weight: statusWeight('awaiting_review') };
+    if (!task && item.finishedOk) return this.reviewOrAttention(job, item);
     if (!task) {
       const reason = this.queueIssues.get(key) ?? (item.queueTaskId ? 'Previously observed queue task is missing; automatic requeue is blocked.' : 'Task is not visible in the queue.');
       return { ...item, status: 'needs_attention', attention: reason, _weight: statusWeight('needs_attention') };
     }
     if (task.status === 'running') return { ...item, status: 'running', _weight: statusWeight('running') };
     if (task.status === 'queued') return { ...item, status: 'queued', _weight: statusWeight('queued') };
-    if (task.outcome === 'done') return { ...item, status: 'awaiting_review', _weight: statusWeight('awaiting_review') };
+    if (task.outcome === 'done') return this.reviewOrAttention(job, item);
     const reason = task.interruption ? `Queue interruption: ${task.interruption.reason}` : task.error ?? (task.outcome ? `Queue task ended with ${task.outcome}` : 'Queue task ended without success');
     return { ...item, status: 'needs_attention', attention: reason, _weight: statusWeight('needs_attention') };
+  }
+
+  /** A finished item is ready for review, unless its internal-job artifact needs attention (Round 2). */
+  private reviewOrAttention(job: StoredJob, item: StoredItem & { phase: ItemPhase }): ItemProjection {
+    let attention: string | undefined;
+    try { attention = this.ports.itemAttention?.(job.id, item.id); } catch { attention = undefined; }
+    if (attention) return { ...item, status: 'needs_attention', attention, _weight: statusWeight('needs_attention') };
+    return { ...item, status: 'awaiting_review', _weight: statusWeight('awaiting_review') };
   }
 
   private readQueue(): QueueRead {

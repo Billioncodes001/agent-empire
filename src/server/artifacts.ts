@@ -32,6 +32,9 @@ export type ArtifactResult = ({ ok: true; frontmatter: Frontmatter; body: string
 /** What the reader needs from a queue task. */
 export type ArtifactTask = Pick<QueueTask, 'status' | 'outcome' | 'branch'>;
 
+/** Tests only: runs between the checks and the open, to simulate a worker swapping the file or a folder. */
+export const artifactTestHooks: { beforeOpen?: (file: string) => void } = {};
+
 export const artifactPath = (kind: ArtifactKind, jobId: string) => `docs/empire/${kind}/${jobId}.md`;
 
 const KEY = /^[A-Za-z][A-Za-z0-9_]{0,40}$/;
@@ -80,6 +83,7 @@ function readConfined(root: string, rel: string, source: ArtifactSource): { ok: 
   const parts = rel.split('/');
   if (parts.some((p) => !p || p === '.' || p === '..')) return fail('The artifact path is not confined');
   let cur = root;
+  let checked: { dev: number; ino: number } | undefined;
   for (const [i, part] of parts.entries()) {
     cur = path.join(cur, part);
     const st = statOrUndefined(cur);
@@ -89,23 +93,32 @@ function readConfined(root: string, rel: string, source: ArtifactSource): { ok: 
     if (!last && !st.isDirectory()) return fail(`${rel}: ${parts.slice(0, i + 1).join('/')} is not a folder`);
     if (last && !st.isFile()) return fail(`${rel} is not a regular file`);
     if (last && st.size > MAX_ARTIFACT_BYTES) return fail(`${rel} is larger than ${MAX_ARTIFACT_BYTES / 1024} KB`);
+    if (last) checked = { dev: st.dev, ino: st.ino };
   }
   // Belt and braces: the resolved file is inside the resolved root.
   const realRoot = realpathSync(root);
   const realFile = realpathSync(cur);
   const inside = path.relative(realRoot, realFile);
   if (!inside || inside.startsWith('..') || path.isAbsolute(inside)) return fail(`${rel} resolves outside the task folder`);
-  const fd = openSync(cur, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  // A still-running worker may swap the file or a parent folder between the checks and the read. Open without
+  // following a symlink and without blocking (a FIFO must never hang the server), then require the very file checked.
+  artifactTestHooks.beforeOpen?.(cur);
+  let fd: number;
+  try { fd = openSync(cur, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)); }
+  catch { return fail(`${rel} changed while it was read`); }
   try {
     const st = fstatSync(fd);
-    if (!st.isFile() || st.size > MAX_ARTIFACT_BYTES) return fail(`${rel} changed while it was read`);
-    const bytes = Buffer.alloc(st.size);
+    if (!st.isFile() || st.dev !== checked!.dev || st.ino !== checked!.ino) return fail(`${rel} changed while it was read`);
+    if (st.size > MAX_ARTIFACT_BYTES) return fail(`${rel} is larger than ${MAX_ARTIFACT_BYTES / 1024} KB`);
+    // Never more than the cap plus one byte, whatever the file grows to meanwhile.
+    const bytes = Buffer.alloc(MAX_ARTIFACT_BYTES + 1);
     let off = 0;
-    while (off < st.size) {
-      const n = readSync(fd, bytes, off, st.size - off, off);
+    while (off < bytes.length) {
+      const n = readSync(fd, bytes, off, bytes.length - off, off);
       if (n <= 0) break;
       off += n;
     }
+    if (off > MAX_ARTIFACT_BYTES) return fail(`${rel} is larger than ${MAX_ARTIFACT_BYTES / 1024} KB`);
     return { ok: true, bytes: bytes.subarray(0, off), source };
   } finally {
     closeSync(fd);

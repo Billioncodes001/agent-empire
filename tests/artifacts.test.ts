@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { MAX_ARTIFACT_BYTES, artifactPath, parseArtifact, readArtifact } from '../src/server/artifacts.ts';
+import { MAX_ARTIFACT_BYTES, artifactPath, artifactTestHooks, parseArtifact, readArtifact } from '../src/server/artifacts.ts';
 
 const JOB = 'consultancy-0123456789ab';
 const DONE = { status: 'done' as const, outcome: 'done' as const };
@@ -121,4 +121,48 @@ test('readArtifact: falls back to the committed blob on the branch when the work
   assert.ok(r.ok && r.source === 'branch', JSON.stringify(r));
   assert.match((readArtifact(dir, { ...DONE, branch: 'office/link-1' }, 'campaigns', JOB) as { reason: string }).reason, /symlink/);
   assert.match((readArtifact(dir, { ...DONE, branch: 'office/never-1' }, 'campaigns', JOB) as { reason: string }).reason, /both gone/);
+});
+
+test('readArtifact is race-safe: a file or folder swapped between the checks and the read is refused, never followed or hung on', () => {
+  const dir = project();
+  const wt = path.join(dir, '.agent-office/worktrees/race-1');
+  const rel = artifactPath('campaigns', JOB);
+  const task = { ...DONE, branch: 'office/race-1' };
+  const reason = () => (readArtifact(dir, task, 'campaigns', JOB) as { reason: string }).reason;
+  const reset = () => { rmSync(path.join(wt, 'docs'), { recursive: true, force: true }); write(wt, rel, GOOD); };
+  try {
+    // Swapped for a FIFO: O_NONBLOCK means no hang, and fstat shows it is not the regular file that was checked.
+    reset();
+    artifactTestHooks.beforeOpen = (file) => { rmSync(file); execFileSync('mkfifo', [file]); };
+    const started = Date.now();
+    assert.match(reason(), /changed while it was read/);
+    assert.ok(Date.now() - started < 2000);
+    // Swapped for a symlink to /dev/zero: O_NOFOLLOW refuses it.
+    reset();
+    artifactTestHooks.beforeOpen = (file) => { rmSync(file); symlinkSync('/dev/zero', file); };
+    assert.match(reason(), /changed while it was read/);
+    // A parent folder swapped for another holding a different file of the same name: dev/ino differ.
+    reset();
+    artifactTestHooks.beforeOpen = () => {
+      const campaigns = path.join(wt, 'docs/empire/campaigns');
+      renameSync(campaigns, `${campaigns}-old`);
+      mkdirSync(campaigns);
+      writeFileSync(path.join(campaigns, `${JOB}.md`), GOOD.replace('Hello', 'Swapped'));
+    };
+    assert.match(reason(), /changed while it was read/);
+    // Grows past the cap after the size check: at most MAX+1 bytes are read, and it is refused.
+    reset();
+    artifactTestHooks.beforeOpen = (file) => appendFileSync(file, 'a'.repeat(MAX_ARTIFACT_BYTES));
+    assert.match(reason(), /larger than 256 KB/);
+    // A direct symlink to /dev/zero is refused before any open.
+    artifactTestHooks.beforeOpen = undefined;
+    rmSync(path.join(wt, rel));
+    symlinkSync('/dev/zero', path.join(wt, rel));
+    assert.match(reason(), /symlink/);
+    // Untouched, the same file reads fine.
+    reset();
+    assert.equal(readArtifact(dir, task, 'campaigns', JOB).ok, true);
+  } finally {
+    artifactTestHooks.beforeOpen = undefined;
+  }
 });

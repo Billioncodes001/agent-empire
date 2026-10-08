@@ -20,6 +20,14 @@ export interface InboxConsultancy {
   raiseBudget(id: string, budgetUsd: number, actor: string): ConsultancyJob;
 }
 
+/**
+ * ORG-04a: whoever owns an external_action (outreach) checks the item still matches what it would act on, then acts.
+ * It throws an ApprovalError (409) when the item is out of date; the inbox then records nothing.
+ */
+export interface ExternalActionPort {
+  decide(item: Approval, decision: 'approved' | 'rejected', actor: string): void;
+}
+
 export interface DecisionOptions {
   budgetUsd?: unknown;
   /** Optional caller idempotency key, recorded with the decision. */
@@ -46,7 +54,7 @@ export class ApprovalError extends Error {
   }
 }
 
-const RAISED_BY: Record<ApprovalKind, ExecutiveRole> = { job_plan: 'chief_of_staff', budget_increase: 'finance' };
+const RAISED_BY: Record<ApprovalKind, ExecutiveRole> = { job_plan: 'chief_of_staff', budget_increase: 'finance', external_action: 'marketing_sales' };
 const usd = (n: number) => `$${n.toFixed(2)}`;
 
 /**
@@ -114,6 +122,7 @@ export class ApprovalInbox {
   /** Set while a decision runs, so the consultancy change it causes does not reconcile half-way through it. */
   private deciding = false;
   private reconciling = false;
+  private external?: ExternalActionPort;
 
   constructor(dataDir: string, private readonly office: InboxConsultancy, private readonly onChange?: () => void, private readonly now = Date.now) {
     this.file = path.join(dataDir, FILE);
@@ -144,6 +153,36 @@ export class ApprovalInbox {
   }
 
   get recoveryError(): string | undefined { return this.storageError; }
+
+  /** ORG-04a: the owner of external_action items (outreach). */
+  setExternal(port: ExternalActionPort) { this.external = port; }
+
+  /**
+   * Raises an external_action item once per `source` (a campaign id plus its snapshot hash). Raising the same source
+   * again returns the existing item, so a frozen snapshot is never asked about twice.
+   */
+  raiseExternal(fields: { source: string; title: string; detail: string; jobId: string; outreach: NonNullable<Approval['outreach']> }): Approval {
+    if (this.storageError) throw new ApprovalError(503, this.storageError);
+    const existing = this.data.items.find((i) => i.source === fields.source);
+    if (existing) return publicItem(existing);
+    this.add({ kind: 'external_action', createdAt: this.now(), ...structuredClone(fields) });
+    const item = this.data.items[this.data.items.length - 1];
+    this.trim();
+    this.save();
+    return publicItem(item);
+  }
+
+  /** A pending external_action that no longer matches what would be sent: resolved with a note, never approved. */
+  resolveExternal(id: string, note: string) {
+    if (this.storageError) return;
+    const item = this.data.items.find((i) => i.id === id);
+    if (!item || item.kind !== 'external_action' || item.status !== 'pending') return;
+    item.status = 'resolved';
+    item.decidedAt = this.now();
+    item.decidedBy = 'Marketing & sales (rule-based)';
+    item.note = note.slice(0, 300);
+    this.save();
+  }
 
   /** Brings the inbox in line with consultancy state. Never throws; returns whether anything changed. */
   reconcile(): boolean {
@@ -189,10 +228,16 @@ export class ApprovalInbox {
     // Idempotent: a decided item answers with the decision it already has, whatever is asked now.
     if (item.status !== 'pending' && !reopen) return publicItem(item);
     const declined = reopen ? { at: item.decidedAt ?? 0, by: item.decidedBy ?? 'CEO' } : undefined;
+    if (item.kind === 'external_action' && options.budgetUsd !== undefined && options.budgetUsd !== null) throw new ApprovalError(400, 'No budget applies to a campaign send. Approve it without an amount.');
     const budget = decision === 'approved' && options.budgetUsd !== undefined && options.budgetUsd !== null ? validBudget(options.budgetUsd) : undefined;
     this.deciding = true;
     try {
-      if (item.kind === 'job_plan') {
+      if (item.kind === 'external_action') {
+        if (!this.external) throw new ApprovalError(503, 'Outreach is not available on this host, so this item cannot be decided here.');
+        // The owner checks the frozen snapshot still stands (409 otherwise) and acts; only then is the decision recorded.
+        this.external.decide(publicItem(item), decision, who);
+        this.record(item, decision, who, requestId);
+      } else if (item.kind === 'job_plan') {
         try {
           if (decision === 'approved') this.office.approve(item.jobId, who, budget === undefined ? {} : { budgetUsd: budget });
           else this.office.reject(item.jobId, who);
@@ -224,7 +269,7 @@ export class ApprovalInbox {
       this.deciding = false;
     }
     if (item.kind === 'job_plan' && requestId) item.requestId = requestId;
-    if (!this.reconcile() && item.kind === 'budget_increase') this.save();
+    if (!this.reconcile() && item.kind !== 'job_plan') this.save();
     return publicItem(item);
   }
 
@@ -345,7 +390,8 @@ function parseFile(value: unknown): StoredFile {
     const label = `item #${index + 1}`;
     if (!item || typeof item !== 'object') throw new Error(`${label} must be an object`);
     if (typeof item.id !== 'string' || !APPROVAL_ID_RE.test(item.id) || Number(item.id.slice(1)) >= (raw.nextSeq as number)) throw new Error(`${label} id is invalid`);
-    if (item.kind !== 'job_plan' && item.kind !== 'budget_increase') throw new Error(`${label} kind is invalid`);
+    if (item.kind !== 'job_plan' && item.kind !== 'budget_increase' && item.kind !== 'external_action') throw new Error(`${label} kind is invalid`);
+    if (item.kind === 'external_action' && (!item.outreach || typeof item.outreach.campaignId !== 'string' || !Array.isArray(item.outreach.recipients))) throw new Error(`${label} outreach snapshot is invalid`);
     if (!['pending', 'approved', 'rejected', 'resolved'].includes(item.status)) throw new Error(`${label} status is invalid`);
     if (item.reopenable !== undefined && (item.reopenable !== true || item.status !== 'rejected' || item.kind !== 'budget_increase')) throw new Error(`${label} reopenable is invalid`);
     if (typeof item.source !== 'string' || typeof item.jobId !== 'string' || typeof item.title !== 'string' || typeof item.detail !== 'string') throw new Error(`${label} is incomplete`);
@@ -367,7 +413,8 @@ export function approvalLine(item: Approval): string {
   if (item.kind === 'budget_increase') {
     if (item.spentUsd !== undefined && item.approvedBudgetUsd !== undefined) parts.push(`spent ${money(item.spentUsd)} of ${money(item.approvedBudgetUsd)}`);
     if (item.suggestedBudgetUsd !== undefined) parts.push(`suggested ${money(item.suggestedBudgetUsd)}`);
-  } else if (item.estimate) parts.push(`estimate ${fmtUsdRange(item.estimate.costUsd)}`);
+  } else if (item.outreach) parts.push(`${item.outreach.recipients.length} recipient${item.outreach.recipients.length === 1 ? '' : 's'} from ${item.outreach.from}`);
+  else if (item.estimate) parts.push(`estimate ${fmtUsdRange(item.estimate.costUsd)}`);
   return parts.join(' · ');
 }
 
@@ -375,6 +422,12 @@ export function approvalLine(item: Approval): string {
 export function approvalText(item: Approval): string {
   const lines = [`Approval ${item.id} · ${APPROVAL_KIND_LABEL[item.kind]} · raised by ${EXECUTIVES[item.raisedBy].name} (rule-based)`, item.title, item.detail];
   if (item.estimate) lines.push(`Estimate (not a quote): ${fmtUsdRange(item.estimate.costUsd)}${item.estimate.calendarMs ? ` · ${fmtDurationRange(item.estimate.calendarMs)} calendar time` : ''}`);
+  if (item.outreach) {
+    const o = item.outreach;
+    const ex = o.excluded;
+    lines.push(`Subject: ${o.samples[0]?.subject ?? '(none)'}`, `${o.recipients.length} recipient${o.recipients.length === 1 ? '' : 's'} · from ${o.from} · at most ${o.dailyCap} a day, one every ${o.intervalSec} s`,
+      `Excluded: ${ex.suppressed} suppressed, ${ex.invalid} invalid, ${ex.unconfirmed} unconfirmed`, 'Review the exact message and full recipient list in the game inbox before approving.');
+  }
   if (item.kind === 'budget_increase' && item.spentUsd !== undefined) lines.push(`Spend so far: ${money(item.spentUsd)} (${ACTUAL_SPEND_LABEL})${item.suggestedBudgetUsd !== undefined ? ` · suggested new budget ${money(item.suggestedBudgetUsd)}` : ''}`);
   lines.push(approveHint(item.id));
   return lines.join('\n');
