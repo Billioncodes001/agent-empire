@@ -189,6 +189,12 @@ for variant in variants:
             aab.unlink()
         run(java, '-jar', args.bundletool.resolve(), 'build-bundle', f'--modules={module}', f'--output={aab}')
         run(java, '-jar', args.bundletool.resolve(), 'validate', f'--bundle={aab}')
+        # REL-07: the Play bundle, like the release APK, must not carry the development key in any entry.
+        with zipfile.ZipFile(aab) as bundle:
+            carriers = [n for n in sorted(bundle.namelist()) if not n.endswith('/') and DEV_KEY in bundle.read(n)]
+        if carriers:
+            raise SystemExit(f'{aab.name} carries the development release key in {", ".join(carriers[:5])}')
+        print('release AAB development-key check: absent from every entry')
         if args.release_keystore:
             run(jarsigner, '-keystore', args.release_keystore.resolve(), '-storepass:env', 'ANDROID_KEYSTORE_PASSWORD', '-keypass:env', 'ANDROID_KEY_PASSWORD',
                 '-sigalg', 'SHA256withRSA', '-digestalg', 'SHA-256', aab, args.key_alias)

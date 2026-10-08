@@ -243,6 +243,19 @@ test('desktop release layout (shell files + runtime/server + runtime/public) car
   assert.throws(() => execFileSync('node', [path.join(ROOT, 'tools/release/sign.mjs'), 'check-trust', app], { stdio: 'pipe' }));
 });
 
+test('release workflow: every run checks release trust; packaged apps, the iOS archive and the APK/AAB are scanned (REL-07)', () => {
+  const wf = readFileSync(path.join(ROOT, '.github/workflows/release.yml'), 'utf8');
+  assert.match(wf, /if: steps\.info\.outputs\.release != 'true'\n\s+run: node tools\/release\/sign\.mjs check-key --allow-dev/);
+  assert.match(wf, /check-trust release\/macos\/\*\/"Agent Empire\.app"\/Contents\/Resources\/app/);
+  assert.match(wf, /check-trust "\$APP_DIR\/resources\/app"/);
+  assert.match(wf, /check-trust "\$RUNNER_TEMP\/ios-sim\/Release-iphonesimulator\/AgentEmpire\.app"/);
+  assert.match(wf, /check-trust "\$RUNNER_TEMP\/AgentEmpire\.xcarchive\/Products"/);
+  assert.doesNotMatch(wf, /prepare-desktop\.mjs[^\n]*--dev-updates/);
+  const android = readFileSync(path.join(ROOT, 'mobile/tools/build-android.py'), 'utf8');
+  assert.match(android, /release AAB development-key check/);
+  assert.match(android, /APK development-key check/);
+});
+
 test('check-trust: built outputs carrying the development key or dev-trust.json are development builds', () => {
   const dir = temp('trust');
   writeFileSync(path.join(dir, 'app.js'), `const k = '${OWNER_KEY}';`);
