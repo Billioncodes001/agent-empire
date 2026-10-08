@@ -1,0 +1,83 @@
+import { EXECUTIVES, NOT_STAFFED, type Executive, type ExecutiveRole, type OrgState } from '../../shared/org';
+import { store } from '../state';
+import { h, openModal } from './dom';
+
+/** Where each executive's waiting items are handled until ORG-03 adds the in-game approval inbox. */
+const ATTENTION: Partial<Record<ExecutiveRole, { label: (n: number) => string; href?: string; queue?: true }>> = {
+  chief_of_staff: { label: (n) => `${n} client plan${n === 1 ? '' : 's'} waiting for your approval`, href: '/consultancy.html' },
+  operations: { label: (n) => `${n} task${n === 1 ? '' : 's'} held after a dependency failed — retry or remove ${n === 1 ? 'it' : 'them'}`, queue: true },
+  finance: { label: (n) => `${n} job${n === 1 ? '' : 's'} reached the approved budget — unstarted items are held`, href: '/consultancy.html' },
+};
+
+export const executiveTitle = (role: ExecutiveRole) => EXECUTIVES[role].title;
+
+/** Plain description of the executive's evidence, so nobody mistakes a rule for a model. */
+const RULE_NOTE = 'Rule-based: computed from the live queue, workers, client jobs and provider usage. No model is called.';
+
+function tone(e: Executive) {
+  if (!e.active) return 'unknown';
+  return e.attention > 0 ? 'attention' : 'active';
+}
+
+/** One executive as a card: role, name, the honest Rule-based label, the summary and what waits on you. */
+export function executiveCard(e: Executive, opts: { openQueue?: () => void; heading?: 'h2' | 'strong' } = {}): HTMLElement {
+  const att = ATTENTION[e.role];
+  const attention = !e.active
+    ? h('p.exec-note', {}, 'This office is furnished but nobody works here yet. It arrives in a later phase.')
+    : e.attention > 0 && att
+      ? h(
+          'p.exec-attention',
+          {},
+          h('span.exec-count', { 'aria-hidden': 'true' }, String(e.attention)),
+          h('span', {}, att.label(e.attention)),
+          att.href ? h('a.btn.exec-link', { href: att.href }, 'Open founder desk') : null,
+          att.queue && opts.openQueue ? h('button.btn.exec-link', { type: 'button', onclick: opts.openQueue }, 'Open task queue') : null,
+        )
+      : h('p.exec-note', {}, 'Nothing waiting for you.');
+  const title = opts.heading === 'h2' ? h('h2', { id: `exec-title-${e.role}` }, e.name) : h('strong', {}, e.name);
+  return h(
+    'article.exec-card',
+    { 'data-tone': tone(e), 'data-role': e.role },
+    h('div.exec-head', {}, h('span.empire-eyebrow', {}, executiveTitle(e.role)), h('span.empire-tag', { title: RULE_NOTE }, 'Rule-based')),
+    title,
+    h('p.exec-summary', {}, h('span.status-dot', { 'aria-hidden': 'true' }), e.active ? e.summary : NOT_STAFFED),
+    attention,
+  );
+}
+
+/** The Management panel's "Executives" section. */
+export function executivesSection(org: OrgState | null, cloud: boolean, openQueue?: () => void): HTMLElement {
+  const body = cloud
+    ? h('p.setting-note', {}, 'Executives run on your own server. They are not available in cloud mode yet.')
+    : !org
+      ? h('p.setting-note', {}, 'This server has not reported its executives yet.')
+      : h('div.exec-cards', {}, ...org.executives.map((e) => executiveCard(e, { openQueue })));
+  return h(
+    'section.empire-section',
+    { 'aria-labelledby': 'empire-executives' },
+    h('h3', { id: 'empire-executives' }, 'Executives ', h('span.empire-tag', {}, 'rule-based')),
+    body,
+    h('p.setting-note', {}, `${RULE_NOTE} Their offices are upstairs in the loft; they never take a funded workstation.`),
+  );
+}
+
+/** Pressing E at an executive's desk: that executive's card, kept current while it is open. */
+export function openExecutiveCard(role: ExecutiveRole, openQueue?: () => void) {
+  const slot = h('div.exec-modal-body');
+  const close = h('button.btn.close', { type: 'button', 'aria-label': 'Close executive card' }, '✕');
+  const render = () => {
+    const e = store.org?.executives.find((x) => x.role === role);
+    slot.replaceChildren(
+      e
+        ? executiveCard(e, { heading: 'h2', openQueue: openQueue && (() => { modal.close(); openQueue(); }) })
+        : h('p.setting-note', {}, store.cloud ? 'Executives are not available in cloud mode yet.' : 'This server has not reported its executives yet.'),
+    );
+  };
+  const modal = openModal(h('div.modal.exec-modal', { role: 'dialog', 'aria-labelledby': `exec-title-${role}`, 'aria-label': executiveTitle(role) }, h('header', {}, h('small.empire-eyebrow', {}, 'Executive office'), close), slot), {
+    onClose: () => off(),
+  });
+  const off = store.on('org', render);
+  close.addEventListener('click', () => modal.close());
+  render();
+  close.focus();
+}

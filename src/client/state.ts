@@ -8,8 +8,9 @@ import type { ChatLine, GhIssue, GhPull, GhState, PeerInfo, ProjectInfo, QueueSt
 import type { ScreenState } from './world/laptop';
 import { randomLook, sanitizeLook, type Look } from '../shared/avatar';
 import type { Decoration } from '../shared/decor';
+import type { OrgState } from '../shared/org';
 
-type Topic = 'cloud' | 'empire' | 'peers' | 'workers' | 'issues' | 'pulls' | 'chat' | 'project' | 'screens' | 'team' | 'upgrade' | 'services' | 'decor' | 'usage' | 'queue' | 'connection' | 'freshness' | 'continuity';
+type Topic = 'cloud' | 'empire' | 'peers' | 'workers' | 'issues' | 'pulls' | 'chat' | 'project' | 'screens' | 'team' | 'upgrade' | 'services' | 'decor' | 'usage' | 'queue' | 'connection' | 'freshness' | 'continuity' | 'org';
 
 const zeroUsage = (): Usage => ({ input: 0, output: 0, cacheWrite: 0, cacheRead: 0, cost: 0, calls: 0 });
 
@@ -118,6 +119,8 @@ class Store {
   decor: Decoration[] = [];
   usage: UsageState = { total: zeroUsage(), today: zeroUsage(), day: '', pauseHiring: false };
   queue: QueueState = { tasks: [], maxWorkers: 0 };
+  /** The rule-based executive roster (ORG-01); null until a server that has one says so. */
+  org: OrgState | null = null;
   /** Cloud mode only: the state-repository snapshot this game is showing, with its age. Null in server mode. */
   cloud: CloudInfo | null = null;
   private subs = new Map<Topic, Set<() => void>>();
@@ -217,7 +220,8 @@ class Store {
         this.decor = msg.decor;
         this.usage = msg.usage;
         this.queue = msg.queue;
-        for (const t of ['peers', 'workers', 'issues', 'pulls', 'chat', 'project', 'upgrade', 'services', 'decor', 'usage', 'queue'] as Topic[]) this.emit(t);
+        this.org = msg.org ?? null;
+        for (const t of ['peers', 'workers', 'issues', 'pulls', 'chat', 'project', 'upgrade', 'services', 'decor', 'usage', 'queue', 'org'] as Topic[]) this.emit(t);
         break;
       case 'peer.join':
       case 'peer.update':
@@ -285,6 +289,10 @@ class Store {
       case 'queue':
         this.queue = msg.state;
         this.emit('queue');
+        break;
+      case 'org':
+        this.org = msg.state;
+        this.emit('org');
         break;
       case 'chat':
         this.chat.push(msg);

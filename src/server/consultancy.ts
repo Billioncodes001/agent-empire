@@ -1,8 +1,10 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import type { ConsultancyCreateInput, ConsultancyDecision, ConsultancyItem, ConsultancyJob, ConsultancySnapshot, ConsultancyStatus, ConsultancyTaskInput } from '../shared/consultancy.js';
+import type { ConsultancyApproveOptions, ConsultancyCreateInput, ConsultancyDecision, ConsultancyItem, ConsultancyJob, ConsultancySnapshot, ConsultancyStatus, ConsultancyTaskInput } from '../shared/consultancy.js';
+import { defaultApprovedBudget, isItemPhase, type BudgetHold, type ItemPhase, type JobEstimate } from '../shared/org.js';
 import type { QueueState, QueueTask } from '../shared/protocol.js';
+import type { PlannedItem } from './estimate.js';
 import { writeJsonAtomic } from './persistence.js';
 
 const JOURNAL_FILE = 'consultancy.json';
@@ -14,6 +16,8 @@ const MAX_BRIEF = 8_000;
 const MAX_TASK_TITLE = 200;
 const MAX_TASK_PROMPT = 8_000;
 const MAX_TASKS = 8;
+/** Approved budgets are USD and bounded; a typo should not authorise unlimited spend. */
+const MAX_BUDGET_USD = 100_000;
 
 interface StoredItem {
   id: string;
@@ -21,6 +25,8 @@ interface StoredItem {
   prompt: string;
   jobKey: string;
   queueTaskId?: string;
+  /** Absent in journals written before ORG-02; means build. */
+  phase?: ItemPhase;
   /** Runs alongside the item before it (LIFE-04). Absent on items saved before LIFE-04: they run in order. */
   parallel?: true;
   /** Its queue task was observed finishing with outcome 'done' (so later items may start once it is cleared). */
@@ -40,6 +46,10 @@ interface StoredJob {
   decidedAt?: number;
   decidedBy?: string;
   items: StoredItem[];
+  /** ORG-02, all optional so older journals load unchanged: the estimate approved, the budget, and a reached budget. */
+  estimate?: JobEstimate;
+  approvedBudgetUsd?: number;
+  budgetHold?: BudgetHold;
 }
 
 interface StoredJournal {
@@ -67,6 +77,12 @@ type QueuePort = {
   add(prompt: string, by: string, title?: string, issue?: number, jobKey?: string, dependsOn?: readonly string[]): string | undefined;
 };
 
+/** Optional ORG-02 inputs: an estimator over past spend, and each queue task's provider-reported list cost. */
+export interface ConsultancyOrgPorts {
+  estimate?(items: PlannedItem[]): JobEstimate;
+  taskCost?(taskId: string): number | undefined;
+}
+
 export class ConsultancyError extends Error {
   constructor(public readonly status: number, message: string) {
     super(message);
@@ -82,7 +98,7 @@ export class Consultancy {
   private _recoveryError?: string;
   private readonly queueIssues = new Map<string, string>();
 
-  constructor(dataDir: string, private readonly queue: QueuePort, private readonly onChange?: () => void) {
+  constructor(dataDir: string, private readonly queue: QueuePort, private readonly onChange?: () => void, private readonly ports: ConsultancyOrgPorts = {}) {
     this.journalPath = path.join(dataDir, JOURNAL_FILE);
     this.restore();
     this.reconcile();
@@ -109,7 +125,7 @@ export class Consultancy {
     const jobId = this.nextId('consultancy');
     const items = clean.tasks.map((task, index) => {
       const itemId = `item-${index + 1}`;
-      return { id: itemId, title: task.title, prompt: task.prompt, jobKey: `consultancy:${jobId}:${itemId}`, ...(task.parallel ? { parallel: true as const } : {}) };
+      return { id: itemId, title: task.title, prompt: task.prompt, jobKey: `consultancy:${jobId}:${itemId}`, phase: task.phase ?? 'build', ...(task.parallel ? { parallel: true as const } : {}) };
     });
     const job: StoredJob = {
       id: jobId,
@@ -127,16 +143,22 @@ export class Consultancy {
     return this.projectJob(job, this.readQueue()).job;
   }
 
-  approve(id: string, actor: string): ConsultancyJob {
+  approve(id: string, actor: string, options: ConsultancyApproveOptions = {}): ConsultancyJob {
     this.assertMutable();
     const cleanActor = cleanBounded(actor, 'actor', MAX_ACTOR);
+    const budget = options.budgetUsd === undefined ? undefined : validBudget(options.budgetUsd);
     const job = this.requireJob(id);
     if (job.decision === 'rejected') throw new ConsultancyError(409, 'Rejected jobs cannot be approved');
     if (job.decision === 'pending_approval') {
+      // The estimate the CEO saw is frozen with the decision, so actuals are later compared with it.
+      const estimate = this.estimateFor(job);
       this.commit(() => {
         job.decision = 'approved';
         job.decidedAt = Date.now();
         job.decidedBy = cleanActor;
+        if (estimate) job.estimate = estimate;
+        const approved = budget ?? (estimate ? defaultApprovedBudget(estimate) : undefined);
+        if (approved !== undefined) job.approvedBudgetUsd = approved;
         return true;
       });
     }
@@ -160,6 +182,45 @@ export class Consultancy {
     return this.projectJob(job, this.readQueue()).job;
   }
 
+  /**
+   * Raises an approved job's budget and releases its held items. ORG-03 calls this when the CEO
+   * approves finance's budget_increase; repeating the same raise is a no-op.
+   */
+  raiseBudget(id: string, budgetUsd: number, actor: string): ConsultancyJob {
+    this.assertMutable();
+    cleanBounded(actor, 'actor', MAX_ACTOR);
+    const budget = validBudget(budgetUsd);
+    const job = this.requireJob(id);
+    if (job.decision !== 'approved') throw new ConsultancyError(409, 'Only approved jobs have a budget to raise');
+    if (job.approvedBudgetUsd === budget && !job.budgetHold) return this.projectJob(job, this.readQueue()).job;
+    if (job.approvedBudgetUsd !== undefined && budget <= job.approvedBudgetUsd) throw new ConsultancyError(409, `A raised budget must exceed the approved ${usd(job.approvedBudgetUsd)}`);
+    this.commit(() => {
+      job.approvedBudgetUsd = budget;
+      delete job.budgetHold;
+      return true;
+    });
+    return this.projectJob(job, this.readQueue()).job;
+  }
+
+  /** Why the queue must not start this task now: its job reached its approved budget. Running work is never affected. */
+  holdReason(task: Pick<QueueTask, 'jobKey' | 'status'>): string | undefined {
+    if (task.status !== 'queued' || !task.jobKey?.startsWith('consultancy:')) return undefined;
+    const job = this.jobs.find((j) => j.decision === 'approved' && j.items.some((item) => item.jobKey === task.jobKey));
+    const hold = job && this.activeHold(job, this.readQueue().state);
+    return hold ? holdText(hold) : undefined;
+  }
+
+  /**
+   * The job's hold, checked live: the persisted budgetHold is the record, but the queue may seat the next item the
+   * moment the previous one finishes, before reconcile() writes that record. Spend at or over budget holds at once.
+   */
+  private activeHold(job: StoredJob, state: QueueState | undefined): BudgetHold | undefined {
+    if (job.budgetHold) return job.budgetHold;
+    if (job.decision !== 'approved' || job.approvedBudgetUsd === undefined) return undefined;
+    const spent = this.jobSpend(job, state);
+    return spent !== undefined && spent >= job.approvedBudgetUsd ? { reachedAt: Date.now(), spentUsd: roundUsd(spent), approvedBudgetUsd: job.approvedBudgetUsd } : undefined;
+  }
+
   reconcile(): void {
     if (this._recoveryError || this.storageError) return;
     const previousJobs = structuredClone(this.jobs);
@@ -173,6 +234,14 @@ export class Consultancy {
     let queueState = initialQueue.state;
     let changed = false;
     try {
+      // Budget first: a job that reached its budget is held before anything else of it is dispatched.
+      for (const job of this.jobs) {
+        if (job.decision !== 'approved' || job.approvedBudgetUsd === undefined || job.budgetHold) continue;
+        const spent = this.jobSpend(job, queueState);
+        if (spent === undefined || spent < job.approvedBudgetUsd) continue;
+        job.budgetHold = { reachedAt: Date.now(), spentUsd: roundUsd(spent), approvedBudgetUsd: job.approvedBudgetUsd };
+        changed = true;
+      }
       for (const job of this.jobs) {
         if (job.decision !== 'approved') continue;
         for (const [index, item] of job.items.entries()) {
@@ -254,10 +323,21 @@ export class Consultancy {
   }
 
   private projectJob(job: StoredJob, queue: QueueRead): JobProjection {
-    const items = job.items.map((item) => this.projectItem(job, item, queue));
+    const estimate = job.decision === 'pending_approval' ? this.estimateFor(job) : job.estimate;
+    const hold = this.activeHold(job, queue.state);
+    const items = job.items.map((item, index) => {
+      const projected = this.projectItem(job, item, queue);
+      const cost = this.itemCost(item, queue.state);
+      if (estimate?.items[index]) projected.estimate = estimate.items[index];
+      if (cost !== undefined) projected.actualSpendUsd = roundUsd(cost);
+      if (hold && projected.status === 'queued') projected.held = true;
+      return projected;
+    });
     const weight = Math.max(...items.map((item) => item._weight));
     const status = statusFromWeight(weight);
-    const attention = items.find((item) => item.status === 'needs_attention')?.attention;
+    const attention = items.find((item) => item.status === 'needs_attention')?.attention
+      ?? (hold && items.some((item) => item.held) ? holdText(hold) : undefined);
+    const spent = this.jobSpend(job, queue.state);
     return {
       _weight: weight,
       job: {
@@ -274,11 +354,43 @@ export class Consultancy {
         decidedBy: job.decidedBy,
         items: items.map(({ _weight: _drop, ...publicItem }) => publicItem),
         attention,
+        ...(estimate ? { estimate } : {}),
+        ...(job.approvedBudgetUsd !== undefined ? { approvedBudgetUsd: job.approvedBudgetUsd } : {}),
+        ...(spent !== undefined ? { actualSpendUsd: roundUsd(spent) } : {}),
+        ...(job.budgetHold ? { budgetHold: { ...job.budgetHold } } : {}),
       },
     };
   }
 
-  private projectItem(job: StoredJob, item: StoredItem, queue: QueueRead): ItemProjection {
+  private estimateFor(job: StoredJob): JobEstimate | undefined {
+    if (!this.ports.estimate) return undefined;
+    try {
+      return this.ports.estimate(job.items.map((item) => ({ phase: item.phase ?? 'build', ...(item.parallel ? { parallel: true } : {}) })));
+    } catch {
+      return undefined; // An estimate is advisory; a failing estimator never blocks the plan.
+    }
+  }
+
+  private itemCost(item: StoredItem, state: QueueState | undefined): number | undefined {
+    if (!this.ports.taskCost) return undefined;
+    const taskId = item.queueTaskId ?? state?.tasks.find((task) => task.jobKey === item.jobKey)?.id;
+    if (!taskId) return undefined;
+    try {
+      const cost = this.ports.taskCost(taskId);
+      return typeof cost === 'number' && Number.isFinite(cost) && cost >= 0 ? cost : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Provider-reported list cost of the workers that ran this job's items; undefined while nothing is recorded. */
+  private jobSpend(job: StoredJob, state: QueueState | undefined): number | undefined {
+    const costs = job.items.map((item) => this.itemCost(item, state)).filter((cost): cost is number => cost !== undefined);
+    return costs.length ? costs.reduce((total, cost) => total + cost, 0) : undefined;
+  }
+
+  private projectItem(job: StoredJob, stored: StoredItem, queue: QueueRead): ItemProjection {
+    const item = { ...stored, phase: stored.phase ?? 'build' };
     if (job.decision === 'pending_approval') return { ...item, status: 'awaiting_approval', _weight: statusWeight('awaiting_approval') };
     if (job.decision === 'rejected') return { ...item, status: 'rejected', _weight: statusWeight('rejected') };
     const state = queue.state;
@@ -393,7 +505,7 @@ function parseJournal(value: unknown): StoredJournal {
 function parseStoredJob(value: unknown, index: number): StoredJob {
   const label = `job #${index + 1}`;
   const raw = asObject(value, label);
-  rejectUnknownKeys(raw, ['id', 'requestId', 'requestFingerprint', 'client', 'title', 'brief', 'decision', 'createdAt', 'createdBy', 'decidedAt', 'decidedBy', 'items'], label);
+  rejectUnknownKeys(raw, ['id', 'requestId', 'requestFingerprint', 'client', 'title', 'brief', 'decision', 'createdAt', 'createdBy', 'decidedAt', 'decidedBy', 'items', 'estimate', 'approvedBudgetUsd', 'budgetHold'], label);
   const decision = asDecision(raw.decision, `${label} decision`);
   if (!Array.isArray(raw.items)) throw new Error(`${label} items must be an array`);
   if (raw.items.length === 0 || raw.items.length > MAX_TASKS) throw new Error(`${label} items must contain 1-${MAX_TASKS} entries`);
@@ -412,6 +524,10 @@ function parseStoredJob(value: unknown, index: number): StoredJob {
     decidedBy: raw.decidedBy === undefined ? undefined : cleanBounded(raw.decidedBy, `${label} decidedBy`, MAX_ACTOR),
     items,
   };
+  if (raw.estimate !== undefined) job.estimate = parseEstimate(raw.estimate, `${label} estimate`);
+  if (raw.approvedBudgetUsd !== undefined) job.approvedBudgetUsd = parseBudget(raw.approvedBudgetUsd, `${label} approvedBudgetUsd`);
+  if (raw.budgetHold !== undefined) job.budgetHold = parseHold(raw.budgetHold, `${label} budgetHold`);
+  if (job.decision !== 'approved' && (job.estimate || job.approvedBudgetUsd !== undefined || job.budgetHold)) throw new Error(`${label} budget evidence requires approval`);
   if (!/^consultancy-[a-f0-9]{12}$/.test(job.id) || job.createdAt < 0) throw new Error(`${label} identity is invalid`);
   const taskIds = new Set<string>();
   job.items.forEach((item, i) => {
@@ -433,10 +549,12 @@ function parseStoredJob(value: unknown, index: number): StoredJob {
 
 function parseStoredItem(value: unknown, label: string): StoredItem {
   const raw = asObject(value, label);
-  rejectUnknownKeys(raw, ['id', 'title', 'prompt', 'jobKey', 'queueTaskId', 'parallel', 'finishedOk'], label);
+  rejectUnknownKeys(raw, ['id', 'title', 'prompt', 'jobKey', 'queueTaskId', 'phase', 'parallel', 'finishedOk'], label);
+  if (raw.phase !== undefined && !isItemPhase(raw.phase)) throw new Error(`${label} phase is invalid`);
   if (raw.parallel !== undefined && raw.parallel !== true) throw new Error(`${label} parallel must be true when present`);
   if (raw.finishedOk !== undefined && (raw.finishedOk !== true || raw.queueTaskId === undefined)) throw new Error(`${label} finishedOk is invalid`);
   return {
+    ...(raw.phase !== undefined ? { phase: raw.phase as ItemPhase } : {}),
     ...(raw.finishedOk === true ? { finishedOk: true as const } : {}),
     ...(raw.parallel === true ? { parallel: true as const } : {}),
     id: cleanBounded(raw.id, `${label} id`, 100),
@@ -462,21 +580,31 @@ function validateCreateInput(input: unknown): Required<ConsultancyCreateInput> {
     if (root.tasks.length > MAX_TASKS) throw new ConsultancyError(400, `tasks may include at most ${MAX_TASKS} items`);
     tasks = root.tasks.map((entry, index) => {
       const raw = asObject(entry, `tasks[${index}]`);
-      rejectUnknownKeys(raw, ['title', 'prompt', 'parallel'], `tasks[${index}]`);
+      rejectUnknownKeys(raw, ['title', 'prompt', 'parallel', 'phase'], `tasks[${index}]`);
       if (raw.parallel !== undefined && typeof raw.parallel !== 'boolean') throw new ConsultancyError(400, `tasks[${index}].parallel must be a boolean`);
+      if (raw.phase !== undefined && !isItemPhase(raw.phase)) throw new ConsultancyError(400, `tasks[${index}].phase must be build, iteration, testing or field_testing`);
       return canonicalTask({
         title: cleanBounded(raw.title, `tasks[${index}].title`, MAX_TASK_TITLE),
         prompt: cleanBounded(raw.prompt, `tasks[${index}].prompt`, MAX_TASK_PROMPT),
         parallel: raw.parallel === true,
+        phase: raw.phase as ItemPhase | undefined,
       });
     });
   }
   return { requestId, client, title, brief, tasks };
 }
 
-/** A plan task as fingerprinted: `parallel` only when set, so plans saved before LIFE-04 keep their fingerprint. */
-function canonicalTask(task: { title: string; prompt: string; parallel?: boolean }): ConsultancyTaskInput {
-  return task.parallel ? { title: task.title, prompt: task.prompt, parallel: true } : { title: task.title, prompt: task.prompt };
+/**
+ * A plan task as fingerprinted: `parallel` only when set (LIFE-04) and `phase` only when not the default build
+ * (ORG-02), so plans saved before either keep their fingerprint.
+ */
+function canonicalTask(task: { title: string; prompt: string; parallel?: boolean; phase?: ItemPhase }): ConsultancyTaskInput {
+  return {
+    title: task.title,
+    prompt: task.prompt,
+    ...(task.parallel ? { parallel: true } : {}),
+    ...(task.phase && task.phase !== 'build' ? { phase: task.phase } : {}),
+  };
 }
 
 /**
@@ -496,7 +624,66 @@ export function itemDependencies<T extends { parallel?: true }>(items: readonly 
 }
 
 function inputFingerprint(input: Required<ConsultancyCreateInput>): string {
-  return createHash('sha256').update(JSON.stringify(input)).digest('hex');
+  return createHash('sha256').update(JSON.stringify({ ...input, tasks: input.tasks.map(canonicalTask) })).digest('hex');
+}
+
+const roundUsd = (n: number) => Math.round(n * 1e6) / 1e6;
+const usd = (n: number) => `$${n.toFixed(2)}`;
+
+function holdText(hold: BudgetHold): string {
+  return `Held: the approved ${usd(hold.approvedBudgetUsd)} budget was reached (${usd(hold.spentUsd)} provider-reported list cost). Running work continues; unstarted items wait for a budget increase.`;
+}
+
+function validBudget(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value > MAX_BUDGET_USD) throw new ConsultancyError(400, `budgetUsd must be a number above 0 and at most ${MAX_BUDGET_USD}`);
+  return Math.round(value * 100) / 100;
+}
+
+function finiteNumber(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw new Error(`${label} must be a non-negative number`);
+  return value;
+}
+
+function parseBudget(value: unknown, label: string): number {
+  const n = finiteNumber(value, label);
+  if (n <= 0 || n > MAX_BUDGET_USD) throw new Error(`${label} is out of range`);
+  return n;
+}
+
+function parseHold(value: unknown, label: string): BudgetHold {
+  const raw = asObject(value, label);
+  rejectUnknownKeys(raw, ['reachedAt', 'spentUsd', 'approvedBudgetUsd'], label);
+  return { reachedAt: asSafeInteger(raw.reachedAt, `${label} reachedAt`), spentUsd: finiteNumber(raw.spentUsd, `${label} spentUsd`), approvedBudgetUsd: parseBudget(raw.approvedBudgetUsd, `${label} approvedBudgetUsd`) };
+}
+
+/** The frozen estimate is evidence of what the CEO approved; it must be well formed, never re-derived. */
+function parseEstimate(value: unknown, label: string): JobEstimate {
+  const raw = asObject(value, label);
+  const range = (v: unknown, l: string) => {
+    const r = asObject(v, l);
+    const low = finiteNumber(r.low, `${l} low`);
+    const high = finiteNumber(r.high, `${l} high`);
+    if (high < low) throw new Error(`${l} is inverted`);
+    return { low, high };
+  };
+  const basis = (v: unknown, l: string) => {
+    const b = asObject(v, l);
+    if (b.source !== 'history' && b.source !== 'default') throw new Error(`${l} source is invalid`);
+    return { samples: asSafeInteger(b.samples, `${l} samples`), source: b.source as 'history' | 'default' };
+  };
+  if (!Array.isArray(raw.items)) throw new Error(`${label} items must be an array`);
+  return {
+    costUsd: range(raw.costUsd, `${label} costUsd`),
+    calendarMs: range(raw.calendarMs, `${label} calendarMs`),
+    items: raw.items.map((entry, i) => {
+      const item = asObject(entry, `${label} item #${i + 1}`);
+      if (!isItemPhase(item.phase)) throw new Error(`${label} item #${i + 1} phase is invalid`);
+      return { phase: item.phase, costUsd: range(item.costUsd, `${label} item cost`), durationMs: range(item.durationMs, `${label} item duration`), basis: basis(item.basis, `${label} item basis`) };
+    }),
+    basis: basis(raw.basis, `${label} basis`),
+    maxWorkers: asSafeInteger(raw.maxWorkers, `${label} maxWorkers`),
+    estimatedAt: asSafeInteger(raw.estimatedAt, `${label} estimatedAt`),
+  };
 }
 
 function findTask(tasks: QueueTask[], item: StoredItem): QueueTask | undefined {
