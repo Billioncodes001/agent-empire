@@ -194,8 +194,8 @@ The game rotated to landscape by itself when the game screen opened: the screens
 
 iOS keeps Keychain items when an app is deleted, so a reinstalled app used to resume its old server or cloud session. The owner chose that a reinstall starts signed out.
 
-- `InstallMarker.claimFreshInstall` (`BridgeProtocol.swift`) checks a flag in UserDefaults, which an uninstall deletes. On the first launch of an install, `SecureStore.wipeIfFreshInstall` removes every Keychain item the app owns, including the APP-03 legacy session, before anything reads them. It runs first in `AgentEmpireApp.init`.
-- `Checks/run.sh` adds 3 checks: the first launch wipes, later launches keep the session, and removing the app's defaults wipes again.
+- `InstallMarker` (`BridgeProtocol.swift`) checks a flag in UserDefaults, which an uninstall deletes. On the first launch of an install, `SecureStore.wipeIfFreshInstall` removes every Keychain item the app owns, including the APP-03 legacy session, before anything reads them. The flag is set only after both deletes succeed, so a failed wipe (for example before the first unlock) is retried on the next launch (review hardening). It runs first in `AgentEmpireApp.init`.
+- `Checks/run.sh` adds 4 checks: the first launch wipes, an incomplete wipe retries, a completed wipe keeps later sessions, and removing the app's defaults wipes again. Independent review: ACCEPT.
 - **Simulator:** the iPhone 18 Pro had a stored session from earlier runs. After uninstalling and installing this build, the app opens on the first-launch screen (`15-reinstall-starts-signed-out.png`) instead of the city.
 - **Effects:**
   - The app hasn't been released yet, so the only side effect is a one-time sign-out on development installs that predate the marker.
