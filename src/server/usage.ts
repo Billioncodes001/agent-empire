@@ -419,6 +419,8 @@ export class Ledger {
       if (!o.taskId || !o.workerId || !Number.isFinite(o.costUsd) || o.costUsd < 0) continue;
       const key = `${o.taskId}|${o.workerId}`;
       const prev = this.tasks[key];
+      // Frozen once its task finished: the CEO chatting with that worker before it goes home is not the task's spend.
+      if (prev?.finishedAt !== undefined) continue;
       const next: TaskCost = { ...prev, ...withoutUndefined(o), costUsd: Math.max(prev?.costUsd ?? 0, o.costUsd) };
       if (prev && JSON.stringify(prev) === JSON.stringify(next)) continue;
       delete this.tasks[key]; // re-insert: insertion order is recency, for trimming

@@ -66,6 +66,9 @@ test('parallel items overlap, limited by maxWorkers', () => {
   // Owner rule: a parallel item runs beside the previous one, and the next ordered item waits for both.
   const beside = estimateJob([{}, {}, { parallel: true }, {}], history, { maxWorkers: 2 });
   assert.deepEqual(beside.calendarMs, { low: 30 * MIN, high: 30 * MIN });
+  // Review: more parallel siblings than workers — the extra one waits for a worker, and the next ordered item for all.
+  const crowded = estimateJob([{}, { parallel: true }, { parallel: true }, {}], history, { maxWorkers: 2 });
+  assert.deepEqual(crowded.calendarMs, { low: 30 * MIN, high: 30 * MIN });
 });
 
 test('approved budget defaults to the top of the range, rounded up', () => {

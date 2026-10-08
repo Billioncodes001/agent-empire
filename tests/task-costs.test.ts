@@ -42,6 +42,20 @@ test('the ledger keeps per-task spend durably, as a high-water mark, summed over
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('review: a finished task’s spend is frozen, so chatting with its worker afterwards never counts toward the job', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'task-costs-frozen-'));
+  try {
+    const ledger = ledgerIn(dir);
+    ledger.recordTaskCosts([{ taskId: 't1', workerId: 'w1', costUsd: 1, startedAt: 1 }]);
+    ledger.recordTaskCosts([{ taskId: 't1', workerId: 'w1', costUsd: 2, startedAt: 1, finishedAt: 10, outcome: 'done' }]);
+    ledger.recordTaskCosts([{ taskId: 't1', workerId: 'w1', costUsd: 9, startedAt: 1, finishedAt: 10, outcome: 'done' }]);
+    assert.equal(ledger.taskCost('t1'), 2, 'spend at finish is kept; later growth on that worker is not the task’s');
+    ledger.recordTaskCosts([{ taskId: 't1', workerId: 'w2', costUsd: 0.5, startedAt: 20 }]);
+    assert.equal(ledger.taskCost('t1'), 2.5, 'a retry by a new worker still counts');
+    ledger.flush();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('a usage.json from before task costs loads unchanged and keeps its totals', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'task-costs-legacy-'));
   try {

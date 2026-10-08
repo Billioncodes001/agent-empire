@@ -45,7 +45,8 @@ export function chiefCommands(office: Consultancy, resourceReport: () => string)
           return `${job.id} · ${job.client} · ${job.title}\n${job.status.replaceAll('_', ' ')}\n\n${job.brief}${estimateText(job)}\n\nReview the complete work-item plan in the CEO console before approval. Approval submits it to this host’s local worker queue under existing budget and desk limits. /approve ${job.id} (or /approve ${job.id} 25 to set a $25 budget)`;
         }
         if (cmd === 'approve' || cmd === 'reject') {
-          const [id = '', amount] = raw.trim().split(/\s+/);
+          const [id = '', amount, ...extra] = raw.trim().split(/\s+/);
+          if (cmd === 'approve' && extra.length) return 'Use /approve ID or /approve ID 25 (budget in USD).';
           if (cmd === 'approve' && amount !== undefined && !/^\$?\d+(\.\d{1,2})?$/.test(amount)) return 'Use /approve ID or /approve ID 25 (budget in USD).';
           const job = cmd === 'approve' ? office.approve(id, 'CEO via Telegram', amount === undefined ? {} : { budgetUsd: Number(amount.replace('$', '')) }) : office.reject(raw.trim(), 'CEO via Telegram');
           const budget = cmd === 'approve' && job.approvedBudgetUsd !== undefined ? ` Approved budget $${job.approvedBudgetUsd.toFixed(2)}; unstarted items are held if provider spend reaches it.` : '';

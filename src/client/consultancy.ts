@@ -52,7 +52,7 @@ function estimateSection(job: ConsultancyJob): HTMLElement | null {
     meter.append(fill);
     box.append(text('p', `Approved budget ${usd(job.approvedBudgetUsd)} · actual ${usd(spent)} (${ACTUAL_SPEND_LABEL})`, 'estimate-actual'), meter);
   }
-  if (job.budgetHold) box.append(text('p', `Budget reached at ${usd(job.budgetHold.spentUsd)}. Unstarted items are held until the budget is raised; finance has flagged it for you.`, 'estimate-hold'));
+  if (job.budgetHold) box.append(text('p', `Budget reached at ${usd(job.budgetHold.spentUsd)}. Unstarted items are held until the budget is raised (coming with the approval inbox).`, 'estimate-hold'));
   return box;
 }
 
