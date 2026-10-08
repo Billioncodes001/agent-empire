@@ -4,6 +4,7 @@ import { store } from '../state';
 import { autoFocus } from '../keyboard';
 import { h, openModal, timeAgo, STATUS_LABEL } from './dom';
 import { confirmDialog } from './prompt';
+import { morphChildren } from './reconcile';
 import { blockedLabel, heldLabel } from '../../shared/dependencies';
 
 export interface QueueActions {
@@ -106,7 +107,7 @@ export function openQueue(net: Net, actions: QueueActions) {
 
   const section = (title: string, tasks: QueueTask[], extra?: HTMLElement) => {
     if (!tasks.length) return null;
-    return h('div', {}, h('h4', {}, title, h('span.count', {}, String(tasks.length)), extra ?? null), h('ul.queue-list', {}, ...tasks.map(row)));
+    return h('div', { 'data-key': title }, h('h4', {}, title, h('span.count', {}, String(tasks.length)), extra ?? null), h('ul.queue-list', {}, ...tasks.map(row)));
   };
 
   const row = (t: QueueTask): HTMLElement => {
@@ -123,10 +124,11 @@ export function openQueue(net: Net, actions: QueueActions) {
       if (t.startedAt) meta.push(`started ${timeAgo(t.startedAt)}`);
       meta.push(`by ${t.addedBy}`);
       if (w) {
-        buttons.push(h('button.btn', { type: 'button', onclick: () => actions.openTerminal(w.id) }, '🖥️ Terminal'));
+        buttons.push(h('button.btn', { type: 'button', 'data-key': 'terminal', onclick: () => actions.openTerminal(w.id) }, '🖥️ Terminal'));
         buttons.push(
           h('button.btn', {
             type: 'button',
+            'data-key': 'stop',
             title: 'Send the worker home; the task counts as stopped',
             onclick: () => confirmDialog(`Stop ${w.name}?`, `This sends ${w.name} home and stops the task. You can requeue it afterwards.`, 'Stop', () => net.send({ t: 'worker.kill', workerId: w.id })),
           }, '⏹ Stop'),
@@ -138,19 +140,19 @@ export function openQueue(net: Net, actions: QueueActions) {
       pos = String(i + 1);
       if (waiting) meta.push(waiting);
       meta.push(`added by ${t.addedBy} ${timeAgo(t.addedAt)}`);
-      buttons.push(h('button.btn', { type: 'button', title: 'Move up', 'aria-label': 'Move up', disabled: i === 0, onclick: () => net.send({ t: 'queue.move', taskId: t.id, delta: -1 }) }, '↑'));
-      buttons.push(h('button.btn', { type: 'button', title: 'Move down', 'aria-label': 'Move down', disabled: i === queued.length - 1, onclick: () => net.send({ t: 'queue.move', taskId: t.id, delta: 1 }) }, '↓'));
-      buttons.push(h('button.btn', { type: 'button', title: 'Remove from the queue', 'aria-label': 'Remove', onclick: () => net.send({ t: 'queue.remove', taskId: t.id }) }, '✕'));
+      buttons.push(h('button.btn', { type: 'button', 'data-key': 'up', title: 'Move up', 'aria-label': 'Move up', disabled: i === 0, onclick: () => net.send({ t: 'queue.move', taskId: t.id, delta: -1 }) }, '↑'));
+      buttons.push(h('button.btn', { type: 'button', 'data-key': 'down', title: 'Move down', 'aria-label': 'Move down', disabled: i === queued.length - 1, onclick: () => net.send({ t: 'queue.move', taskId: t.id, delta: 1 }) }, '↓'));
+      buttons.push(h('button.btn', { type: 'button', 'data-key': 'remove', title: 'Remove from the queue', 'aria-label': 'Remove', onclick: () => net.send({ t: 'queue.remove', taskId: t.id }) }, '✕'));
     } else {
       meta.push(held || outcome(t));
       if (t.workerName) meta.push(t.workerName);
       if (t.branch) meta.push(`🌿 ${t.branch}`);
       if (t.finishedAt) meta.push(timeAgo(t.finishedAt));
-      if (t.pr) buttons.push(h('a.btn', { href: t.pr.url, target: '_blank', rel: 'noopener', title: t.pr.title }, `🔀 PR #${t.pr.number}${t.pr.state === 'MERGED' ? ' ✓' : t.pr.state === 'DRAFT' ? ' (draft)' : ''}`));
+      if (t.pr) buttons.push(h('a.btn', { 'data-key': 'pr', href: t.pr.url, target: '_blank', rel: 'noopener', title: t.pr.title }, `🔀 PR #${t.pr.number}${t.pr.state === 'MERGED' ? ' ✓' : t.pr.state === 'DRAFT' ? ' (draft)' : ''}`));
       const w = t.workerId ? store.workers.get(t.workerId) : undefined;
-      if (w) buttons.push(h('button.btn', { type: 'button', onclick: () => actions.openTerminal(w.id) }, '🖥️ Terminal'));
-      buttons.push(h('button.btn', { type: 'button', title: held ? 'Retry it once its dependency has finished' : 'Put it back on the queue', onclick: () => net.send({ t: 'queue.retry', taskId: t.id }) }, held ? '↻ Retry' : '↻ Requeue'));
-      buttons.push(h('button.btn', { type: 'button', title: 'Forget it', 'aria-label': 'Remove', onclick: () => net.send({ t: 'queue.remove', taskId: t.id }) }, '✕'));
+      if (w) buttons.push(h('button.btn', { type: 'button', 'data-key': 'terminal', onclick: () => actions.openTerminal(w.id) }, '🖥️ Terminal'));
+      buttons.push(h('button.btn', { type: 'button', 'data-key': held ? 'retry' : 'requeue', title: held ? 'Retry it once its dependency has finished' : 'Put it back on the queue', onclick: () => net.send({ t: 'queue.retry', taskId: t.id }) }, held ? '↻ Retry' : '↻ Requeue'));
+      buttons.push(h('button.btn', { type: 'button', 'data-key': 'remove', title: 'Forget it', 'aria-label': 'Remove', onclick: () => net.send({ t: 'queue.remove', taskId: t.id }) }, '✕'));
     }
     return h(
       'li',
@@ -174,11 +176,12 @@ export function openQueue(net: Net, actions: QueueActions) {
     const parts: (HTMLElement | null)[] = [
       section('🤖 Working on it', running),
       section('⏳ Up next', queued),
-      section('✅ Finished', done, h('button.btn', { type: 'button', onclick: () => net.send({ t: 'queue.clear' }) }, 'Clear')),
+      section('✅ Finished', done, h('button.btn', { type: 'button', 'data-key': 'clear', onclick: () => net.send({ t: 'queue.clear' }) }, 'Clear')),
       running.length + queued.length + done.length ? null : h('div.queue-empty', {}, 'Nothing on the queue yet.'),
     ];
-    // Only the list is rebuilt, so the task box keeps its focus and text while events stream in.
-    list.replaceChildren(...parts.filter((n): n is HTMLElement => n !== null));
+    // Only the list is re-rendered, and it is patched in place by task id: the task box keeps its text, and a
+    // focused Retry / Stop / ↑ button keeps focus (and the list its scroll) while events stream in.
+    morphChildren(list, parts.filter((n): n is HTMLElement => n !== null));
   };
 
   const unsubs = [store.on('empire', render), store.on('queue', render), store.on('workers', render), store.on('issues', render)];

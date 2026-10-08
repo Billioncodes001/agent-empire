@@ -7,6 +7,7 @@ import type { Net } from '../net';
 import type { PlayerController } from '../player';
 import { autoFocus } from '../keyboard';
 import { h, openModal, toast } from './dom';
+import { morphChildren } from './reconcile';
 import { openManagement } from './management';
 import { mountTouchControls } from './touch';
 import { mountGameMenu } from './game-menu';
@@ -56,17 +57,20 @@ export function mountEmpire(
     const close = h('button.btn', { 'aria-label': 'Close district map' }, 'Close');
     const details = h('div.map-locations');
     const note = h('p.map-note', {}, 'Select a destination to mark it on your minimap. Walk or drive there.');
+    // Patched in place per site, so a focused Set waypoint / Manage button survives empire and worker broadcasts.
     const renderLocations = () =>
-      details.replaceChildren(
-        ...SITES.map((site) => {
+      morphChildren(
+        details,
+        SITES.map((site) => {
           const access = entranceAccess(site.id, store.empire, store.workers.values());
           return h(
             'article.map-location',
-            {},
+            { 'data-key': site.id },
             h('div', {}, h('strong', {}, site.name), h('small', {}, access.reason)),
             h(
               'button.btn',
               {
+                'data-key': 'waypoint',
                 'aria-label': `Set waypoint to ${site.name}`,
                 onclick: () => {
                   waypoint = { ...entrance(site.id), name: site.name };
@@ -79,6 +83,7 @@ export function mountEmpire(
             h(
               'button.btn',
               {
+                'data-key': 'manage',
                 'aria-label': `Manage ${site.name}`,
                 onclick: () => openOperations(site.id),
               },
