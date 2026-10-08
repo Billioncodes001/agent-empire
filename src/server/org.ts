@@ -1,7 +1,8 @@
 import type { ConsultancyJob } from '../shared/consultancy.js';
 import type { SupervisionState } from '../shared/empire.js';
 import { EXECUTIVE_ROLES, EXECUTIVES, NOT_STAFFED, type Executive, type ExecutiveRole, type OrgState } from '../shared/org.js';
-import type { QueueState, QueueTask, UsageState, WorkerInfo } from '../shared/protocol.js';
+import { heldDependencyId } from '../shared/dependencies.js';
+import type { QueueState, UsageState, WorkerInfo } from '../shared/protocol.js';
 
 /** Everything the executives read. All of it is existing runtime state; nothing is fetched or asked of a model. */
 export interface OrgInput {
@@ -13,13 +14,13 @@ export interface OrgInput {
   usage: UsageState;
 }
 
-/** LIFE-04 adds these; read them defensively so either branch can merge first. */
-type MaybeBlocked = QueueTask & { blockedBy?: string[] };
-type MaybeWaiting = WorkerInfo & { waitingOn?: { id: string; name: string; taskId: string } };
+
+
+
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const usd = (n: number) => `$${n.toFixed(2)}`;
-const DEPENDENCY_FAILURE = /^dependency \S+ did not finish/;
+
 
 const PHASE: Record<SupervisionState['chief']['phase'], string> = {
   unassigned: 'No chief appointed',
@@ -46,12 +47,13 @@ function chiefOfStaff(input: OrgInput): Pick<Executive, 'summary' | 'attention'>
 }
 
 function operations(input: OrgInput): Pick<Executive, 'summary' | 'attention'> {
-  const tasks = input.queue.tasks as MaybeBlocked[];
+  const tasks = input.queue.tasks;
   const running = tasks.filter((t) => t.status === 'running').length;
   const queued = tasks.filter((t) => t.status === 'queued').length;
-  const failures = tasks.filter((t) => t.status !== 'running' && typeof t.error === 'string' && DEPENDENCY_FAILURE.test(t.error)).length;
+  // LIFE-04: a task whose dependency did not finish is held (done/failed) until the CEO retries or removes it.
+  const failures = tasks.filter((t) => heldDependencyId(t) !== undefined).length;
   const blocked = tasks.filter((t) => t.status === 'queued' && Array.isArray(t.blockedBy) && t.blockedBy.length > 0).length;
-  const waiting = (input.workers as MaybeWaiting[]).filter((w) => w.waitingOn && (w.status === 'idle' || w.status === 'done')).length;
+  const waiting = input.workers.filter((w) => w.waitingOn && (w.status === 'idle' || w.status === 'done')).length;
   const held = input.jobs.reduce((n, j) => n + j.items.filter((i) => i.held).length, 0);
   if (!running && !queued && !failures && !held) return { summary: 'Queue idle · nothing queued', attention: 0 };
   const parts = [`${running} running`, `${queued} queued`];

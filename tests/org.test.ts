@@ -67,12 +67,12 @@ test('operations computes queue health, including LIFE-04 fields when present', 
     task('r1', 'running', { workerId: 'w1' }),
     task('q1', 'queued'),
     task('q2', 'queued', { blockedBy: ['r1'] }),
-    task('q3', 'queued', { error: 'dependency r0 did not finish' }),
+    task('q3', 'done', { outcome: 'failed', error: 'dependency r0 did not finish' }),
     task('d1', 'done', { outcome: 'done' }),
   ];
   const workers = [worker('w1', 'working'), worker('w2', 'done', { waitingOn: { id: 'w1', name: 'Bea', taskId: 'r1' } })];
   const ops = exec(base({ queue: { tasks, maxWorkers: 2 }, workers }), 'operations');
-  assert.equal(ops.summary, '1 running · 3 queued · 1 blocked · 1 waiting worker · 1 dependency failure held');
+  assert.equal(ops.summary, '1 running · 2 queued · 1 blocked · 1 waiting worker · 1 dependency failure held');
   assert.equal(ops.attention, 1, 'a held dependency failure waits for the CEO to retry or remove it');
   assert.equal(exec(base(), 'operations').summary, 'Queue idle · nothing queued');
 });
