@@ -15,6 +15,11 @@ export interface ConsultancyTaskInput {
   prompt: string;
   /** Plan phase (ORG-02); absent means build. */
   phase?: ItemPhase;
+  /**
+   * LIFE-04: approved items run in order — item N waits for item N−1. `parallel: true` opts this item out: it runs
+   * alongside the item before it (sharing that item's own dependencies), and the next ordered item waits for both.
+   */
+  parallel?: boolean;
 }
 
 export interface ConsultancyCreateInput {
@@ -31,6 +36,8 @@ export interface ConsultancyItem {
   prompt: string;
   jobKey: string;
   queueTaskId?: string;
+  /** Runs alongside the item before it instead of after it (LIFE-04). */
+  parallel?: true;
   status: ConsultancyStatus;
   attention?: string;
   /** Plan phase; saved plans without one are build. */

@@ -4,6 +4,7 @@ import { store } from '../state';
 import { autoFocus } from '../keyboard';
 import { h, openModal, timeAgo, STATUS_LABEL } from './dom';
 import { confirmDialog } from './prompt';
+import { blockedLabel, heldLabel } from '../../shared/dependencies';
 
 export interface QueueActions {
   openTerminal(workerId: string): void;
@@ -112,6 +113,9 @@ export function openQueue(net: Net, actions: QueueActions) {
     const meta: string[] = [];
     const buttons: HTMLElement[] = [];
     let pos: string | null = null;
+    // LIFE-04: a task waiting on another task, or held because its dependency did not finish.
+    const waiting = t.status === 'queued' ? blockedLabel(t, store.queue.tasks) : '';
+    const held = heldLabel(t, store.queue.tasks);
     if (t.status === 'running') {
       const w = t.workerId ? store.workers.get(t.workerId) : undefined;
       meta.push(`${t.workerName ?? 'a worker'} · ${w ? STATUS_LABEL[w.status] ?? w.status : 'gone'}`);
@@ -132,24 +136,25 @@ export function openQueue(net: Net, actions: QueueActions) {
       const queued = store.queue.tasks.filter((x) => x.status === 'queued');
       const i = queued.indexOf(t);
       pos = String(i + 1);
+      if (waiting) meta.push(waiting);
       meta.push(`added by ${t.addedBy} ${timeAgo(t.addedAt)}`);
       buttons.push(h('button.btn', { type: 'button', title: 'Move up', 'aria-label': 'Move up', disabled: i === 0, onclick: () => net.send({ t: 'queue.move', taskId: t.id, delta: -1 }) }, '↑'));
       buttons.push(h('button.btn', { type: 'button', title: 'Move down', 'aria-label': 'Move down', disabled: i === queued.length - 1, onclick: () => net.send({ t: 'queue.move', taskId: t.id, delta: 1 }) }, '↓'));
       buttons.push(h('button.btn', { type: 'button', title: 'Remove from the queue', 'aria-label': 'Remove', onclick: () => net.send({ t: 'queue.remove', taskId: t.id }) }, '✕'));
     } else {
-      meta.push(outcome(t));
+      meta.push(held || outcome(t));
       if (t.workerName) meta.push(t.workerName);
       if (t.branch) meta.push(`🌿 ${t.branch}`);
       if (t.finishedAt) meta.push(timeAgo(t.finishedAt));
       if (t.pr) buttons.push(h('a.btn', { href: t.pr.url, target: '_blank', rel: 'noopener', title: t.pr.title }, `🔀 PR #${t.pr.number}${t.pr.state === 'MERGED' ? ' ✓' : t.pr.state === 'DRAFT' ? ' (draft)' : ''}`));
       const w = t.workerId ? store.workers.get(t.workerId) : undefined;
       if (w) buttons.push(h('button.btn', { type: 'button', onclick: () => actions.openTerminal(w.id) }, '🖥️ Terminal'));
-      buttons.push(h('button.btn', { type: 'button', title: 'Put it back on the queue', onclick: () => net.send({ t: 'queue.retry', taskId: t.id }) }, '↻ Requeue'));
+      buttons.push(h('button.btn', { type: 'button', title: held ? 'Retry it once its dependency has finished' : 'Put it back on the queue', onclick: () => net.send({ t: 'queue.retry', taskId: t.id }) }, held ? '↻ Retry' : '↻ Requeue'));
       buttons.push(h('button.btn', { type: 'button', title: 'Forget it', 'aria-label': 'Remove', onclick: () => net.send({ t: 'queue.remove', taskId: t.id }) }, '✕'));
     }
     return h(
       'li',
-      { class: t.status },
+      { class: [t.status, waiting ? 'blocked' : '', held ? 'held' : ''].filter(Boolean).join(' '), 'data-task': t.id },
       pos ? h('span.pos', {}, pos) : null,
       h('div.queue-main', {}, taskTitle(t), h('div.queue-meta', {}, meta.join(' · '))),
       h('div.queue-actions', {}, ...buttons),

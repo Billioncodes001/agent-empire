@@ -27,6 +27,10 @@ interface StoredItem {
   queueTaskId?: string;
   /** Absent in journals written before ORG-02; means build. */
   phase?: ItemPhase;
+  /** Runs alongside the item before it (LIFE-04). Absent on items saved before LIFE-04: they run in order. */
+  parallel?: true;
+  /** Its queue task was observed finishing with outcome 'done' (so later items may start once it is cleared). */
+  finishedOk?: true;
 }
 
 interface StoredJob {
@@ -70,7 +74,7 @@ interface JobProjection {
 
 type QueuePort = {
   state(): QueueState;
-  add(prompt: string, by: string, title?: string, issue?: number, jobKey?: string): string | undefined;
+  add(prompt: string, by: string, title?: string, issue?: number, jobKey?: string, dependsOn?: readonly string[]): string | undefined;
 };
 
 /** Optional ORG-02 inputs: an estimator over past spend, and each queue task's provider-reported list cost. */
@@ -121,7 +125,7 @@ export class Consultancy {
     const jobId = this.nextId('consultancy');
     const items = clean.tasks.map((task, index) => {
       const itemId = `item-${index + 1}`;
-      return { id: itemId, title: task.title, prompt: task.prompt, jobKey: `consultancy:${jobId}:${itemId}`, phase: task.phase ?? 'build' };
+      return { id: itemId, title: task.title, prompt: task.prompt, jobKey: `consultancy:${jobId}:${itemId}`, phase: task.phase ?? 'build', ...(task.parallel ? { parallel: true as const } : {}) };
     });
     const job: StoredJob = {
       id: jobId,
@@ -228,7 +232,7 @@ export class Consultancy {
       }
       for (const job of this.jobs) {
         if (job.decision !== 'approved') continue;
-        for (const item of job.items) {
+        for (const [index, item] of job.items.entries()) {
           const key = this.itemKey(job.id, item.id);
           if (item.queueTaskId) {
             const observed = queueState.tasks.find((task) => task.id === item.queueTaskId);
@@ -237,6 +241,8 @@ export class Consultancy {
               continue;
             }
             this.queueIssues.delete(key);
+            // Remember a successful finish, so a later item still counts it once the queue forgets the task.
+            if (observed.status === 'done' && observed.outcome === 'done' && !item.finishedOk) { item.finishedOk = true; changed = true; }
             continue;
           }
           const existing = queueState.tasks.find((task) => task.jobKey === item.jobKey);
@@ -246,9 +252,25 @@ export class Consultancy {
             changed = true;
             continue;
           }
+          // Order within the job: never dispatch an item before the items it waits for are on the queue.
+          const prerequisites = itemDependencies(job.items, index);
+          const missing = prerequisites.find((dep) => !dep.queueTaskId);
+          if (missing) {
+            this.queueIssues.set(key, `Waiting for ${missing.id} to reach the queue first.`);
+            continue;
+          }
+          // A prerequisite that finished successfully and was then cleared from the queue is satisfied. One that vanished
+          // without ever being seen to finish needs the CEO: never wait on it forever.
+          const gone = prerequisites.filter((dep) => !queueState.tasks.some((task) => task.id === dep.queueTaskId));
+          const lost = gone.find((dep) => !dep.finishedOk);
+          if (lost) {
+            this.queueIssues.set(key, `${lost.id} (“${lost.title}”) left the queue without finishing, so this item will not start. Review the job and re-plan it.`);
+            continue;
+          }
+          const waitFor = prerequisites.filter((dep) => !gone.includes(dep)).map((dep) => dep.queueTaskId!);
           let addError: string | undefined;
           try {
-            addError = this.queue.add(item.prompt, job.decidedBy ?? job.createdBy, item.title, undefined, item.jobKey);
+            addError = this.queue.add(item.prompt, job.decidedBy ?? job.createdBy, item.title, undefined, item.jobKey, waitFor);
           } catch (error) {
             addError = (error as Error).message;
           }
@@ -330,7 +352,7 @@ export class Consultancy {
   private estimateFor(job: StoredJob): JobEstimate | undefined {
     if (!this.ports.estimate) return undefined;
     try {
-      return this.ports.estimate(job.items.map((item) => ({ phase: item.phase ?? 'build' })));
+      return this.ports.estimate(job.items.map((item) => ({ phase: item.phase ?? 'build', ...(item.parallel ? { parallel: true } : {}) })));
     } catch {
       return undefined; // An estimate is advisory; a failing estimator never blocks the plan.
     }
@@ -363,6 +385,8 @@ export class Consultancy {
     if (queueFailure) return { ...item, status: 'needs_attention', attention: queueFailure, _weight: statusWeight('needs_attention') };
     const task = findTask(state?.tasks ?? [], item);
     const key = this.itemKey(job.id, item.id);
+    // Finished successfully, then cleared from the queue: still delivered work, not a problem.
+    if (!task && item.finishedOk) return { ...item, status: 'awaiting_review', _weight: statusWeight('awaiting_review') };
     if (!task) {
       const reason = this.queueIssues.get(key) ?? (item.queueTaskId ? 'Previously observed queue task is missing; automatic requeue is blocked.' : 'Task is not visible in the queue.');
       return { ...item, status: 'needs_attention', attention: reason, _weight: statusWeight('needs_attention') };
@@ -512,10 +536,14 @@ function parseStoredJob(value: unknown, index: number): StoredJob {
 
 function parseStoredItem(value: unknown, label: string): StoredItem {
   const raw = asObject(value, label);
-  rejectUnknownKeys(raw, ['id', 'title', 'prompt', 'jobKey', 'queueTaskId', 'phase'], label);
+  rejectUnknownKeys(raw, ['id', 'title', 'prompt', 'jobKey', 'queueTaskId', 'phase', 'parallel', 'finishedOk'], label);
   if (raw.phase !== undefined && !isItemPhase(raw.phase)) throw new Error(`${label} phase is invalid`);
+  if (raw.parallel !== undefined && raw.parallel !== true) throw new Error(`${label} parallel must be true when present`);
+  if (raw.finishedOk !== undefined && (raw.finishedOk !== true || raw.queueTaskId === undefined)) throw new Error(`${label} finishedOk is invalid`);
   return {
     ...(raw.phase !== undefined ? { phase: raw.phase as ItemPhase } : {}),
+    ...(raw.finishedOk === true ? { finishedOk: true as const } : {}),
+    ...(raw.parallel === true ? { parallel: true as const } : {}),
     id: cleanBounded(raw.id, `${label} id`, 100),
     title: cleanBounded(raw.title, `${label} title`, MAX_TASK_TITLE),
     prompt: cleanBounded(raw.prompt, `${label} prompt`, MAX_TASK_PROMPT),
@@ -539,21 +567,47 @@ function validateCreateInput(input: unknown): Required<ConsultancyCreateInput> {
     if (root.tasks.length > MAX_TASKS) throw new ConsultancyError(400, `tasks may include at most ${MAX_TASKS} items`);
     tasks = root.tasks.map((entry, index) => {
       const raw = asObject(entry, `tasks[${index}]`);
-      rejectUnknownKeys(raw, ['title', 'prompt', 'phase'], `tasks[${index}]`);
+      rejectUnknownKeys(raw, ['title', 'prompt', 'parallel', 'phase'], `tasks[${index}]`);
+      if (raw.parallel !== undefined && typeof raw.parallel !== 'boolean') throw new ConsultancyError(400, `tasks[${index}].parallel must be a boolean`);
       if (raw.phase !== undefined && !isItemPhase(raw.phase)) throw new ConsultancyError(400, `tasks[${index}].phase must be build, iteration, testing or field_testing`);
-      return {
+      return canonicalTask({
         title: cleanBounded(raw.title, `tasks[${index}].title`, MAX_TASK_TITLE),
         prompt: cleanBounded(raw.prompt, `tasks[${index}].prompt`, MAX_TASK_PROMPT),
-        ...(raw.phase !== undefined ? { phase: raw.phase as ItemPhase } : {}),
-      };
+        parallel: raw.parallel === true,
+        phase: raw.phase as ItemPhase | undefined,
+      });
     });
   }
   return { requestId, client, title, brief, tasks };
 }
 
-/** Build is the default phase, so a plan without phases keeps the fingerprint it had before ORG-02. */
-function canonicalTask(task: { title: string; prompt: string; phase?: ItemPhase }): ConsultancyTaskInput {
-  return task.phase && task.phase !== 'build' ? { title: task.title, prompt: task.prompt, phase: task.phase } : { title: task.title, prompt: task.prompt };
+/**
+ * A plan task as fingerprinted: `parallel` only when set (LIFE-04) and `phase` only when not the default build
+ * (ORG-02), so plans saved before either keep their fingerprint.
+ */
+function canonicalTask(task: { title: string; prompt: string; parallel?: boolean; phase?: ItemPhase }): ConsultancyTaskInput {
+  return {
+    title: task.title,
+    prompt: task.prompt,
+    ...(task.parallel ? { parallel: true } : {}),
+    ...(task.phase && task.phase !== 'build' ? { phase: task.phase } : {}),
+  };
+}
+
+/**
+ * The items item `index` waits for. An ordered item waits for the item before it and, when that one runs in
+ * parallel, for the whole parallel run back to (and including) the ordered item it started beside. A parallel item
+ * shares the dependencies of the item before it, so it runs alongside that item. The first item waits for nothing.
+ */
+export function itemDependencies<T extends { parallel?: true }>(items: readonly T[], index: number): T[] {
+  if (index <= 0) return [];
+  if (items[index].parallel) return itemDependencies(items, index - 1);
+  const out: T[] = [];
+  for (let i = index - 1; i >= 0; i--) {
+    out.unshift(items[i]);
+    if (!items[i].parallel) break;
+  }
+  return out;
 }
 
 function inputFingerprint(input: Required<ConsultancyCreateInput>): string {

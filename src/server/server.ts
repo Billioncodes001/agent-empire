@@ -21,6 +21,7 @@ import { Services } from './services.js';
 import { Decor, ImageProxy } from './decor.js';
 import { Ledger } from './usage.js';
 import { TaskQueue } from './queue.js';
+import { projectWaitingOn, withWaitingOn } from './waiting.js';
 import { Changes } from './changes.js';
 import { RELAY_LOGIN, relayRequest, relayUpgrade, signInPage, stoppedPage, tunneledPort } from './relay.js';
 import type { ChatLine, ClientMsg, PeerInfo, ProjectInfo, ServerMsg, ServicesState } from '../shared/protocol.js';
@@ -218,6 +219,20 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
 
   let workers!: WorkerManager;
   let queue!: TaskQueue;
+  // LIFE-04: waitingOn is projected from the queue, never stored on the worker. Remember what each client last got so a
+  // queue change re-sends exactly the workers whose waitingOn appeared, changed or cleared.
+  const waitingSent = new Map<string, string>();
+  const currentWaits = () => (queue ? projectWaitingOn(queue.state().tasks, workers.list()) : new Map());
+  const workersForClients = () => { const waits = currentWaits(); return workers.list().map((w) => withWaitingOn(w, waits)); };
+  const syncWaiting = (skip?: string) => {
+    const waits = currentWaits();
+    for (const w of workers.list()) {
+      const key = JSON.stringify(waits.get(w.id) ?? null);
+      if ((waitingSent.get(w.id) ?? 'null') === key) continue;
+      waitingSent.set(w.id, key);
+      if (w.id !== skip) broadcast({ t: 'worker.update', worker: withWaitingOn(w, waits) });
+    }
+  };
   let changes!: Changes;
   let consultancy: Consultancy | undefined;
   let observing = false;
@@ -271,12 +286,16 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     { url: `http://127.0.0.1:${hookPort}`, token: '' },
     {
       update: (worker) => {
-        broadcast({ t: 'worker.update', worker });
+        const waits = currentWaits();
+        waitingSent.set(worker.id, JSON.stringify(waits.get(worker.id) ?? null));
+        broadcast({ t: 'worker.update', worker: withWaitingOn(worker, waits) });
         queue?.onWorker(worker);
+        syncWaiting();
         if (queue) empire.tick(workers.list(), queue.state(), 0);
       },
       remove: (workerId) => {
         changes?.forget(workerId);
+        waitingSent.delete(workerId);
         broadcast({ t: 'worker.remove', workerId });
         queue?.onWorkerGone(workerId);
         if (queue) empire.tick(workers.list(), queue.state(), 0);
@@ -312,7 +331,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   );
   // The 📋 task queue seats workers by itself: it watches the workers and links PRs from GitHub.
   queue = new TaskQueue(cfg.dataDir, workers, !!project.branch, {
-    update: (state) => { broadcast({ t: 'queue', state }); empire.tick(workers.list(), state, 0); },
+    update: (state) => { broadcast({ t: 'queue', state }); syncWaiting(); empire.tick(workers.list(), state, 0); },
     toast: (text, level) => broadcast({ t: 'toast', text, level }),
     claimIssue: (issue) => github.claim(issue),
     refreshGitHub: () => void github.refresh(),
@@ -801,7 +820,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
       t: 'welcome',
       you: id,
       peers: [...clients.values()].map((c) => c.peer),
-      workers: workers.list(),
+      workers: workersForClients(),
       project,
       issues: github.issues,
       pulls: github.pulls,

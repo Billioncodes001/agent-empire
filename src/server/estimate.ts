@@ -1,4 +1,5 @@
 import type { ItemEstimate, ItemPhase, JobEstimate, Range } from '../shared/org.js';
+import { itemDependencies } from './consultancy.js';
 
 /** One finished task: what the provider reported it cost and how long its worker took. */
 export interface CostSample {
@@ -78,14 +79,16 @@ function estimateItem(item: PlannedItem, history: CostSample[]): ItemEstimate {
 }
 
 /**
- * Calendar time for the plan: item N starts after item N−1 finishes unless it is parallel, and at
- * most `workers` items run at once (list scheduling in plan order, like the queue seats them).
+ * Calendar time for the plan, using the queue's real item dependencies (itemDependencies, LIFE-04):
+ * an ordered item waits for the one before it; a parallel item runs beside the previous one, and the
+ * next ordered item waits for both. At most `workers` items run at once (list scheduling in plan order).
  */
 function calendar(items: PlannedItem[], durations: number[], workers: number): number {
   const free = Array.from({ length: Math.max(1, workers) }, () => 0);
   const finish: number[] = [];
-  items.forEach((item, i) => {
-    const ready = i > 0 && !item.parallel ? finish[i - 1] : 0;
+  const indexed = items.map((item, index) => ({ index, ...(item.parallel ? { parallel: true as const } : {}) }));
+  items.forEach((_item, i) => {
+    const ready = Math.max(0, ...itemDependencies(indexed, i).map((d) => finish[d.index]));
     let slot = 0;
     for (let w = 1; w < free.length; w++) if (free[w] < free[slot]) slot = w;
     const start = Math.max(ready, free[slot]);
