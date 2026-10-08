@@ -1,6 +1,6 @@
 # ORG-05: Research executive
 
-This report covers the research executive, built on branch `claude/org-05-research` from `a5a3b5b`. It's awaiting independent review. The user guide is [docs/RESEARCH.md](../../RESEARCH.md).
+This report covers the research executive, built on branch `claude/org-05-research` from `a5a3b5b`. It's awaiting independent review. The user guide is [docs/RESEARCH_EXECUTIVE.md](../../RESEARCH_EXECUTIVE.md) (docs/RESEARCH.md was already the design-research log, so this guide sits beside it and is linked from it).
 
 ## What was built
 
