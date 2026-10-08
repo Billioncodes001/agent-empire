@@ -134,6 +134,37 @@ Re-run results:
 | `org-ui-check` | 32/32 |
 | `mobile-ui-check` | **411/411** |
 
+## Re-review fixes
+
+The re-review verdict was ACCEPT WITH FIXES. Each fix has a test that failed before it.
+
+1. **Email retries gave up too early** (`75a00cb`).
+   - A notification is given up at once only when the server answers 5xx to MAIL FROM, RCPT TO or DATA.
+   - Connection errors, timeouts, 4xx and TLS problems retry with backoff up to the 30-minute cap. A notification is given up after 24 hours.
+   - A 535 AUTH failure pauses the queue and gives nothing up. The status reads "Email: sign-in failed — check AGENT_EMPIRE_SMTP_URL", and the queue resumes when sign-in works.
+   - Status returns to "configured" after a later success. `lastFailedAt` stays.
+   - Tests cover four cases:
+     - offline for 20 minutes, then delivered, with the backoff reaching 30 minutes;
+     - 535: nothing given up, a single paused retry, and both items resume once fixed;
+     - 550 to RCPT TO: that item is given up and the next is sent;
+     - the 24-hour cap.
+2. **The HUD row was fragile at 1280** (`8a206c3`).
+   - At 1440 px and below, Issues, PRs, Queue, Services and Invite are icon buttons that keep their count badges, `aria-label` and `title`.
+   - At 1360 px and below, the gap, padding and badges are tighter.
+   - The voice and share buttons' titles now follow their state.
+   - `inbox-ui-check` now shows every conditional tool at once at 1280, 1440 and 1920: Mute (as in voice), Invite, Upgrade, Services count 3, Queue 12 and Inbox 12. It asserts one row with nothing clipped: 75 px spare at 1280 and 128 px at 1440.
+   - Screenshots: `08-hud-all-tools-*`.
+
+Re-run results:
+
+| Check | Result |
+| --- | --- |
+| typecheck | clean |
+| `npm test` | **653/653** |
+| build | OK |
+| `inbox-ui-check` | **47/47** |
+| `mobile-ui-check` | **411/411** |
+
 ## Open issues
 - **375x812 portrait:** the game asks you to rotate. The inbox layout was checked under the rotate prompt using DOM clicks.
 - **Cloud mode:** the cloud-mode message was checked by marking the store as cloud in the running fixture, not with the cloud build.

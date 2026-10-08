@@ -42,7 +42,12 @@ Set both of the first two, or neither. The built-in SMTP client has no dependenc
 - Each step has a timeout.
 - The URL and password are never logged.
 
-Failures are logged with the approval id and the SMTP status code only. The send is retried with backoff (5 s, 30 s, 2 min, 10 min, then every 30 min) and never blocks the server. Sent ids are remembered in `email-notify.json`, so a restart never mails twice. As with Telegram, what was pending when email was first set up is not mailed.
+Failures are logged with the approval id and the SMTP status code only, and never block the server:
+
+- **The server refuses the message itself** (a 5xx to MAIL FROM, RCPT TO or DATA): that notification is given up at once, and the next one is sent.
+- **Connection errors, timeouts, 4xx replies and TLS problems** are retried with backoff (5 s, 30 s, 2 min, 10 min, then every 30 min). A notification is given up only after it has been failing for 24 hours.
+- **Sign-in (AUTH) fails:** the whole queue pauses and nothing is given up. The status reads "Email: sign-in failed — check AGENT_EMPIRE_SMTP_URL". The queue resumes on the next successful connection or a restart.
+- **A later successful send** returns the status to "Email: configured". The last failure time is still reported. Sent ids are remembered in `email-notify.json`, so a restart never mails twice. As with Telegram, what was pending when email was first set up is not mailed.
 
 The founder desk page and `GET /api/consultancy/status` (`email.label`) show one of: "Email: not configured", "Email: configured" or "Email: last send failed".
 
