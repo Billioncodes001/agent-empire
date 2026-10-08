@@ -20,8 +20,8 @@ import { COORDINATOR_BUNDLE_PATH } from '../src/cloud/workflow';
 import { FakeGitHub } from './fake-github';
 import { asset, channelJson, OTHER_KEYPAIR, sha256, sign, signedChannel } from './update-fixtures';
 import { RELEASE_PUBLIC_KEY } from '../src/shared/release-key';
-import { DEV_RELEASE_PUBLIC_KEY } from '../tools/release/dev-key.mjs';
-import { BUILD_TRUSTED_KEYS, trustedKeys } from '../src/client/update/trust';
+import { DEV_RELEASE_PUBLIC_KEY, keyDigest } from '../tools/release/dev-key.mjs';
+import { BUILD_TRUSTED_KEYS, DEV_KEY_SHA512, isDevKey, trustedKeys } from '../src/client/update/trust';
 
 /** The owner's release key (REL-07). */
 const OWNER_KEY = 'rIRaOVUyoolaIritW/W8zMW7kGymgcjvg7uXhHtTqPk=';
@@ -58,6 +58,12 @@ test('channel: a valid file parses; the owner key is pinned and a plain build tr
   assert.deepEqual(trustedKeys(DEV_RELEASE_PUBLIC_KEY), DEV_TRUST, 'a development shell adds the dev key');
   assert.deepEqual(trustedKeys(null), [OWNER_KEY]);
   assert.deepEqual(trustedKeys('not a key'), [OWNER_KEY]);
+  // A shell can add only the development key itself (checked by digest), never an arbitrary key.
+  assert.equal(DEV_KEY_SHA512, keyDigest(DEV_RELEASE_PUBLIC_KEY));
+  const otherKey = Buffer.from(OTHER_KEYPAIR.publicKey).toString('base64');
+  assert.equal(isDevKey(DEV_RELEASE_PUBLIC_KEY), true);
+  assert.equal(isDevKey(otherKey), false);
+  assert.deepEqual(trustedKeys(otherKey), [OWNER_KEY]);
   assert.deepEqual(c.shell.macos?.feed, { arm64: asset('1.0.0-beta.2', 'desktop-update-darwin-arm64.json'), x64: asset('1.0.0-beta.2', 'desktop-update-darwin-x64.json') });
   // Fields this app doesn't use are ignored; a platform without a build is null.
   const extra = { ...channelJson({ version: '1.0.0-beta.2' }), future: { x: 1 }, shell: { ...channelJson({ version: '1.0.0-beta.2' }).shell, windows: null, ios: { version: '1.0.0-beta.2', testflight: null, appStore: null } } };
@@ -338,6 +344,7 @@ test('bridge: nativeInfo answers are validated', () => {
   assert.equal(parseNativeInfo({ platform: 'android', shellVersion: '1.0.0', installPending: '<b>' }, 'android').installPending, undefined);
   assert.equal(parseNativeInfo({ platform: 'android', shellVersion: '1.0.0', devReleaseKey: DEV_RELEASE_PUBLIC_KEY }, 'android').devReleaseKey, DEV_RELEASE_PUBLIC_KEY);
   assert.equal(parseNativeInfo({ platform: 'android', shellVersion: '1.0.0', devReleaseKey: 'AAAA' }, 'android').devReleaseKey, undefined);
+  assert.equal(parseNativeInfo({ platform: 'android', shellVersion: '1.0.0', devReleaseKey: Buffer.from(OTHER_KEYPAIR.publicKey).toString('base64') }, 'android').devReleaseKey, undefined, 'another key from the shell is ignored');
 });
 
 // ---- service flow ----------------------------------------------------------------------------------------------------------
@@ -379,6 +386,14 @@ test('service: a release shell (no devReleaseKey) refuses dev-signed channels; a
   release.stop();
   assert.equal(release.state.offer, null);
   assert.match(release.state.error ?? '', /signature/);
+  // A shell reporting some other key as its "dev key" gets nothing extra: a channel signed by that key is refused.
+  const rogue: Record<string, { body: string }> = {};
+  publish(rogue, 'stable', '1.0.0-beta.2', undefined, OTHER_KEYPAIR.secretKey);
+  const tricked = new UpdateService({ bridge: fakeShell(rogue, { devReleaseKey: Buffer.from(OTHER_KEYPAIR.publicKey).toString('base64') }).bridge, storage: memory() });
+  await tricked.start();
+  tricked.stop();
+  assert.equal(tricked.state.offer, null);
+  assert.match(tricked.state.error ?? '', /signature/);
   const dev = new UpdateService({ bridge: fakeShell(files).bridge, storage: memory() });
   await dev.start();
   dev.stop();

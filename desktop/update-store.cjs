@@ -35,6 +35,9 @@ const { compareSemver, isSemver, isSha256, releaseAsset, isUpdateFetchUrl, isAss
  */
 const RELEASE_PUBLIC_KEY = 'rIRaOVUyoolaIritW/W8zMW7kGymgcjvg7uXhHtTqPk=';
 const RAW_KEY = /^[A-Za-z0-9+/]{43}=$/;
+/** SHA-512 (hex) of the raw development key bytes (tools/release/dev-key.mjs keyDigest): dev-trust.json may name only that key. */
+const DEV_KEY_SHA512 = '53a585bd98bdf147c51bdc8f4dca645a9d9fe95e3bd662580c7ce3f0e9b67a62019b86085f75980477100aefeb219719a1fe6d58a7bb7e80c9d193f5e081ef03';
+const isDevKey = (key) => typeof key === 'string' && RAW_KEY.test(key) && crypto.createHash('sha512').update(Buffer.from(key, 'base64')).digest('hex') === DEV_KEY_SHA512;
 
 /** The development key from a dev-trust.json in `dir`, or null when there is none. Throws when it is malformed. */
 function readDevTrust(dir = __dirname) {
@@ -48,8 +51,8 @@ function readDevTrust(dir = __dirname) {
   try {
     key = JSON.parse(text).devReleasePublicKey;
   } catch {}
-  if (typeof key === 'string' && RAW_KEY.test(key) && key !== RELEASE_PUBLIC_KEY) return key;
-  throw new Error('dev-trust.json is malformed; rerun tools/prepare-desktop.mjs.');
+  if (isDevKey(key)) return key;
+  throw new Error('dev-trust.json is malformed or names a key other than the development key; rerun tools/prepare-desktop.mjs.');
 }
 
 /** Null in a release build. */
@@ -469,4 +472,4 @@ function windowsPackage(release, version) {
 /** A one-line Squirrel RELEASES index for a package we verified ourselves. */
 const squirrelReleases = (bytes, name) => `${crypto.createHash('sha1').update(bytes).digest('hex').toUpperCase()} ${name} ${bytes.length}\r\n`;
 
-module.exports = { verifyEd25519, verifyTrusted, readDevTrust, TRUSTED_KEYS, DEV_KEY_TRUSTED, releaseChannelUrl, signedRelease, checkGameAgainstRelease, nugetVersion, windowsPackage, squirrelReleases, squirrelUpdateExe, squirrelEvent, autoUpdateFeed, RELEASE_PUBLIC_KEY, DEV_RELEASE_PUBLIC_KEY, BOOT_TIMEOUT_MS, MAX_TEXT_BYTES, safeEntryName, zipEntries, extractZip, download, fixtureMapper, createBundleStore, bundleVersion };
+module.exports = { verifyEd25519, verifyTrusted, readDevTrust, DEV_KEY_SHA512, TRUSTED_KEYS, DEV_KEY_TRUSTED, releaseChannelUrl, signedRelease, checkGameAgainstRelease, nugetVersion, windowsPackage, squirrelReleases, squirrelUpdateExe, squirrelEvent, autoUpdateFeed, RELEASE_PUBLIC_KEY, DEV_RELEASE_PUBLIC_KEY, BOOT_TIMEOUT_MS, MAX_TEXT_BYTES, safeEntryName, zipEntries, extractZip, download, fixtureMapper, createBundleStore, bundleVersion };

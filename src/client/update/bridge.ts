@@ -15,7 +15,7 @@
 import { BridgeError, NativeBridge, TIMEOUTS, native, type AppPlatform, type Native } from '../native';
 import { isAppleUrl, isMacLatestFeed, isPlayUrl, releaseAsset, releaseFolder, releasePage, RELEASES_API, type DesktopArch } from './channel';
 import { isSemver } from './semver';
-import { isPublicKey } from './trust';
+import { isDevKey } from './trust';
 
 export type DesktopOs = 'macos' | 'windows' | 'linux';
 export interface NativeInfo {
@@ -101,7 +101,7 @@ export function parseNativeInfo(raw: unknown, platform: AppPlatform): NativeInfo
   if (source && /^[a-z-]+$/.test(source)) info.installSource = source;
   if (isSemver(r.rolledBack)) info.rolledBack = r.rolledBack;
   if (isSemver(r.installPending)) info.installPending = r.installPending;
-  if (isPublicKey(r.devReleaseKey)) info.devReleaseKey = r.devReleaseKey;
+  if (isDevKey(r.devReleaseKey)) info.devReleaseKey = r.devReleaseKey;
   return info;
 }
 

@@ -11,7 +11,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { RELEASE_PUBLIC_KEY } from '../src/shared/release-key';
-import { DEV_RELEASE_PUBLIC_KEY } from '../tools/release/dev-key.mjs';
+import { DEV_RELEASE_PUBLIC_KEY, keyDigest } from '../tools/release/dev-key.mjs';
 import { channelJson, OTHER_KEYPAIR, sign, asset } from './update-fixtures';
 import { nugetVersion as releaseNuget, parseReleases } from '../tools/release/package-windows-installer.mjs';
 import { coordinatorDecision } from '../src/client/update/coordinator';
@@ -53,7 +53,10 @@ test('desktop: development trust comes only from a valid dev-trust.json written 
   assert.equal(updates.readDevTrust(dir), null);
   writeFileSync(path.join(dir, 'dev-trust.json'), JSON.stringify({ devReleasePublicKey: DEV_RELEASE_PUBLIC_KEY }));
   assert.equal(updates.readDevTrust(dir), DEV_RELEASE_PUBLIC_KEY);
-  for (const bad of ['{', '{}', JSON.stringify({ devReleasePublicKey: 'short' }), JSON.stringify({ devReleasePublicKey: RELEASE_PUBLIC_KEY })]) {
+  assert.equal(updates.DEV_KEY_SHA512, keyDigest(DEV_RELEASE_PUBLIC_KEY));
+  // Only the development key itself: any other well-formed key (here the owner's, or an attacker's) is refused.
+  const otherKey = Buffer.from(OTHER_KEYPAIR.publicKey).toString('base64');
+  for (const bad of ['{', '{}', JSON.stringify({ devReleasePublicKey: 'short' }), JSON.stringify({ devReleasePublicKey: RELEASE_PUBLIC_KEY }), JSON.stringify({ devReleasePublicKey: otherKey })]) {
     writeFileSync(path.join(dir, 'dev-trust.json'), bad);
     assert.throws(() => updates.readDevTrust(dir), /malformed/, bad);
   }
