@@ -42,9 +42,14 @@ export class Worktrees {
    * A new branch and worktree at the project's current HEAD. `from` is the branch the project was
    * on, which the worker's pull request targets. Returns what went wrong as a string.
    */
-  create(slug: string): (Required<WorktreeRef> & { from?: string }) | string {
+  /**
+   * `baseRef` (LIFE-04 continuity) starts the new branch from an existing local branch instead of HEAD, so a worker can
+   * pick up a predecessor's committed work. Callers check `hasBranch` first.
+   */
+  create(slug: string, baseRef?: string): (Required<WorktreeRef> & { from?: string }) | string {
     try {
-      const base = this.gitSync(['rev-parse', 'HEAD']);
+      if (baseRef !== undefined && !safeRef(baseRef)) return `Could not create a git worktree: invalid branch name ${baseRef}`;
+      const base = this.gitSync(['rev-parse', '--verify', baseRef === undefined ? 'HEAD' : `refs/heads/${baseRef}^{commit}`]);
       const from = this.currentBranch();
       const rel = path.join(WORKTREES_DIR, slug);
       const branch = `${BRANCH_PREFIX}${slug}`;
@@ -52,6 +57,17 @@ export class Worktrees {
       return { path: rel, branch, base, from };
     } catch (err) {
       return `Could not create a git worktree: ${gitError(err)}`;
+    }
+  }
+
+  /** Whether a local branch exists (and names a commit). */
+  hasBranch(branch: string): boolean {
+    if (!safeRef(branch)) return false;
+    try {
+      this.gitSync(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}^{commit}`]);
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -178,4 +194,9 @@ function isDir(p: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** A plain branch name: never an option, never a revision expression. */
+function safeRef(ref: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._\/-]{0,200}$/.test(ref) && !ref.includes('..') && !ref.endsWith('.lock');
 }

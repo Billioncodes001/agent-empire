@@ -6,7 +6,7 @@
 import { createHash } from 'node:crypto';
 import { crc32, deflateRawSync } from 'node:zlib';
 import nacl from 'tweetnacl';
-import { DEV_RELEASE_PUBLIC_KEY } from '../src/shared/release-key';
+import { DEV_RELEASE_PUBLIC_KEY } from '../tools/release/dev-key.mjs';
 import { RELEASE_REPO } from '../src/client/update/channel';
 
 /** Same text as tools/release/sign.mjs DEV_KEY_SEED_TEXT (the release lane's dev key). */

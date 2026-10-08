@@ -7,12 +7,61 @@ import { randomBytes } from 'node:crypto';
 import { initialEmpire, MANAGER_NAMES, type SupervisionState } from '../src/shared/empire.js';
 import type { ServerMsg, WorkerInfo, QueueTask } from '../src/shared/protocol.js';
 import { sanitizeOutfit } from '../src/shared/outfit.js';
+import { projectWaitingOn, withWaitingOn } from '../src/server/waiting.js';
+import { projectOrg } from '../src/server/org.js';
+import type { ConsultancyJob } from '../src/shared/consultancy.js';
+import type { OrgState } from '../src/shared/org.js';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { Consultancy } from '../src/server/consultancy.js';
+import { ApprovalError, ApprovalInbox } from '../src/server/approvals.js';
+import { estimateJob } from '../src/server/estimate.js';
+
+/**
+ * ORG-03: a real approval inbox over a real consultancy journal in a throwaway temp directory, with a fake queue that
+ * never starts anything. One client plan waits for approval, and one approved job reached its $3 budget, so finance
+ * raised a budget increase and its second item is held. FIXTURE_APPROVALS=none starts with an empty inbox.
+ */
+const inboxDir = mkdtempSync(resolve(tmpdir(), 'empire-fixture-inbox-'));
+const fxTasks: QueueTask[] = [];
+const fxCosts: Record<string, number> = {};
+let inbox: ApprovalInbox | undefined;
+const fxOffice = new Consultancy(inboxDir, {
+  state: () => ({ tasks: fxTasks.map((t) => ({ ...t })), maxWorkers: 0 }),
+  add: (prompt, by, title, _issue, jobKey, dependsOn) => {
+    if (!fxTasks.some((t) => t.jobKey === jobKey)) fxTasks.push({ id: `fx-q${fxTasks.length + 1}`, jobKey, prompt, title: title ?? 'task', addedBy: by, addedAt: Date.now(), status: 'queued', ...(dependsOn?.length ? { dependsOn: [...dependsOn] } : {}) });
+    return undefined;
+  },
+}, () => inbox?.reconcile(), { estimate: (items) => estimateJob(items, [], { maxWorkers: 2, now: Date.now() }), taskCost: (id) => fxCosts[id] });
+inbox = new ApprovalInbox(inboxDir, fxOffice, () => { for (const ws of sockets.clients) send(ws, { t: 'approvals', state: inbox!.state() }); });
+if (process.env.FIXTURE_APPROVALS !== 'none') {
+  fxOffice.create({ requestId: 'fx-plan', client: 'Northwind', title: 'Booking portal', brief: 'Synthetic fixture brief', tasks: [{ title: 'Build the booking API', prompt: 'Synthetic' }, { title: 'Iterate on the UI', prompt: 'Synthetic', phase: 'iteration' }] }, 'Fixture CEO');
+  const audit = fxOffice.create({ requestId: 'fx-audit', client: 'Harbor Labs', title: 'Security audit', brief: 'Synthetic fixture brief', tasks: [{ title: 'First pass', prompt: 'Synthetic' }, { title: 'Second pass', prompt: 'Synthetic', phase: 'iteration' }] }, 'Fixture CEO');
+  fxOffice.approve(audit.id, 'Fixture CEO', { budgetUsd: 3 });
+  const first = fxTasks.find((t) => t.jobKey?.endsWith(':item-1'))!;
+  Object.assign(first, { status: 'done', outcome: 'done', finishedAt: Date.now() - 60_000 });
+  fxCosts[first.id] = 3.2;
+  fxOffice.reconcile();
+}
+
+/** ORG-01: synthetic client jobs so each executive has something real-shaped to compute from (the real projection). */
+function fixtureOrg(state: ReturnType<typeof initialEmpire>, workers: WorkerInfo[], tasks: QueueTask[]): OrgState {
+  const zero = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, cost: 0, calls: 0 };
+  const job = (id: string, extra: Partial<ConsultancyJob>): ConsultancyJob => ({ id, requestId: id, client: 'Fixture client', title: id, brief: 'Synthetic', decision: 'approved', status: 'queued', createdAt: 1, createdBy: 'Fixture', items: [], ...extra });
+  const jobs = [
+    job('fixture-plan', { decision: 'pending_approval', status: 'awaiting_approval' }),
+    job('fixture-portal', { approvedBudgetUsd: 12, actualSpendUsd: 4.8 }),
+    job('fixture-audit', { approvedBudgetUsd: 3, actualSpendUsd: 3.1, budgetHold: { reachedAt: 1, spentUsd: 3.1, approvedBudgetUsd: 3 }, items: [{ id: 'item-2', title: 'Second pass', prompt: 'Synthetic', jobKey: 'fixture', status: 'queued', phase: 'iteration', held: true }] }),
+  ];
+  return projectOrg({ now: Date.now(), supervision: state.supervision, workers, queue: { tasks, maxWorkers: 3 }, jobs, approvals: inbox?.state().items, usage: { total: { ...zero, cost: 7.9 }, today: { ...zero, cost: 1.2 }, day: '2026-10-08', budget: 10, pauseHiring: false } });
+}
 
 const port = Number(process.env.FIXTURE_PORT || 4613);
 if (!Number.isInteger(port) || port < 1024 || port > 65535 || port === 4610) throw new Error('Use an isolated fixture port (not 4610).');
 const root = resolve(import.meta.dirname, '../dist/public');
-const scenarios = ['working', 'idle', 'needs_input', 'turn_ended', 'interrupted', 'unknown', 'missing', 'stale', 'disconnected'] as const;
-let scenario: typeof scenarios[number] = 'needs_input';
+const scenarios = ['working', 'idle', 'needs_input', 'turn_ended', 'interrupted', 'unknown', 'missing', 'stale', 'disconnected', 'waiting'] as const;
+// FIXTURE_SCENARIO picks the starting scenario (e.g. waiting for LIFE-04: one job, one worker working, one waiting on it).
+let scenario: typeof scenarios[number] = (scenarios as readonly string[]).includes(process.env.FIXTURE_SCENARIO ?? '') ? process.env.FIXTURE_SCENARIO as typeof scenarios[number] : 'needs_input';
 // Like the real server, only ever agree to empire.v1 so a bearer.<token> entry is never echoed back.
 const sockets = new WebSocketServer({ noServer: true, handleProtocols: (offered) => (offered.has('empire.v1') ? 'empire.v1' : false) });
 // Fixture-only device sign-in for the bundled apps: any password works (or only FIXTURE_PASSWORD when set, so the
@@ -26,7 +75,7 @@ const json = (res: import('node:http').ServerResponse, status: number, body: unk
 const send = (ws: WebSocket, msg: ServerMsg) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg)); };
 function snapshot() {
   const now = Date.now();
-  const phase: SupervisionState['chief']['phase'] = ['missing', 'stale', 'disconnected'].includes(scenario) ? 'working' : scenario as SupervisionState['chief']['phase'];
+  const phase: SupervisionState['chief']['phase'] = ['missing', 'stale', 'disconnected', 'waiting'].includes(scenario) ? 'working' : scenario as SupervisionState['chief']['phase'];
   const status: WorkerInfo['status'] = phase === 'turn_ended' ? 'done' : phase === 'interrupted' || phase === 'unknown' ? 'offline' : phase as WorkerInfo['status'];
   const worker: WorkerInfo = { id: 'fixture-chief', kind: 'agent', deskId: 'desk-1', name: 'Alex · fixture', color: '#54bab6', status,
     processState: phase === 'interrupted' ? 'stopped' : phase === 'unknown' ? 'unknown' : 'running',
@@ -50,7 +99,34 @@ function snapshot() {
       reason: phase === 'needs_input' ? 'Waiting for a permission decision in the terminal.' : phase === 'interrupted' ? 'The server restarted; this attempt was interrupted.' : phase === 'unknown' ? 'Prior process state cannot be established. Diagnose it before retrying.' : 'Synthetic observed state.' },
     workforce: { active: phase === 'working' ? 1 : 0, attention: phase === 'needs_input' ? 1 : 0, queued: 0 } };
   if (scenario === 'missing') delete state.supervision;
-  return { state, worker, task };
+  const job = scenario === 'waiting' ? waitingJob(now) : { workers: [], tasks: [] };
+  const tasks = [task, ...job.tasks];
+  // The real server projection (src/server/waiting.ts) decides who is waiting on whom; nothing is hand-set here.
+  const waits = projectWaitingOn(tasks, [worker, ...job.workers]);
+  return { state, worker, task, tasks, jobWorkers: job.workers.map((w) => withWaitingOn(w, waits)) };
+}
+/**
+ * LIFE-04 scenario: one client job with three ordered items. Cyrus finished item 1, Bea is working on item 2, and item 3
+ * depends on both, so it stays queued and Cyrus waits on Bea at an amenity. A second job shows a held task whose
+ * dependency stopped before finishing. Display-only: no process, no provider.
+ */
+const WAITING_DESKS = ['desk-2', 'desk-3'];
+function waitingJob(now: number): { workers: WorkerInfo[]; tasks: QueueTask[] } {
+  const base = { kind: 'agent' as const, acked: true, createdBy: 'Fixture', cols: 90, rows: 25, viewers: [] as string[] };
+  const bea: WorkerInfo = { ...base, id: 'fixture-bea', deskId: WAITING_DESKS[0], name: 'Bea', color: '#f7aef8', status: 'working', processState: 'running', createdAt: now - 600_000,
+    task: { name: 'Build checkout API', summary: 'Synthetic fixture — no agent runs' } };
+  const cyrus: WorkerInfo = { ...base, id: 'fixture-cyrus', deskId: WAITING_DESKS[1], name: 'Cyrus', color: '#5bc0eb', status: 'done', processState: 'running', createdAt: now - 1_200_000,
+    task: { name: 'Design checkout schema', summary: 'Finished — synthetic fixture' } };
+  const item = (n: number, title: string, extra: Partial<QueueTask>): QueueTask => ({ id: `fixture-job-${n}`, jobKey: `consultancy:consultancy-fixture00000:item-${n}`, title, prompt: 'Synthetic fixture',
+    addedBy: 'Fixture CEO', addedAt: now - 1_300_000, status: 'queued', attempt: 1, ...extra });
+  const tasks: QueueTask[] = [
+    item(1, 'Design checkout schema', { status: 'done', outcome: 'done', workerId: cyrus.id, workerName: 'Cyrus', deskId: cyrus.deskId, startedAt: now - 1_200_000, finishedAt: now - 300_000 }),
+    item(2, 'Build checkout API', { status: 'running', workerId: bea.id, workerName: 'Bea', deskId: bea.deskId, startedAt: now - 600_000 }),
+    item(3, 'Wire checkout into the storefront', { dependsOn: ['fixture-job-1', 'fixture-job-2'], blockedBy: ['fixture-job-2'] }),
+    { id: 'fixture-held-1', title: 'Draft launch email copy', prompt: 'Synthetic fixture', addedBy: 'Fixture CEO', addedAt: now - 900_000, status: 'done', attempt: 1, outcome: 'exited', error: 'stopped before finishing', finishedAt: now - 500_000 },
+    { id: 'fixture-held-2', title: 'Send launch emails', prompt: 'Synthetic fixture', addedBy: 'Fixture CEO', addedAt: now - 900_000, status: 'done', attempt: 1, outcome: 'failed', error: 'dependency fixture-held-1 did not finish', dependsOn: ['fixture-held-1'], finishedAt: now - 499_000 },
+  ];
+  return { workers: [bea, cyrus], tasks };
 }
 // Synthetic desk staff for attire checks: FIXTURE_WORKERS=n seats n extra idle workers in default attire, and a hire
 // from the desk dialog seats one more with the chosen outfit. They are display-only: no process, no provider.
@@ -64,13 +140,18 @@ function seatFixtureWorker(deskId: string, outfit?: unknown): WorkerInfo {
   extraWorkers.set(w.id, w);
   return w;
 }
-for (let i = 0; i < Math.min(18, Number(process.env.FIXTURE_WORKERS) || 0); i++) seatFixtureWorker(`desk-${i + 2}`);
+for (let i = 0, n = Math.min(18, Number(process.env.FIXTURE_WORKERS) || 0), desk = 2; i < n && desk <= 20; desk++)
+  if (!WAITING_DESKS.includes(`desk-${desk}`) || process.env.FIXTURE_SCENARIO !== 'waiting') { seatFixtureWorker(`desk-${desk}`); i++; }
 function publish(ws: WebSocket) {
-  const {state, worker, task} = snapshot();
+  const {state, worker, tasks, jobWorkers} = snapshot();
   send(ws, { t: 'worker.update', worker });
   for (const w of extraWorkers.values()) send(ws, { t: 'worker.update', worker: w });
-  send(ws, { t: 'queue', state: { tasks: [task], maxWorkers: 1 } });
+  for (const w of jobWorkers) send(ws, { t: 'worker.update', worker: w });
+  // Leaving the waiting scenario sends its job workers home again.
+  if (!jobWorkers.length) for (const id of ['fixture-bea', 'fixture-cyrus']) send(ws, { t: 'worker.remove', workerId: id });
+  send(ws, { t: 'queue', state: { tasks, maxWorkers: jobWorkers.length ? 3 : 1 } });
   send(ws, { t: 'empire', state });
+  send(ws, { t: 'org', state: fixtureOrg(state, [worker, ...jobWorkers], tasks) });
 }
 const controls = `<!doctype html><html lang="en"><meta charset="utf-8"><title>Agent Empire QA controls</title>
 <style>body{font:17px system-ui;background:#101923;color:#e7eef6;max-width:760px;margin:4rem auto;padding:1rem}button,a{font:inherit;margin:.4rem;padding:.6rem;color:inherit}button{background:#22374a;border:1px solid #8194a9;border-radius:8px}a{display:block}</style>
@@ -131,6 +212,18 @@ const server = createServer(async (req, res) => {
     for (const [ws, token] of socketToken) if (token === entry[0]) ws.close(4401, 'Device signed out');
     return json(res, 200, { ok: true });
   }
+  if (url.pathname === '/__fixture/jobs') return json(res, 200, fxOffice.snapshot());
+  if (url.pathname === '/api/approvals' && req.method === 'GET') return json(res, 200, inbox!.state());
+  const decision = /^\/api\/approvals\/(A[1-9]\d{0,8})\/(approve|reject)$/.exec(url.pathname);
+  if (decision && req.method === 'POST') {
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    let body: { budgetUsd?: unknown } = {}; try { body = raw.trim() ? JSON.parse(raw) : {}; } catch { return json(res, 400, { error: 'Expected a JSON decision.' }); }
+    try {
+      const item = decision[2] === 'approve' ? inbox!.approve(decision[1], 'Fixture CEO', { budgetUsd: body.budgetUsd }) : inbox!.reject(decision[1], 'Fixture CEO');
+      for (const ws of sockets.clients) publish(ws);
+      return json(res, 200, item);
+    } catch (error) { return json(res, error instanceof ApprovalError ? error.status : 500, { error: (error as Error).message }); }
+  }
   if (req.method !== 'GET') { res.writeHead(405); return res.end(); }
   try {
     const file = resolve(root, '.' + decodeURIComponent(url.pathname === '/' ? '/index.html' : url.pathname));
@@ -153,19 +246,19 @@ server.on('upgrade', (req, socket, head) => {
   sockets.handleUpgrade(req, socket, head, ws => { if (token) socketToken.set(ws, token); ws.on('close', () => socketToken.delete(ws)); sockets.emit('connection', ws); });
 });
 sockets.on('connection', ws => {
-  const {worker, task} = snapshot();
+  const {state, worker, tasks, jobWorkers} = snapshot();
   const empty = { items: [], fetchedAt: Date.now(), loading: false };
   const zero = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, cost: 0, calls: 0 };
-  send(ws, { t: 'welcome', you: 'fixture-ceo', peers: [], workers: [worker], project: { name: 'UI fixture · synthetic data', dir: '[isolated fixture]', agentCmd: 'disabled' },
+  send(ws, { t: 'welcome', you: 'fixture-ceo', peers: [], workers: [worker, ...jobWorkers], project: { name: 'UI fixture · synthetic data', dir: '[isolated fixture]', agentCmd: 'disabled' },
     issues: empty, pulls: empty, ice: [], chat: [], invites: false, version: 'fixture', upgrade: { available: false, phase: 'idle' },
-    services: { items: [], port }, decor: [], usage: { total: zero, today: zero, day: '2026-09-27', pauseHiring: false }, queue: { tasks: [task], maxWorkers: 1 } });
+    services: { items: [], port }, decor: [], usage: { total: zero, today: zero, day: '2026-09-27', pauseHiring: false }, queue: { tasks, maxWorkers: jobWorkers.length ? 3 : 1 }, org: fixtureOrg(state, [worker, ...jobWorkers], tasks), approvals: inbox!.state() });
   publish(ws);
   ws.on('message', raw => {
     let msg: any; try { msg = JSON.parse(raw.toString()); } catch { return; }
     if (msg.t === 'worker.attach') send(ws, { t: 'term.snapshot', workerId: 'fixture-chief', cols: 90, rows: 25, data: 'SYNTHETIC TERMINAL — no commands execute.\r\nType to test keyboard routing: ' });
     else if (msg.t === 'term.input' && typeof msg.data === 'string') send(ws, { t: 'term.data', workerId: 'fixture-chief', data: msg.data.replace(/\r/g, '\r\n') });
     else if (msg.t === 'ping') send(ws, { t: 'pong', at: msg.at });
-    else if (msg.t === 'worker.spawn' && typeof msg.deskId === 'string' && /^desk-([2-9]|1[0-9]|20)$/.test(msg.deskId) && msg.kind !== 'shell' && ![...extraWorkers.values()].some((w) => w.deskId === msg.deskId)) {
+    else if (msg.t === 'worker.spawn' && typeof msg.deskId === 'string' && /^desk-([2-9]|1[0-9]|20)$/.test(msg.deskId) && msg.kind !== 'shell' && ![...extraWorkers.values()].some((w) => w.deskId === msg.deskId) && !(scenario === 'waiting' && WAITING_DESKS.includes(msg.deskId))) {
       const w = seatFixtureWorker(msg.deskId, msg.outfit);
       for (const client of sockets.clients) send(client, { t: 'worker.update', worker: w });
       send(ws, { t: 'toast', level: 'info', text: `Fixture only: ${w.name} sat down for display; no agent runs.` });

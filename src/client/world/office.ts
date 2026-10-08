@@ -10,7 +10,10 @@ import { BOARDS, DESKS, DESK_SIZE, FLOOR, LOFT, STAIRS, TV, WALL_HEIGHT, deskSea
 import { wallFacing, type WallId, type WallRect } from '../../shared/decor';
 import { mesh, roundedBox, textPlane, toon } from './toon';
 import { deskAccessories, furnishOffice } from './furnishing';
-import { FURNISHING_FIXTURES } from './furnishing-layout';
+import { FOUNDER_DESK, FURNISHING_FIXTURES, LOFT_COUCH, LOFT_PLANT } from './furnishing-layout';
+import { buildExecutiveDesks } from './executives';
+import { buildInboxTray, type InboxTray } from './inbox-tray';
+import type { ExecutiveRole } from '../../shared/org';
 import { buildAmenities } from './amenities';
 
 export interface Collider {
@@ -23,7 +26,7 @@ export interface Collider {
   bottom?: number;
 }
 
-export type InteractKind = 'desk' | 'issues' | 'pulls' | 'services' | 'queue' | 'tv' | 'coffee' | 'gym' | 'cafeteria' | 'decor' | 'elevator';
+export type InteractKind = 'desk' | 'issues' | 'pulls' | 'services' | 'queue' | 'tv' | 'coffee' | 'gym' | 'cafeteria' | 'decor' | 'elevator' | 'executive' | 'inbox';
 
 /** Something you can use. Its scene object carries it as `userData.interact`, for clicking. */
 export interface Interactable {
@@ -33,6 +36,10 @@ export interface Interactable {
   radius: number;
   deskId?: string;
   decorId?: string;
+  /** An executive's office in the loft (ORG-01). */
+  role?: ExecutiveRole;
+  /** Floor height it is used from (the loft); absent means the ground floor of the office group. */
+  y?: number;
 }
 
 export interface DeskView {
@@ -53,6 +60,10 @@ export interface Office {
   group: THREE.Group;
   colliders: Collider[];
   interactables: Interactable[];
+  /** The loft's executive desks; only HQ's ground-floor office has executives. */
+  executiveInteractables: Interactable[];
+  /** ORG-03: the CEO's inbox tray on the founder's desk in the loft. */
+  inboxTray: InboxTray;
   desks: Map<string, DeskView>;
   boardMeshes: Record<keyof typeof BOARDS, THREE.Mesh>;
   tvScreen: THREE.Mesh;
@@ -518,7 +529,7 @@ export function buildOffice(): Office {
   interactables.push(...buildAmenities(group));
   for (const f of FURNISHING_FIXTURES) fixture(...f);
 
-  buildLoft(group, colliders);
+  const { interactables: executiveInteractables, tray: inboxTray } = buildLoft(group, colliders);
   // Pictures stay clear of the stairs (step by step, so they can hang above them) and of what's on
   // the loft's walls upstairs, as buildLoft places it: a window on each wall, the couch, the sign.
   const run = (STAIRS.toX - STAIRS.fromX) / STAIRS.steps;
@@ -527,7 +538,7 @@ export function buildOffice(): Office {
   const loftZ = (LOFT.minZ + LOFT.maxZ) / 2;
   fixture('south', LOFT.minX + 2, LOFT.y + 1.5, 3.2, 2);
   fixture('east', loftZ, LOFT.y + 1.5, 3.2, 2);
-  fixture('east', loftZ, LOFT.y + 0.5, 2.4, 1);
+  fixture('east', LOFT_COUCH.z, LOFT.y + 0.5, 2.4, 1);
   fixture('south', LOFT.maxX - 3, LOFT.y + 1.9, 2.6, 0.6);
 
   let nameSign: ReturnType<typeof textPlane> | null = null;
@@ -581,7 +592,7 @@ export function buildOffice(): Office {
       });
       office.setElevation(floor * FLOOR_RISE);
       elevator.setFloor(floor);
-    }, group, colliders, interactables, desks, boardMeshes, tvScreen, entranceDoor, fixtures: () => (signRect ? [...fixtures, signRect] : fixtures), setProjectName, update };
+    }, group, colliders, interactables, executiveInteractables, inboxTray, desks, boardMeshes, tvScreen, entranceDoor, fixtures: () => (signRect ? [...fixtures, signRect] : fixtures), setProjectName, update };
   return office;
 }
 
@@ -589,7 +600,7 @@ export function buildOffice(): Office {
  * The upstairs office: a loft on posts in the south-east corner, with glass on the two sides that
  * face the desks, reached by stairs along the south wall.
  */
-function buildLoft(group: THREE.Group, colliders: Collider[]) {
+function buildLoft(group: THREE.Group, colliders: Collider[]): { interactables: Interactable[]; tray: InboxTray } {
   const { minX, maxX, minZ, maxZ, y: floorY, height } = LOFT;
   const w = maxX - minX;
   const d = maxZ - minZ;
@@ -706,8 +717,9 @@ function buildLoft(group: THREE.Group, colliders: Collider[]) {
   colliders.push({ minX: fromX, maxX: toX, minZ: STAIRS.minZ - 0.1, maxZ: STAIRS.minZ, top: 99 });
 
   // Inside: the big desk facing the glass, a comfy couch, a telescope aimed at the desks.
-  const deskX = cx + 0.5;
-  const deskZ = cz - 0.3;
+  // The founder's desk sits back toward the south wall; the executives' row faces the glass (ORG-01).
+  const deskX = FOUNDER_DESK.x;
+  const deskZ = FOUNDER_DESK.z;
   const desk = new THREE.Group();
   desk.add(mesh(roundedBox(2.6, 0.1, 1.2, 0.1), woodMat, 0, 0.78, 0));
   desk.add(mesh(box(2.4, 0.66, 0.08), toon('#8a5a3b'), 0, 0.4, -0.5));
@@ -723,10 +735,12 @@ function buildLoft(group: THREE.Group, colliders: Collider[]) {
   desk.add(plate);
   const bossChair = chair('#2b2d42');
   bossChair.scale.setScalar(1.2);
-  bossChair.position.set(0, 0, 1.0);
+  bossChair.position.set(0, 0, 0.85);
   desk.add(bossChair);
   desk.position.set(deskX, floorY, deskZ);
   group.add(desk);
+  // ORG-03: the inbox tray on the desk's east end; you use it from the CEO's side, beside the chair.
+  const tray = buildInboxTray(desk, { x: deskX + 1.1, z: deskZ + 0.95, y: floorY });
   colliders.push({ minX: deskX - 1.3, maxX: deskX + 1.3, minZ: deskZ - 0.6, maxZ: deskZ + 0.6, bottom: floorY, top: floorY + 0.8 });
 
   const couch = new THREE.Group();
@@ -735,11 +749,11 @@ function buildLoft(group: THREE.Group, colliders: Collider[]) {
   couch.add(mesh(roundedBox(0.35, 0.9, 2.4, 0.15), couchMat, 0.45, 0.55, 0));
   for (const sz of [-1, 1]) couch.add(mesh(roundedBox(1, 0.7, 0.3, 0.15), couchMat, 0, 0.45, sz * 1.1));
   couch.add(mesh(roundedBox(0.2, 0.45, 0.5, 0.1), toon('#343a3c'), 0.2, 0.75, 0.4));
-  couch.position.set(maxX - 0.65, floorY, cz);
+  couch.position.set(LOFT_COUCH.x, floorY, LOFT_COUCH.z);
   group.add(couch);
-  colliders.push({ minX: maxX - 1.15, maxX, minZ: cz - 1.2, maxZ: cz + 1.2, bottom: floorY, top: floorY + 0.55 });
+  colliders.push({ minX: maxX - 1.15, maxX, minZ: LOFT_COUCH.z - 1.2, maxZ: LOFT_COUCH.z + 1.2, bottom: floorY, top: floorY + 0.55 });
 
-  const rug = mesh(roundedBox(4.6, 0.02, 3.2, 0.6), toon('#66716b'), deskX - 0.3, floorY + 0.015, cz + 0.1, false);
+  const rug = mesh(roundedBox(6.6, 0.02, 1.0, 0.3), toon('#66716b'), 13.7, floorY + 0.015, 10.35, false);
   group.add(rug);
 
   const scope = new THREE.Group();
@@ -762,8 +776,7 @@ function buildLoft(group: THREE.Group, colliders: Collider[]) {
   colliders.push({ minX: minX + 0.65, maxX: minX + 1.15, minZ: minZ + 0.65, maxZ: minZ + 1.15, bottom: floorY, top: floorY + 1.3 });
 
   for (const [px, pz, s] of [
-    [maxX - 0.6, minZ + 0.6, 1],
-    [maxX - 0.6, maxZ - 0.6, 1.2],
+    [LOFT_PLANT.x, LOFT_PLANT.z, LOFT_PLANT.scale],
   ]) {
     const p = plant(s);
     p.position.set(px, floorY, pz);
@@ -773,7 +786,7 @@ function buildLoft(group: THREE.Group, colliders: Collider[]) {
   }
 
   const lamp = pendant();
-  lamp.position.set(deskX, roofY - 0.4, cz);
+  lamp.position.set(13.7, roofY - 0.4, 10.3);
   group.add(lamp);
 
   // Signs: one on the back wall inside, one over the glass for everyone downstairs.
@@ -787,4 +800,6 @@ function buildLoft(group: THREE.Group, colliders: Collider[]) {
   outside.position.set(cx, roofY + 0.2, minZ - 0.06); // in front of the fascia and the glass rail
   outside.rotation.y = Math.PI;
   group.add(outside);
+
+  return { interactables: [...buildExecutiveDesks(group, colliders), tray.interactable], tray };
 }

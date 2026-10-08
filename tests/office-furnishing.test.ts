@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  AMENITY_COLLIDERS, AMENITY_SPOTS, BAR_STOOLS, BREAKFAST, CAFE_CHAIRS, CAFE_TABLES, CAFETERIA, FURNISHING_COLLIDERS, FURNISHING_FIXTURES, GYM, MEETING_CHAIRS, RECEPTION_CHAIR, TREADMILLS, type Footprint,
+  AMENITY_COLLIDERS, AMENITY_SPOTS, BAR_STOOLS, EXECUTIVE_DESKS, EXECUTIVE_DESK_SIZE, FOUNDER_DESK, LOFT_COLLIDERS, LOFT_LANDING, executiveApproach, executiveSeat, BREAKFAST, CAFE_CHAIRS, CAFE_TABLES, CAFETERIA, FURNISHING_COLLIDERS, FURNISHING_FIXTURES, GYM, MEETING_CHAIRS, RECEPTION_CHAIR, TREADMILLS, type Footprint,
 } from '../src/client/world/furnishing-layout';
 import { BOARDS, DESKS, DESK_SIZE, FLOOR, LIFT, LOFT, SPAWN, STAIRS, TV, deskSeat } from '../src/shared/layout';
 
@@ -125,4 +125,31 @@ test('chairs and stools block their seat and backrest, and wall fixtures are reg
   function named(name: string) {
     return FURNISHING_COLLIDERS.filter((f) => f.name === name);
   }
+});
+
+test('executive offices fit the loft, keep its door, aisle and posts clear, and are never funded workstations', () => {
+  const inLoft = (f: Box) => f.minX >= LOFT.minX + 0.12 && f.maxX <= LOFT.maxX && f.minZ >= LOFT.minZ + 0.12 && f.maxZ <= LOFT.maxZ;
+  for (const f of LOFT_COLLIDERS) {
+    assert.ok(inLoft(f), `${f.name} stands inside the loft, clear of the glass`);
+    assert.ok(f.top > 0 && f.top < LOFT.height, `${f.name} fits under the loft roof`);
+    assert.ok(!overlaps(f, LOFT_LANDING), `${f.name} keeps the stair landing open`);
+    for (const g of LOFT_COLLIDERS) if (f !== g) assert.ok(!overlaps(f, g), `${f.name} overlaps the ${g.name}`);
+  }
+  assert.equal(EXECUTIVE_DESKS.length, 5);
+  assert.deepEqual(EXECUTIVE_DESKS.map((d) => d.role), ['chief_of_staff', 'operations', 'finance', 'marketing_sales', 'research']);
+  for (const d of EXECUTIVE_DESKS) {
+    // Not a workstation: no desk-N id, and nowhere near a funded desk position.
+    assert.ok(!('id' in d));
+    for (const w of DESKS) assert.ok(Math.hypot(w.x - d.x, w.z - d.z) > 3, `${d.role} desk is not a workstation`);
+    const seat = executiveSeat(d);
+    const chair = LOFT_COLLIDERS.find((f) => f.name === `${d.role} chair`)!;
+    assert.ok(overlaps(chair, around(seat.x, seat.z, 0.01)), `${d.role} sits in its own chair`);
+    assert.ok(seat.z - d.z >= EXECUTIVE_DESK_SIZE.depth / 2 + 0.3, `${d.role} chair is pulled up to, not inside, the desk`);
+    const stand = executiveApproach(d);
+    for (const f of LOFT_COLLIDERS) assert.ok(!overlaps(f, around(stand.x, stand.z, 0.22)), `the ${d.role} approach is clear of the ${f.name}`);
+  }
+  // A real aisle between the executives' chairs and the founder's desk, from the landing to the far end.
+  const chairs = LOFT_COLLIDERS.filter((f) => f.name.endsWith(' chair'));
+  assert.ok(FOUNDER_DESK.z - FOUNDER_DESK.depth / 2 - Math.max(...chairs.map((c) => c.maxZ)) >= 1, 'the loft aisle stays at least 1 m');
+  for (const x of [LOFT.minX + 0.15, (LOFT.minX + LOFT.maxX) / 2]) for (const f of LOFT_COLLIDERS) assert.ok(!overlaps(f, around(x, LOFT.minZ + 0.15, 0.2)), `${f.name} clears a loft post`);
 });

@@ -188,7 +188,12 @@ export class WorkerManager {
     return false;
   }
 
-  spawn(deskId: string, by: string, prompt?: string, worktree = false, kind: WorkerKind = 'agent', queueOwned = false, outfit?: Outfit): WorkerInfo | string {
+  /**
+   * LIFE-04 continuity: `continues` starts the worktree from the dependency's branch. Only when that branch exists (and
+   * so the worktree really starts from the predecessor's work) are `persona`'s name and colour reused; otherwise the
+   * worker starts from HEAD as a new person. The name is used only when nobody else currently has it.
+   */
+  spawn(deskId: string, by: string, prompt?: string, worktree = false, kind: WorkerKind = 'agent', queueOwned = false, outfit?: Outfit, persona?: { name: string; color?: string }, continues?: { branch: string; title: string }): WorkerInfo | string {
     const executionBlocked = this.executionBlocker();
     if (executionBlocked) return executionBlocked;
     if (!fundedDesk(deskId, this.capacity())) return 'Build and furnish this workstation before employing a worker';
@@ -199,20 +204,24 @@ export class WorkerManager {
       if (paused) return paused;
     }
     const used = new Set([...this.workers.values()].map((w) => w.info.name.replace(/ 🐚$/, '')));
-    const name = NAMES.find((n) => !used.has(n)) ?? `Worker ${this.workers.size + 1}`;
+    const from = kind === 'agent' && worktree && continues && this.trees.hasBranch(continues.branch) ? continues : undefined;
+    if (!from) { persona = undefined; outfit = continues ? undefined : outfit; }
+    // Only a roster name: it also names the worktree branch, so free text never reaches git.
+    const wanted = persona && NAMES.includes(persona.name) ? persona.name : undefined;
+    const name = wanted && !used.has(wanted) ? wanted : NAMES.find((n) => !used.has(n)) ?? `Worker ${this.workers.size + 1}`;
     const id = randomBytes(6).toString('hex');
     let wt: WorkerInfo['worktree'];
     if (worktree) {
-      const made = this.trees.create(`${name.toLowerCase()}-${id.slice(0, 4)}`);
+      const made = this.trees.create(`${name.toLowerCase()}-${id.slice(0, 4)}`, from?.branch);
       if (typeof made === 'string') return made;
-      wt = made;
+      wt = from ? { ...made, continues: { branch: from.branch, title: from.title.slice(0, 120) } } : made;
     }
     const info: WorkerInfo = {
       id,
       kind,
       deskId,
       name: kind === 'shell' ? `${name} 🐚` : name,
-      color: kind === 'shell' ? '#8d99ae' : COLORS[Math.floor(Math.random() * COLORS.length)],
+      color: kind === 'shell' ? '#8d99ae' : persona?.color && /^#[0-9a-f]{6}$/i.test(persona.color) ? persona.color : COLORS[Math.floor(Math.random() * COLORS.length)],
       status: 'starting',
       processState: 'unknown',
       acked: true,
@@ -321,6 +330,14 @@ export class WorkerManager {
   }
 
   artifactPublishing(id: string): boolean { return !!this.workers.get(id)?.publishing; }
+
+  /** Publishing, opening a PR or stopping: the queue must not send this worker home now. */
+  workerBusy(id: string): boolean {
+    const w = this.workers.get(id);
+    return !!w && (!!w.publishing || !!w.stopping || !!w.info.prOpening);
+  }
+
+  branchExists(branch: string): boolean { return this.trees.hasBranch(branch); }
 
   /** Reserve a confirmed stopped worker until its immutable bundle has been verified. */
   async publishArtifact<T>(id: string, publish: (worker: WorkerInfo) => Promise<T>): Promise<T> {

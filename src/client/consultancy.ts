@@ -1,10 +1,65 @@
 import type { ConsultancyJob } from '../shared/consultancy';
 import { apiFetch } from './endpoint';
+import { ACTUAL_SPEND_LABEL, PHASE_LABEL, basisLabel, defaultApprovedBudget, fmtDurationRange, fmtUsdRange } from '../shared/org';
+
+/** The CEO's edited budget per pending job, kept across the 5-second refreshes while they type. */
+const budgetDraft = new Map<string, string>();
+const usd = (n: number) => `$${n.toFixed(2)}`;
+
+/** ORG-02: the estimate before approval, labelled with its basis; afterwards, approved budget against actual spend. */
+function estimateSection(job: ConsultancyJob): HTMLElement | null {
+  const e = job.estimate;
+  if (!e && job.approvedBudgetUsd === undefined && job.actualSpendUsd === undefined) return null;
+  const box = text('section', '', 'estimate');
+  box.setAttribute('aria-labelledby', 'estimate-title');
+  const head = text('h3', job.decision === 'pending_approval' ? 'Estimate before approval' : 'Estimate and actual spend');
+  head.id = 'estimate-title';
+  box.append(head);
+  if (e) {
+    const figures = text('dl', '', 'estimate-figures');
+    const pair = (k: string, v: string) => { const d = text('div', ''); d.append(text('dt', k), text('dd', v)); figures.append(d); };
+    pair('Provider cost', fmtUsdRange(e.costUsd));
+    pair('Calendar time', fmtDurationRange(e.calendarMs));
+    pair('Workers at once', String(Math.max(1, e.maxWorkers)));
+    box.append(figures, text('p', basisLabel(e.basis), e.basis.source === 'default' ? 'estimate-basis rough' : 'estimate-basis'));
+    const list = text('ol', '', 'estimate-items');
+    job.items.forEach((item, i) => {
+      const ie = e.items[i]; if (!ie) return;
+      const li = text('li', '');
+      li.append(text('span', PHASE_LABEL[ie.phase], 'phase'), text('span', item.title), text('span', fmtUsdRange(ie.costUsd), 'amount'));
+      if (item.actualSpendUsd !== undefined) li.append(text('span', `actual ${usd(item.actualSpendUsd)}`, 'amount actual'));
+      list.append(li);
+    });
+    box.append(list);
+    box.append(text('p', 'An estimate, not a quote: the p25–p75 range of comparable finished tasks. Items run in order unless the plan marks them parallel.', 'estimate-note'));
+  }
+  if (job.decision === 'pending_approval' && e) {
+    const label = text('label', 'Approved budget (USD)', 'budget');
+    const input = document.createElement('input');
+    input.type = 'number'; input.min = '1'; input.step = '1'; input.inputMode = 'decimal'; input.id = 'budget-input';
+    input.value = budgetDraft.get(job.id) ?? String(defaultApprovedBudget(e));
+    input.addEventListener('input', () => budgetDraft.set(job.id, input.value));
+    label.append(input);
+    box.append(label, text('p', 'Defaults to the top of the range, rounded up. If provider spend reaches it, unstarted items wait for your approval; running work is not stopped.', 'estimate-note'));
+  }
+  if (job.approvedBudgetUsd !== undefined) {
+    const spent = job.actualSpendUsd ?? 0;
+    const meter = text('div', '', 'budget-meter');
+    meter.setAttribute('role', 'img');
+    meter.setAttribute('aria-label', `${usd(spent)} of ${usd(job.approvedBudgetUsd)} approved budget spent`);
+    const fill = text('span', '');
+    fill.style.width = `${Math.min(100, (spent / job.approvedBudgetUsd) * 100).toFixed(1)}%`;
+    meter.append(fill);
+    box.append(text('p', `Approved budget ${usd(job.approvedBudgetUsd)} · actual ${usd(spent)} (${ACTUAL_SPEND_LABEL})`, 'estimate-actual'), meter);
+  }
+  if (job.budgetHold) box.append(text('p', `Budget reached at ${usd(job.budgetHold.spentUsd)}. Unstarted items are held until the budget is raised (coming with the approval inbox).`, 'estimate-hold'));
+  return box;
+}
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const labels: Record<string, string> = { awaiting_approval: 'Your approval', queued: 'Queued', running: 'In progress', needs_attention: 'Needs attention', awaiting_review: 'Ready for review', rejected: 'Declined' };
 interface Snapshot { revision: number; jobs: ConsultancyJob[]; storageError?: string }
-interface Status { repository: string; resources: { workstations: number; workers: number; attention: number; concurrency: number; queued: number | null; blocker?: string; mode: string }; telegram: {configured: boolean; running: boolean; error?: string; lastPollAt?: number} }
+interface Status { repository: string; resources: { workstations: number; workers: number; attention: number; concurrency: number; queued: number | null; blocker?: string; mode: string }; telegram: {configured: boolean; running: boolean; error?: string; lastPollAt?: number}; email?: { label: string; error?: string } }
 let jobs: ConsultancyJob[] = [], fresh = false, selected: string | undefined, busy = false, refreshing = false;
 let lastRendered = '';
 let refreshFlight: Promise<void> | undefined;
@@ -42,6 +97,7 @@ function showJobs() {
 }
 function renderDetail() {
   const focusedAction = detail.contains(document.activeElement) ? document.activeElement?.textContent : undefined;
+  const budgetFocused = document.activeElement?.id === 'budget-input';
   const job = jobs.find(j => j.id === selected); if (!job) return;
   const title = text('h2', job.title); title.id = 'detail-title';
   const content = $('detail-content'); content.replaceChildren(title,text('p',`${job.client} · ${labels[job.status] ?? job.status}`),text('p',job.brief));
@@ -52,6 +108,8 @@ function renderDetail() {
     plan.append(text('h3',item.title), text('small', labels[item.status] ?? item.status), text('p',item.prompt));
     if (item.attention) plan.append(text('p',item.attention));
   }
+  const estimate = estimateSection(job);
+  if (estimate) content.append(estimate);
   content.append(plan, text('p','Approval submits these work items to this host’s local queue. Existing provider charges, budget, concurrency and funded desks still apply. Worker turn completion requires review before client delivery.'));
   const actions = $('detail-actions'); actions.replaceChildren();
   if (job.decision === 'pending_approval') {
@@ -61,7 +119,16 @@ function renderDetail() {
       b.addEventListener('click',async () => {
         if (busy || !fresh) return;
         busy = true; error('action-error'); renderDetail();
-        try { await api(`jobs/${encodeURIComponent(job.id)}/${kind}`,{}); await refresh(); }
+        let body: { budgetUsd?: number } = {};
+        if (kind === 'approve') {
+          const raw = ($('budget-input') as HTMLInputElement | null)?.value.trim();
+          if (raw) {
+            const n = Number(raw);
+            if (!Number.isFinite(n) || n <= 0) { busy = false; error('action-error', 'Enter a budget above $0, or clear it to use the estimate.'); renderDetail(); return; }
+            body = { budgetUsd: n };
+          }
+        }
+        try { await api(`jobs/${encodeURIComponent(job.id)}/${kind}`, body); budgetDraft.delete(job.id); await refresh(); }
         catch (e) { error('action-error',(e as Error).message); }
         finally { busy = false; renderDetail(); }
       });
@@ -69,6 +136,7 @@ function renderDetail() {
       if (focusedAction === label && !b.disabled) b.focus();
     }
   }
+  if (budgetFocused) ($('budget-input') as HTMLInputElement | null)?.focus();
   if (detail.open && !detail.contains(document.activeElement)) $('close-detail').focus();
 }
 async function refresh() {
@@ -91,6 +159,7 @@ async function refreshNow() {
     metric('workers-count', String(status.resources.workers)); metric('desks-count', String(status.resources.workstations));
     $('chief-report').textContent = status.resources.blocker || `${status.resources.attention} workers need input. ${status.resources.queued} tasks waiting. Up to ${status.resources.concurrency} workers can run at once within the funded desk limit. Work is scoped to ${status.repository}.`;
     $('telegram-status').textContent = status.telegram.error || (!status.telegram.configured ? 'Not connected yet. Connect your private bot to send briefs, approve plans and receive updates.' : status.telegram.lastPollAt ? 'Connected to your configured private bot.' : 'Configured. Waiting for the first successful connection.');
+    $('email-status').textContent = status.email ? `${status.email.label}${status.email.error ? ` — ${status.email.error}` : ''}` : 'Email: not configured';
     showJobs(); if (detail.open && (changed || !wasFresh)) renderDetail();
   } catch (e) {
     fresh = false; $('connection').textContent = 'Host unavailable · last view retained'; error('error',(e as Error).message);
@@ -113,7 +182,7 @@ form.addEventListener('submit', async e => {
   const values = new FormData(form); const body = {requestId,client:String(values.get('client') ?? '').trim(),title:String(values.get('title') ?? '').trim(),brief:String(values.get('brief') ?? '').trim()};
   if (!body.client || !body.title || !body.brief) { setStep(1); error('form-error','Please fill in the client, title and brief.'); return; }
   if (step === 1) {
-    $('brief-review').replaceChildren(text('h3',`${body.client} / ${body.title}`),text('p',body.brief),text('p','The initial plan contains one work item matching your brief. Saving does not launch a worker. Review and approve the job separately to start.'));
+    $('brief-review').replaceChildren(text('h3',`${body.client} / ${body.title}`),text('p',body.brief),text('p','The initial plan contains one work item matching your brief. Saving does not launch a worker. The next step shows a cost and time estimate with its basis; approve the job separately to start.'));
     setStep(2); return;
   }
   busy = true; ($('save-job') as HTMLButtonElement).disabled = true; error('form-error');

@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertNoFixtureBuild } from './check-no-fixture.mjs';
+import { assertNoFixtureBuild, devKeyFiles, devReleaseKey } from './check-no-fixture.mjs';
 
 // Every shell file the app loads. The Windows stage copies exactly these; tests/desktop-bridge.test.ts checks the list.
 const DESKTOP_FILES = ['package.json', 'main.cjs', 'preload.cjs', 'bridge-policy.cjs', 'app-protocol.cjs', 'update-store.cjs', 'secure-store.cjs', 'device-flow.cjs', 'local-host.cjs', 'credential-vault.cjs',
@@ -13,7 +13,12 @@ const allArgs = process.argv.slice(2);
 // --skip-archive (release workflow): leave the packaged folder unzipped so it can be code-signed first, then archived
 // by tools/release/zip.mjs (Windows runners have no zip/unzip commands).
 const skipArchive = allArgs.includes('--skip-archive');
-const args = allArgs.filter(arg => arg !== '--skip-archive');
+// --dev-updates (local update checks only, REL-07): a development build that also trusts the public development release
+// key, so it honours the loopback update fixture (tools/update-desktop-check.ts). It writes desktop/dev-trust.json; every
+// prepare without the flag deletes that file, and the release workflow never passes it (tools/release/sign.mjs
+// check-trust proves the packaged app carries neither the file nor the key).
+const devUpdates = allArgs.includes('--dev-updates');
+const args = allArgs.filter(arg => arg !== '--skip-archive' && arg !== '--dev-updates');
 const crossPackage = args.length > 0;
 if (crossPackage && args.join(' ') !== '--platform=win32 --arch=x64') throw new Error('Supported target: --platform=win32 --arch=x64 [--skip-archive]; omit flags to prepare the local desktop.');
 const platform = crossPackage ? 'win32' : process.platform;
@@ -26,6 +31,12 @@ if (crossPackage) {
     copyFileSync(path.join(project, 'desktop', name), path.join(desktop, name));
   copyFileSync(path.join(project, 'docs/PLATFORMS.md'), path.join(desktop, 'PLATFORMS.md'));
 }
+const devTrust = path.join(desktop, 'dev-trust.json');
+rmSync(devTrust, { force: true });
+if (devUpdates) {
+  writeFileSync(devTrust, `${JSON.stringify({ devReleasePublicKey: devReleaseKey(), note: 'Development build (prepare-desktop.mjs --dev-updates): trusts the public development release key. Never ship.' }, null, 2)}\n`);
+  console.warn('warning: development desktop build (--dev-updates): it trusts the public development release key. Never ship it.');
+}
 const root = path.join(desktop, 'runtime');
 mkdirSync(root, { recursive: true });
 for (const [from, to] of [['dist/server', 'server'], ['dist/public', 'public']]) {
@@ -35,6 +46,12 @@ for (const [from, to] of [['dist/server', 'server'], ['dist/public', 'public']])
 }
 // A fixture client (fake GitHub API) must never be packaged.
 assertNoFixtureBuild(path.join(root, 'public'));
+if (!devUpdates) {
+  // Release shape (REL-07): nothing shipped may carry the development key: shell files, the game, the bundled server.
+  const hits = [...DESKTOP_FILES.filter((name) => devKeyFiles(path.join(desktop, name)).length),
+    ...['public', 'server'].flatMap((dir) => devKeyFiles(path.join(root, dir)).map((f) => `runtime/${dir}/${f}`))];
+  if (hits.length) throw new Error(`The desktop app would carry the development release key: ${hits.slice(0, 5).join(', ')}`);
+}
 copyFileSync(path.join(project, 'dist/server/server/device-sync.js'), path.join(root, 'device-sync.js'));
 // The game window loads this bundle through empire-app://game (desktop/app-protocol.cjs); fail early if it's missing.
 for (const file of ['public/index.html', 'device-sync.js']) if (!existsSync(path.join(root, file))) throw new Error(`Bundled ${file} is missing from ${root}`);

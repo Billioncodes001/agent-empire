@@ -1,4 +1,6 @@
 import { Consultancy, ConsultancyError } from './consultancy.js';
+import { ApprovalError, ApprovalInbox } from './approvals.js';
+import { EmailNotifier, NOT_CONFIGURED, emailConfig, smtpTransport, type MailTransport } from './email.js';
 import { TelegramBridge, telegramConfig, type TelegramConfig, type TelegramTransport } from './telegram.js';
 import { chiefCommands } from './chief-commands.js';
 import { Empire } from './empire.js';
@@ -19,8 +21,11 @@ import { Team } from './team.js';
 import { Upgrader } from './upgrade.js';
 import { Services } from './services.js';
 import { Decor, ImageProxy } from './decor.js';
-import { Ledger } from './usage.js';
+import { Ledger, taskCostObservations } from './usage.js';
+import { estimateJob, historyFromTaskCosts } from './estimate.js';
+import { orgSignature, projectOrg } from './org.js';
 import { TaskQueue } from './queue.js';
+import { projectWaitingOn, withWaitingOn } from './waiting.js';
 import { Changes } from './changes.js';
 import { RELAY_LOGIN, relayRequest, relayUpgrade, signInPage, stoppedPage, tunneledPort } from './relay.js';
 import type { ChatLine, ClientMsg, PeerInfo, ProjectInfo, ServerMsg, ServicesState } from '../shared/protocol.js';
@@ -169,6 +174,8 @@ export interface ServerRuntime {
   execution?: ExecutionOptions;
   /** Explicit test injection; false prevents use of host Telegram environment. */
   telegram?: { config: TelegramConfig; transport?: TelegramTransport } | false;
+  /** Explicit test injection (a fake transport); false prevents use of the host email environment. */
+  email?: { transport: MailTransport; to: string; from: string } | false;
   /** Packaged first-run desktops require an explicit execution choice before any local process. */
   requireExecutionSetup?: boolean;
 }
@@ -218,8 +225,23 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
 
   let workers!: WorkerManager;
   let queue!: TaskQueue;
+  // LIFE-04: waitingOn is projected from the queue, never stored on the worker. Remember what each client last got so a
+  // queue change re-sends exactly the workers whose waitingOn appeared, changed or cleared.
+  const waitingSent = new Map<string, string>();
+  const currentWaits = () => (queue ? projectWaitingOn(queue.state().tasks, workers.list()) : new Map());
+  const workersForClients = () => { const waits = currentWaits(); return workers.list().map((w) => withWaitingOn(w, waits)); };
+  const syncWaiting = (skip?: string) => {
+    const waits = currentWaits();
+    for (const w of workers.list()) {
+      const key = JSON.stringify(waits.get(w.id) ?? null);
+      if ((waitingSent.get(w.id) ?? 'null') === key) continue;
+      waitingSent.set(w.id, key);
+      if (w.id !== skip) broadcast({ t: 'worker.update', worker: withWaitingOn(w, waits) });
+    }
+  };
   let changes!: Changes;
   let consultancy: Consultancy | undefined;
+  let inbox: ApprovalInbox | undefined;
   let observing = false;
   const storageError = () => [workers?.recoveryError, queue?.recoveryError, consultancy?.recoveryError].filter(Boolean).join(' ') || undefined;
   const observeContinuity = () => {
@@ -229,7 +251,8 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     finally { observing = false; }
     broadcast({ t: 'continuity.status', status: continuity.status(storageError()) });
   };
-  const empire = new Empire(cfg.dataDir, state => { broadcast({ t: 'empire', state }); observeContinuity(); });
+  let publishOrg = () => {};
+  const empire = new Empire(cfg.dataDir, state => { broadcast({ t: 'empire', state }); observeContinuity(); publishOrg(); });
 
   // --- Loopback-only endpoint that Claude Code hooks POST to --------------------------------
   const hookServer = http.createServer(async (req, res) => {
@@ -259,7 +282,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   const ledger = new Ledger(
     cfg.dataDir,
     { budget: cfg.budget, pauseHiring: cfg.budgetPause },
-    (state) => broadcast({ t: 'usage', state }),
+    (state) => { broadcast({ t: 'usage', state }); publishOrg(); },
     (text, level) => broadcast({ t: 'toast', text, level }),
   );
 
@@ -271,12 +294,16 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     { url: `http://127.0.0.1:${hookPort}`, token: '' },
     {
       update: (worker) => {
-        broadcast({ t: 'worker.update', worker });
+        const waits = currentWaits();
+        waitingSent.set(worker.id, JSON.stringify(waits.get(worker.id) ?? null));
+        broadcast({ t: 'worker.update', worker: withWaitingOn(worker, waits) });
         queue?.onWorker(worker);
+        syncWaiting();
         if (queue) empire.tick(workers.list(), queue.state(), 0);
       },
       remove: (workerId) => {
         changes?.forget(workerId);
+        waitingSent.delete(workerId);
         broadcast({ t: 'worker.remove', workerId });
         queue?.onWorkerGone(workerId);
         if (queue) empire.tick(workers.list(), queue.state(), 0);
@@ -312,23 +339,77 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   );
   // The 📋 task queue seats workers by itself: it watches the workers and links PRs from GitHub.
   queue = new TaskQueue(cfg.dataDir, workers, !!project.branch, {
-    update: (state) => { broadcast({ t: 'queue', state }); empire.tick(workers.list(), state, 0); },
+    update: (state) => { broadcast({ t: 'queue', state }); syncWaiting(); empire.tick(workers.list(), state, 0); },
     toast: (text, level) => broadcast({ t: 'toast', text, level }),
     claimIssue: (issue) => github.claim(issue),
     refreshGitHub: () => void github.refresh(),
     hiringPaused: () => localExecutionBlocker() || (!localQueueApproved ? 'Choose queue concurrency explicitly to start pending local tasks.' : undefined) || ledger.hiringPaused,
     retryAllowed: task => empire.managerTaskRetryBlocker(task),
+    // ORG-02: a client job that reached its approved budget keeps its unstarted items queued.
+    // Record the latest worker spend once per seating pass, so a task that just finished over budget holds the next item.
+    beforeSeat: () => { if (queue) ledger.recordTaskCosts(taskCostObservations(queue.state().tasks, workers.list())); },
+    // Side-effect free, and free for non-client tasks.
+    taskHold: task => (task.jobKey?.startsWith('consultancy:') ? consultancy?.holdReason(task) : undefined),
   }, runtime.requireExecutionSetup);
   // Saved appointment flags are historical until worker/queue evidence has been reconciled.
   startupCleanup.push(() => queue.shutdown());
   empire.tick(workers.list(), queue.state(), 0);
   if (runtime.backgroundServices !== false) github.start();
 
+  // ORG-02: estimates come from finished tasks with recorded provider spend; nothing is called to make them.
+  const phaseOfJobKey = (jobKey?: string) => {
+    const [, jobId] = jobKey?.match(/^consultancy:([^:]+):/) ?? [];
+    return jobId ? consultancy?.snapshot().jobs.find((j) => j.id === jobId)?.items.find((i) => i.jobKey === jobKey)?.phase : undefined;
+  };
   consultancy = new Consultancy(cfg.dataDir, {
     state: () => ({ ...queue.state(), storageError: queue.recoveryError }),
-    add: (prompt, by, title, issue, jobKey) => queue.add(prompt, by, title, issue, jobKey),
+    // dependsOn carries LIFE-04's item order into the queue.
+    add: (prompt, by, title, issue, jobKey, dependsOn) => queue.add(prompt, by, title, issue, jobKey, dependsOn),
+  }, () => { inbox?.reconcile(); publishOrg(); }, {
+    estimate: (items) => estimateJob(items, historyFromTaskCosts(ledger.taskCosts(), phaseOfJobKey), { maxWorkers: queue.limit }),
+    taskCost: (taskId) => ledger.taskCost(taskId),
   });
   const office = consultancy;
+  // ORG-03: the CEO approval inbox, reconciled from consultancy state and re-sent only when an item changes.
+  let approvalsSent = '';
+  const publishApprovals = () => {
+    if (!inbox) return;
+    const state = inbox.state();
+    const sig = JSON.stringify([state.items, state.storageError]);
+    if (sig === approvalsSent) return;
+    approvalsSent = sig;
+    broadcast({ t: 'approvals', state });
+    email?.observe(state.items);
+    publishOrg();
+  };
+  // ORG-03: optional email, one per new pending approval. Never blocks; the URL and password are never logged.
+  let email: EmailNotifier | undefined;
+  let emailError: string | undefined;
+  try {
+    const setup = runtime.email === false || runtime.backgroundServices === false && !runtime.email ? undefined
+      : runtime.email ? runtime.email : (() => { const c = emailConfig(process.env); return c && { transport: smtpTransport(c.smtp), to: c.to, from: c.from }; })();
+    if (setup) email = new EmailNotifier(cfg.dataDir, setup.transport, { to: setup.to, from: setup.from });
+  } catch (error) { emailError = (error as Error).message; }
+  startupCleanup.push(() => email?.stop());
+  inbox = new ApprovalInbox(cfg.dataDir, office, publishApprovals);
+  approvalsSent = JSON.stringify([inbox.state().items, inbox.state().storageError]);
+  email?.observe(inbox.state().items);
+  // ORG-01: the executive roster is a pure projection, re-sent only when a summary or attention count changes.
+  let orgSent = '';
+  const currentOrg = () => projectOrg({
+    now: Date.now(), supervision: empire.state.supervision, workers: workersForClients(), queue: queue.state(),
+    jobs: (() => { try { return office.snapshot().jobs; } catch { return []; } })(), usage: ledger.state(),
+    approvals: inbox?.state().items,
+  });
+  publishOrg = () => {
+    if (!queue || !consultancy) return;
+    ledger.recordTaskCosts(taskCostObservations(queue.state().tasks, workers.list()));
+    const org = currentOrg();
+    const sig = orgSignature(org);
+    if (sig === orgSent) return;
+    orgSent = sig;
+    broadcast({ t: 'org', state: org });
+  };
   const capacityReport = () => ({
     workstations: empire.state.office.workstations,
     workers: workers.list().filter(w => w.processState === 'running').length,
@@ -341,7 +422,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   const chief = chiefCommands(office, () => {
     const r = capacityReport();
     return `${r.workstations} funded workstations · ${r.workers} running workers · concurrency ${r.concurrency} · ${r.queued === null ? 'queue count unavailable' : `${r.queued} tasks queued`} · ${r.attention} workers need input.${r.blocker ? ` Waiting: ${r.blocker}` : ''} This coordinator requires the execution host to remain running.`;
-  });
+  }, inbox, () => { queue.pump(); publishApprovals(); });
   let telegram: TelegramBridge | undefined;
   let telegramError: string | undefined;
   try {
@@ -595,6 +676,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
           if (p === '/api/consultancy/status' && req.method === 'GET') return send(res, 200, {
             mode: 'rule_based', observedAt: Date.now(), repository: project.name,
             resources: capacityReport(), telegram: telegram?.status() ?? { configured: false, running: false, error: telegramError },
+            email: email?.status() ?? (emailError ? { ...NOT_CONFIGURED, error: emailError } : NOT_CONFIGURED),
             hostRequired: true,
           });
           if (p === '/api/consultancy/jobs' && req.method === 'POST') {
@@ -604,11 +686,46 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
             return send(res, 200, office.create(value, 'CEO'));
           }
           const action = /^\/api\/consultancy\/jobs\/([a-zA-Z0-9_-]{1,80})\/(approve|reject)$/.exec(p);
-          if (action && req.method === 'POST') return send(res, 200, action[2] === 'approve' ? office.approve(action[1], 'CEO') : office.reject(action[1], 'CEO'));
+          if (action && req.method === 'POST') {
+            if (action[2] === 'reject') return send(res, 200, office.reject(action[1], 'CEO'));
+            // ORG-02: the CEO may edit the budget at approval; an empty body keeps the estimate's default.
+            let body: { budgetUsd?: unknown } = {};
+            try { const raw = await readBody(req, 4_000); body = raw.trim() ? JSON.parse(raw) : {}; }
+            catch { return send(res, 400, { error: 'Expected a JSON approval.' }); }
+            if (!body || typeof body !== 'object') return send(res, 400, { error: 'Expected a JSON approval.' });
+            return send(res, 200, office.approve(action[1], 'CEO', body.budgetUsd === undefined || body.budgetUsd === null ? {} : { budgetUsd: body.budgetUsd as number }));
+          }
           return send(res, 404, { error: 'Unknown consultancy endpoint.' });
         } catch (error) {
           if (error instanceof ConsultancyError) return send(res, error.status, { error: error.message });
           return send(res, 500, { error: 'Consultancy service could not complete this request.' });
+        }
+      }
+      if (p === '/api/approvals' || p.startsWith('/api/approvals/')) {
+        if (req.method !== 'GET' && !trusted()) return send(res, 403, { error: 'A same-origin Origin header is required' });
+        const approvals = inbox!;
+        try {
+          office.reconcile();
+          approvals.reconcile();
+          if (p === '/api/approvals' && req.method === 'GET') return send(res, 200, approvals.state());
+          const action = /^\/api\/approvals\/(A[1-9]\d{0,8})\/(approve|reject)$/.exec(p);
+          if (action && req.method === 'POST') {
+            // The body may carry budgetUsd (validated as in ORG-02) and a requestId; an empty body is fine.
+            let body: { budgetUsd?: unknown; requestId?: unknown } = {};
+            try { const raw = await readBody(req, 4_000); body = raw.trim() ? JSON.parse(raw) : {}; }
+            catch { return send(res, 400, { error: 'Expected a JSON decision.' }); }
+            if (!body || typeof body !== 'object' || Array.isArray(body)) return send(res, 400, { error: 'Expected a JSON decision.' });
+            const options = { budgetUsd: body.budgetUsd, requestId: body.requestId };
+            const item = action[2] === 'approve' ? approvals.approve(action[1], 'CEO', options) : approvals.reject(action[1], 'CEO', options);
+            // A raised budget releases held items: let the queue seat them now rather than on its next tick.
+            queue.pump();
+            publishApprovals();
+            return send(res, 200, item);
+          }
+          return send(res, 404, { error: 'Unknown approval endpoint.' });
+        } catch (error) {
+          if (error instanceof ApprovalError || error instanceof ConsultancyError) return send(res, error.status, { error: error.message });
+          return send(res, 500, { error: 'The approval inbox could not complete this request.' });
         }
       }
       if (p.startsWith('/api/execution/')) {
@@ -801,7 +918,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
       t: 'welcome',
       you: id,
       peers: [...clients.values()].map((c) => c.peer),
-      workers: workers.list(),
+      workers: workersForClients(),
       project,
       issues: github.issues,
       pulls: github.pulls,
@@ -814,6 +931,8 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
       services: servicesState(),
       decor: decor.list(),
       usage: ledger.state(),
+      org: currentOrg(),
+      approvals: inbox?.state(),
       queue: queue.state(),
     });
     sendTo(client, { t: 'empire', state: empire.state });
@@ -1129,7 +1248,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
 
   // Drop dead connections so ghosts don't linger in the office.
   empire.dispatchManagers(queue, 'Chief of staff');
-  const empireTimer = setInterval(() => { empire.tick(workers.list(), queue.state()); try { office.reconcile(); } catch { /* Durable service exposes recovery errors through its snapshot. */ } }, 5000);
+  const empireTimer = setInterval(() => { empire.tick(workers.list(), queue.state()); try { office.reconcile(); inbox?.reconcile(); } catch { /* Durable service exposes recovery errors through its snapshot. */ } }, 5000);
   const heartbeat = setInterval(() => {
     for (const c of clients.values()) {
       if ((c.ws as any).isAlive === false) {
@@ -1153,6 +1272,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
 
   const shutdown = () => {
     telegram?.stop();
+    email?.stop();
     execution.stop();
     clearInterval(empireTimer);
     empire.flush();

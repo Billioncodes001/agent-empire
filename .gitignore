@@ -9,6 +9,9 @@ artifacts/
 
 /release/
 
+# Written only by `node tools/prepare-desktop.mjs --dev-updates` (development desktop builds, REL-07); never committed.
+/desktop/dev-trust.json
+
 # Downloaded build inputs for `npm run build:avatars` (Rocketbox FBX/TGA); never committed.
 .cache/
 

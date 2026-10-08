@@ -238,6 +238,7 @@ final class NativeBridge {
                     if (pendingApp != null) out.put("installPending", pendingApp);
                     String back = u.takeRolledBack();
                     if (back != null) out.put("rolledBack", back);
+                    if (UpdatePolicy.DEV_KEY_TRUSTED) out.put("devReleaseKey", UpdatePolicy.DEV_RELEASE_PUBLIC_KEY);
                     resolve(id, out.toString());
                 } catch (Exception impossible) {
                     reject(id, "The app could not report its version.");

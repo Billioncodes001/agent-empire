@@ -6,7 +6,7 @@
  * Ed25519 (Safari 17+, Chrome 137+); otherwise tweetnacl's audited implementation does the same check.
  */
 import nacl from 'tweetnacl';
-import { RELEASE_PUBLIC_KEY } from '../../shared/release-key';
+import { BUILD_TRUSTED_KEYS } from './trust';
 import { parseChannel, ChannelError, type Channel, type ChannelFile } from './channel';
 
 export function decodeBase64(text: string, expectedLength: number): Uint8Array | null {
@@ -46,12 +46,18 @@ export async function verifyEd25519(message: Uint8Array, signatureBase64: string
   }
 }
 
+/** True when any one of `keys` made `signatureBase64` over `message` (each key is checked on its own). */
+export async function verifyWithAny(message: Uint8Array, signatureBase64: string, keys: string | readonly string[], subtle?: Subtle | null): Promise<boolean> {
+  for (const key of typeof keys === 'string' ? [keys] : keys) if (await verifyEd25519(message, signatureBase64, key, subtle)) return true;
+  return false;
+}
+
 /**
- * Verifies, then parses. Throws ChannelError('signature') when the signature does not match the pinned key: nothing
- * from an unverified file is read, not even its version.
+ * Verifies, then parses. Throws ChannelError('signature') when no trusted key (default: this build's, trust.ts) made the
+ * signature: nothing from an unverified file is read, not even its version.
  */
-export async function verifyChannel(text: string, signature: string, channel: Channel, publicKey: string = RELEASE_PUBLIC_KEY, subtle?: Subtle | null): Promise<ChannelFile> {
-  const ok = await verifyEd25519(new TextEncoder().encode(text), signature, publicKey, subtle);
+export async function verifyChannel(text: string, signature: string, channel: Channel, publicKey: string | readonly string[] = BUILD_TRUSTED_KEYS, subtle?: Subtle | null): Promise<ChannelFile> {
+  const ok = await verifyWithAny(new TextEncoder().encode(text), signature, publicKey, subtle);
   if (!ok) throw new ChannelError('The update channel’s signature does not match this app’s release key');
   return parseChannel(text, channel);
 }
