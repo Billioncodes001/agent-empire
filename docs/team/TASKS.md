@@ -52,7 +52,7 @@ Plan: [OFFICE_LIFE_AND_MOBILE_PLAN.md](OFFICE_LIFE_AND_MOBILE_PLAN.md).
 | CLOUD-03 | First-launch setup: cloud accounts or own server | Reviewed and accepted | [Report](reports/first-launch-setup.md). Mode choice, the server path end to end, and the cloud path through GitHub device sign-in (client id Ov23li3G3aR4rgZ0lCJ3), repositories, keys (libsodium sealed box), limits and review |
 | CLOUD-04 | Client cloud adapter (state repo snapshots and intents) | Reviewed and accepted (fakes only) | Snapshots with ETag polling and honest age labels; UUIDv7 intents checked by the coordinator's parser; cloud-aware founding with explicit paid confirmation |
 | CLOUD-05 | In-app shut down and start | Reviewed and accepted (fakes only) | Menu control with a full-effect confirmation; shutdown and start intents plus a wake-up dispatch |
-| CLOUD-06 | OpenAI Agents adapter | Planned | — |
+| CLOUD-06 | OpenAI Agents adapter | Requirements drafted — owner decisions pending | [Plan](CLOUD_06_OPENAI_PLAN.md) (docs checked 2026-10-08). Recommends the Agents API with an OpenAI-hosted sandbox. Blockers: no documented per-session budget or USD cost (coordinator-side estimates instead), no repository mount (vault-credential GitHub API helper), Codex cloud needs ChatGPT sign-in. Paid spike 06-0 (≤ $1) needs owner approval |
 | APP-05 | Desktop bundled app (macOS/Windows) | Reviewed and accepted | [Report](reports/desktop-app.md). Bundled game, shared setup with a desktop-only "Run on this computer" card (main-process confirmation only), safeStorage bridge. Packaged-macOS CDP walk done; Windows packaged and checked but not run; unsigned |
 | LIFE-01 | Jump and landing animation, locomotion polish | Reviewed and accepted | [Report](reports/office-life.md). No idle clip in mid-air |
 | LIFE-02 | Gym, cafeteria/breakfast, coffee amenities | Reviewed and accepted | Built from primitives on every HQ floor, with colliders and clearance tests |
@@ -67,7 +67,7 @@ Plan: [OFFICE_LIFE_AND_MOBILE_PLAN.md](OFFICE_LIFE_AND_MOBILE_PLAN.md).
 | ORG-04a | Email outreach (first marketing channel) | Built, awaiting independent review | [Report](reports/org-04a.md), [guide](../OUTREACH.md). Branch `claude/org-04a-outreach`. Shared `artifacts.ts` importer (race-safe), leads/suppression, campaign drafts as internal jobs, frozen-snapshot external_action, rate/daily caps, no double send across restart, Telegram `/optout`. outreach-ui-check 60/60, inbox 47/47, org 32/32, mobile 411/411, npm test 678/678 |
 | ORG-05 | Research executive | Built, awaiting independent review | [Report](reports/org-05.md), [guide](../RESEARCH_EXECUTIVE.md). Branch `claude/org-05-research`. Questions become Internal jobs needing approval (founder desk, research card, Telegram `/research`); strict report import with source-URL rule; `tool_proposal` inbox items record decisions only. Importer swapped to the shared `src/server/artifacts.ts` at the ORG-04a merge (its tests ported). research-ui-check 44/44, inbox 47/47, org 32/32, mobile 411/411, npm test 670/670 |
 | ORG-04b, ORG-06 | Other marketing channels; onboarding/voice | Backlog | Each channel needs an owner decision |
-| CLOUD-06 | OpenAI Agents adapter | Next after ORG-04a/05 | — |
+| CLOUD-06 | OpenAI Agents adapter | Requirements drafted — owner decisions pending | [Plan](CLOUD_06_OPENAI_PLAN.md): decisions D1–D12, then spike 06-0 |
 
 ## Releases and in-app updates
 
