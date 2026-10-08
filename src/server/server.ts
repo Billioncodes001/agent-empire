@@ -19,7 +19,9 @@ import { Team } from './team.js';
 import { Upgrader } from './upgrade.js';
 import { Services } from './services.js';
 import { Decor, ImageProxy } from './decor.js';
-import { Ledger } from './usage.js';
+import { Ledger, taskCostObservations } from './usage.js';
+import { estimateJob, historyFromTaskCosts } from './estimate.js';
+import { orgSignature, projectOrg } from './org.js';
 import { TaskQueue } from './queue.js';
 import { projectWaitingOn, withWaitingOn } from './waiting.js';
 import { Changes } from './changes.js';
@@ -244,7 +246,8 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     finally { observing = false; }
     broadcast({ t: 'continuity.status', status: continuity.status(storageError()) });
   };
-  const empire = new Empire(cfg.dataDir, state => { broadcast({ t: 'empire', state }); observeContinuity(); });
+  let publishOrg = () => {};
+  const empire = new Empire(cfg.dataDir, state => { broadcast({ t: 'empire', state }); observeContinuity(); publishOrg(); });
 
   // --- Loopback-only endpoint that Claude Code hooks POST to --------------------------------
   const hookServer = http.createServer(async (req, res) => {
@@ -274,7 +277,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   const ledger = new Ledger(
     cfg.dataDir,
     { budget: cfg.budget, pauseHiring: cfg.budgetPause },
-    (state) => broadcast({ t: 'usage', state }),
+    (state) => { broadcast({ t: 'usage', state }); publishOrg(); },
     (text, level) => broadcast({ t: 'toast', text, level }),
   );
 
@@ -337,17 +340,43 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     refreshGitHub: () => void github.refresh(),
     hiringPaused: () => localExecutionBlocker() || (!localQueueApproved ? 'Choose queue concurrency explicitly to start pending local tasks.' : undefined) || ledger.hiringPaused,
     retryAllowed: task => empire.managerTaskRetryBlocker(task),
+    // ORG-02: a client job that reached its approved budget keeps its unstarted items queued.
+    taskHold: task => consultancy?.holdReason(task),
   }, runtime.requireExecutionSetup);
   // Saved appointment flags are historical until worker/queue evidence has been reconciled.
   startupCleanup.push(() => queue.shutdown());
   empire.tick(workers.list(), queue.state(), 0);
   if (runtime.backgroundServices !== false) github.start();
 
+  // ORG-02: estimates come from finished tasks with recorded provider spend; nothing is called to make them.
+  const phaseOfJobKey = (jobKey?: string) => {
+    const [, jobId] = jobKey?.match(/^consultancy:([^:]+):/) ?? [];
+    return jobId ? consultancy?.snapshot().jobs.find((j) => j.id === jobId)?.items.find((i) => i.jobKey === jobKey)?.phase : undefined;
+  };
   consultancy = new Consultancy(cfg.dataDir, {
     state: () => ({ ...queue.state(), storageError: queue.recoveryError }),
-    add: (prompt, by, title, issue, jobKey) => queue.add(prompt, by, title, issue, jobKey),
+    // dependsOn carries LIFE-04's item order into the queue.
+    add: (prompt, by, title, issue, jobKey, dependsOn) => queue.add(prompt, by, title, issue, jobKey, dependsOn),
+  }, () => publishOrg(), {
+    estimate: (items) => estimateJob(items, historyFromTaskCosts(ledger.taskCosts(), phaseOfJobKey), { maxWorkers: queue.limit }),
+    taskCost: (taskId) => ledger.taskCost(taskId),
   });
   const office = consultancy;
+  // ORG-01: the executive roster is a pure projection, re-sent only when a summary or attention count changes.
+  let orgSent = '';
+  const currentOrg = () => projectOrg({
+    now: Date.now(), supervision: empire.state.supervision, workers: workersForClients(), queue: queue.state(),
+    jobs: (() => { try { return office.snapshot().jobs; } catch { return []; } })(), usage: ledger.state(),
+  });
+  publishOrg = () => {
+    if (!queue || !consultancy) return;
+    ledger.recordTaskCosts(taskCostObservations(queue.state().tasks, workers.list()));
+    const org = currentOrg();
+    const sig = orgSignature(org);
+    if (sig === orgSent) return;
+    orgSent = sig;
+    broadcast({ t: 'org', state: org });
+  };
   const capacityReport = () => ({
     workstations: empire.state.office.workstations,
     workers: workers.list().filter(w => w.processState === 'running').length,
@@ -623,7 +652,15 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
             return send(res, 200, office.create(value, 'CEO'));
           }
           const action = /^\/api\/consultancy\/jobs\/([a-zA-Z0-9_-]{1,80})\/(approve|reject)$/.exec(p);
-          if (action && req.method === 'POST') return send(res, 200, action[2] === 'approve' ? office.approve(action[1], 'CEO') : office.reject(action[1], 'CEO'));
+          if (action && req.method === 'POST') {
+            if (action[2] === 'reject') return send(res, 200, office.reject(action[1], 'CEO'));
+            // ORG-02: the CEO may edit the budget at approval; an empty body keeps the estimate's default.
+            let body: { budgetUsd?: unknown } = {};
+            try { const raw = await readBody(req, 4_000); body = raw.trim() ? JSON.parse(raw) : {}; }
+            catch { return send(res, 400, { error: 'Expected a JSON approval.' }); }
+            if (!body || typeof body !== 'object') return send(res, 400, { error: 'Expected a JSON approval.' });
+            return send(res, 200, office.approve(action[1], 'CEO', body.budgetUsd === undefined || body.budgetUsd === null ? {} : { budgetUsd: body.budgetUsd as number }));
+          }
           return send(res, 404, { error: 'Unknown consultancy endpoint.' });
         } catch (error) {
           if (error instanceof ConsultancyError) return send(res, error.status, { error: error.message });
@@ -833,6 +870,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
       services: servicesState(),
       decor: decor.list(),
       usage: ledger.state(),
+      org: currentOrg(),
       queue: queue.state(),
     });
     sendTo(client, { t: 'empire', state: empire.state });

@@ -1,6 +1,20 @@
 import { createHash } from 'node:crypto';
 import { Consultancy, ConsultancyError } from './consultancy.js';
 import { TELEGRAM_HELP, type TelegramCommands } from './telegram.js';
+import type { ConsultancyJob } from '../shared/consultancy.js';
+import { ACTUAL_SPEND_LABEL, PHASE_LABEL, basisLabel, fmtDurationRange, fmtUsdRange } from '../shared/org.js';
+
+/** The estimate as plain text: labelled, with its basis, and actuals once there are any. */
+export function estimateText(job: ConsultancyJob): string {
+  const e = job.estimate;
+  if (!e) return '';
+  const lines = [`\n\nEstimate (not a quote): ${fmtUsdRange(e.costUsd)} · ${fmtDurationRange(e.calendarMs)} calendar time · ${basisLabel(e.basis)}`];
+  job.items.forEach((item, i) => { const ie = e.items[i]; if (ie) lines.push(`${i + 1}. ${item.title} [${PHASE_LABEL[ie.phase]}] ${fmtUsdRange(ie.costUsd)}`); });
+  if (job.approvedBudgetUsd !== undefined) lines.push(`Approved budget $${job.approvedBudgetUsd.toFixed(2)}`);
+  if (job.actualSpendUsd !== undefined) lines.push(`Actual so far $${job.actualSpendUsd.toFixed(2)} (${ACTUAL_SPEND_LABEL})`);
+  if (job.budgetHold) lines.push('Budget reached: unstarted items are held until the budget is raised.');
+  return lines.join('\n');
+}
 
 /** A deterministic command surface shared with the same consultancy service as the CEO console. */
 export function chiefCommands(office: Consultancy, resourceReport: () => string): TelegramCommands {
@@ -28,11 +42,14 @@ export function chiefCommands(office: Consultancy, resourceReport: () => string)
           const job = office.snapshot().jobs.find(j => j.id === raw.trim());
           if (!job) return 'Job not found. Use /jobs for its ID.';
           // Explicit plan review can reveal the requested brief to the configured CEO, never in unsolicited updates.
-          return `${job.id} · ${job.client} · ${job.title}\n${job.status.replaceAll('_', ' ')}\n\n${job.brief}\n\nReview the complete work-item plan in the CEO console before approval. Approval submits it to this host’s local worker queue under existing budget and desk limits. /approve ${job.id}`;
+          return `${job.id} · ${job.client} · ${job.title}\n${job.status.replaceAll('_', ' ')}\n\n${job.brief}${estimateText(job)}\n\nReview the complete work-item plan in the CEO console before approval. Approval submits it to this host’s local worker queue under existing budget and desk limits. /approve ${job.id} (or /approve ${job.id} 25 to set a $25 budget)`;
         }
         if (cmd === 'approve' || cmd === 'reject') {
-          const job = cmd === 'approve' ? office.approve(raw.trim(), 'CEO via Telegram') : office.reject(raw.trim(), 'CEO via Telegram');
-          return `Job ${job.id}: ${job.status.replaceAll('_', ' ')}. ${cmd === 'approve' ? 'Existing execution, budget and workstation limits still apply.' : 'The unstarted plan was declined.'}`;
+          const [id = '', amount] = raw.trim().split(/\s+/);
+          if (cmd === 'approve' && amount !== undefined && !/^\$?\d+(\.\d{1,2})?$/.test(amount)) return 'Use /approve ID or /approve ID 25 (budget in USD).';
+          const job = cmd === 'approve' ? office.approve(id, 'CEO via Telegram', amount === undefined ? {} : { budgetUsd: Number(amount.replace('$', '')) }) : office.reject(raw.trim(), 'CEO via Telegram');
+          const budget = cmd === 'approve' && job.approvedBudgetUsd !== undefined ? ` Approved budget $${job.approvedBudgetUsd.toFixed(2)}; unstarted items are held if provider spend reaches it.` : '';
+          return `Job ${job.id}: ${job.status.replaceAll('_', ' ')}. ${cmd === 'approve' ? 'Existing execution, budget and workstation limits still apply.' : 'The unstarted plan was declined.'}${budget}`;
         }
         return TELEGRAM_HELP;
       } catch (error) {
