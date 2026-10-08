@@ -191,6 +191,22 @@ test('review fix 1: the next ordered item never starts once spend reached the bu
   } finally { queue.shutdown(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('spend is still recorded while the queue is paused at startup (a worker status change still samples task costs)', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'budget-paused-'));
+  let before = 0;
+  writeFileSync(path.join(dir, 'queue.json'), JSON.stringify({ maxWorkers: 2, tasks: [] }));
+  const queue = new TaskQueue(dir, { list: () => [], deskOccupied: () => false, spawn: () => 'no', kill: async () => ({}) }, false, {
+    update() {}, toast() {}, claimIssue: async () => undefined, refreshGitHub() {}, hiringPaused: () => undefined,
+    beforeSeat: () => { before++; },
+  }, true);
+  try {
+    before = 0;
+    queue.pump();
+    assert.ok(before >= 1, 'beforeSeat runs although seating is paused at startup');
+    assert.equal(queue.state().maxWorkers, 0, 'still paused: nothing is seated');
+  } finally { queue.shutdown(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('re-review: spend is recorded once per seating pass, and the hold predicate is free for non-client tasks', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'budget-cheap-'));
   let costReads = 0;

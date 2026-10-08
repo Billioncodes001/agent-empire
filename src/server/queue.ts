@@ -303,7 +303,10 @@ export class TaskQueue {
         this.again = false;
         this.reconcile();
         if (!this.storageError && this.refreshDependencies()) this.changed();
-        if (!this.storageError && !this.pauseOnStart) { this.events.beforeSeat?.(); this.seat(); }
+        // Spend is recorded on every pass, even while seating is paused at startup or blocked by a storage error: a
+        // CEO prompt to a finished task's worker must freeze that task's spend record before the chat is counted.
+        this.events.beforeSeat?.();
+        if (!this.storageError && !this.pauseOnStart) this.seat();
       } while (this.again);
     } finally {
       this.pumping = false;
