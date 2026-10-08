@@ -220,30 +220,93 @@ test('review: a subject with CR/LF stays one header line', () => {
   assert.ok(!headers.some((h) => /^Bcc:|^X-Evil:/.test(h)), headers.join(' | '));
 });
 
-test('review fix 4: a permanent 5xx or repeated failures give up on that item and move on', async (t) => {
+/** A notifier with a controllable clock: firing the next retry advances the clock by its wait. */
+function clockedNotifier(t: { after(fn: () => void): void }, send: (m: MailMessage) => Promise<void>) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'empire-email-retry-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const clock = { now: 1_000_000 };
+  const logs: string[] = [];
+  const timers: { fn: () => void; ms: number }[] = [];
+  const make = () => new EmailNotifier(dir, { send }, { to: 'ceo@example.com', from: 'empire@example.com' }, {
+    now: () => clock.now, log: (line) => logs.push(line), schedule: (fn, ms) => { timers.push({ fn, ms }); return () => undefined; },
+  });
+  const fire = async (n: EmailNotifier) => { const next = timers.shift()!; clock.now += next.ms; next.fn(); await n.idle(); return next.ms; };
+  return { clock, logs, timers, make, fire };
+}
+
+test('re-review fix 1: offline for 20 minutes, then the notification is delivered (connection errors keep retrying)', async (t) => {
   const sent: string[] = [];
-  const f = notifierFixture(t, { async send(m) {
-    if (m.subject.includes('approval A1:')) throw new Error('SMTP server answered 550 to RCPT TO');
-    if (m.subject.includes('approval A2:')) throw new Error('SMTP connection failed (ECONNRESET)');
-    sent.push(m.subject);
-  } });
+  let online = false;
+  const f = clockedNotifier(t, async (m) => { if (!online) throw new Error('SMTP connection failed (ECONNREFUSED)'); sent.push(m.subject); });
   const n = f.make();
   n.observe([]);
-  n.observe([item({ id: 'A1' }), item({ id: 'A3' })]);
+  const start = f.clock.now;
+  n.observe([item({ id: 'A1' })]);
   await n.idle();
-  assert.equal(sent.length, 1, 'the 5xx item was given up at once and the next one sent');
-  assert.match(sent[0], /A3:/);
-  assert.equal(n.status().state, 'failed');
+  const waits: number[] = [];
+  while (f.clock.now - start < 20 * 60_000) waits.push(await f.fire(n));
+  online = true;
+  waits.push(await f.fire(n));
+  assert.equal(sent.length, 1);
+  assert.equal(n.status().gaveUp, undefined);
+  assert.equal(n.status().state, 'configured', 'status recovers after a later successful send');
+  // Keep going offline long enough to reach the 30-minute cap.
+  online = false;
+  n.observe([item({ id: 'A2' })]);
+  await n.idle();
+  const later: number[] = [];
+  for (let i = 0; i < 7; i++) later.push(await f.fire(n));
+  assert.equal(Math.max(...later), 30 * 60_000, `backoff reaches the 30-minute cap: ${later.join(',')}`);
+});
+
+test('re-review fix 1: an AUTH failure pauses the queue without giving anything up; fixing it resumes', async (t) => {
+  const sent: string[] = [];
+  let password = 'wrong';
+  const f = clockedNotifier(t, async (m) => { if (password === 'wrong') throw new Error('SMTP server answered 535 to AUTH PLAIN'); sent.push(m.subject); });
+  const n = f.make();
+  n.observe([]);
+  n.observe([item({ id: 'A1' }), item({ id: 'A2' })]);
+  await n.idle();
+  assert.equal(sent.length, 0);
+  assert.equal(n.status().gaveUp, undefined, 'nothing given up');
+  assert.equal(n.status().label, 'Email: sign-in failed — check AGENT_EMPIRE_SMTP_URL');
+  assert.equal(f.timers.length, 1, 'one paused retry, not a tight loop');
+  for (let i = 0; i < 3; i++) await f.fire(n);
+  assert.equal(n.status().gaveUp, undefined);
+  password = 'fixed';
+  await f.fire(n);
+  assert.equal(sent.length, 2, 'both resume once sign-in works');
+  assert.equal(n.status().state, 'configured');
+});
+
+test('re-review fix 1: a 5xx to RCPT TO gives up that item and the next proceeds', async (t) => {
+  const sent: string[] = [];
+  const f = clockedNotifier(t, async (m) => { if (m.subject.includes('approval A1:')) throw new Error('SMTP server answered 550 to RCPT TO'); sent.push(m.subject); });
+  const n = f.make();
+  n.observe([]);
+  n.observe([item({ id: 'A1' }), item({ id: 'A2' })]);
+  await n.idle();
+  assert.equal(sent.length, 1);
+  assert.match(sent[0], /A2:/);
   assert.equal(n.status().gaveUp, 1);
-  // A transient failure is retried, then given up after 5 attempts.
-  n.observe([item({ id: 'A2' }), item({ id: 'A4' })]);
+  assert.equal(n.status().state, 'configured', 'a later success clears the failed state');
+  assert.ok(n.status().lastFailedAt, 'the last failure time is still reported');
+  assert.ok(f.logs.some((l) => /Gave up/.test(l) && /A1/.test(l)));
+});
+
+test('re-review fix 1: a transient failure is given up only after 24 hours', async (t) => {
+  const sent: string[] = [];
+  const f = clockedNotifier(t, async (m) => { if (m.subject.includes('approval A1:')) throw new Error('SMTP server answered 421 to MAIL FROM'); sent.push(m.subject); });
+  const n = f.make();
+  n.observe([]);
+  const start = f.clock.now;
+  n.observe([item({ id: 'A1' }), item({ id: 'A2' })]);
   await n.idle();
-  for (let i = 0; i < 4; i++) { f.timers.shift()!.fn(); await n.idle(); }
-  assert.ok(sent.some((x) => /A4:/.test(x)), 'A4 is sent after A2 is given up');
-  assert.equal(n.status().gaveUp, 2);
-  assert.ok(f.logs.some((l) => /gave up/i.test(l) && /A2/.test(l)));
-  const again = f.make();
-  again.observe([item({ id: 'A1' }), item({ id: 'A2' })]);
-  await again.idle();
-  assert.equal(sent.length, 2, 'given-up items are not retried after a restart');
+  while (!sent.length && f.timers.length) {
+    assert.equal(n.status().gaveUp, undefined, `still retrying at ${(f.clock.now - start) / 3_600_000} h`);
+    await f.fire(n);
+  }
+  assert.ok(f.clock.now - start >= 24 * 3_600_000, 'given up after the 24-hour cap');
+  assert.equal(n.status().gaveUp, 1);
+  assert.match(sent[0], /A2:/);
 });

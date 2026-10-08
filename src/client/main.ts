@@ -1195,6 +1195,7 @@ voice.onChange(() => {
   vb.classList.toggle('on', voice.inVoice);
   vb.querySelector('span')!.textContent = voice.inVoice ? 'Leave voice' : 'Join voice';
   vb.setAttribute('aria-label', voice.inVoice ? 'Leave voice' : 'Join voice');
+  if (window.isSecureContext) vb.title = voice.inVoice ? 'Leave voice (V)' : 'Join voice (V)';
   const mb = $('btn-mute');
   mb.classList.toggle('hidden', !voice.inVoice);
   mb.textContent = voice.muted ? '🔇' : '🎙️';
@@ -1205,6 +1206,7 @@ voice.onChange(() => {
   sb.classList.toggle('on', voice.sharing);
   sb.querySelector('span')!.textContent = voice.sharing ? 'Stop sharing' : 'Share screen';
   sb.setAttribute('aria-label', voice.sharing ? 'Stop sharing screen' : 'Share screen');
+  if (window.isSecureContext) sb.title = voice.sharing ? 'Stop sharing your screen' : 'Share your screen';
   refreshShares();
 });
 
