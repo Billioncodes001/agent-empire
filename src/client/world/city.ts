@@ -381,6 +381,8 @@ export function buildCity() {
   // The chief of staff dresses by the CEO's choice (never in the same suit); see shared/outfit.ts.
   const chief = new Person('Chief of staff', '#345f65', lookFromSeed('empire-chief'), { avatar: chiefAvatar(ceoAvatar(store.profile.look.style)) });
   chief.showLabel(false);
+  // Seated at the chief of staff's loft desk by ExecutiveBodies (world/executives.ts).
+  chief.pose = 'sit';
   chief.root.position.set(8, 0, 9);
   const citizens = Array.from({ length: 8 }, (_, i) => {
     const p = new Person('Resident', '#8c9a9e', lookFromSeed(`citizen-${i}`), { avatar: workerAvatar(`citizen-${i}`) });
