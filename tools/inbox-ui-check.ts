@@ -98,6 +98,21 @@ async function run(browser: Browser, size: { width: number; height: number; touc
     await page.screenshot({ path: resolve(out, `03-inbox-budget-detail-${tag}.jpg`), quality: 82 });
 
     if (decide) {
+      // Review fix 1: decline first; the job stays held and the increase can still be approved from Recent decisions.
+      await modal.locator('.inbox-actions .btn', { hasText: 'Decline…' }).click();
+      await modal.locator('.inbox-confirm .btn.danger').click();
+      await page.waitForFunction(() => (window as unknown as { __office: Office }).__office.store.approvals?.items.some((i) => i.kind === 'budget_increase' && i.status === 'rejected'), null, { timeout: 5000 }).catch(() => undefined);
+      await page.waitForTimeout(300);
+      const heldJobs = (await (await page.request.get(new URL('/__fixture/jobs', base).href)).json()) as { jobs: { client: string; budgetHold?: unknown; items: { held?: boolean }[] }[] };
+      const stillHeld = heldJobs.jobs.find((j) => j.client === 'Harbor Labs');
+      check(`${tag}: declining keeps the job held`, !!stillHeld?.budgetHold && stillHeld.items.some((i) => i.held));
+      const reopenRow = modal.locator('.inbox-history .inbox-row', { hasText: 'Approve increase…' });
+      check(`${tag}: the declined increase shows "Approve increase…" in Recent decisions`, await reopenRow.isVisible());
+      await reopenRow.click();
+      const reopenText = (await detail.innerText().catch(() => '')).replace(/\s+/g, ' ');
+      check(`${tag}: the declined increase can still be approved, with no second decline`, /Declined by/.test(reopenText) && (await modal.locator('.inbox-detail .btn', { hasText: 'Approve increase…' }).count()) === 1 && (await modal.locator('.inbox-detail .btn', { hasText: 'Decline…' }).count()) === 0, reopenText.slice(0, 160));
+      await page.waitForTimeout(300);
+      await page.screenshot({ path: resolve(out, `04b-inbox-declined-reopen-${tag}.jpg`), quality: 82 });
       // Keyboard: Tab moves within the dialog and focus is visible on a control in it.
       await page.locator('#inbox-budget').fill('10');
       await page.locator('#inbox-budget').focus();
@@ -174,6 +189,27 @@ try {
   await run(browser, { width: 874, height: 402, touch: true }, '874x402', false);
   await run(browser, { width: 375, height: 812, touch: true, reduce: true }, '375x812-reduced-motion', false);
   await run(browser, { width: 1440, height: 900, touch: false }, '1440x900', true);
+  // Review fix 2: the desktop tool row stays on one line.
+  for (const width of [1280, 1440, 1920]) {
+    const ctx = await browser.newContext({ viewport: { width, height: 900 }, deviceScaleFactor: 1 });
+    await ctx.addInitScript({ content: 'window.__name = (f) => f;' });
+    await ctx.addInitScript(() => { localStorage.setItem('agent-office.profile', JSON.stringify({ name: 'Fixture CEO', color: '#32685c', look: { skin: 4, hair: 0, style: 0 } })); localStorage.setItem('agent-empire.execution.offered', '1'); });
+    const page = await ctx.newPage();
+    try {
+      await page.goto(base);
+      await page.waitForFunction(() => ['ready', 'forced'].includes(document.documentElement.dataset.boot ?? ''), null, { timeout: 120_000 });
+      await page.waitForFunction(() => !document.getElementById('splash'), null, { timeout: 10_000 });
+      for (let i = 0; i < 4 && (await page.locator('#modal-root .backdrop').count()); i++) { await page.keyboard.press('Escape'); await page.waitForTimeout(150); }
+      await page.waitForTimeout(1500);
+      const row = await page.evaluate(() => {
+        const btns = [...document.querySelectorAll('#hud .topbar .controls > button')].filter((b) => (b as HTMLElement).getClientRects().length) as HTMLElement[];
+        return { tops: [...new Set(btns.map((b) => Math.round(b.getBoundingClientRect().top)))], unlabeled: btns.filter((b) => !b.getAttribute('aria-label') && !b.textContent?.trim()).map((b) => b.id) };
+      });
+      check(`${width}x900: the HUD tools fit on one row`, row.tops.length === 1, `rows at ${row.tops.join(', ')}`);
+      check(`${width}x900: every HUD tool keeps an accessible name`, !row.unlabeled.length, row.unlabeled.join(','));
+      await page.screenshot({ path: resolve(out, `07-hud-one-row-${width}x900.jpg`), quality: 82, clip: { x: 0, y: 0, width, height: 140 } });
+    } finally { await ctx.close(); }
+  }
 } finally {
   await browser.close();
 }

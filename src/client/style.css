@@ -1308,3 +1308,12 @@ html.ae-touch #hud .topbar .controls > #btn-inbox > span:not(.svc-count):not(.in
   .inbox-actions .btn { flex: 1 1 140px; }
 }
 @media (prefers-reduced-motion: reduce) { .inbox-row { transition: none; } }
+.inbox-row-reopen { font-size: 12px; font-weight: 700; color: var(--brass); }
+/* ORG-03 review fix 2: keep the desktop tool row on one line up to 1680 px. Inbox, voice and screen sharing become
+   icon buttons (their aria-label and title stay), and the row tightens. */
+@media (max-width: 1680px) {
+  #hud .topbar .controls { gap: 4px; padding: 6px; }
+  #hud .topbar .controls > .btn { padding-left: 8px; padding-right: 8px; }
+  #hud .topbar .controls > #btn-voice > span, #hud .topbar .controls > #btn-share > span, #hud .topbar .controls > #btn-inbox > span:not(.svc-count):not(.inbox-glyph) { display: none; }
+}
+@media (max-width: 1360px) { #hud .topbar .controls > #btn-services > span:not(.svc-count) { display: none; } }
