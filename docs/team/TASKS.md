@@ -64,7 +64,10 @@ Plan: [OFFICE_LIFE_AND_MOBILE_PLAN.md](OFFICE_LIFE_AND_MOBILE_PLAN.md).
 | LIFE-06 | Corporate attire (CEO/chief suits, worker default outfit, hire-dialog customisation) | Reviewed and accepted | [Report](reports/corporate-outfits.md). Rocketbox business avatars (MIT) via a TypeScript pipeline; review ACCEPT WITH FIXES, the medium (failed clip/model downloads cached for the session) fixed with a retry and a test. 559/559 tests, 19/19 outfit and 411/411 mobile checks on the merged tree. Open (low): frustum culling disabled for skinned bodies; old rigs still in `tools/avatars/rigs/`. Not run on the iPhone simulator |
 | ORG-01..03 | Executive roster and offices, estimates before work, CEO approval inbox and notifications | Requirements recorded ([ORG_PLAN.md](ORG_PLAN.md)) | Rule-based executives this round (no model calls); server mode only. ORG-01/02 author assigned 2026-10-02; ORG-03 after |
 | ORG-03 | CEO approval inbox and notifications (in-game tray and panel, HUD badge, Telegram, optional email) | Built, awaiting independent review | [Report](reports/org-03.md), [guide](../APPROVALS.md). Branch `claude/org-03-inbox`. Inbox reconciled from consultancy state; Telegram `/approvals`, `/approve A3 [budget]`; email via a minimal SMTP client. inbox-ui-check 35/35, mobile 411/411, life04 16/16, outfit 29/29, org 32/32, npm test 653/653 |
-| ORG-04..06 | Marketing/sales, research, onboarding/voice | Backlog | After ORG-03 |
+| ORG-04a | Email outreach (first marketing channel) | Requirements recorded ([ORG_PLAN.md](ORG_PLAN.md) Round 2) | Owner chose email first (2026-10-08). Leads by CEO import only, suppression list, fixed compliance footer, per-campaign external_action approval of a frozen snapshot, owner SMTP, rate and daily caps |
+| ORG-05 | Research executive | Requirements recorded ([ORG_PLAN.md](ORG_PLAN.md) Round 2) | Sourced research reports with honest feasibility; tool proposals are approval items, never auto-installed |
+| ORG-04b, ORG-06 | Other marketing channels; onboarding/voice | Backlog | Each channel needs an owner decision |
+| CLOUD-06 | OpenAI Agents adapter | Next after ORG-04a/05 | — |
 
 ## Releases and in-app updates
 

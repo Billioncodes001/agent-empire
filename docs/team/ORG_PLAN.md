@@ -41,7 +41,9 @@ for this round and says so in the UI.
 | ORG-01 | Executive roster and offices | Org + world | See below |
 | ORG-02 | Estimates before work, compared with actuals | Org | See below |
 | ORG-03 | CEO approval inbox and notifications | Org (after ORG-01/02) | See below |
-| ORG-04..06 | Marketing/sales, research, onboarding/voice | — | Later; not in this round |
+| ORG-04a | Email outreach (first marketing channel) | ORG-03 | See "Round 2" below |
+| ORG-05 | Research executive | ORG-03 | See "Round 2" below |
+| ORG-04b, ORG-06 | Other marketing channels; onboarding/voice | — | Later |
 
 ### LIFE-04: Dependencies and recreation while waiting
 
@@ -155,8 +157,93 @@ interface OrgState { schemaVersion: 1; observedAt: number; executives: Executive
     a fake transport.
 - **Cloud mode:** the inbox is not available in cloud mode yet, and the UI says so.
 
+## Round 2 (owner direction, 2026-10-08): email outreach and research
+
+The owner chose email outreach as marketing's first channel, with the research executive alongside. The OpenAI cloud
+option (CLOUD-06) follows. LinkedIn, X and other channels are later, and each needs its own owner decision.
+
+### Shared: internal jobs with a worker artifact
+
+Drafting a campaign and researching a question are **internal jobs**. They use the existing consultancy job path,
+with client `Internal`, an estimate and CEO approval before any paid work. Each item's prompt tells the worker to
+write one markdown file with strict frontmatter at a fixed path:
+- campaigns: `docs/empire/campaigns/<jobId>.md`;
+- research: `docs/empire/research/<jobId>.md`.
+
+The worker writes the file in its worktree. When the task finishes with `outcome === 'done'`, the server reads it
+from the task's branch or worktree.
+- **Path confinement:** no symlinks, no `..`. **Size cap:** 256 KB.
+- **Parsing:** strict. A missing or invalid artifact makes the item need attention, with the reason; nothing is
+  guessed.
+- **Honest labels:** the imported content is labelled "Drafted by <worker> — not verified".
+
+### ORG-04a: Email outreach (marketing & sales executive, first channel)
+
+- **Executive:** marketing_sales becomes active as "Rule-based": it coordinates, it doesn't write. Its card shows
+  campaigns, leads and what's waiting on the CEO.
+- **Leads:**
+  - **Import:** the CEO imports CSV files (name, email, company, source, basis) on the founder desk or by API. A
+    worker can propose leads inside a campaign draft, but proposed leads are unconfirmed until the CEO accepts them.
+  - **Validation:** every lead needs a valid address and a recorded `source` and `basis` (e.g. "existing customer",
+    "inbound inquiry", "conference contact"). The UI states the CEO is responsible for having a lawful basis to email
+    each contact.
+  - **No scraping:** the Empire never scrapes or buys addresses.
+  - **Storage:** leads are kept in `leads.json`, deduplicated by lowercase address.
+- **Suppression list:** opted-out, bounced and CEO-blocked addresses are never emailed again. The CEO adds opt-outs
+  (from replies such as "STOP") in the UI or with Telegram `/optout <email>`, because without IMAP the Empire doesn't
+  read replies, and the UI says so.
+- **Campaign drafts:** a worker drafts a campaign as an internal job. The artifact's frontmatter holds `subject`,
+  `audience` (lead tags or ids) and an optional `proposedLeads` list. The body is plain text with only
+  `{{name}}`/`{{company}}` merge fields.
+- **Owner-config footer:** every email appends a fixed footer, which the worker can't edit:
+  - the sender's identity and physical postal address, from `AGENT_EMPIRE_OUTREACH_ADDRESS` (required; sending is
+    disabled without it);
+  - "Reply STOP to stop receiving these emails".
+- **Approval:** sending is an `external_action` inbox item, raised by marketing_sales. It shows:
+  - the exact subject and body, rendered for 2 sample recipients;
+  - the full recipient count and list, with suppressed or invalid addresses excluded and counted;
+  - the sender address and the daily cap.
+  - Approving sends exactly that frozen snapshot. Any edit makes a new item. Rejecting records the decision.
+    Telegram can approve with `/approve A7`.
+- **Sending:**
+  - It reuses the ORG-03 SMTP client and transport over the owner's `AGENT_EMPIRE_SMTP_URL`. The From address is
+    `AGENT_EMPIRE_OUTREACH_FROM` and must be set.
+  - One message per recipient, never CC or BCC lists. Rate-limited, default 1 message every 10 s and 200 a day
+    (`AGENT_EMPIRE_OUTREACH_DAILY_CAP`).
+  - Results per recipient (sent, refused, failed) are durable in `outreach.json`. A 5xx refusal adds the address to
+    suppression as a bounce. A restart resumes without re-sending anyone already marked sent.
+  - The CEO can pause or cancel a running campaign.
+- **Honesty:** the campaign card reports only real counts. City credits are never involved.
+- **Tests:** fake SMTP only, never a real recipient. They cover:
+  - suppression always wins;
+  - cap and rate limiting;
+  - a frozen snapshot;
+  - no double send across a restart;
+  - footer always present;
+  - merge-field escaping, with no header injection from names or companies;
+  - CSV validation;
+  - artifact path confinement.
+
+### ORG-05: Research executive
+
+- **Executive:** research becomes active as "Rule-based". Its card lists research reports and open tool proposals.
+- **Asking:** the CEO asks a question or describes an unfamiliar job (founder desk, the research card, or Telegram
+  `/research <question>`). This creates an internal job with an estimate, which needs approval like any job.
+- **Report contract:** `docs/empire/research/<jobId>.md` with frontmatter `question`, `feasibility`
+  (`feasible` | `partial` | `not_yet` | `unknown`) and `confidence` (low/medium/high). Required sections: Findings,
+  where every claim cites a source URL; What we can do now; What we can't do yet and why; Proposed tools.
+  - Reports without at least one source URL in Findings are rejected as needing attention.
+- **Tool proposals:** each proposed tool (name, URL, licence, what it enables, risk) becomes a `tool_proposal`
+  inbox item. Approving only records the decision and shows it on the research card. Installing or adopting a tool
+  is never automatic; it's later work through the normal reviewed flow.
+- **Memory:** reports stay in the repo and are listed with question, feasibility, date and cost. Nothing is
+  presented as verified.
+
 ## Coordination
 
+- **Round 2 authors:** ORG-04a and ORG-05 run in parallel. The ORG-04a author owns the shared artifact importer
+  (`src/server/artifacts.ts`). The ORG-05 author builds against the same contract and merges after ORG-04a; if it
+  finishes first, the coordinator reconciles them.
 - **Authors:** LIFE-04 and ORG-01/02 run in parallel in separate worktrees. ORG-03 starts after ORG-01/02 merge.
 - **Contract owners:** `QueueTask`/`WorkerInfo` changes belong to the LIFE-04 author. `src/shared/org.ts`, the
   approvals types and the estimate types belong to the ORG author. `protocol.ts` additions merge in that order.
