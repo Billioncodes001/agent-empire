@@ -12,7 +12,7 @@ Branch `claude/rel-07-pin-key`, based on `origin/codex/empire-world` at ae8bda5.
 
 | Platform | Mechanism | Proof that release builds exclude it |
 |---|---|---|
-| Web page | `vite.config.ts` defines `__AGENT_EMPIRE_DEV_UPDATE_KEY__` only when `command === 'serve'` or `--mode fixture`. It reads the key from `release-key.ts`; no client module imports the dev key (`src/client/update/trust.ts`). | `npm run build` produced a `dist/public` with 0 dev-key hits; the owner key is in `main-*.js`. `tools/check-no-fixture.mjs` (run by `build:client`, `prepare-desktop`, `package-game`) now also refuses the dev key. The fixture build carries it and is refused. |
+| Web page | `vite.config.ts` defines `__AGENT_EMPIRE_DEV_UPDATE_KEY__` only when `command === 'serve'` or `--mode fixture`. It reads the key from `tools/release/dev-release-public-key.txt` (see Review fixes; nothing under `src/` holds it). | `npm run build` produced a `dist/public` with 0 dev-key hits; the owner key is in `main-*.js`. `tools/check-no-fixture.mjs` (run by `build:client`, `prepare-desktop`, `package-game`) now also refuses the dev key. The fixture build carries it and is refused. |
 | Desktop | Build time, not an environment variable. `prepare-desktop.mjs --dev-updates` writes `desktop/dev-trust.json`, which holds the key, and every other prepare deletes it. `update-store.cjs` does not contain the dev key string. Only with that file does it trust the key, honour `--empire-update-fixture`, and report `devReleaseKey`. | The release workflow never passes `--dev-updates`, dry runs included. A new step asserts there is no `dev-trust.json`, and `sign.mjs check-trust` scans the shell files and `runtime/public` (macOS) or the whole packaged app (Windows). `.gitignore` excludes the file. |
 | Android | Per-variant source sets: `app/src/debug/java/.../DevTrust.java` holds the key, and `app/src/release/java` holds `null`. `build-android.py` compiles one of them, and PolicyTest runs once per variant (`-Dae.variant`). | `build-android.py` decompresses every APK entry and fails the release build if the dev key is present. Result: "release APK development-key check: absent from every entry". `unzip -p … classes.dex` found the dev key 0 times in the release dex and 1 time in the debug dex. |
 | iOS | `#if DEBUG` / `#else nil`. `Checks/run.sh` now compiles and runs the checks twice, without and with `-D DEBUG`. | The simulator Release build passes `sign.mjs check-trust`; the Debug build is flagged. The workflow runs check-trust on its Release simulator build. |
@@ -24,7 +24,7 @@ Development shells send `devReleaseKey` in `update.nativeInfo`, and the page add
 `checkPinnedKey` (`sign.mjs check-key`) now also runs `checkReleaseTrust`. It refuses a release in any of these cases:
 
 - the dev key appears in desktop shell files, `src/client`, Android `src/main` or `src/release`;
-- a client module imports `DEV_RELEASE_PUBLIC_KEY`;
+- the dev key appears anywhere under `src/` (`src/shared` and `src/server` ship in `dist/server`);
 - the dev key appears outside `#if DEBUG` in the iOS sources;
 - the Android release `DevTrust` is missing;
 - `desktop/dev-trust.json` exists.
@@ -33,7 +33,7 @@ It still refuses the dev key as `RELEASE_PUBLIC_KEY` and any shell that does not
 
 ## Checks
 
-- `npm run typecheck`: pass. `npm test`: 583/583, with new gate, desktop and page trust tests.
+- `npm run typecheck`: pass. `npm test`: 583/583 (585/585 after the review fixes), with new gate, desktop and page trust tests.
 - `npm run build`: pass, no dev key in `dist/public`.
 - Android `build-android.py --variant all`: PolicyTest 708 checks passed for each variant; release and debug APKs built (debug-signed).
 - `sh mobile/ios/Checks/run.sh`: all checks passed in Release and Debug.
@@ -46,3 +46,18 @@ It still refuses the dev key as `RELEASE_PUBLIC_KEY` and any shell that does not
 - Not run: `prepare-desktop.mjs --dev-updates`, which needs a desktop `npm ci` into `runtime/`, plus `tools/update-desktop-check.ts` and the device or emulator fixture runs. The desktop logic is unit-tested (`readDevTrust`, trusted sets, `signedRelease`).
 - The workflow's check-trust steps have not run in CI yet. Running one dry run would prove them.
 - Anyone with write access to an installed desktop app could add a `dev-trust.json`. On macOS that breaks the code signature. It is the same trust boundary as editing `update-store.cjs`.
+
+## Review fixes (security review: ACCEPT WITH FIXES)
+
+1. **HIGH: the Windows release job always failed `check-trust`.** `tsconfig.server.json` compiles `src/shared/**`, so `dist/server/shared/release-key.js` contained the dev key. That file ships in `desktop/runtime/server`.
+   - The dev key now lives only in `tools/release/dev-release-public-key.txt`, read through `tools/release/dev-key.mjs`. All readers use it: `vite.config.ts`, `check-no-fixture.mjs`, `sign.mjs pinnedKeys`, `build-android.py`, the tests, the update fixtures and `update-ui-check.ts`.
+   - `src/shared/release-key.ts` holds only the owner key, so the "client must never import it" rule is gone.
+   - The gate now refuses the dev key anywhere under `src/`.
+   - `prepare-desktop.mjs` (release shape) scans the shell files plus `runtime/public` and `runtime/server`.
+   - The macOS workflow step scans the packaged `Agent Empire.app/Contents/Resources/app`.
+   - A new test copies a desktop release layout and runs `devKeyFiles` and `check-trust` over it, and passes. The layout is: the shell files; `runtime/server` built from every `tsconfig.server.json` include; and `dist/server` and `dist/public` when present. Before this fix, the test would have failed on `src/shared/release-key.ts`.
+   - After `npm run build`, neither `dist/public` nor `dist/server` contains the dev key. The owner key is only in `dist/public/assets/main-*.js` and `dist/server/shared/release-key.js`. `check-trust dist/server dist/public` passes.
+2. **MEDIUM: shell-reported keys.** The page (`trust.ts isDevKey`, used by `parseNativeInfo` and `trustedKeys`) accepts a reported `devReleaseKey` only if its SHA-512 (tweetnacl, synchronous) equals `DEV_KEY_SHA512`. Comparing a digest keeps the key string out of the bundle. `desktop/update-store.cjs readDevTrust` applies the same digest check (`node:crypto`) and refuses any other key. Tests cover four things: the digest constants equal `keyDigest(dev key)`; another key from the shell is ignored, both in `parseNativeInfo` and in a service run against a channel signed by that key; and `dev-trust.json` naming the owner's or another key is refused.
+3. **LOW.** Dry runs now run `check-key --allow-dev`, so CI exercises the release-trust scan. `build-android.py` also scans every entry of the AAB. The workflow runs `check-trust` on the iOS `xcarchive/Products` before export and upload. A workflow test pins all of these steps.
+
+Re-run after the fixes: typecheck pass; `npm test` 585/585; `npm run build` pass; `check-key` and `check-key --allow-dev` pass; Android `--variant all` builds with PolicyTest 708 checks passed for each variant, the release APK clean and the debug dex carrying the dev key; `Checks/run.sh` passes in both Release and Debug; `update-ui-check` 57 PASS. The AAB and iOS archive scans run only in CI, because they need bundletool and signing.
