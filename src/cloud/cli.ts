@@ -4,7 +4,9 @@
  * environment; prints only non-secret progress lines.
  */
 import { AnthropicCloudAdapter } from './anthropic-adapter.js';
-import { UnavailableProvider, type ProviderAdapter } from './provider.js';
+import { OpenAICloudAdapter } from './openai-adapter.js';
+import { OPENAI_VERIFIED_DEFAULT, OPENAI_VERIFIED_ENV } from './openai-spec.js';
+import { UnavailableProvider, type ProviderAdapter, type ProviderSet } from './provider.js';
 import { GitHubClient, GitHubStateStore } from './store.js';
 import { runCoordinatorTick } from './tick.js';
 import { readCloudView } from './client.js';
@@ -16,6 +18,21 @@ export function providerFromEnv(env: CliEnv, transport?: typeof fetch): Provider
   const githubToken = env.PROJECT_GITHUB_TOKEN?.trim() ?? '';
   if (!apiKey) return new UnavailableProvider();
   return new AnthropicCloudAdapter({ apiKey, githubToken }, transport ? { fetch: transport } : {});
+}
+
+/**
+ * The owner's verification flag (decision 12): OpenAI work is refused unless this build ships verified, or the owner set
+ * the Actions variable AGENT_EMPIRE_OPENAI_VERIFIED=true in their state repository for the first real run.
+ */
+export const openaiVerified = (env: CliEnv) => OPENAI_VERIFIED_DEFAULT || env[OPENAI_VERIFIED_ENV]?.trim() === 'true';
+
+/** Both adapters; the coordinator uses the one the Empire's execution names (one provider per Empire). */
+export function providersFromEnv(env: CliEnv, transport?: typeof fetch): ProviderSet {
+  const apiKey = env.OPENAI_API_KEY?.trim() ?? '';
+  return {
+    anthropic: providerFromEnv(env, transport),
+    ...(apiKey ? { openai: new OpenAICloudAdapter({ apiKey, githubToken: env.PROJECT_GITHUB_TOKEN?.trim() ?? '' }, { verified: openaiVerified(env), ...(transport ? { fetch: transport } : {}) }) } : {}),
+  };
 }
 
 /** The state lives on the repository's default branch (AGENT_EMPIRE_STATE_BRANCH, set by the workflow). */
@@ -50,7 +67,7 @@ export async function main(argv: string[], env: CliEnv, out: (line: string) => v
     }
     const runId = `${env.GITHUB_RUN_ID ?? 'local'}-${env.GITHUB_RUN_ATTEMPT ?? '1'}`.replace(/[^A-Za-z0-9._-]/g, '').slice(0, 80) || 'local-1';
     const report = await runCoordinatorTick({
-      store, provider: providerFromEnv(env, transport), now: Date.now, runId,
+      store, provider: providersFromEnv(env, transport), now: Date.now, runId,
       allowSelfDisable: env.AGENT_EMPIRE_SELF_DISABLE === 'true', log: out,
     });
     out(JSON.stringify({ runId: report.runId, revision: report.revision, intents: report.intents.map(i => ({ id: i.id, kind: i.kind, outcome: i.outcome, reason: i.reason })), observed: report.observed, stopped: report.stopped, commits: report.commits, dispatched: report.dispatched, lifecycle: report.lifecycle, migrated: report.migrated, intentsTruncated: report.intentsTruncated, provisioning: report.provisioning }));

@@ -85,5 +85,6 @@ jobs:
           AGENT_EMPIRE_STATE_BRANCH: \${{ github.event.repository.default_branch || github.ref_name }}
           AGENT_EMPIRE_WORKFLOW: ${WORKFLOW_FILE}
           AGENT_EMPIRE_SELF_DISABLE: '${selfDisable ? 'true' : 'false'}'
+          AGENT_EMPIRE_OPENAI_VERIFIED: \${{ vars.AGENT_EMPIRE_OPENAI_VERIFIED }}
 `;
 }
