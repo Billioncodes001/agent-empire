@@ -100,29 +100,30 @@ Together these mean:
 
 ## One-time setup: the update signing key (required)
 
-Every app checks the signature on the channel file and game manifest against a public key built into the app. This key must exist before the first release.
+Every app checks the signature on the channel file and game manifest against a public key built into the app.
 
-1. On a trusted computer, from the repository root, create the key into a file only you can read:
+**Status: done.** The owner generated the key offline and it was pinned on 2026-10-08 (REL-07, [report](team/reports/rel-07-pin-key.md)). The public key is `rIRaOVUyoolaIritW/W8zMW7kGymgcjvg7uXhHtTqPk=` (raw Ed25519, base64). It is in `src/shared/release-key.ts` and in every file listed in `tools/release/config.json` → `pinnedKeyFiles`. The owner stores the private key as the `release` environment secret `GAME_SIGNING_KEY` with `~/AgentEmpire-credentials/setup-github-release.sh`, and keeps an offline backup. GitHub secrets cannot be read back. If the key is lost, installed apps stop accepting updates until users install a new native build.
 
-   ```sh
-   node tools/release/generate-signing-key.mjs --out ~/agent-empire-signing-key.pem
-   ```
+Check that the secret matches the pinned key (paste the PEM from your password manager; it is never written to disk):
 
-   It prints the public key and a line to paste.
-2. Store the private key as a repository secret:
+```sh
+GAME_SIGNING_KEY="$(pbpaste)" node tools/release/sign.mjs check-key
+```
 
-   ```sh
-   gh secret set GAME_SIGNING_KEY --env release < ~/agent-empire-signing-key.pem
-   ```
-3. Back up the `.pem` in your password manager, then delete the file. GitHub secrets cannot be read back. If this key is lost, installed apps stop accepting updates until users install a new native build.
-4. Replace `RELEASE_PUBLIC_KEY` in `src/shared/release-key.ts` with the printed line. Also replace it in every file listed in `tools/release/config.json` → `pinnedKeyFiles`. Commit through the normal PR flow.
-5. Check the key locally:
+This prints "ready … matches".
 
-   ```sh
-   GAME_SIGNING_KEY="$(pbpaste)" node tools/release/sign.mjs check-key
-   ```
+**Development builds and the public development key.** Tests and the local update fixture (`tools/update-fixture.ts`) sign with a public development key (`DEV_RELEASE_PUBLIC_KEY`, private half derived from a published seed). Only development builds trust it:
 
-   This prints "ready … matches". `pbpaste` assumes the PEM is on the clipboard; you can use your password manager's CLI instead.
+| Platform | Development build (trusts owner key + dev key) | Release build (owner key only) |
+|---|---|---|
+| Web page | Vite dev server, `vite build --mode fixture` (compile-time define) | `npm run build:client`: the dev key string is absent from `dist/public` (checked by `tools/check-no-fixture.mjs`) |
+| Desktop | `node tools/prepare-desktop.mjs --dev-updates` writes `desktop/dev-trust.json` | Any other prepare deletes that file; the release workflow never passes the flag |
+| Android | `build-android.py --variant debug` (`app/src/debug/java/.../DevTrust.java`) | Release variant (`app/src/release/java`, no key); the build fails if the dev key is anywhere in the APK |
+| iOS | Debug configuration (`#if DEBUG`) | Release configuration |
+
+A development shell reports the dev key to the page it carries (`update.nativeInfo` → `devReleaseKey`), so the production page can be tested against the fixture. A release shell never does. Every run of the release workflow builds release-shaped apps, dry runs included. `node tools/release/sign.mjs check-key` refuses a release when `RELEASE_PUBLIC_KEY` is the dev key, when a shell file does not pin the owner key, or when any release-build source would trust the dev key. The workflow also runs `sign.mjs check-trust` on the packaged macOS, Windows and iOS apps.
+
+**Rotating the key** (only if it is compromised or lost): run `node tools/release/generate-signing-key.mjs --out <new file>` on a trusted computer, replace `RELEASE_PUBLIC_KEY` in `src/shared/release-key.ts` and in every `pinnedKeyFiles` entry, update the secret, and ship a native build. Apps that are already installed trust only the old key.
 
 ## GitHub secrets and variables
 
