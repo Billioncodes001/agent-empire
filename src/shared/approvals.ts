@@ -4,7 +4,8 @@
 import type { EstimateBasis, ExecutiveRole, Range } from './org.js';
 
 export type ApprovalKind = 'job_plan' | 'budget_increase';
-export type ApprovalStatus = 'pending' | 'approved' | 'rejected';
+/** `resolved`: the hold an increase was raised for cleared without any recorded budget raise (no decision is implied). */
+export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'resolved';
 
 export interface ApprovalEstimate {
   costUsd: Range;
@@ -35,6 +36,10 @@ export interface Approval {
   decidedBy?: string;
   /** The budget the decision recorded, in USD. */
   budgetUsd?: number;
+  /** A plain note on the decision, e.g. "Reopened after decline on …". */
+  note?: string;
+  /** A declined budget increase whose hold still stands: it can still be approved (review fix 1). */
+  reopenable?: true;
 }
 
 export interface ApprovalsState {

@@ -186,7 +186,7 @@ test('rejecting a budget_increase keeps the job held and records the decision', 
     f.inbox.reconcile();
     f.office.reconcile();
     assert.equal(pending(f.inbox).length, 0, 'the same hold is not raised again');
-    assert.equal(f.inbox.approve(item.id, 'CEO', { budgetUsd: 10 }).status, 'rejected');
+    assert.equal(f.inbox.get(item.id)!.reopenable, true, 'review fix 1: it stays approvable while the hold stands');
   } finally { f.done(); }
 });
 
@@ -255,4 +255,57 @@ test('finance and chief attention count the inbox items they raised', () => {
   assert.equal(org.executives.find((e) => e.role === 'chief_of_staff')!.attention, 2);
   assert.equal(org.executives.find((e) => e.role === 'finance')!.attention, 1);
   assert.match(org.executives.find((e) => e.role === 'finance')!.summary, /1 budget increase/);
+});
+
+test('review fix 1: a declined budget increase can be approved later while its hold stands; the budget is raised once', () => {
+  const f = setup();
+  try {
+    overBudget(f);
+    let raises = 0;
+    const raise = f.office.raiseBudget.bind(f.office);
+    f.office.raiseBudget = (...args) => { raises++; return raise(...args); };
+    const [item] = pending(f.inbox);
+    f.inbox.reject(item.id, 'CEO');
+    assert.equal(f.inbox.get(item.id)!.reopenable, true, 'the hold still stands, so it can be reopened');
+    assert.equal(f.inbox.reject(item.id, 'CEO').status, 'rejected', 'a second decline changes nothing');
+    assert.throws(() => f.inbox.approve(item.id, 'CEO', { budgetUsd: 3.1 }), (e) => e instanceof ApprovalError && e.status === 400, 'same validation');
+    const approved = f.inbox.approve(item.id, 'CEO via Telegram', { budgetUsd: 10 });
+    assert.equal(approved.status, 'approved');
+    assert.equal(approved.decidedBy, 'CEO via Telegram');
+    assert.match(approved.note ?? '', /Reopened after decline on/);
+    assert.equal(approved.reopenable, undefined);
+    const job = f.office.snapshot().jobs[0];
+    assert.equal(job.approvedBudgetUsd, 10);
+    assert.equal(job.budgetHold, undefined);
+    assert.ok(!job.items.some((i) => i.held), 'held items released');
+    assert.deepEqual(f.inbox.approve(item.id, 'CEO', { budgetUsd: 50 }), approved);
+    assert.equal(raises, 1);
+    assert.equal(new ApprovalInbox(f.dir, f.office).get(item.id)!.status, 'approved', 'persisted');
+  } finally { f.done(); }
+});
+
+test('review fix 6: a hold that clears without a recorded budget raise is resolved, never a fabricated approval', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'approvals-resolved-'));
+  try {
+    const hold = { reachedAt: 5, spentUsd: 3.2, approvedBudgetUsd: 3 };
+    const job = { id: 'consultancy-aaaaaaaaaaaa', requestId: 'r', client: 'Acme', title: 'T', brief: 'b', decision: 'approved' as const, status: 'queued' as const, createdAt: 1, createdBy: 'CEO', decidedAt: 2, decidedBy: 'CEO', items: [], approvedBudgetUsd: 3, actualSpendUsd: 3.2, budgetHold: hold as typeof hold | undefined };
+    const fake = { snapshot: () => ({ revision: 1, jobs: [structuredClone(job)] }), approve: () => { throw new Error('no'); }, reject: () => { throw new Error('no'); }, raiseBudget: () => { throw new Error('no'); } };
+    const inbox = new ApprovalInbox(dir, fake as never);
+    const [item] = inbox.pending();
+    assert.equal(item.kind, 'budget_increase');
+    job.budgetHold = undefined;
+    inbox.reconcile();
+    assert.equal(inbox.get(item.id)!.status, 'resolved');
+    assert.equal(inbox.get(item.id)!.budgetUsd, undefined);
+    // A second hold that ends with a higher budget on record is the budget raised elsewhere.
+    job.budgetHold = { ...hold, reachedAt: 9 };
+    inbox.reconcile();
+    const second = inbox.pending()[0];
+    job.budgetHold = undefined;
+    job.approvedBudgetUsd = 8;
+    inbox.reconcile();
+    assert.equal(inbox.get(second.id)!.status, 'approved');
+    assert.equal(inbox.get(second.id)!.budgetUsd, 8);
+    assert.match(inbox.get(second.id)!.decidedBy ?? '', /outside the inbox/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

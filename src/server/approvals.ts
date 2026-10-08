@@ -177,15 +177,18 @@ export class ApprovalInbox {
     return this.decide(id, actor, 'rejected', options);
   }
 
-  private decide(id: string, actor: string, decision: Exclude<ApprovalStatus, 'pending'>, options: DecisionOptions): Approval {
+  private decide(id: string, actor: string, decision: 'approved' | 'rejected', options: DecisionOptions): Approval {
     if (this.storageError) throw new ApprovalError(503, this.storageError);
     const who = cleanActor(actor);
     const requestId = cleanRequestId(options.requestId);
     this.reconcile();
     const item = this.data.items.find((i) => i.id === id);
     if (!item) throw new ApprovalError(404, `Unknown approval: ${id}`);
+    // A declined budget increase stays approvable while its hold stands; otherwise its job would be held for good.
+    const reopen = decision === 'approved' && item.kind === 'budget_increase' && item.status === 'rejected' && item.reopenable === true;
     // Idempotent: a decided item answers with the decision it already has, whatever is asked now.
-    if (item.status !== 'pending') return publicItem(item);
+    if (item.status !== 'pending' && !reopen) return publicItem(item);
+    const declined = reopen ? { at: item.decidedAt ?? 0, by: item.decidedBy ?? 'CEO' } : undefined;
     const budget = decision === 'approved' && options.budgetUsd !== undefined && options.budgetUsd !== null ? validBudget(options.budgetUsd) : undefined;
     this.deciding = true;
     try {
@@ -206,6 +209,10 @@ export class ApprovalInbox {
         if (job.approvedBudgetUsd !== undefined && raised <= job.approvedBudgetUsd) throw new ApprovalError(400, `The new budget must exceed the approved ${usd(job.approvedBudgetUsd)}`);
         this.office.raiseBudget(item.jobId, raised, who);
         this.record(item, 'approved', who, requestId, raised);
+        if (declined) {
+          item.note = `Reopened after decline on ${new Date(declined.at).toISOString().slice(0, 16).replace('T', ' ')} UTC by ${declined.by}`;
+          delete item.reopenable;
+        }
       } else {
         // The job stays held; the decision is the record.
         this.record(item, 'rejected', who, requestId);
@@ -221,7 +228,7 @@ export class ApprovalInbox {
     return publicItem(item);
   }
 
-  private record(item: Stored, status: Exclude<ApprovalStatus, 'pending'>, who: string, requestId?: string, budgetUsd?: number) {
+  private record(item: Stored, status: 'approved' | 'rejected', who: string, requestId?: string, budgetUsd?: number) {
     item.status = status;
     item.decidedAt = this.now();
     item.decidedBy = who;
@@ -257,11 +264,24 @@ export class ApprovalInbox {
     const source = hold && `budget:${job.id}:${hold.reachedAt}`;
     for (const item of open) {
       if (item.source === source) continue;
-      // The hold this item was raised for is gone, so its budget was raised some other way.
-      item.status = 'approved';
+      // The hold this item was raised for is gone. Only Consultancy.raiseBudget clears a hold today, but an approval is
+      // recorded only with evidence of a raise: a budget above the one the hold was reached at. Anything else is
+      // "resolved", so a future path that clears holds can never produce a fabricated approval.
       item.decidedAt = at;
-      item.decidedBy = 'Budget raised outside the inbox';
-      if (job.approvedBudgetUsd !== undefined) item.budgetUsd = job.approvedBudgetUsd;
+      if (job.approvedBudgetUsd !== undefined && item.approvedBudgetUsd !== undefined && job.approvedBudgetUsd > item.approvedBudgetUsd) {
+        item.status = 'approved';
+        item.decidedBy = 'Budget raised outside the inbox';
+        item.budgetUsd = job.approvedBudgetUsd;
+      } else {
+        item.status = 'resolved';
+        item.decidedBy = 'Hold cleared without a budget decision';
+      }
+    }
+    // A declined increase can be approved later only while the very hold it was raised for still stands.
+    for (const item of this.data.items) {
+      if (item.kind !== 'budget_increase' || item.jobId !== job.id || item.status !== 'rejected') continue;
+      if (item.source === source) item.reopenable = true;
+      else delete item.reopenable;
     }
     if (!hold || !source) return;
     const spent = job.actualSpendUsd ?? hold.spentUsd;
@@ -326,7 +346,8 @@ function parseFile(value: unknown): StoredFile {
     if (!item || typeof item !== 'object') throw new Error(`${label} must be an object`);
     if (typeof item.id !== 'string' || !APPROVAL_ID_RE.test(item.id) || Number(item.id.slice(1)) >= (raw.nextSeq as number)) throw new Error(`${label} id is invalid`);
     if (item.kind !== 'job_plan' && item.kind !== 'budget_increase') throw new Error(`${label} kind is invalid`);
-    if (!['pending', 'approved', 'rejected'].includes(item.status)) throw new Error(`${label} status is invalid`);
+    if (!['pending', 'approved', 'rejected', 'resolved'].includes(item.status)) throw new Error(`${label} status is invalid`);
+    if (item.reopenable !== undefined && (item.reopenable !== true || item.status !== 'rejected' || item.kind !== 'budget_increase')) throw new Error(`${label} reopenable is invalid`);
     if (typeof item.source !== 'string' || typeof item.jobId !== 'string' || typeof item.title !== 'string' || typeof item.detail !== 'string') throw new Error(`${label} is incomplete`);
     if (!Number.isSafeInteger(item.createdAt)) throw new Error(`${label} createdAt is invalid`);
     if (item.status !== 'pending' && (!Number.isSafeInteger(item.decidedAt) || typeof item.decidedBy !== 'string')) throw new Error(`${label} decision evidence is invalid`);

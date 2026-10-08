@@ -17,7 +17,7 @@ export interface TelegramCommands {
   /** Compact status without task briefs, credentials, paths or worker terminal output. */
   summary(): { fingerprint: string; text: string };
   /** ORG-03: one message per key, sent once each; keys pending before the first poll are a silent baseline. */
-  notifications?(): { key: string; text: string }[];
+  notifications?(): { key: string; text: string; silent?: boolean }[];
 }
 interface Checkpoint { version: 1; binding: string; offset: number; fingerprint?: string; notified?: string[] }
 /** Announced approval keys kept for de-duplication; older ones are long decided. */
@@ -142,7 +142,8 @@ export class TelegramBridge {
       if (this.saved.notified === undefined) this.save({ ...this.saved, notified: notes.map((n) => n.key).slice(-MAX_NOTIFIED) });
       else for (const note of notes) {
         if (this.saved.notified!.includes(note.key)) continue;
-        await this.send(note.text, signal);
+        // Silent: the command reply already told the owner (a plan created with /new).
+        if (!note.silent) await this.send(note.text, signal);
         assertCurrent();
         // Saved per message, so a failed send retries only what was not sent.
         this.save({ ...this.saved, notified: [...this.saved.notified!, note.key].slice(-MAX_NOTIFIED) });

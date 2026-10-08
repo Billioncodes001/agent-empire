@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { scryptSync } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -13,7 +14,7 @@ import type { WorkerRuntime } from '../src/server/workers.js';
 async function fixture(t: { after(fn: () => Promise<void>): void }, extra: Partial<ServerRuntime> = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'empire-approvals-server-'));
   writeFileSync(path.join(dir, 'queue.json'), JSON.stringify({ tasks: [], maxWorkers: 0 }));
-  const cfg: Config = { dir, dataDir: dir, host: '127.0.0.1', port: 0, passwordGenerated: false, verifier: Buffer.alloc(32, 1), salt: Buffer.alloc(16, 2), secret: 'fixture-only-secret', claimed: true, markClaimed() {}, agentCmd: 'claude', agentArgs: [], trustProxy: false, iceServers: [], budgetPause: false };
+  const cfg: Config = { dir, dataDir: dir, host: '127.0.0.1', port: 0, passwordGenerated: false, verifier: scryptSync('fixture-password', Buffer.alloc(16, 2), 32), salt: Buffer.alloc(16, 2), secret: 'fixture-only-secret', claimed: true, markClaimed() {}, agentCmd: 'claude', agentArgs: [], trustProxy: false, iceServers: [], budgetPause: false };
   const runtime: WorkerRuntime = { taskNaming: false, resolveCommand: () => '/fixture/claude', processExists: () => false, spawn: (() => { throw new Error('no worker may start in this test'); }) as WorkerRuntime['spawn'] };
   const running = await startServer(cfg, { publicDir: dir, backgroundServices: false, workers: runtime, telegram: false, email: false, ...extra });
   const port = (running.server.address() as { port: number }).port;
@@ -38,7 +39,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, extra: Parti
     });
     return messages;
   }
-  return { call, connect, cookie, origin };
+  return { call, connect, cookie, origin, running };
 }
 
 const waitFor = async (pred: () => boolean, ms = 3000) => {
@@ -111,4 +112,20 @@ test('a plan approved on the founder desk resolves its inbox item', async (t) =>
   const state = await (await f.call('/api/approvals')).json();
   assert.equal(state.pending, 0);
   assert.equal(state.items[0].status, 'approved');
+});
+
+test('review: a signed-in device (bearer token) can list and decide without an Origin; a bad token cannot', async (t) => {
+  const f = await fixture(t);
+  const login = await fetch(`${f.origin}/api/device/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'fixture-password', deviceName: 'Phone' }) });
+  assert.equal(login.status, 200);
+  const { token } = await login.json();
+  const bearer = { authorization: `Bearer ${token}` };
+  await f.call('/api/consultancy/jobs', { requestId: 'dev-1', client: 'Acme', title: 'Device', brief: 'Fixture only' });
+  const listed = await f.call('/api/approvals', undefined, bearer);
+  assert.equal(listed.status, 200);
+  const [item] = (await listed.json()).items;
+  const decided = await f.call(`/api/approvals/${item.id}/reject`, {}, bearer);
+  assert.equal(decided.status, 200);
+  assert.equal((await decided.json()).status, 'rejected');
+  assert.equal((await f.call('/api/approvals', undefined, { authorization: 'Bearer not-a-real-token' })).status, 401);
 });

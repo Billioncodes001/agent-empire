@@ -19,17 +19,22 @@ export function estimateText(job: ConsultancyJob): string {
 }
 
 /** A deterministic command surface shared with the same consultancy service as the CEO console. */
-export function chiefCommands(office: Consultancy, resourceReport: () => string, inbox?: ApprovalInbox): TelegramCommands {
+export function chiefCommands(office: Consultancy, resourceReport: () => string, inbox?: ApprovalInbox, afterDecision?: () => void): TelegramCommands {
   const ACTOR = 'CEO via Telegram';
+  /** Inbox ids the owner already heard about in a command reply (/new); announced silently. */
+  const announced = new Set<string>();
   /** Inbox ids (A3) are distinct from consultancy job ids (consultancy-…); both are accepted. */
   const decideInbox = (cmd: 'approve' | 'reject', id: string, amount: string | undefined, requestId: string) => {
     const before = inbox!.get(id);
     if (!before) return `Unknown approval ${id}. Use /approvals for pending items.`;
-    if (before.status !== 'pending') return `${id} is already ${before.status}.`;
+    const reopen = cmd === 'approve' && before.status === 'rejected' && before.reopenable === true;
+    if (before.status !== 'pending' && !reopen) return `${id} is already ${before.status}.`;
     const item = cmd === 'approve' ? inbox!.approve(id, ACTOR, { requestId, ...(amount === undefined ? {} : { budgetUsd: Number(amount.replace('$', '')) }) }) : inbox!.reject(id, ACTOR, { requestId });
+    // Like the HTTP route: a raised budget releases held items, so the queue seats them now.
+    try { afterDecision?.(); } catch { /* the decision is saved; seating retries on the queue's own timer */ }
     const budget = item.status === 'approved' && item.budgetUsd !== undefined ? ` · budget $${item.budgetUsd.toFixed(2)}` : '';
     const note = item.kind === 'budget_increase'
-      ? (item.status === 'approved' ? ' Held items are released; existing execution and workstation limits still apply.' : ' The job stays held until its budget is raised.')
+      ? (item.status === 'approved' ? ' Held items are released; existing execution and workstation limits still apply.' : ` The job stays held. To release it later, approve this item in the game inbox (Recent decisions) or send /approve ${item.id} [budget].`)
       : (item.status === 'approved' ? ' The plan is queued under existing execution, budget and workstation limits.' : ' The unstarted plan was declined.');
     return `${item.id} ${item.status}${budget}.${note}`;
   };
@@ -51,7 +56,10 @@ export function chiefCommands(office: Consultancy, resourceReport: () => string,
           if (parts.length < 3) return 'Use /new Client | Job title | Brief';
           const [client, title, ...brief] = parts;
           const job = office.create({ requestId, client: client.trim(), title: title.trim(), brief: brief.join('|').trim() }, 'CEO via Telegram');
-          return `Job ${job.id} saved for ${job.client}. Nothing starts before approval.\nReview the brief and work items with /job ${job.id}`;
+          inbox?.reconcile();
+          const item = inbox?.state().items.find((i) => i.kind === 'job_plan' && i.jobId === job.id);
+          if (item) announced.add(item.id);
+          return `Job ${job.id} saved for ${job.client}. Nothing starts before approval.\nReview the brief and work items with /job ${job.id}${item ? `\nIt is approval ${item.id} in your inbox: /approve ${item.id} [budget]` : ''}`;
         }
         if (cmd === 'job') {
           const job = office.snapshot().jobs.find(j => j.id === raw.trim());
@@ -93,7 +101,7 @@ export function chiefCommands(office: Consultancy, resourceReport: () => string,
     notifications() {
       if (!inbox) return [];
       if (inbox.recoveryError) throw new Error('Approval inbox storage unavailable');
-      return inbox.pending().map((item) => ({ key: item.id, text: `${approvalText(item)}\n/reject ${item.id} to decline.` }));
+      return inbox.pending().map((item) => ({ key: item.id, text: `${approvalText(item)}\n/reject ${item.id} to decline.`, ...(announced.has(item.id) ? { silent: true } : {}) }));
     },
   };
 }
