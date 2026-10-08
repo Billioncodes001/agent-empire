@@ -33,7 +33,7 @@ function setup(opts: { config?: OutreachConfig; dir?: string; behave?: Behaviour
   const office = new Consultancy(dir, {
     state: () => ({ tasks: tasks.map((t) => ({ ...t })), maxWorkers: 1 }),
     add: (prompt, by, title, _issue, jobKey) => { tasks.push({ id: `q${tasks.length + 1}`, jobKey, prompt, title: title ?? 'task', addedBy: by, addedAt: 1, status: 'queued' }); return undefined; },
-  }, () => inbox?.reconcile(), { itemAttention: (jobId) => outreach?.itemAttention(jobId) });
+  }, () => inbox?.reconcile(), { itemIssue: (jobKey) => outreach?.itemIssue(jobKey) });
   inbox = new ApprovalInbox(dir, office, undefined, () => clock);
   const make = () => {
     const o = new Outreach(dir, {
@@ -584,7 +584,7 @@ test('Telegram: /optout adds a suppression; /approve A# approves a campaign send
   f.outreach.importCsv(CSV, 'CEO');
   f.draft();
   const item = f.pendingSend()!;
-  const bot = chiefCommands(f.office, () => 'ok', f.inbox, undefined, f.outreach);
+  const bot = chiefCommands(f.office, () => 'ok', f.inbox, undefined, undefined, f.outreach);
   assert.match(bot.execute('/optout Cid@Client.example', 'tg-1'), /cid@client\.example is on the suppression list \(opt-out\)/);
   assert.match(bot.execute('/optout not-an-address', 'tg-2'), /valid email address/);
   assert.match(bot.execute('/optout', 'tg-3'), /Use \/optout name@example\.com/);

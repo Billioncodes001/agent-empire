@@ -1,5 +1,7 @@
 import type { ConsultancyJob } from '../shared/consultancy';
 import { apiFetch } from './endpoint';
+import type { ResearchReport, ResearchState } from '../shared/research';
+import { STATUS_LABEL, reportBody, reportFacts } from './research-view';
 import { ACTUAL_SPEND_LABEL, PHASE_LABEL, basisLabel, defaultApprovedBudget, fmtDurationRange, fmtUsdRange } from '../shared/org';
 
 /** The CEO's edited budget per pending job, kept across the 5-second refreshes while they type. */
@@ -161,6 +163,7 @@ async function refreshNow() {
     $('telegram-status').textContent = status.telegram.error || (!status.telegram.configured ? 'Not connected yet. Connect your private bot to send briefs, approve plans and receive updates.' : status.telegram.lastPollAt ? 'Connected to your configured private bot.' : 'Configured. Waiting for the first successful connection.');
     $('email-status').textContent = status.email ? `${status.email.label}${status.email.error ? ` — ${status.email.error}` : ''}` : 'Email: not configured';
     showJobs(); if (detail.open && (changed || !wasFresh)) renderDetail();
+    void refreshResearch();
   } catch (e) {
     fresh = false; $('connection').textContent = 'Host unavailable · last view retained'; error('error',(e as Error).message);
     if (detail.open) renderDetail();
@@ -191,6 +194,60 @@ form.addEventListener('submit', async e => {
   finally { busy = false; ($('save-job') as HTMLButtonElement).disabled = false; if (detail.open) renderDetail(); }
 });
 intake.addEventListener('cancel',e => { if (busy) e.preventDefault(); });
+// ORG-05: the research executive on the founder desk. Report text is rendered as text; links are https anchors only.
+let researchSeen = '';
+let researchRequest = newRequestId();
+async function researchApi<T>(path: string, body?: unknown): Promise<T> {
+  const response = await apiFetch(`/api/research${path}`, { credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(12000), ...(body === undefined ? {} : {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}) });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || 'The host could not complete the request.');
+  return data;
+}
+async function refreshResearch() {
+  let state: ResearchState;
+  try { state = await researchApi<ResearchState>(''); } catch { return; }
+  const fp = JSON.stringify(state); if (fp === researchSeen) return; researchSeen = fp;
+  const done = state.reports.filter(r => r.status === 'imported').length;
+  $('research-summary').textContent = state.storageError ?? `${done} report${done === 1 ? '' : 's'} · ${state.openProposals} open tool proposal${state.openProposals === 1 ? '' : 's'} · reports are the worker's work, not verified`;
+  const list = $('research-list'); list.replaceChildren();
+  if (!state.reports.length) { list.append(text('li', 'No research yet. Ask the first question.', 'empty')); return; }
+  for (const r of state.reports) {
+    const li = document.createElement('li');
+    const row = text('button', '', 'job research-row') as HTMLButtonElement; row.type = 'button'; row.dataset.status = r.status; row.dataset.report = r.jobId;
+    const title = text('div', ''); title.append(text('small', r.worker ? `Researched by ${r.worker} — not verified` : 'Internal research'), text('strong', r.question), reportFacts(r));
+    const open = r.tools.filter(t => t.decision === 'pending').length;
+    if (r.reason) title.append(text('p', r.reason, 'research-reason'));
+    row.append(title, text('span', open ? `${open} tool${open === 1 ? '' : 's'} to decide` : STATUS_LABEL[r.status]));
+    row.addEventListener('click', () => void openResearch(r.jobId));
+    li.append(row); list.append(li);
+  }
+}
+const researchDialog = $<HTMLDialogElement>('research-detail');
+async function openResearch(jobId: string) {
+  $('research-detail-title').textContent = 'Loading…'; $('research-detail-content').replaceChildren(); researchDialog.showModal();
+  try {
+    const report = await researchApi<ResearchReport>(`/reports/${encodeURIComponent(jobId)}`);
+    $('research-detail-title').textContent = report.question;
+    const body = reportBody(report);
+    if (report.tools.some(t => t.decision === 'pending')) body.append(text('p', 'Decide tool proposals in the game inbox (CEO desk) or with /approve ID in Telegram. Approving only records your decision.', 'research-note'));
+    $('research-detail-content').replaceChildren(body);
+  } catch (e) { $('research-detail-content').replaceChildren(text('p', (e as Error).message, 'research-reason')); }
+  $('close-research').focus();
+}
+$('close-research').addEventListener('click', () => researchDialog.close());
+$<HTMLFormElement>('research-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const field = $<HTMLTextAreaElement>('research-question'); const button = $<HTMLButtonElement>('research-ask');
+  const question = field.value.trim(); if (!question) { $('research-status').textContent = 'Write a question first.'; return; }
+  button.disabled = true; $('research-status').textContent = 'Saving…';
+  try {
+    await researchApi('', { question, requestId: researchRequest });
+    researchRequest = newRequestId(); field.value = '';
+    $('research-status').textContent = 'Saved as an internal job. Approve it under Client engagements (client “Internal”), in the game inbox or in Telegram before any work starts.';
+    await refresh();
+  } catch (err) { $('research-status').textContent = (err as Error).message; }
+  finally { button.disabled = false; }
+});
 void refresh();
 const saveData = (navigator as Navigator & {connection?: {saveData?: boolean}}).connection?.saveData;
 let timer: ReturnType<typeof setInterval> | undefined;

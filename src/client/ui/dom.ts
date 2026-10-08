@@ -58,7 +58,7 @@ function focusables(root: HTMLElement): HTMLElement[] {
  * `dirty` says whether closing now would lose something typed: then a backdrop click is ignored
  * and Esc has to be pressed twice.
  */
-export function openModal(content: HTMLElement, opts: { escCloses?: boolean; onClose?: () => void; backdropCloses?: boolean; dirty?: () => boolean } = {}): Modal {
+export function openModal(content: HTMLElement, opts: { escCloses?: boolean; onClose?: () => void; backdropCloses?: boolean; dirty?: () => boolean; onEscape?: () => boolean } = {}): Modal {
   const backdrop = h('div.backdrop', {}, content);
   const root = document.getElementById('modal-root')!;
   const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -71,6 +71,12 @@ export function openModal(content: HTMLElement, opts: { escCloses?: boolean; onC
   let escArmed = 0;
   const onKey = (e: KeyboardEvent) => {
     if (stack[stack.length - 1] !== modal) return;
+    if (e.key === 'Escape' && opts.onEscape?.()) {
+      // An inner view (e.g. a report inside a card) handled Esc by stepping back; the dialog stays open.
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     if (e.key === 'Escape' && opts.escCloses !== false) {
       // Stop it here so the Esc that closes a terminal isn't also typed into it.
       e.preventDefault();

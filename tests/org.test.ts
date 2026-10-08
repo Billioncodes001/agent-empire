@@ -42,7 +42,10 @@ test('the roster is stable, rule-based and honest about who is not staffed', () 
   assert.deepEqual(org.executives.map((e) => e.role), EXECUTIVE_ROLES);
   for (const e of org.executives) assert.equal(e.monitor, 'rule_based');
   assert.equal(exec(base(), 'operations').name, 'Morgan · Operations');
-  for (const role of ['research'] as const) {
+  // ORG-05 staffed research and ORG-04a staffed marketing & sales: every role is staffed now.
+  assert.equal(exec(base(), 'research').active, true);
+  assert.match(exec(base(), 'research').summary, /No research yet/);
+  for (const role of [] as ('marketing_sales' | 'research')[]) {
     const e = exec(base(), role);
     assert.equal(e.active, false);
     assert.equal(e.summary, 'Not staffed yet');

@@ -1,6 +1,8 @@
 import { APPROVAL_KIND_LABEL, CLOUD_INBOX_NOTE, MAX_APPROVAL_BUDGET_USD, approveHint, type Approval } from '../../shared/approvals';
 import { ACTUAL_SPEND_LABEL, EXECUTIVES, basisLabel, defaultApprovedBudget, fmtDurationRange, fmtUsdRange } from '../../shared/org';
 import { apiFetch } from '../endpoint';
+import { TOOL_DECISION_NOTE } from '../../shared/research';
+import { safeLink } from '../research-view';
 import { store } from '../state';
 import { h, openModal } from './dom';
 
@@ -8,7 +10,7 @@ import { h, openModal } from './dom';
 // a decision here is the same decision as on the founder desk or in Telegram.
 
 const usd = (n: number) => `$${n.toFixed(2)}`;
-const KIND_ICON: Record<Approval['kind'], string> = { job_plan: '📄', budget_increase: '💵', external_action: '✉️' };
+const KIND_ICON: Record<Approval['kind'], string> = { job_plan: '📄', budget_increase: '💵', external_action: '✉️', tool_proposal: '🧰' };
 
 export const pendingApprovals = () => (store.cloud ? 0 : store.approvals?.pending ?? 0);
 
@@ -36,6 +38,13 @@ function moneyFacts(item: Approval): HTMLElement {
     const pct = Math.min(100, Math.round((item.spentUsd / item.approvedBudgetUsd) * 100));
     rows.push(h('div', {}, h('dt', {}, 'Spent so far'), h('dd', {}, `${usd(item.spentUsd)} of the approved ${usd(item.approvedBudgetUsd)} `, h('small', {}, `(${ACTUAL_SPEND_LABEL})`))));
     rows.push(h('div.inbox-meter', { role: 'img', 'aria-label': `${pct}% of the approved budget spent` }, h('span', { style: `width:${pct}%` })));
+  }
+  if (item.tool) {
+    rows.push(h('div', {}, h('dt', {}, 'Tool'), h('dd', {}, item.tool.name)));
+    rows.push(h('div', {}, h('dt', {}, 'Link'), h('dd', {}, safeLink(item.tool.url))));
+    rows.push(h('div', {}, h('dt', {}, 'Licence'), h('dd', {}, item.tool.licence)));
+    rows.push(h('div', {}, h('dt', {}, 'Enables'), h('dd', {}, item.tool.enables)));
+    rows.push(h('div', {}, h('dt', {}, 'Risk'), h('dd', {}, item.tool.risk)));
   }
   if (item.status !== 'pending' && item.budgetUsd !== undefined) rows.push(h('div', {}, h('dt', {}, 'Budget recorded'), h('dd', {}, usd(item.budgetUsd))));
   return h('dl.inbox-facts', {}, ...rows);
@@ -73,7 +82,7 @@ function itemRow(item: Approval, selected: boolean, onSelect: () => void): HTMLE
   const money = item.kind === 'budget_increase' && item.spentUsd !== undefined && item.approvedBudgetUsd !== undefined
     ? `${usd(item.spentUsd)} of ${usd(item.approvedBudgetUsd)} spent`
     : item.outreach ? `${item.outreach.recipients.length} recipient${item.outreach.recipients.length === 1 ? '' : 's'}`
-    : item.estimate ? `Estimate ${fmtUsdRange(item.estimate.costUsd)}` : '';
+    : item.tool ? item.tool.licence : item.estimate ? `Estimate ${fmtUsdRange(item.estimate.costUsd)}` : '';
   return h(
     'li',
     {},
@@ -172,6 +181,7 @@ export function openInbox(focusId?: string) {
         h('p.setting-note', {}, `Any change to the recipients or sender makes a new item. Pause or cancel a send on the founder desk. ${approveHint(item.id)}`));
       return;
     }
+    const tool = item.kind === 'tool_proposal';
     const fallback = defaultBudget(item);
     const input = h('input', { id: 'inbox-budget', type: 'number', inputmode: 'decimal', min: '1', max: String(MAX_APPROVAL_BUDGET_USD), step: '0.01', value: budgetDraft ?? (fallback !== undefined ? String(fallback) : ''), 'aria-describedby': 'inbox-budget-note' }) as HTMLInputElement;
     input.addEventListener('input', () => { budgetDraft = input.value; if (confirming) { confirming = null; render(); input.focus(); } });
@@ -180,6 +190,7 @@ export function openInbox(focusId?: string) {
       : 'Approval records this budget. Unstarted items are held if provider spend reaches it.';
     const budget = (): number | undefined => {
       const raw = input.value.trim();
+      if (tool) return undefined;
       if (!raw) return item.kind === 'budget_increase' ? NaN : undefined;
       return Number(raw);
     };
@@ -213,24 +224,27 @@ export function openInbox(focusId?: string) {
       }
     };
     const b = budget();
-    const spendSentence = item.kind === 'budget_increase'
+    const spendSentence = tool
+      ? `Record that you approve ${item.tool?.name ?? 'this tool'}? Nothing is installed or adopted; adopting it is later reviewed work.`
+      : item.kind === 'budget_increase'
       ? `Raise the budget for “${item.title.replace(/ reached its budget$/, '')}” from ${usd(item.approvedBudgetUsd ?? 0)} to ${b !== undefined && Number.isFinite(b) ? usd(b) : '—'}? Held items will start.`
       : `Approve this plan${b !== undefined && Number.isFinite(b) ? ` with a ${usd(b)} budget` : ''}? Its items go to the task queue and real provider spend starts.`;
     const confirm = confirming && h(
       'div.inbox-confirm',
       { role: 'group', 'aria-label': 'Confirm decision' },
-      h('p', {}, confirming === 'approve' ? spendSentence : item.kind === 'budget_increase' ? 'Decline the increase? The job stays held; its unstarted items will not start.' : 'Decline this plan? Nothing from it will start.'),
+      h('p', {}, confirming === 'approve' ? spendSentence : tool ? 'Record that you decline this tool proposal?' : item.kind === 'budget_increase' ? 'Decline the increase? The job stays held; its unstarted items will not start.' : 'Decline this plan? Nothing from it will start.'),
       h('div.inbox-actions', {},
         h(`button.btn.${confirming === 'approve' ? 'primary' : 'danger'}`, { type: 'button', disabled: busy, onclick: () => void run(confirming!) }, busy ? 'Saving…' : confirming === 'approve' ? 'Confirm approval' : 'Confirm decline'),
         h('button.btn', { type: 'button', disabled: busy, onclick: () => { confirming = null; render(); } }, 'Cancel')),
     );
     detail.replaceChildren(
       ...head,
-      h('label.inbox-budget', { for: 'inbox-budget' }, item.kind === 'budget_increase' ? 'New budget (USD)' : 'Approved budget (USD)', h('span.inbox-dollar', {}, '$', input)),
-      h('p.setting-note', { id: 'inbox-budget-note' }, note),
+      ...(tool ? [h('p.setting-note', {}, TOOL_DECISION_NOTE)] : [
+        h('label.inbox-budget', { for: 'inbox-budget' }, item.kind === 'budget_increase' ? 'New budget (USD)' : 'Approved budget (USD)', h('span.inbox-dollar', {}, '$', input)),
+        h('p.setting-note', { id: 'inbox-budget-note' }, note)]),
       ...(error ? [h('p.inbox-error', { role: 'alert' }, error)] : []),
       confirm || h('div.inbox-actions', {},
-        h('button.btn.primary', { type: 'button', disabled: busy, onclick: () => ask('approve') }, item.kind === 'budget_increase' ? 'Approve increase…' : 'Approve plan…'),
+        h('button.btn.primary', { type: 'button', disabled: busy, onclick: () => ask('approve') }, tool ? 'Approve proposal…' : item.kind === 'budget_increase' ? 'Approve increase…' : 'Approve plan…'),
         reopen ? null : h('button.btn', { type: 'button', disabled: busy, onclick: () => ask('reject') }, 'Decline…')),
       h('p.setting-note', {}, approveHint(item.id)),
     );
@@ -271,7 +285,7 @@ export function openInbox(focusId?: string) {
     h('div.modal.inbox-modal', { role: 'dialog', 'aria-labelledby': 'inbox-title' },
       h('header', {}, h('div.inbox-heading', {}, h('small.empire-eyebrow', {}, 'CEO desk · Approval inbox'), h('h2', { id: 'inbox-title' }, 'Waiting for you ', count)), close),
       body,
-      h('footer', {}, h('p.setting-note', {}, 'Plans come from Alex, budget increases from Priya, campaign sends from Jordan. All are rule-based monitors of real jobs, spend and outreach. Telegram: /approvals.'))),
+      h('footer', {}, h('p.setting-note', {}, 'Plans come from Alex, budget increases from Priya, campaign sends from Jordan, tool proposals from Sam. All are rule-based monitors of real jobs, spend, outreach and worker reports. Telegram: /approvals.'))),
     { onClose: () => offs.forEach((off) => off()) },
   );
   const offs = (['approvals', 'cloud'] as const).map((topic) => store.on(topic, render));

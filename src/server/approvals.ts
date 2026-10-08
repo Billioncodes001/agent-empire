@@ -56,7 +56,7 @@ export class ApprovalError extends Error {
   }
 }
 
-const RAISED_BY: Record<ApprovalKind, ExecutiveRole> = { job_plan: 'chief_of_staff', budget_increase: 'finance', external_action: 'marketing_sales' };
+const RAISED_BY: Record<ApprovalKind, ExecutiveRole> = { job_plan: 'chief_of_staff', budget_increase: 'finance', external_action: 'marketing_sales', tool_proposal: 'research' };
 const usd = (n: number) => `$${n.toFixed(2)}`;
 
 /**
@@ -252,6 +252,9 @@ export class ApprovalInbox {
           // The plan was decided the other way meanwhile: the consultancy decision stands and is reconciled below.
           if (!(error instanceof ConsultancyError && error.status === 409)) throw error;
         }
+      } else if (item.kind === 'tool_proposal') {
+        // ORG-05: the decision is the record. Nothing is installed or adopted.
+        this.record(item, decision, who, requestId);
       } else if (decision === 'approved') {
         const job = this.office.snapshot().jobs.find((j) => j.id === item.jobId);
         if (!job) throw new ApprovalError(404, `Unknown consultancy job: ${item.jobId}`);
@@ -350,6 +353,20 @@ export class ApprovalInbox {
     }
   }
 
+  /**
+   * ORG-05: raises an item that does not come from consultancy state (a research tool proposal). Idempotent by
+   * `source`: raising the same source again answers the existing id. Answers undefined while storage is broken.
+   */
+  raise(fields: { source: string; kind: 'tool_proposal'; jobId: string; title: string; detail: string; tool: NonNullable<Approval['tool']> }): string | undefined {
+    if (this.storageError) return undefined;
+    const existing = this.data.items.find((i) => i.source === fields.source);
+    if (existing) return existing.id;
+    this.add({ ...fields, createdAt: this.now() });
+    this.trim();
+    try { this.save(); } catch { return undefined; }
+    return this.data.items.find((i) => i.source === fields.source)?.id;
+  }
+
   private add(fields: Omit<Stored, 'id' | 'raisedBy' | 'status'>) {
     const id = `A${this.data.nextSeq++}`;
     this.data.items.push({ id, raisedBy: RAISED_BY[fields.kind], status: 'pending', ...fields });
@@ -398,7 +415,7 @@ function parseFile(value: unknown): StoredFile {
     const label = `item #${index + 1}`;
     if (!item || typeof item !== 'object') throw new Error(`${label} must be an object`);
     if (typeof item.id !== 'string' || !APPROVAL_ID_RE.test(item.id) || Number(item.id.slice(1)) >= (raw.nextSeq as number)) throw new Error(`${label} id is invalid`);
-    if (item.kind !== 'job_plan' && item.kind !== 'budget_increase' && item.kind !== 'external_action') throw new Error(`${label} kind is invalid`);
+    if (item.kind !== 'job_plan' && item.kind !== 'budget_increase' && item.kind !== 'external_action' && item.kind !== 'tool_proposal') throw new Error(`${label} kind is invalid`);
     if (item.kind === 'external_action' && (!item.outreach || typeof item.outreach.campaignId !== 'string' || !Array.isArray(item.outreach.recipients))) throw new Error(`${label} outreach snapshot is invalid`);
     if (!['pending', 'approved', 'rejected', 'resolved'].includes(item.status)) throw new Error(`${label} status is invalid`);
     if (item.reopenable !== undefined && (item.reopenable !== true || item.status !== 'rejected' || item.kind !== 'budget_increase')) throw new Error(`${label} reopenable is invalid`);
@@ -422,6 +439,7 @@ export function approvalLine(item: Approval): string {
     if (item.spentUsd !== undefined && item.approvedBudgetUsd !== undefined) parts.push(`spent ${money(item.spentUsd)} of ${money(item.approvedBudgetUsd)}`);
     if (item.suggestedBudgetUsd !== undefined) parts.push(`suggested ${money(item.suggestedBudgetUsd)}`);
   } else if (item.outreach) parts.push(`${item.outreach.recipients.length} recipient${item.outreach.recipients.length === 1 ? '' : 's'} from ${item.outreach.from}`);
+  else if (item.tool) parts.push(item.tool.url, item.tool.licence);
   else if (item.estimate) parts.push(`estimate ${fmtUsdRange(item.estimate.costUsd)}`);
   return parts.join(' · ');
 }
@@ -437,6 +455,7 @@ export function approvalText(item: Approval): string {
       `Excluded: ${ex.suppressed} suppressed, ${ex.invalid} invalid, ${ex.unconfirmed} unconfirmed`, 'Review the exact message and full recipient list in the game inbox before approving.');
   }
   if (item.kind === 'budget_increase' && item.spentUsd !== undefined) lines.push(`Spend so far: ${money(item.spentUsd)} (${ACTUAL_SPEND_LABEL})${item.suggestedBudgetUsd !== undefined ? ` · suggested new budget ${money(item.suggestedBudgetUsd)}` : ''}`);
+  if (item.tool) lines.push(`Tool: ${item.tool.name} · ${item.tool.url} · licence ${item.tool.licence}`, `Enables: ${item.tool.enables}`, `Risk: ${item.tool.risk}`, 'Approving records your decision only; nothing is installed.');
   lines.push(approveHint(item.id));
   return lines.join('\n');
 }

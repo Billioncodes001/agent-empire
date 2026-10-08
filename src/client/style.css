@@ -1332,3 +1332,61 @@ html.ae-touch #hud .topbar .controls > #btn-inbox > span:not(.svc-count):not(.in
 /* ORG-03 re-review fix 2: at 1440 px and below Issues, PRs, Queue and Invite are icon buttons too (count badges, aria-label and title stay), so conditional tools never wrap the row. */
 @media (max-width: 1440px) { #hud .topbar .controls > #btn-issues > span:not(.svc-count), #hud .topbar .controls > #btn-pulls > span:not(.svc-count), #hud .topbar .controls > #btn-queue > span:not(.svc-count), #hud .topbar .controls > #btn-team > span, #hud .topbar .controls > #btn-services > span:not(.svc-count) { display: none; } }
 @media (max-width: 1360px) { #hud .topbar .controls { gap: 3px; padding: 5px; } #hud .topbar .controls > .btn { padding-left: 6px; padding-right: 6px; } #hud .topbar .controls .svc-count { margin-left: 3px; padding: 0 5px; } }
+
+/* ORG-05: the research office. Reports are worker text rendered as text; links are https anchors only. */
+.exec-modal .research-body { padding-top: 0; border-top: 1px solid var(--hud-line); }
+.research-panel h3 { margin: 18px 0 8px; }
+.research-ask { display: grid; gap: 8px; }
+.research-ask label { font-size: 13px; color: #dce6df; }
+.research-ask textarea { width: 100%; min-height: 56px; resize: vertical; padding: 10px 12px; font: inherit; font-size: 14px; color: #eef3ef; background: #0000003a; border: 1px solid #ffffff2e; border-radius: 6px; }
+.research-ask textarea:focus-visible { outline: 2px solid #c7d9bd; outline-offset: 1px; }
+.research-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.research-status { margin: 0; min-height: 1em; font-size: 12px; color: #c9d6d2; }
+.research-status:empty { display: none; }
+.research-summary { margin: 0 0 10px; font-size: 12px; color: var(--hud-muted); }
+.research-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.research-row { display: grid; gap: 4px; width: 100%; text-align: left; padding: 12px 14px; color: inherit; font: inherit; background: #ffffff08; border: 1px solid var(--hud-line); border-left: 3px solid #8fa39c; border-radius: 8px; cursor: pointer; }
+.research-row:hover { background: #ffffff12; }
+.research-row:focus-visible { outline: 2px solid #c7d9bd; outline-offset: 2px; }
+.research-row[data-status=imported] { border-left-color: #c7d9bd; }
+.research-row[data-status=needs_attention] { border-left-color: #f2a488; }
+.research-row[data-status=awaiting_approval] { border-left-color: #e0c387; }
+.research-q { font-size: 14px; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
+.research-facts { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0; }
+.research-chip { display: inline-block; padding: 2px 8px; font-size: 11px; line-height: 1.5; border-radius: 999px; background: #ffffff14; color: #dce6df; }
+.research-chip.quiet { background: transparent; border: 1px solid var(--hud-line); color: var(--hud-muted); }
+.research-chip.feas-feasible { background: #c7d9bd; color: #1c3025; }
+.research-chip.feas-partial { background: #e0c38733; color: #f1dcae; }
+.research-chip.feas-not_yet { background: #f2a48829; color: #f8c6b2; }
+.research-row-status, .research-row-tools { font-size: 12px; color: #e0c387; }
+.research-row-tools.decided { color: var(--hud-muted); }
+.research-row-reason, .research-reason { font-size: 12px; color: #f8c6b2; overflow-wrap: anywhere; }
+.research-modal { width: min(820px, 96vw); }
+.research-modal header h2 { overflow-wrap: anywhere; }
+.research-report { display: grid; gap: 6px; }
+.research-label { margin: 0; font-size: 12px; letter-spacing: .04em; color: #e0c387; }
+.research-section h4 { margin: 14px 0 6px; font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: #c9d6d2; }
+.research-text { font-size: 14px; line-height: 1.55; color: #dce6df; overflow-wrap: anywhere; }
+.research-text p { margin: 0 0 8px; }
+.research-text ul, .research-tools { margin: 0 0 8px; padding-left: 20px; }
+.research-text li { margin: 0 0 6px; }
+.research-link { color: #b9d7ee; text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
+.research-tools { list-style: none; padding: 0; display: grid; gap: 8px; }
+.research-tool { display: grid; gap: 3px; padding: 10px 12px; background: #00000026; border: 1px solid var(--hud-line); border-radius: 8px; overflow-wrap: anywhere; }
+.research-tool-meta { font-size: 12px; color: var(--hud-muted); }
+.research-tool-decision { font-size: 12px; color: #e0c387; }
+.research-tool.decision-approved .research-tool-decision { color: #c7d9bd; }
+.research-tool.decision-rejected .research-tool-decision { color: #f8c6b2; }
+.research-note { font-size: 12px; color: var(--hud-muted); margin: 6px 0 0; }
+.inbox-facts dd a { color: #b9d7ee; overflow-wrap: anywhere; }
+@media (max-height: 500px), (max-width: 600px) {
+  .research-row { padding: 10px 12px; }
+  .research-ask textarea { min-height: 44px; }
+  .research-text { font-size: 13px; }
+}
+/* ORG-05 review fix 3: the report replaces the list inside the research card. */
+.exec-modal:has(.research-panel[data-view=report]) .exec-modal-body { display: none; }
+.exec-modal:has(.research-panel[data-view=report]) .research-body { border-top: 0; padding-top: 14px; }
+.research-back { margin-bottom: 10px; }
+.exec-modal h3.research-report-title { margin: 4px 0 8px; font-size: 18px; font-weight: 500; letter-spacing: 0; text-transform: none; color: #eef3ef; overflow-wrap: anywhere; }
+.research-report-title:focus { outline: none; }

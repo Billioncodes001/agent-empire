@@ -14,3 +14,5 @@ Design principle: the world makes actual work legible. A fictional hospital staf
 - [MotionSites](https://motionsites.ai): studied its cinematic composition, dark translucent navigation and restrained typographic hierarchy. These informed the revised HUD; no template source, protected scene, video or gallery artwork is bundled.
 - [Poly Haven](https://polyhaven.com): HDR sky and photographed asphalt/concrete/wood provide real surface response. Sources and licenses are recorded in THIRD_PARTY_NOTICES.md.
 - Higgsfield 3D Jutsu: authored and rendered an executive sedan using Blender geometry, then loaded the portable GLB in the game. It is real geometry, not a video backdrop. The editable modeling script is in tools/build-sedan.py.
+
+> The research executive (ORG-05) guide is in [RESEARCH_EXECUTIVE.md](RESEARCH_EXECUTIVE.md).

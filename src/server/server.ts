@@ -37,6 +37,8 @@ import { Continuity } from './continuity.js';
 import { SyncArtifacts } from './sync-artifacts.js';
 import { acquireHostLock } from './host-lock.js';
 import { ExecutionManager, ExecutionError, type ExecutionOptions } from './execution.js';
+import { ResearchDesk, ResearchError } from './research.js';
+import { readArtifact } from './artifacts.js';
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -246,6 +248,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   let consultancy: Consultancy | undefined;
   let inbox: ApprovalInbox | undefined;
   let outreach: Outreach | undefined;
+  let research: ResearchDesk | undefined;
   let observing = false;
   const storageError = () => [workers?.recoveryError, queue?.recoveryError, consultancy?.recoveryError].filter(Boolean).join(' ') || undefined;
   const observeContinuity = () => {
@@ -343,7 +346,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   );
   // The 📋 task queue seats workers by itself: it watches the workers and links PRs from GitHub.
   queue = new TaskQueue(cfg.dataDir, workers, !!project.branch, {
-    update: (state) => { broadcast({ t: 'queue', state }); syncWaiting(); empire.tick(workers.list(), state, 0); },
+    update: (state) => { broadcast({ t: 'queue', state }); syncWaiting(); empire.tick(workers.list(), state, 0); research?.reconcile(); },
     toast: (text, level) => broadcast({ t: 'toast', text, level }),
     claimIssue: (issue) => github.claim(issue),
     refreshGitHub: () => void github.refresh(),
@@ -369,11 +372,12 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     state: () => ({ ...queue.state(), storageError: queue.recoveryError }),
     // dependsOn carries LIFE-04's item order into the queue.
     add: (prompt, by, title, issue, jobKey, dependsOn) => queue.add(prompt, by, title, issue, jobKey, dependsOn),
-  }, () => { inbox?.reconcile(); outreach?.reconcile(); publishOrg(); }, {
+  }, () => { inbox?.reconcile(); research?.reconcile(); outreach?.reconcile(); publishOrg(); }, {
     estimate: (items) => estimateJob(items, historyFromTaskCosts(ledger.taskCosts(), phaseOfJobKey), { maxWorkers: queue.limit }),
     taskCost: (taskId) => ledger.taskCost(taskId),
-    // Round 2: a finished internal job whose artifact is missing or invalid needs attention, with the reason.
-    itemAttention: (jobId) => outreach?.itemAttention(jobId),
+    // Round 2 internal jobs: a research report (ORG-05) or campaign draft (ORG-04a) that was not accepted needs
+    // attention, with the reason. Each owner answers only for its own jobs.
+    itemIssue: (jobKey) => research?.issue(jobKey) ?? outreach?.itemIssue(jobKey),
   });
   const office = consultancy;
   // ORG-03: the CEO approval inbox, reconciled from consultancy state and re-sent only when an item changes.
@@ -386,6 +390,8 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     approvalsSent = sig;
     broadcast({ t: 'approvals', state });
     email?.observe(state.items);
+    // A tool-proposal decision is recorded on the research card too.
+    research?.reconcile();
     publishOrg();
   };
   // ORG-03: optional email, one per new pending approval. Never blocks; the URL and password are never logged.
@@ -416,6 +422,29 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     startupCleanup.push(() => outreach?.stop());
   }
   const outreachService = outreach!;
+  // ORG-05: the research executive files questions as internal jobs and imports the worker's report strictly.
+  let researchSent = '';
+  const publishResearch = () => {
+    if (!research) return;
+    const state = research.state();
+    const sig = JSON.stringify(state);
+    if (sig === researchSent) return;
+    researchSent = sig;
+    broadcast({ t: 'research', state });
+    publishOrg();
+  };
+  const desk = inbox;
+  research = new ResearchDesk(cfg.dataDir, {
+    create: (input, actor) => office.create(input, actor),
+    snapshot: () => office.snapshot(),
+    queue: () => queue.state(),
+    readArtifact: (task, jobId) => readArtifact(cfg.dir, task, 'research', jobId),
+    raiseTool: ({ source, jobId, tool, question }) => desk.raise({ source, kind: 'tool_proposal', jobId, tool,
+      title: `Tool: ${tool.name}`, detail: `Proposed in research on “${question.length > 120 ? `${question.slice(0, 117)}…` : question}”. Licence ${tool.licence}. Approving records your decision only; nothing is installed.` }),
+    decision: (id) => desk.get(id),
+  }, publishResearch);
+  research.reconcile();
+  researchSent = JSON.stringify(research.state());
   // ORG-01: the executive roster is a pure projection, re-sent only when a summary or attention count changes.
   let orgSent = '';
   const currentOrg = () => projectOrg({
@@ -423,6 +452,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     jobs: (() => { try { return office.snapshot().jobs; } catch { return []; } })(), usage: ledger.state(),
     approvals: inbox?.state().items,
     outreach: outreach?.summary(),
+    research: research?.state(),
   });
   publishOrg = () => {
     if (!queue || !consultancy) return;
@@ -445,7 +475,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   const chief = chiefCommands(office, () => {
     const r = capacityReport();
     return `${r.workstations} funded workstations · ${r.workers} running workers · concurrency ${r.concurrency} · ${r.queued === null ? 'queue count unavailable' : `${r.queued} tasks queued`} · ${r.attention} workers need input.${r.blocker ? ` Waiting: ${r.blocker}` : ''} This coordinator requires the execution host to remain running.`;
-  }, inbox, () => { queue.pump(); publishApprovals(); }, outreachService);
+  }, inbox, () => { queue.pump(); publishApprovals(); }, research, outreachService);
   let telegram: TelegramBridge | undefined;
   let telegramError: string | undefined;
   try {
@@ -724,6 +754,35 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
           return send(res, 500, { error: 'Consultancy service could not complete this request.' });
         }
       }
+      if (p === '/api/research' || p.startsWith('/api/research/')) {
+        if (req.method !== 'GET' && !trusted()) return send(res, 403, { error: 'A same-origin Origin header is required' });
+        const desk = research!;
+        try {
+          office.reconcile();
+          desk.reconcile();
+          if (p === '/api/research' && req.method === 'GET') return send(res, 200, desk.state());
+          const one = /^\/api\/research\/reports\/([a-zA-Z0-9_-]{1,80})$/.exec(p);
+          if (one && req.method === 'GET') {
+            const report = desk.report(one[1]);
+            return report ? send(res, 200, report) : send(res, 404, { error: 'Unknown research report.' });
+          }
+          if (p === '/api/research' && req.method === 'POST') {
+            let body: { question?: unknown; requestId?: unknown };
+            try { body = JSON.parse(await readBody(req, 8_000)); } catch { return send(res, 400, { error: 'Expected a JSON question.' }); }
+            if (!body || typeof body !== 'object' || Array.isArray(body)) return send(res, 400, { error: 'Expected a JSON question.' });
+            if (typeof body.requestId !== 'string') return send(res, 400, { error: 'requestId is required.' });
+            const asked = desk.ask(body.question, 'CEO', body.requestId);
+            inbox?.reconcile();
+            publishApprovals();
+            publishResearch();
+            return send(res, 200, asked);
+          }
+          return send(res, 404, { error: 'Unknown research endpoint.' });
+        } catch (error) {
+          if (error instanceof ResearchError || error instanceof ConsultancyError) return send(res, error.status, { error: error.message });
+          return send(res, 500, { error: 'Research could not complete this request.' });
+        }
+      }
       if (p === '/api/approvals' || p.startsWith('/api/approvals/')) {
         if (req.method !== 'GET' && !trusted()) return send(res, 403, { error: 'A same-origin Origin header is required' });
         const approvals = inbox!;
@@ -982,6 +1041,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
       usage: ledger.state(),
       org: currentOrg(),
       approvals: inbox?.state(),
+      research: research?.state(),
       queue: queue.state(),
     });
     sendTo(client, { t: 'empire', state: empire.state });
@@ -1297,7 +1357,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
 
   // Drop dead connections so ghosts don't linger in the office.
   empire.dispatchManagers(queue, 'Chief of staff');
-  const empireTimer = setInterval(() => { empire.tick(workers.list(), queue.state()); try { office.reconcile(); inbox?.reconcile(); outreach?.reconcile(); } catch { /* Durable service exposes recovery errors through its snapshot. */ } }, 5000);
+  const empireTimer = setInterval(() => { empire.tick(workers.list(), queue.state()); try { office.reconcile(); inbox?.reconcile(); research?.reconcile(); outreach?.reconcile(); } catch { /* Durable service exposes recovery errors through its snapshot. */ } }, 5000);
   const heartbeat = setInterval(() => {
     for (const c of clients.values()) {
       if ((c.ws as any).isAlive === false) {

@@ -4,8 +4,11 @@
 import type { EstimateBasis, ExecutiveRole, Range } from './org.js';
 import type { OutreachExcluded } from './outreach.js';
 
-/** `external_action` (ORG-04a): something leaves the Empire, e.g. a campaign send. Approving acts on a frozen snapshot. */
-export type ApprovalKind = 'job_plan' | 'budget_increase' | 'external_action';
+/**
+ * `external_action` (ORG-04a): something leaves the Empire, e.g. a campaign send; approving acts on a frozen snapshot.
+ * `tool_proposal` (ORG-05): a researched tool; approving only records the decision.
+ */
+export type ApprovalKind = 'job_plan' | 'budget_increase' | 'external_action' | 'tool_proposal';
 
 /** The frozen campaign send an external_action approves: exactly this is sent, to exactly these recipients. */
 export interface OutreachApproval {
@@ -56,6 +59,8 @@ export interface Approval {
   budgetUsd?: number;
   /** A plain note on the decision, e.g. "Reopened after decline on …". */
   note?: string;
+  /** ORG-05 tool_proposal: the tool a research report proposes. Deciding only records the decision. */
+  tool?: { name: string; url: string; licence: string; enables: string; risk: string };
   /** A declined budget increase whose hold still stands: it can still be approved (review fix 1). */
   reopenable?: true;
   /** external_action: the campaign send being approved. */
@@ -77,6 +82,7 @@ export const APPROVAL_KIND_LABEL: Record<ApprovalKind, string> = {
   job_plan: 'Client plan',
   budget_increase: 'Budget increase',
   external_action: 'Campaign send',
+  tool_proposal: 'Tool proposal',
 };
 
 export const MAX_APPROVAL_BUDGET_USD = 100_000;

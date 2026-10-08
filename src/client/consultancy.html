@@ -183,6 +183,17 @@
               <ul id="suppression-list" class="ledger-list"></ul>
             </section>
           </aside>
+      <section class="research-desk" aria-labelledby="research-title">
+        <div class="section-title"><div><p class="kicker">Sam / Research · rule-based</p><h2 id="research-title" tabindex="-1">Research</h2></div></div>
+        <div class="research-grid">
+          <form id="research-form" class="research-form">
+            <label for="research-question">Ask a question or describe an unfamiliar job</label>
+            <textarea id="research-question" name="question" maxlength="500" rows="3" required placeholder="e.g. Can we offer appointment booking for dental practices?" aria-describedby="research-note"></textarea>
+            <p id="research-note" class="small">Creates an internal job with an estimate. Nothing runs, and nothing is spent, until you approve it. A worker writes a sourced report; nothing is verified, installed or adopted. Telegram: /research &lt;question&gt;.</p>
+            <button type="submit" class="primary" id="research-ask">Ask research</button>
+            <p id="research-status" role="status" aria-live="polite"></p>
+          </form>
+          <div><p id="research-summary" class="small"></p><ul id="research-list" class="research-list" aria-label="Research reports"><li class="empty">Loading research…</li></ul></div>
         </div>
       </section>
       <footer class="site-footer"><span class="footer-mark">Agent Empire</span><span>Client work, with a clear line of sight.</span></footer>
@@ -191,6 +202,7 @@
   <dialog id="intake" aria-labelledby="form-title"><form id="brief-form"><header><p class="eyebrow" id="step-label">01 / THE BRIEF</p><button type="button" class="close" id="close-intake" aria-label="Close new job">×</button></header><h2 id="form-title">Bring a new opportunity.</h2><div id="brief-fields"><label>Client<input name="client" maxlength="100" required autocomplete="organization" placeholder="e.g. Northstar Studio" /></label><label>Job title<input name="title" maxlength="120" required placeholder="e.g. Customer booking portal" /></label><label>What does success look like?<textarea name="brief" maxlength="8000" required rows="5" placeholder="Describe the outcome, constraints and what the team should deliver."></textarea></label></div><div id="brief-review" hidden></div><p id="form-error" role="alert" hidden></p><footer><button type="button" id="back" class="quiet" hidden>← Edit brief</button><button type="submit" class="primary" id="save-job">Review brief →</button></footer></form></dialog>
   <dialog id="job-detail" aria-labelledby="detail-title"><header><p class="eyebrow">ENGAGEMENT / REVIEW</p><button type="button" class="close" id="close-detail" aria-label="Close job details">×</button></header><div id="detail-content"></div><p id="action-error" role="alert" hidden></p><footer id="detail-actions"></footer></dialog>
   <dialog id="campaign-intake" aria-labelledby="campaign-form-title"><form id="campaign-form"><header><p class="eyebrow">OUTREACH / NEW CAMPAIGN</p><button type="button" class="close" id="close-campaign" aria-label="Close new campaign">×</button></header><h2 id="campaign-form-title">Brief the campaign.</h2><p>Saving creates an internal drafting job for your approval, with an estimate. A worker then writes the subject and plain-text body; the server adds your postal address and the STOP line.</p><label for="campaign-title">Title</label><input id="campaign-title" name="title" maxlength="120" required /><label for="campaign-brief">Brief</label><textarea id="campaign-brief" name="brief" rows="5" maxlength="4000" required placeholder="Who it is for, what to say, the tone. Audience tags, e.g. customers."></textarea><p id="campaign-error" role="alert" hidden></p><footer><button type="submit" class="primary" id="save-campaign">Save for approval</button></footer></form></dialog>
+  <dialog id="research-detail" aria-labelledby="research-detail-title"><header><p class="eyebrow">RESEARCH / REPORT</p><button type="button" class="close" id="close-research" aria-label="Close research report">×</button></header><h2 id="research-detail-title"></h2><div id="research-detail-content"></div></dialog>
   <script type="module" src="/consultancy.ts"></script>
   <script type="module" src="/outreach-desk.ts"></script>
   <script type="module" src="/consultancy-scene-entry.ts"></script>

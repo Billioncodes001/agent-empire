@@ -5,6 +5,7 @@ import path from 'node:path';
 import { startServer } from '../src/server/server.js';
 import { scryptSync } from 'node:crypto';
 import type { Config } from '../src/server/config.js';
+import { syntheticParsed } from './research-fixture.js';
 if (Number(process.env.PREVIEW_PORT) === 4610) throw new Error('Refusing the protected 4610 session; use an isolated preview port.');
 const dataDir = mkdtempSync(path.join(tmpdir(),'empire-founder-preview-'));
 // ORG-04a (PREVIEW_OUTREACH=1): synthetic leads and campaigns. Each drafting task already finished for a reserved job id
@@ -19,6 +20,12 @@ if (outreachOn) {
   art(JOBS.autumn, '---\nsubject: You are invited, {{name}} — autumn open day\naudience: [customers]\n---\n\nHi {{name}},\n\nWe are opening the studio on 24 October for customers like {{company}}: short demos, the new booking tools, and coffee.\n\nReply to this email to save a place.\n\nThe Northstar team\n');
   art(JOBS.webinar, '---\nsubject: A 30-minute walkthrough for {{company}}\naudience: [events]\nproposedLeads:\n  - Fay Lin | fay@client-preview.example | Zed Works | trade show | met at stand 12\n  - Gus Ode | gus@client-preview.example | Lumen | inbound inquiry | asked for a demo\n---\n\nHi {{name}},\n\nWould a short walkthrough of the booking portal help {{company}}? Pick any slot next week.\n');
   art(JOBS.spring, '---\nsubject: Spring follow-up\naudience: [customers]\n---\n\nHello {{first_name}}, thanks again.\n');
+// ORG-05: PREVIEW_RESEARCH=seed starts with one synthetic imported report (two tool proposals) in research.json.
+if (process.env.PREVIEW_RESEARCH === 'seed') {
+  const parsed = syntheticParsed();
+  writeFileSync(path.join(dataDir,'research.json'),JSON.stringify({version:1,revision:1,reports:[{jobId:'consultancy-00000000f1c5',requestId:'research-preview-1',question:parsed.question,askedAt:Date.now()-86_400_000,askedBy:'Preview fixture',
+    import:{taskId:'preview-task',attempt:0,at:Date.now()-3_600_000,worker:'Bea',ok:true,feasibility:parsed.feasibility,confidence:parsed.confidence,sources:parsed.sources,sections:parsed.sections},
+    tools:parsed.tools.map((t,i)=>({...t,decision:i===0?'approved':'pending',...(i===0?{decidedAt:Date.now()-1_800_000,decidedBy:'CEO'}:{})}))}]}));
 }
 const cfg: Config = {dir:dataDir,dataDir,host:'127.0.0.1',port:Number(process.env.PREVIEW_PORT||4622),passwordGenerated:false,verifier:scryptSync('founder-preview',Buffer.alloc(16,2),32),salt:Buffer.alloc(16,2),secret:'isolated-founder-preview-only',claimed:true,markClaimed(){},agentCmd:'disabled-fixture',agentArgs:[],trustProxy:false,iceServers:[],budgetPause:false};
 const sentPreview: string[] = [];

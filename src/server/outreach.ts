@@ -581,6 +581,12 @@ export class Outreach {
     return c?.state === 'needs_attention' ? c.issue : undefined;
   }
 
+  /** The consultancy itemIssue port, keyed by job key (consultancy:<jobId>:<itemId>). */
+  itemIssue(jobKey: string): string | undefined {
+    const m = /^consultancy:([^:]+):/.exec(jobKey);
+    return m ? this.itemAttention(m[1]) : undefined;
+  }
+
   private reconcileDraft(c: StoredCampaign, jobs: ConsultancyJob[], tasks: QueueState['tasks']) {
     const job = jobs.find((j) => j.id === c.jobId);
     if (!job) return;

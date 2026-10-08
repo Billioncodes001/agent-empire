@@ -4,7 +4,7 @@
 //
 // API (keep it small; both slices build on it):
 //   readArtifact(projectDir, task, kind, jobId) → { ok: true, frontmatter, body, source, path } | { ok: false, reason }
-//   parseArtifact(text) → the same result, for text already in hand (tests, previews)
+//   parseArtifact(text | bytes) → the same result for content already in hand (bytes: size cap and strict UTF-8)
 //   artifactPath(kind, jobId) → "docs/empire/<kind>/<jobId>.md", the path a prompt tells the worker to write
 //
 // Frontmatter is a strict YAML subset: `key: value` scalars (optionally "double" or 'single' quoted), inline lists
@@ -157,8 +157,17 @@ function unquote(raw: string, line: number): string | { error: string } {
   return v;
 }
 
-/** Strict frontmatter + body. The file must start with a `---` line; the frontmatter ends at the next `---` line. */
-export function parseArtifact(input: string): ParsedArtifact {
+/**
+ * Strict frontmatter + body. The file must start with a `---` line; the frontmatter ends at the next `---` line. Bytes
+ * are held to the size cap and must be valid UTF-8.
+ */
+export function parseArtifact(content: string | Buffer): ParsedArtifact {
+  let input: string;
+  if (typeof content === 'string') input = content;
+  else {
+    if (content.length > MAX_ARTIFACT_BYTES) return fail(`it is larger than ${MAX_ARTIFACT_BYTES / 1024} KB`);
+    try { input = new TextDecoder('utf-8', { fatal: true }).decode(content); } catch { return fail('it is not valid UTF-8'); }
+  }
   if (input.includes('\0')) return fail('contains a NUL byte');
   const text = input.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
   const lines = text.split('\n');

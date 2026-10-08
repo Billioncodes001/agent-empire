@@ -46,6 +46,8 @@ export interface ConsultancyItem {
   estimate?: ItemEstimate;
   /** An unstarted item waiting because the job's budget was reached. */
   held?: boolean;
+  /** Its queue task was observed finishing with outcome done (it stays set after the task is cleared). */
+  finishedOk?: true;
   /** Provider-reported list cost of the worker(s) that ran this item, in USD. */
   actualSpendUsd?: number;
 }
