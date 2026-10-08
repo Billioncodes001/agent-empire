@@ -52,7 +52,7 @@ export function devKeyFiles(dir, devKey = devReleaseKey()) {
 
 export function assertNoFixtureBuild(dir) {
   const hits = fixtureFiles(dir);
-  if (hits.length) throw new Error(`${dir} is a fixture or development build (it talks to a fake GitHub or trusts the development release key): ${hits.slice(0, 5).join(', ')}. Rebuild with \`npm run build:client\` before packaging.`);
+  if (hits.length) throw new Error(`${dir} is a fixture build or another development build (it talks to a fake GitHub or trusts the development release key): ${hits.slice(0, 5).join(', ')}. Rebuild with \`npm run build:client\` before packaging.`);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

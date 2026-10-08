@@ -19,7 +19,13 @@ import { CloudRepo } from '../src/client/cloud/repo';
 import { COORDINATOR_BUNDLE_PATH } from '../src/cloud/workflow';
 import { FakeGitHub } from './fake-github';
 import { asset, channelJson, OTHER_KEYPAIR, sha256, sign, signedChannel } from './update-fixtures';
-import { DEV_RELEASE_PUBLIC_KEY, RELEASE_KEY_IS_DEVELOPMENT, RELEASE_PUBLIC_KEY } from '../src/shared/release-key';
+import { DEV_RELEASE_PUBLIC_KEY, RELEASE_PUBLIC_KEY } from '../src/shared/release-key';
+import { BUILD_TRUSTED_KEYS, trustedKeys } from '../src/client/update/trust';
+
+/** The owner's release key (REL-07). */
+const OWNER_KEY = 'rIRaOVUyoolaIritW/W8zMW7kGymgcjvg7uXhHtTqPk=';
+/** What a development build trusts (tests sign fixtures with the dev key). */
+const DEV_TRUST = [RELEASE_PUBLIC_KEY, DEV_RELEASE_PUBLIC_KEY];
 
 const info = (over: Partial<NativeInfo> = {}): NativeInfo => ({
   platform: 'android', shellVersion: '1.0.0-beta.1', installedGame: '1.0.0-beta.1', builtinGame: '1.0.0-beta.1', pendingGame: null, canInstallGame: true, canAutoUpdate: false, installSource: 'sideload', ...over,
@@ -39,14 +45,18 @@ test('semver: SemVer 2.0 precedence for release versions', () => {
 
 // ---- channel parsing --------------------------------------------------------------------------------------------
 
-test('channel: a valid file parses; the release key is the dev key in this tree', () => {
+test('channel: a valid file parses; the owner key is pinned and a plain build trusts only it', () => {
   const c = parseChannel(JSON.stringify(channelJson({ version: '1.0.0-beta.2', channel: 'beta', coordinatorSha: 'c'.repeat(64) })), 'beta');
   assert.equal(c.version, '1.0.0-beta.2');
   assert.equal(c.game.url, asset('1.0.0-beta.2', 'agent-empire-game-1.0.0-beta.2.zip'));
   assert.equal(c.shell.android?.sha256, 'b'.repeat(64));
   assert.equal(c.coordinator?.schema, 1);
-  assert.equal(RELEASE_KEY_IS_DEVELOPMENT, true);
-  assert.equal(RELEASE_PUBLIC_KEY, DEV_RELEASE_PUBLIC_KEY);
+  assert.equal(RELEASE_PUBLIC_KEY, OWNER_KEY);
+  // Outside the Vite dev server / fixture build (no __AGENT_EMPIRE_DEV_UPDATE_KEY__), only the owner key is trusted.
+  assert.deepEqual(BUILD_TRUSTED_KEYS, [OWNER_KEY]);
+  assert.deepEqual(trustedKeys(DEV_RELEASE_PUBLIC_KEY), DEV_TRUST, 'a development shell adds the dev key');
+  assert.deepEqual(trustedKeys(null), [OWNER_KEY]);
+  assert.deepEqual(trustedKeys('not a key'), [OWNER_KEY]);
   assert.deepEqual(c.shell.macos?.feed, { arm64: asset('1.0.0-beta.2', 'desktop-update-darwin-arm64.json'), x64: asset('1.0.0-beta.2', 'desktop-update-darwin-x64.json') });
   // Fields this app doesn't use are ignored; a platform without a build is null.
   const extra = { ...channelJson({ version: '1.0.0-beta.2' }), future: { x: 1 }, shell: { ...channelJson({ version: '1.0.0-beta.2' }).shell, windows: null, ios: { version: '1.0.0-beta.2', testflight: null, appStore: null } } };
@@ -55,15 +65,24 @@ test('channel: a valid file parses; the release key is the dev key in this tree'
   assert.deepEqual(parsed.shell.ios, { version: '1.0.0-beta.2' });
 });
 
-test('release key: every shell pins the same key, and tools/release/config.json lists each copy for the release gate', async () => {
+test('release key: every shell pins the owner key, dev trust is development-only, and config.json lists each copy', async () => {
   const { readFileSync } = await import('node:fs');
   const config = JSON.parse(readFileSync('tools/release/config.json', 'utf8'));
   assert.deepEqual(config.pinnedKeyFiles, ['src/shared/release-key.ts', 'desktop/update-store.cjs', 'mobile/android/app/src/main/java/com/agentempire/mobile/UpdatePolicy.java', 'mobile/ios/AgentEmpire/UpdatePolicy.swift']);
   for (const file of config.pinnedKeyFiles) {
     const text = readFileSync(file, 'utf8');
-    assert.ok(text.includes(RELEASE_PUBLIC_KEY), `${file} pins RELEASE_PUBLIC_KEY`);
-    assert.ok(text.includes(DEV_RELEASE_PUBLIC_KEY), `${file} knows the development key`);
+    assert.ok(text.includes(OWNER_KEY), `${file} pins the owner's RELEASE_PUBLIC_KEY`);
   }
+  // The development key exists only where development builds get it.
+  assert.ok(readFileSync('src/shared/release-key.ts', 'utf8').includes(DEV_RELEASE_PUBLIC_KEY), 'tools and vite.config.ts read the dev key here');
+  assert.ok(!readFileSync('desktop/update-store.cjs', 'utf8').includes(DEV_RELEASE_PUBLIC_KEY), 'desktop: dev trust only via dev-trust.json');
+  assert.ok(!readFileSync('mobile/android/app/src/main/java/com/agentempire/mobile/UpdatePolicy.java', 'utf8').includes(DEV_RELEASE_PUBLIC_KEY), 'android: not in main');
+  assert.ok(readFileSync('mobile/android/app/src/debug/java/com/agentempire/mobile/DevTrust.java', 'utf8').includes(DEV_RELEASE_PUBLIC_KEY), 'android: debug variant');
+  assert.ok(!readFileSync('mobile/android/app/src/release/java/com/agentempire/mobile/DevTrust.java', 'utf8').includes(DEV_RELEASE_PUBLIC_KEY), 'android: not in release variant');
+  const swift = readFileSync('mobile/ios/AgentEmpire/UpdatePolicy.swift', 'utf8');
+  assert.match(swift, /#if DEBUG\n\s*static let devReleasePublicKey: String\? = "[^"]+"\n\s*#else\n\s*static let devReleasePublicKey: String\? = nil\n\s*#endif/, 'iOS: Debug only');
+  assert.equal(swift.split(DEV_RELEASE_PUBLIC_KEY).length, 2, 'iOS: the dev key appears once, inside #if DEBUG');
+  assert.match(readFileSync('vite.config.ts', 'utf8'), /__AGENT_EMPIRE_DEV_UPDATE_KEY__: fixture \|\| command === 'serve' \? JSON\.stringify\(DEV_RELEASE_PUBLIC_KEY\) : 'undefined'/, 'web: dev server and fixture builds only');
   assert.equal(config.repository, RELEASE_REPO);
 });
 
@@ -119,19 +138,22 @@ test('channel: release asset URLs are pinned to the repository and refuse traver
 
 test('signature: verified against the pinned key; tampering, the wrong key and garbage are refused', async () => {
   const { text, sig } = signedChannel({ version: '1.0.0-beta.2' });
-  assert.equal((await verifyChannel(text, sig, 'stable')).version, '1.0.0-beta.2');
+  assert.equal((await verifyChannel(text, sig, 'stable', DEV_TRUST)).version, '1.0.0-beta.2');
+  // REL-07: this (non-development) build trusts only the owner key, so a dev-signed channel is refused by default.
+  await assert.rejects(verifyChannel(text, sig, 'stable'), /signature/);
+  await assert.rejects(verifyChannel(text, sig, 'stable', [OWNER_KEY], null), /signature/);
   // tweetnacl path (an engine without Ed25519 in WebCrypto)
   assert.equal((await verifyChannel(text, sig, 'stable', DEV_RELEASE_PUBLIC_KEY, null)).version, '1.0.0-beta.2');
   const tampered = text.replace('"a', '"b');
-  await assert.rejects(verifyChannel(tampered, sig, 'stable'), /signature/);
+  await assert.rejects(verifyChannel(tampered, sig, 'stable', DEV_TRUST), /signature/);
   await assert.rejects(verifyChannel(tampered, sig, 'stable', DEV_RELEASE_PUBLIC_KEY, null), /signature/);
-  await assert.rejects(verifyChannel(text, sign(text, OTHER_KEYPAIR.secretKey), 'stable'), /signature/);
-  await assert.rejects(verifyChannel(text, 'not base64!', 'stable'), /signature/);
-  await assert.rejects(verifyChannel(text, '', 'stable'), /signature/);
+  await assert.rejects(verifyChannel(text, sign(text, OTHER_KEYPAIR.secretKey), 'stable', DEV_TRUST), /signature/);
+  await assert.rejects(verifyChannel(text, 'not base64!', 'stable', DEV_TRUST), /signature/);
+  await assert.rejects(verifyChannel(text, '', 'stable', DEV_TRUST), /signature/);
   assert.equal(await verifyEd25519(new TextEncoder().encode(text), sig, 'AAAA'), false);
   // A correctly signed file for the other channel is still refused.
   const beta = signedChannel({ version: '1.0.0-beta.3', channel: 'beta' });
-  await assert.rejects(verifyChannel(beta.text, beta.sig, 'stable'), /beta channel/);
+  await assert.rejects(verifyChannel(beta.text, beta.sig, 'stable', DEV_TRUST), /beta channel/);
 });
 
 // ---- fetching -----------------------------------------------------------------------------------------------------
@@ -162,9 +184,9 @@ const listing = (rels: { tag: string; prerelease: boolean; beta?: boolean }[]) =
 
 test('fetch: stable reads the latest release; no release yet is not an error', async () => {
   const files: Record<string, { body: string }> = {};
-  assert.equal(await fetchChannel('stable', fakeReleases(files).fetcher), null);
+  assert.equal(await fetchChannel('stable', fakeReleases(files).fetcher, { publicKey: DEV_TRUST }), null);
   publish(files, 'stable', '1.0.0');
-  assert.equal((await fetchChannel('stable', fakeReleases(files).fetcher))?.file.version, '1.0.0');
+  assert.equal((await fetchChannel('stable', fakeReleases(files).fetcher, { publicKey: DEV_TRUST }))?.file.version, '1.0.0');
 });
 
 test('fetch: beta takes the newest pre-release, or stable when that is newer; the listing uses ETags', async () => {
@@ -175,16 +197,16 @@ test('fetch: beta takes the newest pre-release, or stable when that is newer; th
   files[RELEASES_API] = { body: listing([{ tag: 'v1.0.0-beta.2', prerelease: true }, { tag: 'v1.0.0-beta.3', prerelease: true }, { tag: 'v1.0.0-beta.9', prerelease: true, beta: false }]), etag: 'W/"1"' };
   const cache = memory();
   const a = fakeReleases(files);
-  const got = await fetchChannel('beta', a.fetcher, { cache });
+  const got = await fetchChannel('beta', a.fetcher, { cache, publicKey: DEV_TRUST });
   assert.equal(got?.file.version, '1.0.0-beta.3');
   assert.equal(got?.from, 'v1.0.0-beta.3');
   // Second check: conditional request, 304, cached listing used.
   const b = fakeReleases(files);
-  assert.equal((await fetchChannel('beta', b.fetcher, { cache }))?.file.version, '1.0.0-beta.3');
+  assert.equal((await fetchChannel('beta', b.fetcher, { cache, publicKey: DEV_TRUST }))?.file.version, '1.0.0-beta.3');
   assert.equal(b.calls.find((c) => c.url === RELEASES_API)?.etag, 'W/"1"');
   // A newer stable release wins for beta players.
   publish(files, 'stable', '1.0.0');
-  assert.equal((await fetchChannel('beta', fakeReleases(files).fetcher, { cache }))?.file.version, '1.0.0');
+  assert.equal((await fetchChannel('beta', fakeReleases(files).fetcher, { cache, publicKey: DEV_TRUST }))?.file.version, '1.0.0');
   assert.equal(newestPrereleaseTag(JSON.parse(listing([{ tag: 'v2.0.0', prerelease: false }])), compareSemver), null);
 });
 
@@ -193,16 +215,16 @@ test('fetch: a rate-limited listing falls back to the cached copy, and without o
   publish(files, 'beta', '1.0.0-beta.2', 'v1.0.0-beta.2');
   files[RELEASES_API] = { body: listing([{ tag: 'v1.0.0-beta.2', prerelease: true }]), etag: 'W/"a"' };
   const cache = memory();
-  await fetchChannel('beta', fakeReleases(files).fetcher, { cache });
+  await fetchChannel('beta', fakeReleases(files).fetcher, { cache, publicKey: DEV_TRUST });
   files[RELEASES_API] = { status: 403, body: '{"message":"API rate limit exceeded"}' };
-  assert.equal((await fetchChannel('beta', fakeReleases(files).fetcher, { cache, now: 1000 }))?.file.version, '1.0.0-beta.2');
-  await assert.rejects(fetchChannel('beta', fakeReleases(files).fetcher, { cache: memory() }), (e: unknown) => e instanceof SourceError && e.code === 'rate_limited');
+  assert.equal((await fetchChannel('beta', fakeReleases(files).fetcher, { cache, now: 1000, publicKey: DEV_TRUST }))?.file.version, '1.0.0-beta.2');
+  await assert.rejects(fetchChannel('beta', fakeReleases(files).fetcher, { cache: memory(), publicKey: DEV_TRUST }), (e: unknown) => e instanceof SourceError && e.code === 'rate_limited');
 });
 
 test('fetch: a file signed with another key is refused, never used', async () => {
   const files: Record<string, { body: string }> = {};
   publish(files, 'stable', '9.9.9', undefined, OTHER_KEYPAIR.secretKey);
-  await assert.rejects(fetchChannel('stable', fakeReleases(files).fetcher), (e: unknown) => e instanceof SourceError && e.code === 'signature');
+  await assert.rejects(fetchChannel('stable', fakeReleases(files).fetcher, { publicKey: DEV_TRUST }), (e: unknown) => e instanceof SourceError && e.code === 'signature');
 });
 
 // ---- offers ---------------------------------------------------------------------------------------------------------
@@ -312,6 +334,8 @@ test('bridge: nativeInfo answers are validated', () => {
   assert.equal(parseNativeInfo({ platform: 'desktop', shellVersion: '1.0.0', os: 'macos', rolledBack: '1.0.1' }, 'desktop').rolledBack, '1.0.1');
   assert.equal(parseNativeInfo({ platform: 'android', shellVersion: '1.0.0', installPending: '1.0.2' }, 'android').installPending, '1.0.2');
   assert.equal(parseNativeInfo({ platform: 'android', shellVersion: '1.0.0', installPending: '<b>' }, 'android').installPending, undefined);
+  assert.equal(parseNativeInfo({ platform: 'android', shellVersion: '1.0.0', devReleaseKey: DEV_RELEASE_PUBLIC_KEY }, 'android').devReleaseKey, DEV_RELEASE_PUBLIC_KEY);
+  assert.equal(parseNativeInfo({ platform: 'android', shellVersion: '1.0.0', devReleaseKey: 'AAAA' }, 'android').devReleaseKey, undefined);
 });
 
 // ---- service flow ----------------------------------------------------------------------------------------------------------
@@ -324,7 +348,7 @@ function fakeShell(files: Record<string, { body: string }>, over: Partial<Native
     installGame: async (p) => (calls.push(`install ${p.version} ${p.sha256.slice(0, 4)}`), { version: p.version }),
     activate: async () => void calls.push('activate'),
     bootOk: async () => void calls.push('bootOk'),
-    nativeInfo: async () => info(over),
+    nativeInfo: async () => info({ devReleaseKey: DEV_RELEASE_PUBLIC_KEY, ...over }), // a development shell (dev-signed fixtures)
     openNative: async (p) => (calls.push(`native ${p.version}`), { action: 'installer' }),
   };
   return { bridge, calls };
@@ -343,6 +367,20 @@ test('service: check → offer → install (only when asked) → restart into it
   assert.equal(svc.state.installed, '1.0.0-beta.2');
   await svc.restart();
   assert.deepEqual(calls, ['install 1.0.0-beta.2 aaaa', 'activate']);
+});
+
+test('service: a release shell (no devReleaseKey) refuses dev-signed channels; a development shell accepts them', async () => {
+  const files: Record<string, { body: string }> = {};
+  publish(files, 'stable', '1.0.0-beta.2');
+  const release = new UpdateService({ bridge: fakeShell(files, { devReleaseKey: undefined }).bridge, storage: memory() });
+  await release.start();
+  release.stop();
+  assert.equal(release.state.offer, null);
+  assert.match(release.state.error ?? '', /signature/);
+  const dev = new UpdateService({ bridge: fakeShell(files).bridge, storage: memory() });
+  await dev.start();
+  dev.stop();
+  assert.equal(dev.state.offer?.game.kind, 'install');
 });
 
 test('service: the channel setting persists, and a failed check keeps the app usable', async () => {

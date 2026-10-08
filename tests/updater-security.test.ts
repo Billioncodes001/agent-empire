@@ -7,6 +7,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { DEV_RELEASE_PUBLIC_KEY, RELEASE_PUBLIC_KEY } from '../src/shared/release-key';
 import { channelJson, OTHER_KEYPAIR, sign, asset } from './update-fixtures';
 import { nugetVersion as releaseNuget, parseReleases } from '../tools/release/package-windows-installer.mjs';
 import { coordinatorDecision } from '../src/client/update/coordinator';
@@ -14,6 +18,8 @@ import { parseChannel } from '../src/client/update/channel';
 
 const require = createRequire(import.meta.url);
 const updates = require('../desktop/update-store.cjs');
+/** What a development desktop build (prepare-desktop.mjs --dev-updates) trusts; fixtures are dev-signed. */
+const DEV_TRUST = [RELEASE_PUBLIC_KEY, DEV_RELEASE_PUBLIC_KEY];
 
 const signedDoc = (version: string, over: Record<string, unknown> = {}, key?: Uint8Array) => {
   const doc = { ...channelJson({ version, gameSha: 'a'.repeat(64), minShell: '0.2.0' }), ...over };
@@ -25,19 +31,41 @@ const getter = (files: Record<string, { text: string; status?: number }>) => asy
   return f ? { status: f.status ?? 200, body: Buffer.from(f.text) } : { status: 404, body: Buffer.from('') };
 };
 
-test('desktop: Ed25519 with node:crypto against the pinned key; tampering and other keys fail', () => {
+test('desktop: Ed25519 with node:crypto; tampering and other keys fail; a release build trusts only the owner key', () => {
   const msg = 'hello release';
-  assert.equal(updates.verifyEd25519(Buffer.from(msg), sign(msg)), true);
-  assert.equal(updates.verifyEd25519(Buffer.from(`${msg}!`), sign(msg)), false);
-  assert.equal(updates.verifyEd25519(Buffer.from(msg), sign(msg, OTHER_KEYPAIR.secretKey)), false);
-  assert.equal(updates.verifyEd25519(Buffer.from(msg), 'garbage'), false);
+  assert.equal(updates.verifyEd25519(Buffer.from(msg), sign(msg), DEV_RELEASE_PUBLIC_KEY), true);
+  assert.equal(updates.verifyEd25519(Buffer.from(`${msg}!`), sign(msg), DEV_RELEASE_PUBLIC_KEY), false);
+  assert.equal(updates.verifyEd25519(Buffer.from(msg), sign(msg, OTHER_KEYPAIR.secretKey), DEV_RELEASE_PUBLIC_KEY), false);
+  assert.equal(updates.verifyEd25519(Buffer.from(msg), 'garbage', DEV_RELEASE_PUBLIC_KEY), false);
+  // REL-07: this tree has no desktop/dev-trust.json, so update-store.cjs is in its release shape.
+  assert.equal(updates.RELEASE_PUBLIC_KEY, RELEASE_PUBLIC_KEY);
+  assert.equal(updates.DEV_KEY_TRUSTED, false);
+  assert.deepEqual([...updates.TRUSTED_KEYS], [RELEASE_PUBLIC_KEY]);
+  assert.equal(updates.verifyEd25519(Buffer.from(msg), sign(msg)), false, 'a dev signature fails against the owner key');
+  assert.equal(updates.verifyTrusted(Buffer.from(msg), sign(msg)), false, 'and against the release build trusted set');
+  assert.equal(updates.verifyTrusted(Buffer.from(msg), sign(msg), DEV_TRUST), true);
+  assert.equal(updates.verifyTrusted(Buffer.from(`${msg}!`), sign(msg), DEV_TRUST), false);
+});
+
+test('desktop: development trust comes only from a valid dev-trust.json written at build time', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'ae-devtrust-'));
+  assert.equal(updates.readDevTrust(dir), null);
+  writeFileSync(path.join(dir, 'dev-trust.json'), JSON.stringify({ devReleasePublicKey: DEV_RELEASE_PUBLIC_KEY }));
+  assert.equal(updates.readDevTrust(dir), DEV_RELEASE_PUBLIC_KEY);
+  for (const bad of ['{', '{}', JSON.stringify({ devReleasePublicKey: 'short' }), JSON.stringify({ devReleasePublicKey: RELEASE_PUBLIC_KEY })]) {
+    writeFileSync(path.join(dir, 'dev-trust.json'), bad);
+    assert.throws(() => updates.readDevTrust(dir), /malformed/, bad);
+  }
 });
 
 test('desktop: the shell reads the release’s own signed channel and installs only what it names', async () => {
   const v = '1.0.1';
   const { text, sig, doc } = signedDoc(v);
   const url = updates.releaseChannelUrl(v);
-  const release = await updates.signedRelease(v, getter({ [url]: { text }, [`${url}.sig`]: { text: `${sig}\n` } }));
+  const files = getter({ [url]: { text }, [`${url}.sig`]: { text: `${sig}\n` } });
+  // A release build (owner key only) refuses the dev-signed fixture; a development build accepts it.
+  await assert.rejects(updates.signedRelease(v, files), /signature does not match/);
+  const release = await updates.signedRelease(v, files, DEV_TRUST);
   const ok = { url: doc.game.url, sha256: doc.game.sha256, version: v };
   assert.doesNotThrow(() => updates.checkGameAgainstRelease(release, ok, '0.2.0'));
   // A page that asks for another sha256, another release's zip or another version is refused.
@@ -46,10 +74,10 @@ test('desktop: the shell reads the release’s own signed channel and installs o
   assert.throws(() => updates.checkGameAgainstRelease(release, ok, '0.1.9'), /needs app version 0\.2\.0/);
   // Wrong key, other version, missing signature.
   const forged = signedDoc(v, {}, OTHER_KEYPAIR.secretKey);
-  await assert.rejects(updates.signedRelease(v, getter({ [url]: { text: forged.text }, [`${url}.sig`]: { text: forged.sig } })), /signature does not match/);
+  await assert.rejects(updates.signedRelease(v, getter({ [url]: { text: forged.text }, [`${url}.sig`]: { text: forged.sig } }), DEV_TRUST), /signature does not match/);
   const other = signedDoc('1.0.2');
-  await assert.rejects(updates.signedRelease(v, getter({ [url]: { text: other.text }, [`${url}.sig`]: { text: other.sig } })), /another version/);
-  await assert.rejects(updates.signedRelease(v, getter({ [url]: { text } })), /could not be read/);
+  await assert.rejects(updates.signedRelease(v, getter({ [url]: { text: other.text }, [`${url}.sig`]: { text: other.sig } }), DEV_TRUST), /another version/);
+  await assert.rejects(updates.signedRelease(v, getter({ [url]: { text } }), DEV_TRUST), /could not be read/);
 });
 
 test('desktop Windows: only the signed release’s nupkg (its tag, not latest), with a RELEASES index computed locally', () => {

@@ -4,20 +4,24 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createPublicKey, generateKeyPairSync, verify as cryptoVerify } from 'node:crypto';
-import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   checkTag, checkVersion, compareVersions, isOnMain, parseVersion, releaseChannel, syncVersion, TARGETS, versionCode, versionInfo,
 } from '../tools/release/version.mjs';
-import { checkPinnedKey, devPrivateKey, pinnedKeys, privateKey, publicKeyBase64, signBytes, verifyBytes } from '../tools/release/sign.mjs';
+import { checkPinnedKey, checkReleaseTrust, devPrivateKey, pinnedKeys, privateKey, publicKeyBase64, signBytes, verifyBytes } from '../tools/release/sign.mjs';
 import { crc32, createZip, readZip } from '../tools/release/zip.mjs';
 import { packageGame } from '../tools/release/package-game.mjs';
 import { buildChannel, classifyAssets, coordinatorSchema, squirrelFeed } from '../tools/release/channel.mjs';
 import { serviceAccountAssertion, uploadBundle } from '../tools/release/play-upload.mjs';
 import { checkFeed, nugetVersion, nupkgName, parseReleases, SQUIRREL_ID } from '../tools/release/package-windows-installer.mjs';
 import { createHash } from 'node:crypto';
-import { DEV_RELEASE_PUBLIC_KEY, RELEASE_KEY_IS_DEVELOPMENT, RELEASE_PUBLIC_KEY } from '../src/shared/release-key';
+import { DEV_RELEASE_PUBLIC_KEY, RELEASE_PUBLIC_KEY } from '../src/shared/release-key';
+import { devKeyFiles } from '../tools/check-no-fixture.mjs';
+
+/** The owner's release key (REL-07, pinned 2026-10-08). */
+const OWNER_KEY = 'rIRaOVUyoolaIritW/W8zMW7kGymgcjvg7uXhHtTqPk=';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const temp = (name: string) => mkdtempSync(path.join(tmpdir(), `ae-release-${name}-`));
@@ -32,22 +36,22 @@ function fixtureRoot(): string {
   }
   // Every file that pins the key (the shells list theirs in config.json) comes along, so the gate sees them all.
   const pinned: string[] = JSON.parse(readFileSync(path.join(ROOT, 'tools/release/config.json'), 'utf8')).pinnedKeyFiles ?? [];
-  for (const file of new Set(['src/shared/release-key.ts', 'tools/release/config.json', 'src/cloud/schema.ts', ...pinned])) {
+  // Plus the per-build trust sources the gate inspects (REL-07).
+  const trust = ['src/client/update/trust.ts', 'desktop/main.cjs', 'mobile/android/app/src/release/java/com/agentempire/mobile/DevTrust.java',
+    'mobile/android/app/src/debug/java/com/agentempire/mobile/DevTrust.java', 'mobile/android/app/src/main/java/com/agentempire/mobile/GameUpdater.java', 'mobile/ios/AgentEmpire/GameUpdater.swift'];
+  for (const file of new Set(['src/shared/release-key.ts', 'tools/release/config.json', 'src/cloud/schema.ts', ...pinned, ...trust])) {
     mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
     copyFileSync(path.join(ROOT, file), path.join(root, file));
   }
   return root;
 }
 
-/** What the owner does by hand: swap the release key line (never the dev one) in every pinned shell file. */
-function pinInShells(root: string, key: string) {
+/** What the owner does by hand when rotating: swap the release key (never the dev one) in every pinned shell file. */
+function pinInShells(root: string, from: string, to: string) {
   const pinned: string[] = JSON.parse(readFileSync(path.join(root, 'tools/release/config.json'), 'utf8')).pinnedKeyFiles ?? [];
   for (const file of pinned.filter((f) => f !== 'src/shared/release-key.ts')) {
     const full = path.join(root, file);
-    const lines = readFileSync(full, 'utf8').split('\n').map((line) =>
-      /RELEASE_PUBLIC_KEY|releasePublicKey/.test(line) && !/DEV_RELEASE_PUBLIC_KEY\s*=|devReleasePublicKey\s*=/.test(line) ? line.replace(DEV_RELEASE_PUBLIC_KEY, key) : line,
-    );
-    writeFileSync(full, lines.join('\n'));
+    writeFileSync(full, readFileSync(full, 'utf8').split(from).join(to));
   }
 }
 
@@ -156,23 +160,35 @@ test('Ed25519 sign/verify round-trips and rejects tampering, other keys and malf
   });
 });
 
-test('the pinned key file holds the development placeholder, and the release gate refuses it', () => {
+test('the owner key is pinned everywhere, development trust is development-only, and the release gate passes', () => {
   assert.equal(DEV_RELEASE_PUBLIC_KEY, publicKeyBase64(devPrivateKey()));
-  assert.equal(RELEASE_PUBLIC_KEY, DEV_RELEASE_PUBLIC_KEY);
-  assert.equal(RELEASE_KEY_IS_DEVELOPMENT, true);
-  assert.deepEqual(pinnedKeys(ROOT), { release: RELEASE_PUBLIC_KEY, dev: DEV_RELEASE_PUBLIC_KEY });
-  assert.match(checkPinnedKey({ root: ROOT }).join('\n'), /still the development key/);
-  assert.deepEqual(checkPinnedKey({ root: ROOT, allowDev: true }), []);
+  assert.equal(RELEASE_PUBLIC_KEY, OWNER_KEY);
+  assert.notEqual(RELEASE_PUBLIC_KEY, DEV_RELEASE_PUBLIC_KEY);
+  assert.deepEqual(pinnedKeys(ROOT), { release: OWNER_KEY, dev: DEV_RELEASE_PUBLIC_KEY });
+  assert.deepEqual(checkPinnedKey({ root: ROOT }), []);
+  assert.deepEqual(checkReleaseTrust(ROOT), []);
+  // A signing key that is not the owner's (e.g. the dev key) is refused.
+  assert.match(checkPinnedKey({ root: ROOT, signingKey: devPrivateKey() }).join('\n'), /is not the pinned RELEASE_PUBLIC_KEY/);
+});
 
-  const root = fixtureRoot();
+test('release gate: refuses the dev key as release key, an unpinned shell, and any release build that would trust the dev key', () => {
+  const fresh = () => { const r = fixtureRoot(); assert.deepEqual(checkPinnedKey({ root: r }), []); return r; };
+  const edit = (root: string, file: string, fn: (t: string) => string) => writeFileSync(path.join(root, file), fn(readFileSync(path.join(root, file), 'utf8')));
+  const KEYFILE = 'src/shared/release-key.ts';
+
+  // The development key as RELEASE_PUBLIC_KEY.
+  let root = fresh();
+  edit(root, KEYFILE, (t) => t.replace(`export const RELEASE_PUBLIC_KEY = '${OWNER_KEY}';`, `export const RELEASE_PUBLIC_KEY = '${DEV_RELEASE_PUBLIC_KEY}';`));
+  assert.match(checkPinnedKey({ root }).join('\n'), /still the development key/);
+
+  // A rotated key: refused until every shell pins it too.
+  root = fresh();
   const { privateKey: owner } = generateKeyPairSync('ed25519');
   const ownerPem = owner.export({ format: 'pem', type: 'pkcs8' }).toString();
   const ownerPub = publicKeyBase64(owner);
-  const keyFile = path.join(root, 'src/shared/release-key.ts');
-  writeFileSync(keyFile, readFileSync(keyFile, 'utf8').replace(`export const RELEASE_PUBLIC_KEY = '${DEV_RELEASE_PUBLIC_KEY}';`, `export const RELEASE_PUBLIC_KEY = '${ownerPub}';`));
-  // Until every shell pins the owner key too, the gate refuses the release.
+  edit(root, KEYFILE, (t) => t.replace(`export const RELEASE_PUBLIC_KEY = '${OWNER_KEY}';`, `export const RELEASE_PUBLIC_KEY = '${ownerPub}';`));
   assert.match(checkPinnedKey({ root, signingKey: ownerPem }).join('\n'), /does not pin RELEASE_PUBLIC_KEY/);
-  pinInShells(root, ownerPub);
+  pinInShells(root, OWNER_KEY, ownerPub);
   assert.deepEqual(checkPinnedKey({ root, signingKey: ownerPem }), []);
   const other = generateKeyPairSync('ed25519').privateKey.export({ format: 'pem', type: 'pkcs8' }).toString();
   assert.match(checkPinnedKey({ root, signingKey: other }).join('\n'), /is not the pinned RELEASE_PUBLIC_KEY/);
@@ -181,10 +197,44 @@ test('the pinned key file holds the development placeholder, and the release gat
   const config = JSON.parse(readFileSync(configFile, 'utf8'));
   writeFileSync(configFile, JSON.stringify({ ...config, pinnedKeyFiles: [...config.pinnedKeyFiles, 'desktop/release-key.cjs'] }));
   assert.match(checkPinnedKey({ root }).join('\n'), /desktop\/release-key\.cjs: missing/);
-  writeFileSync(path.join(root, 'desktop/release-key.cjs'), `module.exports = '${DEV_RELEASE_PUBLIC_KEY}';\n`);
+  writeFileSync(path.join(root, 'desktop/release-key.cjs'), `module.exports = '${OWNER_KEY}';\n`);
   assert.match(checkPinnedKey({ root }).join('\n'), /desktop\/release-key\.cjs: does not pin/);
   writeFileSync(path.join(root, 'desktop/release-key.cjs'), `module.exports = '${ownerPub}';\n`);
   assert.deepEqual(checkPinnedKey({ root }), []);
+
+  // Release builds that would trust the development key.
+  const ANDROID_MAIN = 'mobile/android/app/src/main/java/com/agentempire/mobile/UpdatePolicy.java';
+  const ANDROID_RELEASE = 'mobile/android/app/src/release/java/com/agentempire/mobile/DevTrust.java';
+  const IOS = 'mobile/ios/AgentEmpire/UpdatePolicy.swift';
+  const cases: [string, (r: string) => void, RegExp][] = [
+    ['Android main source', (r) => edit(r, ANDROID_MAIN, (t) => t.replace('DevTrust.DEV_RELEASE_PUBLIC_KEY;', `"${DEV_RELEASE_PUBLIC_KEY}";`)), /UpdatePolicy\.java: a release build would trust/],
+    ['Android release variant', (r) => edit(r, ANDROID_RELEASE, (t) => t.replace('= null;', `= "${DEV_RELEASE_PUBLIC_KEY}";`)), /DevTrust\.java: a release build would trust/],
+    ['Android release variant missing', (r) => rmSync(path.join(r, ANDROID_RELEASE)), /must declare no development key/],
+    ['iOS outside #if DEBUG', (r) => edit(r, IOS, (t) => t.replace('static let devReleasePublicKey: String? = nil', `static let devReleasePublicKey: String? = "${DEV_RELEASE_PUBLIC_KEY}"`)), /UpdatePolicy\.swift:\d+: the development key outside #if DEBUG/],
+    ['desktop shell source', (r) => edit(r, 'desktop/update-store.cjs', (t) => `${t}\nconst DEV = '${DEV_RELEASE_PUBLIC_KEY}';\n`), /update-store\.cjs: a release build would trust/],
+    ['desktop dev-trust.json', (r) => writeFileSync(path.join(r, 'desktop/dev-trust.json'), JSON.stringify({ devReleasePublicKey: DEV_RELEASE_PUBLIC_KEY })), /dev-trust\.json exists/],
+    ['web client import', (r) => edit(r, 'src/client/update/trust.ts', (t) => t.replace("import { RELEASE_PUBLIC_KEY } from", "import { RELEASE_PUBLIC_KEY, DEV_RELEASE_PUBLIC_KEY } from")), /trust\.ts: a release build would trust/],
+  ];
+  for (const [name, breakIt, expected] of cases) {
+    const r = fresh();
+    breakIt(r);
+    assert.match(checkPinnedKey({ root: r }).join('\n'), expected, name);
+  }
+});
+
+test('check-trust: built outputs carrying the development key or dev-trust.json are development builds', () => {
+  const dir = temp('trust');
+  writeFileSync(path.join(dir, 'app.js'), `const k = '${OWNER_KEY}';`);
+  assert.deepEqual(devKeyFiles(dir), []);
+  mkdirSync(path.join(dir, 'nested'));
+  writeFileSync(path.join(dir, 'nested/blob.bin'), Buffer.concat([Buffer.from([0, 1, 2]), Buffer.from(DEV_RELEASE_PUBLIC_KEY), Buffer.from([3])]));
+  assert.deepEqual(devKeyFiles(dir), [path.join('nested', 'blob.bin')]);
+  writeFileSync(path.join(dir, 'dev-trust.json'), '{}');
+  assert.equal(devKeyFiles(dir).length, 2);
+  assert.throws(() => execFileSync('node', [path.join(ROOT, 'tools/release/sign.mjs'), 'check-trust', dir], { stdio: 'pipe' }));
+  const clean = temp('trust-clean');
+  writeFileSync(path.join(clean, 'index.html'), '<p>release</p>');
+  assert.match(execFileSync('node', [path.join(ROOT, 'tools/release/sign.mjs'), 'check-trust', clean]).toString(), /no development key trust/);
 });
 
 test('zip writer: known CRC, unsafe paths refused, round trip', () => {

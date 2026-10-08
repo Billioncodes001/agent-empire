@@ -6,6 +6,8 @@
  *   FIXTURE_URL=http://127.0.0.1:4718/ npx tsx tools/update-ui-check.ts        (screenshots: docs/team/reports/in-app-updates/)
  *
  * The page runs as the Android app: an emulated window.empireAndroid answers secure.* in memory and update.* in Node,
+ * as a development (debug-variant) shell would, including nativeInfo.devReleaseKey: the production page in dist/public
+ * trusts only the owner's key on its own, and the dev-signed fixture verifies only through that development key (REL-07).
  * where downloads go through desktop/update-store.cjs to the update fixture (real redirects, real sha256 checks).
  * The real shells are exercised on devices (docs/team/reports/in-app-updates.md).
  */
@@ -18,6 +20,7 @@ import { startUpdateFixture } from './update-fixture';
 import { FakeGitHub } from '../tests/fake-github';
 import { seed, TOKEN } from './cloud-seed';
 import { COORDINATOR_BUNDLE_PATH } from '../src/cloud/workflow';
+import { DEV_RELEASE_PUBLIC_KEY } from '../src/shared/release-key';
 
 const require = createRequire(import.meta.url);
 const updates = require('../desktop/update-store.cjs');
@@ -60,7 +63,7 @@ function shell(fixture: ReturnType<typeof updates.fixtureMapper>, opts: { platfo
         state.bootOk++;
         return true;
       case 'update.nativeInfo':
-        return { platform: opts.platform, shellVersion: '0.3.0', installedGame: state.installedGame, builtinGame: '0.1.0', pendingGame: state.pending, canInstallGame: true, canAutoUpdate: false, installSource: opts.platform === 'android' ? 'sideload' : 'testflight' };
+        return { platform: opts.platform, shellVersion: '0.3.0', installedGame: state.installedGame, builtinGame: '0.1.0', pendingGame: state.pending, canInstallGame: true, canAutoUpdate: false, installSource: opts.platform === 'android' ? 'sideload' : 'testflight', devReleaseKey: DEV_RELEASE_PUBLIC_KEY };
       case 'update.openNative':
         return { action: 'store' };
     }
