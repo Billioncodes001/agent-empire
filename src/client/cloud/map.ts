@@ -3,10 +3,14 @@
  * "as recorded by the coordinator at the snapshot time", and the status view says how old that is.
  */
 import { holdsSlot, REVIEW_STATUSES, utcDay, type CloudJob, type CloudJobStatus, type CloudState } from '../../cloud/schema';
-import { DEFAULT_WORKER_MODEL, workerModelLabel } from '../../cloud/worker-spec';
+import { defaultModelFor, PROVIDER_LABELS, workerModelLabel } from '../../cloud/worker-spec';
+import { OPENAI_DISCLOSURES } from '../../cloud/openai-spec';
 
 /** Owner decision 2026-10-02, shown wherever execution is described. */
 export const SANDBOX_NOTE = 'Workers run in an Anthropic cloud sandbox with full internet access: they can install packages and can also fetch untrusted content. They approve their own tool use inside the sandbox; your keys never enter it.';
+/** CLOUD-06: the OpenAI equivalent, with the vault disclosure and the owner verification gate. */
+export const OPENAI_SANDBOX_NOTE = `Workers run in a medium OpenAI-hosted sandbox (2 vCPU, 4 GB) with network access: they can install packages and can also fetch untrusted content. Your OpenAI key never enters it. ${OPENAI_DISCLOSURES.join(' ')}`;
+export const OPENAI_GATE_NOTE = `OpenAI support is new and has been tested only against simulated responses, so the coordinator refuses OpenAI jobs until the integration's first verified real run (owner flag openaiVerified). Until then, jobs you submit wait and nothing is charged.`;
 import type { SectorState } from '../../shared/empire';
 import type { QueueState, QueueTask, Usage, UsageState } from '../../shared/protocol';
 import type { Snapshot } from './repo';
@@ -142,7 +146,8 @@ export function toUsage(state: CloudState, now: number): UsageState {
 /** Real-money admission figures for today (UTC), in cents. */
 export function todaySpend(state: CloudState, now: number) {
   const d = state.ledger.days[utcDay(now)];
-  return { reservedCents: d?.reservedCents ?? 0, observedCents: d?.observedCostCents ?? 0, dailyCents: state.meta.limits.dailyBudgetCents, perJobCents: state.meta.limits.perTaskBudgetCents };
+  // OpenAI estimates are kept apart from provider-reported costs and never added to them (CLOUD-06).
+  return { reservedCents: d?.reservedCents ?? 0, observedCents: d?.observedCostCents ?? 0, estimatedCents: d?.estimatedCostCents ?? 0, dailyCents: state.meta.limits.dailyBudgetCents, perJobCents: state.meta.limits.perTaskBudgetCents };
 }
 
 const MANAGER: Record<NonNullable<SectorState['manager']>['status'], { tone: Tone; label: string }> = {
@@ -181,16 +186,24 @@ export function executionStatus(state: CloudState): ExecutionStatus {
   const p = state.meta.provisioning;
   if (p) {
     const repo = `${p.repository.owner}/${p.repository.name}`;
+    const what = p.provider === 'openai' ? 'the OpenAI vault' : 'the Anthropic agent and environment';
     if (p.status === 'failed')
       return {
         kind: 'failed', tone: 'attention', label: 'Setup needs you', canSubmit: false,
-        detail: `Setting up the Anthropic agent and environment for ${repo} did not finish: ${p.message ?? 'no reason recorded'}${p.retryable ? ' The coordinator tries again within the hour.' : ' Fix it, then choose “Set up automatically” under Limits.'} New jobs are refused, not charged, until it is ready.`,
+        detail: `Setting up ${what} for ${repo} did not finish: ${p.message ?? 'no reason recorded'}${p.retryable ? ' The coordinator tries again within the hour.' : ' Fix it, then choose “Set up automatically” under Limits.'} New jobs are refused, not charged, until it is ready.`,
       };
     return {
       kind: 'setting_up', tone: 'active', label: 'Being set up', canSubmit: false,
-      detail: `Your coordinator creates (or reuses) an Anthropic agent with ${workerModelLabel(p.model ?? DEFAULT_WORKER_MODEL)} and a cloud environment for ${repo} on its next run. That is not a billed item and starts no session. New jobs are refused, not charged, until it is ready.${ex ? ` When it finishes it replaces the current settings (${ex.repository.owner}/${ex.repository.name}).` : ''}`,
+      detail: `${p.provider === 'openai'
+        ? `Your coordinator creates (or reuses) an OpenAI vault holding your project GitHub token for ${repo} on its next run; jobs will use ${workerModelLabel(p.model ?? defaultModelFor('openai'))}.`
+        : `Your coordinator creates (or reuses) an Anthropic agent with ${workerModelLabel(p.model ?? defaultModelFor('anthropic'))} and a cloud environment for ${repo} on its next run.`} That is not a billed item and starts no session. New jobs are refused, not charged, until it is ready.${ex ? ` When it finishes it replaces the current settings (${ex.repository.owner}/${ex.repository.name}).` : ''}`,
     };
   }
+  if (ex?.provider === 'openai')
+    return {
+      kind: 'ready', tone: 'idle', label: `${ex.repository.owner}/${ex.repository.name}`, canSubmit: true,
+      detail: `${PROVIDER_LABELS.openai} on ${ex.repository.baseBranch} with ${workerModelLabel(ex.openai.model)} (unverified until first run), vault ${ex.openai.vaultId}. Costs are estimates, not provider-reported. ${OPENAI_GATE_NOTE} Work arrives as a task branch.`,
+    };
   if (ex)
     return {
       kind: 'ready', tone: 'idle', label: `${ex.repository.owner}/${ex.repository.name}`, canSubmit: true,
@@ -198,7 +211,7 @@ export function executionStatus(state: CloudState): ExecutionStatus {
     };
   return {
     kind: 'none', tone: 'attention', label: 'Not set up', canSubmit: false,
-    detail: 'No execution settings, so the coordinator refuses new jobs (nothing is charged). With an Anthropic key in your secrets, choose “Set up automatically” under Limits. OpenAI-only Empires can’t run jobs until the OpenAI adapter exists.',
+    detail: 'No execution settings, so the coordinator refuses new jobs (nothing is charged). Choose “Set up automatically” under Limits with the provider whose key is in your secrets (Anthropic, or OpenAI once it is verified).',
   };
 }
 

@@ -199,7 +199,7 @@ test('coordinator: failures are recorded once, retried hourly when retryable, wa
   const k = harness(provisioningStore(), keyless);
   assert.equal((await k.tick()).provisioning, 'waiting_for_key');
   assert.deepEqual(keyless.calls, []);
-  assert.match((await k.state()).meta.provisioning!.message!, /ANTHROPIC_API_KEY[\s\S]*OpenAI-only Empires can’t run jobs/);
+  assert.match((await k.state()).meta.provisioning!.message!, /ANTHROPIC_API_KEY[\s\S]*or choose OpenAI/);
 });
 
 test('coordinator: a provision intent is refused while jobs are queued or running, and rejects a stale revision', async () => {
@@ -337,7 +337,7 @@ test('cloud UI: execution status never says jobs “will wait”; only ready exe
     assert.match(s.detail, /refuse[sd][\s\S]*(nothing is charged|not charged)/);
   }
   assert.match(setting.detail, /not a billed item and starts no session/);
-  assert.match(none.detail, /OpenAI-only Empires can’t run jobs until the OpenAI adapter exists/);
+  assert.match(none.detail, /Anthropic, or OpenAI once it is verified/);
 });
 
 test('cloud UI: a paid job whose write may have landed tells the user to check Jobs before re-assigning (review note b)', () => {

@@ -24,16 +24,28 @@
 import { safeExecutionError } from '../server/execution-errors.js';
 import { PROVIDER_ID } from '../server/execution-validation.js';
 import type { AnthropicManaged } from '../server/providers/anthropic-managed.js';
-import { DEFAULT_WORKER_MODEL, isWorkerModel, workerAgentBody, workerAgentName, WORKER_ENVIRONMENT, WORKER_MARKER, WORKER_SPEC_VERSION, type WorkerModel } from './worker-spec.js';
+import { DEFAULT_WORKER_MODEL, isWorkerModel, workerAgentBody, workerAgentName, WORKER_ENVIRONMENT, WORKER_MARKER, WORKER_SPEC_VERSION, type OpenAIWorkerModel, type WorkerModel } from './worker-spec.js';
 
 export { DEFAULT_WORKER_MODEL, isWorkerModel, WORKER_AGENT, workerAgentBody, workerAgentName, WORKER_ENVIRONMENT, WORKER_MARKER, WORKER_MODELS, workerModelLabel, WORKER_SPEC_VERSION, type WorkerModel } from './worker-spec.js';
 
-export interface ProvisionResult {
+export type ProvisionResult = AnthropicProvisionResult | OpenAIProvisionResult;
+export interface AnthropicProvisionResult {
+  provider?: 'anthropic';
   agentId: string;
   environmentId: string;
   agentCreated: boolean;
   environmentCreated: boolean;
   model: WorkerModel;
+}
+/** CLOUD-06 (openai-provisioning.ts): the vault and the GitHub-token credential; no agent or environment is saved. */
+export interface OpenAIProvisionResult {
+  provider: 'openai';
+  vaultId: string;
+  credentialId: string;
+  vaultCreated: boolean;
+  /** `created` the first time; `updated` when an existing credential received the current project token. */
+  credential: 'created' | 'updated';
+  model: OpenAIWorkerModel;
 }
 
 /** User-safe failure. `retryable` is false when only the user can fix it (key, access, a conflicting resource). */
@@ -119,7 +131,7 @@ async function findOrCreate(client: AnthropicManaged, kind: Kind, apiKey: string
 }
 
 /** Finds or creates the worker agent and environment. Throws ProvisionError with a user-safe message. */
-export async function provisionAnthropicExecution(client: AnthropicManaged, apiKey: string, model: WorkerModel = DEFAULT_WORKER_MODEL): Promise<ProvisionResult> {
+export async function provisionAnthropicExecution(client: AnthropicManaged, apiKey: string, model: WorkerModel = DEFAULT_WORKER_MODEL): Promise<AnthropicProvisionResult> {
   if (!isWorkerModel(model)) throw new ProvisionError('Unsupported worker model. Choose one under Cloud Empire → Limits.', false);
   if (!apiKey) throw new ProvisionError('The ANTHROPIC_API_KEY Actions secret is missing from the state repository. Run setup again with an Anthropic API key.', false);
   try {

@@ -21,16 +21,27 @@
  */
 import { advanceEconomy, applyEmpireAction, rewardAcceptedJob, settleCapMs, syncManagers, syncWorkforce } from './economy.js';
 import { intentIdFromPath, parseIntent, sortIntents, IntentError, type CloudIntent } from './intents.js';
-import { DispatchFailure, ProvisionError, type ProviderAdapter, type ProviderObservation, type ProvisionResult } from './provider.js';
+import { DispatchFailure, ProvisionError, providerOf, type ProviderAdapter, type ProviderObservation, type ProviderSet, type ProvisionResult } from './provider.js';
 import { SITES } from '../shared/empire.js';
-import { DEFAULT_WORKER_MODEL, WORKER_ENVIRONMENT, workerModelLabel } from './worker-spec.js';
+import { defaultModelFor, PROVIDER_LABELS, WORKER_ENVIRONMENT, workerModelLabel } from './worker-spec.js';
+import { OPENAI_ENVIRONMENT } from './openai-spec.js';
 import {
-  clone, PROVISION_RETRY_MS, FINAL_STATUSES, holdsSlot, LIMITS, parseStateFiles, promptHash, promptPreview, PROMPT_STATUSES, REVIEW_STATUSES, serializeState, sessionLive, SLOT_STATUSES, STATE_FILES, utcDay,
-  type CloudJob, type CloudState, type EventCursorState, type JournalKind, type SpendEntry, type StopReason,
+  clone, PROVISION_RETRY_MS, FINAL_STATUSES, holdsSlot, LIMITS, parseStateFiles, promptHash, promptPreview, PROMPT_STATUSES, providerEnforcesBudget, REVIEW_STATUSES, serializeState, sessionLive, SLOT_STATUSES, STATE_FILES, utcDay,
+  type CloudJob, type CloudState, type EventCursorState, type JournalKind, type ProviderId, type SpendEntry, type StopReason,
 } from './schema.js';
 import { updateWithRetry, type FileChange, type RetryOptions, type StateSnapshot, type StateStore, type WorkflowControl } from './store.js';
 
 export interface TickContext { now: number; runId: string }
+/** Resolves the adapter for a provider. A single adapter (tests, older callers) answers only for its own provider. */
+export type ProviderResolver = (id: ProviderId) => ProviderAdapter;
+export function resolverOf(source: ProviderAdapter | ProviderSet | ProviderResolver): ProviderResolver {
+  if (typeof source === 'function') return source;
+  if ('provider' in source && typeof (source as ProviderAdapter).observe === 'function') { const one = source as ProviderAdapter; return id => providerOf({ [one.provider]: one }, id); }
+  const set = source as ProviderSet;
+  return id => providerOf(set, id);
+}
+/** The Empire's one provider: the pending setup request's, else the configured execution's, else Anthropic. */
+export const empireProvider = (state: CloudState): ProviderId => state.meta.provisioning?.provider ?? state.meta.execution?.provider ?? 'anthropic';
 export const HEARTBEAT_MS = 60 * 60_000;
 
 // ---------------------------------------------------------------- small helpers
@@ -48,6 +59,7 @@ function spend(state: CloudState, entry: SpendEntry) {
   if (entry.kind === 'reserved') day.reservedCents += entry.cents;
   if (entry.kind === 'released') day.reservedCents = Math.max(0, day.reservedCents - entry.cents);
   if (entry.kind === 'cost_observed') day.observedCostCents += entry.cents;
+  if (entry.kind === 'cost_estimated') day.estimatedCostCents = (day.estimatedCostCents ?? 0) + entry.cents;
   const days = Object.keys(state.ledger.days).sort();
   for (const old of days.slice(0, Math.max(0, days.length - LIMITS.spendDays))) delete state.ledger.days[old];
 }
@@ -132,7 +144,7 @@ function applyOne(state: CloudState, intent: CloudIntent, ctx: TickContext): { o
         ...(input.site ? { site: input.site } : {}), intentId: intent.id,
         createdAt: ctx.now, updatedAt: ctx.now, configRevision: input.configRevision, authorizedCents: meta.limits.perTaskBudgetCents,
         status: 'queued', message: meta.lifecycle.status === 'running' ? 'Queued. The coordinator dispatches within your concurrency and daily limits.' : 'Queued while the Empire is shut down. Nothing is dispatched until you start it again.',
-        provider: 'anthropic', repository: clone(execution.repository), branch: `agent-empire/task-${input.id}`, outputs: 'unverified',
+        provider: execution.provider, repository: clone(execution.repository), branch: `agent-empire/task-${input.id}`, outputs: 'unverified',
       });
       journal(state, ctx, 'job', `${input.title}: queued (allowance ${meta.limits.perTaskBudgetCents} cents, estimate).`, { intentId: intent.id, jobId: input.id });
       return { outcome: 'applied' };
@@ -154,7 +166,7 @@ function applyOne(state: CloudState, intent: CloudIntent, ctx: TickContext): { o
       const job = findJob(intent.jobId);
       if (job.status === 'queued') { setStatus(state, ctx, job, 'cancelled', 'Cancelled before dispatch; no provider session was requested.'); return { outcome: 'applied' }; }
       if (holdsSlot(job) && sessionLive(job)) {
-        if (!job.stopRequested || job.stopRequested.reason === 'turn_ended') job.stopRequested = { at: ctx.now, reason: 'cancel' };
+        if (!job.stopRequested || job.stopRequested.reason === 'turn_ended' || job.stopRequested.reason === 'budget') job.stopRequested = { at: ctx.now, reason: 'cancel' };
         job.message = job.status === 'awaiting_review'
           ? 'Archival requested. The session is archived; the finished turn stays available for review.'
           : 'Cancellation requested. The coordinator interrupts and archives the session; the slot and reservation stay held until the provider confirms.';
@@ -182,7 +194,7 @@ function applyOne(state: CloudState, intent: CloudIntent, ctx: TickContext): { o
       settleEconomy(state, ctx); // Close the books up to now; nothing accrues while shut down.
       meta.lifecycle = { status: 'shutting_down', changedAt: ctx.now, workflow: meta.lifecycle.workflow };
       for (const job of state.jobs.jobs) {
-        if (SLOT_STATUSES.includes(job.status) && sessionLive(job) && !job.stopRequested) job.stopRequested = { at: ctx.now, reason: 'shutdown' };
+        if (SLOT_STATUSES.includes(job.status) && sessionLive(job) && (!job.stopRequested || job.stopRequested.reason === 'budget')) job.stopRequested = { at: ctx.now, reason: 'shutdown' };
       }
       journal(state, ctx, 'lifecycle', 'Shutdown requested. Active provider sessions are being interrupted and archived; nothing new will be dispatched. Finished turns left open for review are not archived.', { intentId: intent.id });
       return { outcome: 'applied' };
@@ -215,9 +227,11 @@ function applyOne(state: CloudState, intent: CloudIntent, ctx: TickContext): { o
     case 'provision': {
       if (intent.configRevision !== meta.configRevision) reject('setup_changed', 'Settings changed since you opened them. Review and try again.');
       if (state.jobs.jobs.some(job => job.status === 'queued' || holdsSlot(job))) reject('active_cloud_jobs', 'Cancel or finish queued and active jobs before changing where jobs run.');
-      const model = intent.model ?? DEFAULT_WORKER_MODEL;
-      meta.provisioning = { provider: 'anthropic', repository: clone(intent.repository), status: 'pending', model, requestedAt: ctx.now, attempts: 0 };
-      journal(state, ctx, 'limits', `Automatic execution setup requested for ${intent.repository.owner}/${intent.repository.name} (${intent.repository.baseBranch}) with ${workerModelLabel(model)}. The coordinator finds or creates your Anthropic agent and environment; this starts no session.${meta.execution ? ' When it finishes it replaces the current execution settings.' : ''}`, { intentId: intent.id });
+      const provider = intent.provider ?? 'anthropic';
+      const model = intent.model ?? defaultModelFor(provider);
+      meta.provisioning = { provider, repository: clone(intent.repository), status: 'pending', model, requestedAt: ctx.now, attempts: 0 };
+      const what = provider === 'openai' ? 'your OpenAI vault holding the project GitHub token (released only to api.github.com)' : 'your Anthropic agent and environment';
+      journal(state, ctx, 'limits', `Automatic execution setup requested for ${intent.repository.owner}/${intent.repository.name} (${intent.repository.baseBranch}) with ${workerModelLabel(model)}. The coordinator finds or creates ${what}; this starts no session.${meta.execution ? ' When it finishes it replaces the current execution settings.' : ''}`, { intentId: intent.id });
       return { outcome: 'applied' };
     }
     case 'empire_action': {
@@ -278,7 +292,7 @@ export type ProvisionOutcome =
   | { key: string; ok: true; result: ProvisionResult }
   | { key: string; ok: false; attempted: boolean; retryable: boolean; message: string };
 /** Identifies one request: a withdrawn or replaced request never receives an older outcome. */
-const provisionKey = (state: CloudState) => { const p = state.meta.provisioning; return JSON.stringify(p ? [p.repository, p.model ?? DEFAULT_WORKER_MODEL, p.requestedAt] : null); };
+const provisionKey = (state: CloudState) => { const p = state.meta.provisioning; return JSON.stringify(p ? [p.repository, p.model ?? defaultModelFor(p.provider), p.requestedAt, ...(p.provider === 'anthropic' ? [] : [p.provider])] : null); };
 
 /** A pending request is tried on the next run; a retryable failure again after an hour. */
 export function provisioningDue(state: CloudState, now: number): boolean {
@@ -289,10 +303,14 @@ export function provisioningDue(state: CloudState, now: number): boolean {
 }
 
 /** Control-plane calls only (lookups, and creation of an agent and environment); never a session. */
-export async function attemptProvisioning(state: CloudState, provider: ProviderAdapter): Promise<ProvisionOutcome> {
+export async function attemptProvisioning(state: CloudState, providers: ProviderAdapter | ProviderSet | ProviderResolver): Promise<ProvisionOutcome> {
   const key = provisionKey(state);
-  if (!provider.canProvision) return { key, ok: false, attempted: false, retryable: true, message: 'Waiting for an Anthropic API key: the ANTHROPIC_API_KEY Actions secret is not set in the state repository. Run setup again with an Anthropic key. OpenAI-only Empires can’t run jobs until the OpenAI adapter exists.' };
-  try { return { key, ok: true, result: await provider.provision(state.meta.provisioning?.model ?? DEFAULT_WORKER_MODEL) }; }
+  const id = state.meta.provisioning?.provider ?? 'anthropic';
+  const provider = resolverOf(providers)(id);
+  if (!provider.canProvision) return { key, ok: false, attempted: false, retryable: true, message: provider.blockedReason && !(provider.blockedReason.startsWith('No provider API key')) ? provider.blockedReason : id === 'openai'
+    ? 'Waiting for an OpenAI API key: the OPENAI_API_KEY Actions secret is not set in the state repository. Run setup again with an OpenAI key.'
+    : 'Waiting for an Anthropic API key: the ANTHROPIC_API_KEY Actions secret is not set in the state repository. Run setup again with an Anthropic key, or choose OpenAI under Cloud Empire → Limits.' };
+  try { return { key, ok: true, result: await provider.provision(state.meta.provisioning?.model ?? defaultModelFor(id)) }; }
   catch (error) {
     return error instanceof ProvisionError
       ? { key, ok: false, attempted: true, retryable: error.retryable, message: error.message }
@@ -305,7 +323,18 @@ export function recordProvisioning(input: CloudState, outcome: ProvisionOutcome,
   const p = state.meta.provisioning;
   if (!p || provisionKey(state) !== outcome.key) return state; // the request changed meanwhile
   const repo = `${p.repository.owner}/${p.repository.name} (${p.repository.baseBranch})`;
+  if (outcome.ok && outcome.result.provider === 'openai') {
+    const r = outcome.result;
+    if (p.provider !== 'openai') return state; // an adapter answering for the wrong provider is ignored, never recorded
+    state.meta.execution = { provider: 'openai', repository: clone(p.repository), openai: { model: r.model, containerSize: OPENAI_ENVIRONMENT.containerSize, network: OPENAI_ENVIRONMENT.network, vaultId: r.vaultId, credentialId: r.credentialId } };
+    state.meta.executionProfile = { provider: 'openai', model: r.model, networking: OPENAI_ENVIRONMENT.network, containerSize: OPENAI_ENVIRONMENT.containerSize };
+    delete state.meta.provisioning;
+    state.meta.configRevision++;
+    journal(state, ctx, 'limits', `Execution ready for ${repo} on ${PROVIDER_LABELS.openai}: vault ${r.vaultId} (${r.vaultCreated ? 'created' : 'reused'}) holds your project GitHub token as credential ${r.credentialId} (${r.credential}), released only to api.github.com. Jobs use ${workerModelLabel(r.model)} in a ${OPENAI_ENVIRONMENT.containerSize} OpenAI-hosted sandbox with network access. No session was started and nothing was charged. Costs of OpenAI jobs are estimates.`);
+    return state;
+  }
   if (outcome.ok) {
+    if (outcome.result.provider === 'openai' || p.provider !== 'anthropic') return state;
     const { agentId, environmentId, agentCreated, environmentCreated } = outcome.result;
     state.meta.execution = { provider: 'anthropic', repository: clone(p.repository), anthropic: { agentId, environmentId } };
     state.meta.executionProfile = { model: outcome.result.model, networking: WORKER_ENVIRONMENT.config.networking.type };
@@ -324,7 +353,7 @@ export function recordProvisioning(input: CloudState, outcome: ProvisionOutcome,
 
 // ---------------------------------------------------------------- provider sessions
 
-export interface ProviderTask { jobId: string; sessionId: string; cursor: EventCursorState; checkBranch: boolean; reason?: StopReason }
+export interface ProviderTask { jobId: string; sessionId: string; cursor: EventCursorState; checkBranch: boolean; reason?: StopReason; provider?: ProviderId; stopAt?: number }
 export type BranchEvidence = { state: 'found'; sha: string } | { state: 'missing' } | { state: 'unknown'; reason: string };
 export interface ProviderResult {
   jobId: string; sessionId: string;
@@ -341,19 +370,21 @@ const safeMessage = (error: unknown) => (error instanceof Error && error.name ==
 /** Phase 1 (read-only): sessions that are still live and either hold a slot or await review. */
 export function collectObservations(state: CloudState): ProviderTask[] {
   return state.jobs.jobs.filter(job => sessionLive(job) && holdsSlot(job) && !job.stopRequested)
-    .map(job => ({ jobId: job.id, sessionId: job.sessionId!, cursor: clone(job.cursor ?? {}), checkBranch: true }));
+    .map(job => ({ jobId: job.id, sessionId: job.sessionId!, cursor: clone(job.cursor ?? {}), checkBranch: true, provider: job.provider }));
 }
 /** Phase 2 (mutating): stops already committed to the state branch. */
 export function collectStops(state: CloudState): ProviderTask[] {
   return state.jobs.jobs.filter(job => sessionLive(job) && job.stopRequested)
-    .map(job => ({ jobId: job.id, sessionId: job.sessionId!, cursor: clone(job.cursor ?? {}), checkBranch: false, reason: job.stopRequested!.reason }));
+    .map(job => ({ jobId: job.id, sessionId: job.sessionId!, cursor: clone(job.cursor ?? {}), checkBranch: false, reason: job.stopRequested!.reason, provider: job.provider, stopAt: job.stopRequested!.at }));
 }
 
 /** GET status/events, and for a finished turn GET the task branch head. No provider mutation. */
-export async function observeSessions(tasks: ProviderTask[], provider: ProviderAdapter, state: CloudState): Promise<ProviderResult[]> {
+export async function observeSessions(tasks: ProviderTask[], providers: ProviderAdapter | ProviderSet | ProviderResolver, state: CloudState): Promise<ProviderResult[]> {
+  const resolve = resolverOf(providers);
   const results: ProviderResult[] = [];
   for (const task of tasks) {
     const result: ProviderResult = { jobId: task.jobId, sessionId: task.sessionId };
+    const provider = resolve(task.provider ?? 'anthropic');
     try {
       const seen = await provider.observe(task.sessionId, task.cursor);
       result.observation = seen.observation; result.cursor = seen.cursor;
@@ -374,22 +405,27 @@ export async function observeSessions(tasks: ProviderTask[], provider: ProviderA
  * after a finished turn or a review never interrupts: if the user resumed the session from the
  * provider Console, the work continues and archival waits until it is idle again.
  */
-export async function performStops(tasks: ProviderTask[], provider: ProviderAdapter): Promise<ProviderResult[]> {
+export async function performStops(tasks: ProviderTask[], providers: ProviderAdapter | ProviderSet | ProviderResolver): Promise<ProviderResult[]> {
+  const resolve = resolverOf(providers);
   const results: ProviderResult[] = [];
   for (const task of tasks) {
     const result: ProviderResult = { jobId: task.jobId, sessionId: task.sessionId };
+    const provider = resolve(task.provider ?? 'anthropic');
     try {
       let seen = await provider.observe(task.sessionId, task.cursor);
       result.observation = seen.observation; result.cursor = seen.cursor;
-      const interruptible = task.reason === 'cancel' || task.reason === 'shutdown';
+      // A budget stop (coordinator estimate reached the reservation) cancels the turn but keeps the session for the
+      // user to inspect; it never resumes. Cancel or shutdown then closes it like any other.
+      const interruptible = task.reason === 'cancel' || task.reason === 'shutdown' || task.reason === 'budget';
       if (interruptible && (seen.observation.providerStatus === 'running' || seen.observation.providerStatus === 'rescheduling')) {
-        await provider.interrupt(task.sessionId);
+        // Stable per stop request: a later run repeating this cancel sends the same key.
+        await provider.interrupt(task.sessionId, `agent-empire-stop-${task.jobId}-${task.reason}-${task.stopAt ?? 0}`);
         seen = await provider.observe(task.sessionId, seen.cursor);
         result.observation = seen.observation; result.cursor = seen.cursor;
       }
-      if (seen.observation.providerStatus === 'idle') {
-        await provider.archive(task.sessionId);
-        seen = await provider.observe(task.sessionId, seen.cursor);
+      if (task.reason !== 'budget' && seen.observation.providerStatus === 'idle') {
+        const closed = await provider.archive(task.sessionId, seen.cursor);
+        seen = await provider.observe(task.sessionId, closed ?? seen.cursor);
         result.observation = seen.observation; result.cursor = seen.cursor;
       }
     } catch (error) { result.error = safeMessage(error); }
@@ -412,13 +448,23 @@ function observeInto(state: CloudState, ctx: TickContext, job: CloudJob, observa
   job.sessionId = observation.sessionId;
   job.providerStatus = observation.providerStatus;
   if (cursor) job.cursor = cursor;
+  // Anthropic reports an exact list cost; OpenAI jobs carry the coordinator's estimate. Both only ever grow.
+  const estimated = !providerEnforcesBudget(job.provider);
   if (observation.costCents !== undefined) {
     const previous = job.cost?.amountCents ?? 0;
     if (observation.costCents > previous || !job.cost) {
       const amount = Math.max(previous, observation.costCents);
-      if (amount > previous) spend(state, { at: ctx.now, jobId: job.id, kind: 'cost_observed', cents: amount - previous, day: utcDay(ctx.now), basis: 'provider_reported_list_cost' });
-      job.cost = { amountCents: amount, currency: 'USD', observedAt: ctx.now, basis: 'provider_reported_list_cost' };
+      if (amount > previous) spend(state, estimated
+        ? { at: ctx.now, jobId: job.id, kind: 'cost_estimated', cents: amount - previous, day: utcDay(ctx.now), basis: 'estimate_from_reported_usage' }
+        : { at: ctx.now, jobId: job.id, kind: 'cost_observed', cents: amount - previous, day: utcDay(ctx.now), basis: 'provider_reported_list_cost' });
+      job.cost = { amountCents: amount, currency: 'USD', observedAt: ctx.now, basis: estimated ? 'estimate_from_reported_usage' : 'provider_reported_list_cost' };
     }
+  }
+  // No provider cap (OpenAI): when the estimate reaches the reservation, the coordinator cancels the running turn. The
+  // stop is committed before it is sent (phase 2), and the turn is never resumed.
+  if (estimated && job.reservation && job.cost && job.cost.amountCents >= job.reservation.cents && SLOT_STATUSES.includes(job.status) && observation.status === 'running' && !job.stopRequested) {
+    job.stopRequested = { at: ctx.now, reason: 'budget' };
+    journal(state, ctx, 'job', `${job.title}: estimated cost ${job.cost.amountCents} cents reached the ${job.reservation.cents}-cent allowance; the coordinator cancels the turn.`, { jobId: job.id });
   }
   const closed = observation.status === 'cancelled' || observation.status === 'failed';
   // A reviewable turn the user continued from the provider Console is live work again: show it as
@@ -434,6 +480,8 @@ function observeInto(state: CloudState, ctx: TickContext, job: CloudJob, observa
     else if (job.status === 'awaiting_review' && info.turnEnded && !job.stopRequested) decideTurnArchive(state, ctx, job, info.branch);
     return;
   }
+  // A turn that finished before the budget cancel took effect is a normal finished turn, reviewable as usual.
+  if (job.stopRequested?.reason === 'budget' && observation.status === 'idle' && (cursor?.stopReason ?? savedStop) === 'end_turn') delete job.stopRequested;
   const reason = job.stopRequested?.reason;
   let status: CloudJob['status']; let message = observation.message;
   if (observation.status === 'cancelled') {
@@ -453,7 +501,11 @@ function observeInto(state: CloudState, ctx: TickContext, job: CloudJob, observa
     else { status = 'idle'; message = `Provider session is idle (stop reason ${job.stopReason}). Review it in provider controls; its slot stays held.`; }
   } else if (observation.status === 'running') status = 'running';
   else status = 'unknown';
-  if (SLOT_STATUSES.includes(status) && job.reservation && observation.budgetCents !== job.reservation.cents) {
+  if (reason === 'budget' && SLOT_STATUSES.includes(status)) {
+    status = 'budget_paused';
+    message = `The estimated cost reached this job’s allowance, so the coordinator cancelled the turn${observation.status === 'running' ? ' (waiting for OpenAI to confirm)' : ''}. It will not be resumed. Cancel the job to close the session, which may still hold unpublished work for about an hour.`;
+  }
+  if (SLOT_STATUSES.includes(status) && job.reservation && providerEnforcesBudget(job.provider) && observation.budgetCents !== job.reservation.cents) {
     status = 'unknown';
     message = 'The provider did not confirm the reserved session budget. The reservation is kept; review or stop this session in provider controls.';
   }
@@ -496,8 +548,11 @@ export function recordObservations(input: CloudState, results: ProviderResult[],
 
 // ---------------------------------------------------------------- phase: dispatch planning
 
-/** FIFO admission within concurrency and daily limits. Marks jobs `dispatching` with a full reservation. */
-export function planDispatch(input: CloudState, ctx: TickContext, canDispatch: boolean): { state: CloudState; planned: string[] } {
+/**
+ * FIFO admission within concurrency and daily limits. Marks jobs `dispatching` with a full reservation. `blockedReason`
+ * explains a provider that cannot dispatch (e.g. OpenAI before the owner's verification flag).
+ */
+export function planDispatch(input: CloudState, ctx: TickContext, canDispatch: boolean, blockedReason?: string): { state: CloudState; planned: string[] } {
   const state = clone(input);
   const planned: string[] = [];
   const queued = state.jobs.jobs.filter(job => job.status === 'queued').sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
@@ -506,7 +561,7 @@ export function planDispatch(input: CloudState, ctx: TickContext, canDispatch: b
   const { meta } = state;
   if (meta.lifecycle.status !== 'running') { queued.forEach(job => wait(job, 'Queued while the Empire is shut down. Nothing is dispatched until you start it again.')); return { state, planned }; }
   if (!meta.execution) { queued.forEach(job => wait(job, 'Waiting: cloud execution is not configured.')); return { state, planned }; }
-  if (!canDispatch) { queued.forEach(job => wait(job, 'Waiting: the provider API key or project GitHub token is missing from the state repository secrets.')); return { state, planned }; }
+  if (!canDispatch) { queued.forEach(job => wait(job, `Waiting: ${blockedReason ?? 'the provider API key or project GitHub token is missing from the state repository secrets.'}`)); return { state, planned }; }
   let active = state.jobs.jobs.filter(holdsSlot).length;
   let reserved = reservedToday(state, ctx.now);
   for (const job of queued) {
@@ -525,7 +580,7 @@ export function planDispatch(input: CloudState, ctx: TickContext, canDispatch: b
 
 // ---------------------------------------------------------------- phase: dispatch receipts
 
-export type DispatchResult = { jobId: string; sourceCommit: string; observation: ProviderObservation } | { jobId: string; failure: { sent: boolean; message: string } };
+export type DispatchResult = { jobId: string; sourceCommit: string; observation: ProviderObservation; cursor?: EventCursorState } | { jobId: string; failure: { sent: boolean; message: string } };
 export const MAX_DISPATCH_ATTEMPTS = 3;
 
 export function recordDispatches(input: CloudState, results: DispatchResult[], ctx: TickContext): CloudState {
@@ -545,7 +600,7 @@ export function recordDispatches(input: CloudState, results: DispatchResult[], c
       continue;
     }
     job.sourceCommit = result.sourceCommit;
-    job.cursor = {};
+    job.cursor = clone(result.cursor ?? {});
     journal(state, ctx, 'dispatch', `${job.title}: provider session ${result.observation.sessionId} created from ${result.sourceCommit.slice(0, 12)} on branch ${job.branch}.`, { jobId: job.id });
     applyObservation(state, ctx, job, result.observation, undefined);
   }
@@ -634,7 +689,8 @@ function meaningful(state: CloudState, snapshot: StateSnapshot): boolean {
 
 export interface CoordinatorDeps {
   store: StateStore & Partial<WorkflowControl>;
-  provider: ProviderAdapter;
+  /** One adapter (answers only for its own provider) or one per provider. The Empire's execution picks which is used. */
+  provider: ProviderAdapter | ProviderSet;
   now: () => number;
   runId: string;
   /** The workflow grants `actions: write`, so the coordinator may disable itself on shutdown. */
@@ -659,6 +715,7 @@ export interface TickReport {
 
 export async function runCoordinatorTick(deps: CoordinatorDeps): Promise<TickReport> {
   const log = deps.log ?? (() => {});
+  const resolve = resolverOf(deps.provider);
   const ctx1: TickContext = { now: deps.now(), runId: deps.runId };
   let observations: ProviderResult[] | undefined;
   let provisionOutcome: ProvisionOutcome | undefined;
@@ -671,16 +728,17 @@ export async function runCoordinatorTick(deps: CoordinatorDeps): Promise<TickRep
     let state = reconcileStaleDispatches(parsed.state, ctx1);
     // Read-only provider calls run once per tick, before intents, so a review or cancel is judged
     // against the session's current state. A commit retry reuses these results.
-    observations ??= await observeSessions(collectObservations(state), deps.provider, state);
+    observations ??= await observeSessions(collectObservations(state), resolve, state);
     state = recordObservations(state, observations, ctx1);
     const intents = applyIntents(state, intentFilesOf(snapshot), ctx1);
     state = intents.state;
     // Free control-plane calls, once per tick (a commit retry reuses the outcome), before dispatch planning.
     if (provisioningDue(state, ctx1.now)) {
-      if (!provisionOutcome || provisionOutcome.key !== provisionKey(state)) provisionOutcome = await attemptProvisioning(state, deps.provider);
+      if (!provisionOutcome || provisionOutcome.key !== provisionKey(state)) provisionOutcome = await attemptProvisioning(state, resolve);
       state = recordProvisioning(state, provisionOutcome, ctx1);
     }
-    const plan = planDispatch(state, ctx1, deps.provider.canDispatch);
+    const dispatcher = resolve(state.meta.execution?.provider ?? 'anthropic');
+    const plan = planDispatch(state, ctx1, dispatcher.canDispatch, dispatcher.blockedReason);
     state = plan.state;
     const lifecycle = lifecycleStep(state, ctx1);
     economyStep(state, ctx1);
@@ -697,16 +755,19 @@ export async function runCoordinatorTick(deps: CoordinatorDeps): Promise<TickRep
   }, deps.retry);
   if (phase1.changed) commits++;
   let state = phase1.value.state;
-  if (provisionOutcome) log(`execution setup: ${provisionOutcome.ok ? `ready (agent ${provisionOutcome.result.agentCreated ? 'created' : 'reused'}, environment ${provisionOutcome.result.environmentCreated ? 'created' : 'reused'})` : `not finished (${provisionOutcome.attempted ? 'provider refused or unreachable' : 'no Anthropic key'})`}`);
+  if (provisionOutcome) {
+    const r = provisionOutcome.ok ? provisionOutcome.result : undefined;
+    log(`execution setup: ${r ? r.provider === 'openai' ? `ready (OpenAI vault ${r.vaultCreated ? 'created' : 'reused'}, credential ${r.credential})` : `ready (agent ${r.agentCreated ? 'created' : 'reused'}, environment ${r.environmentCreated ? 'created' : 'reused'})` : `not finished (${!provisionOutcome.ok && provisionOutcome.attempted ? 'provider refused or unreachable' : 'provider not available'})`}`);
+  }
   log(`phase 1 ${phase1.changed ? `commit ${phase1.sha.slice(0, 12)} after ${phase1.attempts} attempt(s)` : 'nothing to commit'}: ${phase1.value.outcomes.length} intent(s), ${observations?.length ?? 0} session(s) observed, ${phase1.value.planned.length} planned`);
 
   // Mutating provider calls: only for intentions now durable in the state branch.
-  const stopResults = await performStops(collectStops(state), deps.provider);
+  const stopResults = await performStops(collectStops(state), resolve);
   const dispatchResults: DispatchResult[] = [];
   for (const jobId of phase1.value.planned) {
     const job = state.jobs.jobs.find(item => item.id === jobId)!;
     try {
-      const created = await deps.provider.dispatch({ jobId, prompt: job.prompt!, branch: job.branch, budgetCents: job.reservation!.cents, execution: state.meta.execution! });
+      const created = await resolve(state.meta.execution!.provider).dispatch({ jobId, prompt: job.prompt!, branch: job.branch, budgetCents: job.reservation!.cents, execution: state.meta.execution! });
       dispatchResults.push({ jobId, ...created });
     } catch (error) {
       // Anything other than a proven not-sent failure may have created a paid session.

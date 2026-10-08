@@ -9,13 +9,15 @@ import { COMMIT } from '../server/execution-validation.js';
 import { GitHubClient, GitHubError } from './store.js';
 import { AnthropicManaged, type ProviderCredentials } from '../server/providers/anthropic-managed.js';
 import { provisionAnthropicExecution, type ProvisionResult, type WorkerModel } from './provisioning.js';
+import type { AnyWorkerModel } from './worker-spec.js';
 import { DispatchFailure, type DispatchRequest, type ProviderAdapter, type ProviderObservation } from './provider.js';
-import { utcDay, type CloudExecution, type EventCursorState } from './schema.js';
+import { utcDay, type AnthropicExecution, type CloudExecution, type EventCursorState } from './schema.js';
 
 const MAX_EVENT_PAGES = 5;
 
 export class AnthropicCloudAdapter implements ProviderAdapter {
   readonly provider = 'anthropic' as const;
+  readonly budget = 'provider_enforced' as const;
   readonly canDispatch: boolean;
   readonly canProvision: boolean;
   private client: AnthropicManaged;
@@ -33,14 +35,16 @@ export class AnthropicCloudAdapter implements ProviderAdapter {
     this.now = options.now ?? Date.now;
   }
 
-  private config(execution: CloudExecution, budgetCents: number): ExecutionConfig {
+  private config(execution: AnthropicExecution, budgetCents: number): ExecutionConfig {
     return { schemaVersion: 1, completed: true, mode: 'anthropic_cloud', repository: execution.repository, anthropic: execution.anthropic, githubAuth: 'host_token', limits: { maxConcurrent: 1, perTaskBudgetCents: budgetCents, dailyBudgetCents: budgetCents } };
   }
 
   async dispatch(request: DispatchRequest): Promise<{ sourceCommit: string; observation: ProviderObservation }> {
     if (!this.canDispatch) throw new DispatchFailure(false, 'Anthropic API key or project GitHub token is not configured in the state repository secrets.');
-    const config = this.config(request.execution, request.budgetCents);
-    const key = JSON.stringify([request.execution.repository, request.execution.anthropic]);
+    const execution = request.execution;
+    if (execution.provider !== 'anthropic') throw new DispatchFailure(false, 'This Empire runs jobs on another provider. No paid session was requested.');
+    const config = this.config(execution, request.budgetCents);
+    const key = JSON.stringify([execution.repository, execution.anthropic]);
     let prepared: { agentVersion: number; sourceCommit: string };
     try {
       let check = this.checked.get(key);
@@ -64,13 +68,14 @@ export class AnthropicCloudAdapter implements ProviderAdapter {
     }
   }
 
-  /** Control-plane lookups and creates only; no session. Needs only the Anthropic key. */
-  provision(model: WorkerModel): Promise<ProvisionResult> { return provisionAnthropicExecution(this.client, this.credentials.apiKey, model); }
+  /** Control-plane lookups and creates only; no session. Needs only the Anthropic key. Rejects non-Anthropic models. */
+  provision(model: AnyWorkerModel): Promise<ProvisionResult> { return provisionAnthropicExecution(this.client, this.credentials.apiKey, model as WorkerModel); }
 
   async observe(sessionId: string, cursor: EventCursorState): Promise<{ observation: ProviderObservation; cursor: EventCursorState }> {
     let next = { ...cursor };
     for (let page = 0; page < MAX_EVENT_PAGES; page++) {
-      next = await this.client.events(sessionId, this.credentials.apiKey, next);
+      // Anthropic cursors never carry the OpenAI-only `cancelled` stop reason or `openai` bookkeeping.
+      next = await this.client.events(sessionId, this.credentials.apiKey, next as Parameters<AnthropicManaged['events']>[2]);
       if (!next.page) break;
     }
     const observation = await this.client.session(sessionId, this.credentials.apiKey);

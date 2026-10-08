@@ -7,8 +7,9 @@
  * real provider money.
  */
 import { SITES, type SiteId } from '../../shared/empire';
-import { CANCELLABLE, cloudStatus, dollars, executionStatus, JOB_LABEL, JOB_TONE, jobCounts, SANDBOX_NOTE, shortAge, snapshotTime, todaySpend } from './map';
-import { DEFAULT_WORKER_MODEL, WORKER_MODELS, type WorkerModel } from '../../cloud/worker-spec';
+import { CANCELLABLE, cloudStatus, dollars, executionStatus, JOB_LABEL, JOB_TONE, jobCounts, OPENAI_GATE_NOTE, OPENAI_SANDBOX_NOTE, SANDBOX_NOTE, shortAge, snapshotTime, todaySpend } from './map';
+import { defaultModelFor, isProviderId, modelsFor, PROVIDER_LABELS, type AnyWorkerModel, type ProviderId } from '../../cloud/worker-spec';
+import { ESTIMATE_LABEL, OPENAI_DEFAULT_PER_JOB_CENTS } from '../../cloud/openai-spec';
 import { repoLabel } from './repo';
 import type { CloudNet, NewJobRequest } from './net';
 import { store } from '../state';
@@ -206,6 +207,7 @@ function statusTab(net: CloudNet, state: CloudState): HTMLElement[] {
         metric('Need you', String(counts.attention + counts.review), `${counts.review} ready for review`),
         metric('Queued', String(counts.queued)),
         metric('Spent today (UTC)', dollars(spend.observedCents), `${dollars(spend.reservedCents)} reserved of ${dollars(spend.dailyCents)}`),
+        spend.estimatedCents || meta.execution?.provider === 'openai' ? metric('Estimated today (UTC)', dollars(spend.estimatedCents), 'OpenAI estimate, not a bill') : null,
       ),
     ),
     h(
@@ -238,13 +240,19 @@ function jobRow(net: CloudNet, job: CloudJob): HTMLElement {
           void net.submit({ kind: 'cancel', jobId: job.id }, `Cancel “${job.title.slice(0, 40)}”`),
         ), { disabled: busy || sent }),
     );
-  const cost = job.cost ? `${dollars(job.cost.amountCents)} used (provider list cost)` : job.reservation ? `${dollars(job.reservation.cents)} reserved` : `up to ${dollars(job.authorizedCents)} authorized`;
+  const cost = job.cost
+    ? job.cost.basis === 'estimate_from_reported_usage' ? `about ${dollars(job.cost.amountCents)} (estimate from OpenAI-reported usage; not a bill)` : `${dollars(job.cost.amountCents)} used (provider list cost)`
+    : job.provider === 'openai' && job.sessionId ? `${job.reservation ? `${dollars(job.reservation.cents)} reserved · ` : ''}usage not reported yet`
+    : job.reservation ? `${dollars(job.reservation.cents)} reserved` : `up to ${dollars(job.authorizedCents)} authorized`;
   return h(
     'li.cloud-job',
     { 'data-tone': tone, 'data-job': job.id },
     h('div.cloud-job-head', {}, h('span.status-dot', { 'aria-hidden': 'true' }), h('strong', {}, job.title), h('span.cloud-pill', {}, JOB_LABEL[job.status])),
     h('p', {}, [site, job.message, cost, job.branchHead ? `branch ${job.branch} @ ${job.branchHead.sha.slice(0, 7)} (pushed; not verified)` : null, `updated ${shortAge(Date.now() - job.updatedAt)} ago`].filter(Boolean).join(' · ')),
-    job.status === 'dispatch_uncertain' ? h('p.setting-note', {}, 'The start was interrupted after the paid request; check the provider Console before retrying so nothing runs twice.') : null,
+    job.status === 'dispatch_uncertain' ? h('p.setting-note', {}, job.provider === 'openai'
+      ? `The start was interrupted after the paid request; check platform.openai.com/logs?api=agents for task ${job.id} before retrying so nothing runs twice.`
+      : 'The start was interrupted after the paid request; check the provider Console before retrying so nothing runs twice.') : null,
+    job.cost?.basis === 'estimate_from_reported_usage' ? h('p.setting-note', {}, ESTIMATE_LABEL) : null,
     actions.length ? h('div.sector-actions', {}, ...actions) : null,
   );
 }
@@ -304,11 +312,15 @@ export function openCloudJobDialog(net: CloudNet, request: NewJobRequest) {
   const cancel = h('button.btn', { type: 'button' }, 'Never mind');
   tick.addEventListener('change', () => (go.disabled = !tick.checked || !exec.canSubmit));
   const site = request.site && SITES.some((s) => s.id === request.site) ? (request.site as SiteId) : undefined;
+  const openai = state.meta.execution?.provider === 'openai';
   const rows: [string, string][] = [
     ['Job', request.title],
-    ['Allowance', `Up to ${dollars(spend.perJobCents)} is reserved for this job; the provider stops it at that budget (it can overshoot slightly between requests).`],
-    ['Today (UTC)', `${dollars(spend.reservedCents)} reserved and ${dollars(spend.observedCents)} used of ${dollars(spend.dailyCents)} a day. If today is full, the job waits.`],
-    ['Billing', 'Billed by Anthropic to your API account, plus GitHub Actions minutes. City credits are not involved.'],
+    ['Allowance', openai
+      ? `Up to ${dollars(spend.perJobCents)} is reserved for this job. OpenAI has no per-job cap: the coordinator cancels the job when its cost estimate reaches the allowance, which can lag by one coordinator run, so it can overshoot. Your OpenAI project's monthly limit is the hard backstop.`
+      : `Up to ${dollars(spend.perJobCents)} is reserved for this job; the provider stops it at that budget (it can overshoot slightly between requests).`],
+    ['Today (UTC)', `${dollars(spend.reservedCents)} reserved and ${dollars(spend.observedCents)} used${spend.estimatedCents ? ` (plus about ${dollars(spend.estimatedCents)} estimated)` : ''} of ${dollars(spend.dailyCents)} a day. If today is full, the job waits.`],
+    ['Billing', openai ? `Billed by OpenAI to your API project, plus GitHub Actions minutes. Costs shown are estimates. City credits are not involved.` : 'Billed by Anthropic to your API account, plus GitHub Actions minutes. City credits are not involved.'],
+    ...(openai ? [['OpenAI', OPENAI_GATE_NOTE] as [string, string]] : []),
     ['Where', exec.canSubmit && state.meta.execution ? `${state.meta.execution.repository.owner}/${state.meta.execution.repository.name}, on a new branch` : `Can’t start yet. ${exec.detail}`],
     ['Checked against', `Your limits as of the snapshot ${shortAge(Date.now() - at)} ago (revision ${state.meta.configRevision}). If they changed since, the coordinator refuses the job and nothing is charged.`],
   ];
@@ -366,8 +378,21 @@ function limitsTab(net: CloudNet, state: CloudState): HTMLElement[] {
   const autoOwner = h('input', { type: 'text', value: target?.owner ?? '', placeholder: 'owner', 'aria-label': 'Project owner for automatic setup' }) as HTMLInputElement;
   const autoName = h('input', { type: 'text', value: target?.name ?? '', placeholder: 'repository', 'aria-label': 'Project repository for automatic setup' }) as HTMLInputElement;
   const autoBase = h('input', { type: 'text', value: target?.baseBranch ?? 'main', 'aria-label': 'Base branch for automatic setup' }) as HTMLInputElement;
-  const autoModel = h('select', { 'aria-label': 'Worker model' }, ...WORKER_MODELS.map((m) => h('option', { value: m.id }, `${m.label}${m.id === DEFAULT_WORKER_MODEL ? ' (default)' : ''} · ${m.price}`))) as HTMLSelectElement;
-  autoModel.value = state.meta.provisioning?.model ?? state.meta.executionProfile?.model ?? DEFAULT_WORKER_MODEL;
+  // One provider per Empire (owner decision D10): Anthropic unless the Empire already runs on, or is being set up for, OpenAI.
+  const currentProvider: ProviderId = state.meta.provisioning?.provider ?? ex?.provider ?? 'anthropic';
+  const autoProvider = h('select', { 'aria-label': 'Execution provider' }, ...(['anthropic', 'openai'] as ProviderId[]).map((id) => h('option', { value: id }, `${PROVIDER_LABELS[id]}${id === 'anthropic' ? ' (default)' : ' (unverified until first run)'}`))) as HTMLSelectElement;
+  autoProvider.value = currentProvider;
+  const autoModel = h('select', { 'aria-label': 'Worker model' }) as HTMLSelectElement;
+  const providerNote = h('p.setting-note', {});
+  const fillModels = (provider: ProviderId, selected?: string) => {
+    autoModel.replaceChildren(...modelsFor(provider).map((m) => h('option', { value: m.id }, `${m.label}${m.id === defaultModelFor(provider) ? ' (default)' : ''}${m.verified === false ? ' (unverified until first run)' : ''} · ${m.price}`)));
+    autoModel.value = selected && modelsFor(provider).some((m) => m.id === selected) ? selected : defaultModelFor(provider);
+    providerNote.textContent = provider === 'openai'
+      ? `${OPENAI_SANDBOX_NOTE} ${OPENAI_GATE_NOTE} A per-job allowance of at least ${dollars(OPENAI_DEFAULT_PER_JOB_CENTS)} is suggested: a 30-minute GPT-6.1 Sol job is estimated at about $2.90.`
+      : SANDBOX_NOTE;
+  };
+  fillModels(currentProvider, state.meta.provisioning?.model ?? state.meta.executionProfile?.model);
+  autoProvider.addEventListener('change', () => fillModels(isProviderId(autoProvider.value) ? autoProvider.value : 'anthropic'));
   const autoErr = h('p.setting-note.cloud-error', { role: 'alert' });
   const autoForm = h(
     'form.cloud-form',
@@ -380,21 +405,24 @@ function limitsTab(net: CloudNet, state: CloudState): HTMLElement[] {
           return;
         }
         autoErr.textContent = '';
-        void net.submit({ kind: 'provision', repository, model: autoModel.value as WorkerModel, configRevision: state.meta.configRevision }, 'Set up execution').then((id) => {
+        const provider: ProviderId = isProviderId(autoProvider.value) ? autoProvider.value : 'anthropic';
+        void net.submit({ kind: 'provision', repository, ...(provider === 'openai' ? { provider } : {}), model: autoModel.value as AnyWorkerModel, configRevision: state.meta.configRevision }, 'Set up execution').then((id) => {
           if (!id) autoErr.textContent = 'Not sent. Check the repository fields.';
         });
       },
     },
     h('div.cloud-row', {}, field('Owner', autoOwner), field('Repository', autoName), field('Base branch', autoBase)),
-    h('div.cloud-row', {}, field('Worker model', autoModel, 'Billed by Anthropic per token for jobs you confirm. Each model gets its own agent.')),
+    h('div.cloud-row', {}, field('Provider', autoProvider, 'One provider per Empire. Its API key must be in your state repository secrets.'), field('Worker model', autoModel, 'Billed by the provider per token for jobs you confirm.')),
+    providerNote,
     autoErr,
     h('div.sector-actions', {}, h('button.btn.primary', { type: 'submit', disabled: net.info.busy || exec.kind === 'setting_up' }, exec.kind === 'failed' ? 'Try setup again' : 'Set up automatically')),
   );
   const owner = h('input', { type: 'text', value: ex?.repository.owner ?? '', placeholder: 'owner', 'aria-label': 'Project owner' }) as HTMLInputElement;
   const name = h('input', { type: 'text', value: ex?.repository.name ?? '', placeholder: 'repository', 'aria-label': 'Project repository' }) as HTMLInputElement;
   const base = h('input', { type: 'text', value: ex?.repository.baseBranch ?? 'main', 'aria-label': 'Base branch' }) as HTMLInputElement;
-  const agent = h('input', { type: 'text', value: ex?.anthropic.agentId ?? '', placeholder: 'agent_…', 'aria-label': 'Anthropic agent ID' }) as HTMLInputElement;
-  const env = h('input', { type: 'text', value: ex?.anthropic.environmentId ?? '', placeholder: 'env_…', 'aria-label': 'Anthropic environment ID' }) as HTMLInputElement;
+  const exA = ex?.provider === 'anthropic' ? ex : undefined;
+  const agent = h('input', { type: 'text', value: exA?.anthropic.agentId ?? '', placeholder: 'agent_…', 'aria-label': 'Anthropic agent ID' }) as HTMLInputElement;
+  const env = h('input', { type: 'text', value: exA?.anthropic.environmentId ?? '', placeholder: 'env_…', 'aria-label': 'Anthropic environment ID' }) as HTMLInputElement;
   const exErr = h('p.setting-note.cloud-error', { role: 'alert' });
   const execForm = h(
     'form.cloud-form',
@@ -420,8 +448,7 @@ function limitsTab(net: CloudNet, state: CloudState): HTMLElement[] {
       {},
       h('h3', {}, 'Agent execution'),
       h('p.setting-note', {}, `${exec.label}. ${exec.detail}`),
-      h('p.setting-note', {}, `Automatic: your coordinator uses the Anthropic key in your Actions secrets to find or create an agent “Agent Empire worker” and a cloud environment, then records their IDs. Creating them is not a billed item and starts no session; jobs are charged only when you confirm them.${ex ? ' This replaces the current execution settings once it finishes.' : ''}`),
-      h('p.setting-note', {}, SANDBOX_NOTE),
+      h('p.setting-note', {}, `Automatic: your coordinator uses the provider key in your Actions secrets to find or create what jobs run on (Anthropic: an agent “Agent Empire worker” and a cloud environment; OpenAI: a vault holding your project GitHub token), then records their IDs. Creating them is not a billed item and starts no session; jobs are charged only when you confirm them.${ex ? ' This replaces the current execution settings once it finishes.' : ''}`),
       autoForm,
     ),
     h('section.empire-section', {}, h('h3', {}, 'Use existing IDs'), h('p.setting-note', {}, 'Advanced. References only: an Anthropic agent and environment you already created, and the project repository jobs run on. Keys stay in your GitHub Actions secrets. Saving these withdraws any automatic setup request.'), execForm),

@@ -13,7 +13,9 @@ import { initialEmpire, newSector, SITES, type EmpireState, type SectorState, ty
 import { DESKS_PER_FLOOR } from '../shared/layout.js';
 import type { ExecutionConfig, ExecutionTask } from '../shared/execution.js';
 import { COMMIT, PROVIDER_ID, TASK_ID, validateConfig } from '../server/execution-validation.js';
-import { DEFAULT_WORKER_MODEL, isWorkerModel, WORKER_ENVIRONMENT, type WorkerModel } from './worker-spec.js';
+import { defaultModelFor, isModelFor, isProviderId, isWorkerModel, WORKER_ENVIRONMENT, type AnyWorkerModel, type ProviderId } from './worker-spec.js';
+import { CONTAINER_BLOCK_CENTS, OPENAI_ENVIRONMENT, type ContainerSize } from './openai-spec.js';
+export type { ProviderId } from './worker-spec.js';
 
 export const CLOUD_SCHEMA_VERSION = 1;
 export const STATE_FILES = {
@@ -52,23 +54,41 @@ export const LIMITS = {
 /** Same ranges as the host execution ledger (execution-validation.ts). */
 export type CloudLimits = ExecutionConfig['limits'];
 /** Provider references only. Credentials live in encrypted Actions secrets, never in state. */
-export interface CloudExecution {
+export type CloudExecution = AnthropicExecution | OpenAIExecution;
+export interface AnthropicExecution {
   provider: 'anthropic';
   repository: ExecutionConfig['repository'];
   anthropic: ExecutionConfig['anthropic'];
 }
+/**
+ * CLOUD-06: an OpenAI Agents API Empire. No saved agent: each session carries an inline agent with `model`. The vault
+ * holds the project GitHub token as an `environment_variable` credential released only to api.github.com; these are
+ * its references, never the token.
+ */
+export interface OpenAIExecution {
+  provider: 'openai';
+  repository: ExecutionConfig['repository'];
+  openai: { model: AnyWorkerModel; containerSize: ContainerSize; network: 'enabled'; vaultId: string; credentialId: string };
+}
+/** OpenAI resource ids (vault, credential, session, turn). UNVERIFIED format: a lowercase prefix, `_`, then an opaque id. */
+export const OPENAI_ID = /^[a-z][a-z0-9]{0,15}_[A-Za-z0-9_-]{8,120}$/;
+/** Values that are credentials, never references; refused anywhere an id is expected. */
+export const SECRET_LIKE = /^(github_pat_|ghp_|gho_|ghu_|ghs_|ghr_|sk-|sess-)/;
+export const isOpenAIId = (value: unknown): value is string => typeof value === 'string' && OPENAI_ID.test(value) && !SECRET_LIKE.test(value);
+/** Whether the provider enforces the session budget (Anthropic) or only the coordinator's estimate does (OpenAI). */
+export const providerEnforcesBudget = (provider: ProviderId) => provider === 'anthropic';
 
 /**
  * A request for the coordinator to find or create the Anthropic agent and environment for `repository`
  * (src/cloud/provisioning.ts). Present only until it succeeds; it then becomes `execution`. No secrets.
  */
 export interface CloudProvisioning {
-  provider: 'anthropic';
+  provider: ProviderId;
   repository: ExecutionConfig['repository'];
   /** `pending`: the next run tries. `failed`: `message` says why; retried hourly when `retryable`. */
   status: 'pending' | 'failed';
-  /** Worker model for the agent (absent in states written before 2026-10-02: the default, Sonnet 5). */
-  model?: WorkerModel;
+  /** Worker model for the agent (absent in states written before 2026-10-02: the provider's default). */
+  model?: AnyWorkerModel;
   requestedAt: number;
   attempts: number;
   lastAttemptAt?: number;
@@ -76,7 +96,8 @@ export interface CloudProvisioning {
   message?: string;
 }
 export const PROVISION_RETRY_MS = 60 * 60_000;
-export interface CloudExecutionProfile { model: WorkerModel; networking: typeof WORKER_ENVIRONMENT.config.networking.type }
+/** Anthropic: `{model, networking: 'unrestricted'}` (unchanged). OpenAI adds `provider` and `containerSize`. */
+export interface CloudExecutionProfile { model: AnyWorkerModel; networking: typeof WORKER_ENVIRONMENT.config.networking.type | typeof OPENAI_ENVIRONMENT.network; provider?: 'openai'; containerSize?: ContainerSize }
 
 /** Scheduled-run cost estimate shown by setup. Dispatch-triggered runs come on top. */
 export interface ScheduleEstimate {
@@ -143,7 +164,18 @@ export const sessionLive = (job: CloudJob) => !!job.sessionId && job.providerSta
  */
 export const holdsSlot = (job: CloudJob) => SLOT_STATUSES.includes(job.status) || (REVIEW_STATUSES.includes(job.status) && sessionLive(job));
 
-export interface EventCursorState { after?: string; page?: string; newest?: string; lastEventId?: string; stopReason?: ExecutionTask['stopReason'] }
+/** `cancelled` (CLOUD-06): the OpenAI turn was cancelled. */
+export type CloudStopReason = NonNullable<ExecutionTask['stopReason']> | 'cancelled';
+/**
+ * CLOUD-06 OpenAI bookkeeping: ids, statuses and token counts only, never model text. `deletedAt` is set only after a
+ * confirmed DELETE, and is the only case in which a later 404 means "closed".
+ */
+export interface OpenAICursor {
+  createdAt?: number; observedAt?: number; deletedAt?: number; turnId?: string;
+  model?: string; containerSize?: ContainerSize;
+  usage?: { input: number; cached: number; output: number; reasoning: number };
+}
+export interface EventCursorState { after?: string; page?: string; newest?: string; lastEventId?: string; stopReason?: CloudStopReason; openai?: OpenAICursor }
 export interface CloudJob {
   id: string;
   title: string;
@@ -164,19 +196,20 @@ export interface CloudJob {
   authorizedCents: number;
   status: CloudJobStatus;
   message: string;
-  provider: 'anthropic';
+  provider: ProviderId;
   repository: ExecutionConfig['repository'];
   branch: string;
   sourceCommit?: string;
   sessionId?: string;
   cursor?: EventCursorState;
   providerStatus?: ExecutionTask['providerStatus'];
-  stopReason?: ExecutionTask['stopReason'];
+  stopReason?: CloudStopReason;
   /** Task branch head observed with the project token: evidence of a push, not verification. */
   branchHead?: { sha: string; observedAt: number };
   /** Admission-control estimate: the full per-job budget, not an observed charge. */
   reservation?: { cents: number; day: string; basis: 'per_job_allowance_estimate' };
-  cost?: { amountCents: number; currency: 'USD'; observedAt: number; basis: 'provider_reported_list_cost' };
+  /** Anthropic: exact provider-reported list cost. OpenAI: the coordinator's conservative estimate (labelled as such). */
+  cost?: { amountCents: number; currency: 'USD'; observedAt: number; basis: CostBasis };
   dispatch?: { runId: string; preparedAt: number; attempts: number };
   stopRequested?: { at: number; reason: StopReason };
   review?: { decision: 'accepted' | 'rejected'; at: number; intentId: string; note?: string };
@@ -184,23 +217,27 @@ export interface CloudJob {
   outputs: 'unverified';
   rewarded?: boolean;
 }
-export type StopReason = 'cancel' | 'shutdown' | 'turn_ended' | 'review';
+/** `budget` (CLOUD-06): the coordinator's cost estimate reached the reservation, so the turn is cancelled (never resumed). */
+export type StopReason = 'cancel' | 'shutdown' | 'turn_ended' | 'review' | 'budget';
+export type CostBasis = 'provider_reported_list_cost' | 'estimate_from_reported_usage';
 export interface CloudJobs { schemaVersion: 1; jobs: CloudJob[] }
 
 /** Real-money evidence, kept apart from the city's simulation-credit ledger in empire.json. */
 export interface SpendEntry {
   at: number;
   jobId: string;
-  kind: 'reserved' | 'released' | 'cost_observed';
+  /** `cost_estimated` (CLOUD-06): an OpenAI estimate increase, kept apart from provider-reported costs. */
+  kind: 'reserved' | 'released' | 'cost_observed' | 'cost_estimated';
   cents: number;
   day: string;
-  basis: 'per_job_allowance_estimate' | 'provider_reported_list_cost';
+  basis: 'per_job_allowance_estimate' | CostBasis;
 }
 export interface CloudLedger {
   schemaVersion: 1;
   currency: 'USD';
   entries: SpendEntry[];
-  days: Record<string, { reservedCents: number; observedCostCents: number }>;
+  /** `estimatedCostCents` is present only on days with OpenAI estimates; never added into `observedCostCents`. */
+  days: Record<string, { reservedCents: number; observedCostCents: number; estimatedCostCents?: number }>;
 }
 
 export type JournalKind = 'intent_applied' | 'intent_rejected' | 'job' | 'dispatch' | 'lifecycle' | 'limits' | 'economy' | 'warning';
@@ -234,7 +271,7 @@ export function promptHash(text: string): string {
 }
 export const promptPreview = (text: string) => text.length > 200 ? text.slice(0, 199) + '…' : text;
 
-export function initialCloudState(now: number, options: { limits?: CloudLimits; execution?: CloudExecution; intervalMinutes?: number; provision?: ExecutionConfig['repository']; model?: WorkerModel } = {}): CloudState {
+export function initialCloudState(now: number, options: { limits?: CloudLimits; execution?: CloudExecution; intervalMinutes?: number; provision?: ExecutionConfig['repository']; model?: AnyWorkerModel; provider?: ProviderId } = {}): CloudState {
   const limits = validateLimits(options.limits ?? DEFAULT_LIMITS);
   const empire = initialEmpire(now);
   empire.reports[0].text = 'Cloud mode: the coordinator in your GitHub state repository keeps the city running. City credits are simulation credits; provider usage is billed by your provider.';
@@ -244,7 +281,7 @@ export function initialCloudState(now: number, options: { limits?: CloudLimits; 
       lifecycle: { status: 'running', changedAt: now, workflow: 'enabled' },
       coordinator: {}, schedule: scheduleEstimate(options.intervalMinutes), limits,
       ...(options.execution ? { execution: validateExecution(options.execution) } : {}),
-      ...(options.provision && !options.execution ? { provisioning: { provider: 'anthropic' as const, repository: validateProvisionRepository(options.provision), status: 'pending' as const, model: options.model ?? DEFAULT_WORKER_MODEL, requestedAt: now, attempts: 0 } } : {}),
+      ...(options.provision && !options.execution ? { provisioning: { provider: options.provider ?? 'anthropic', repository: validateProvisionRepository(options.provision), status: 'pending' as const, model: options.model ?? defaultModelFor(options.provider ?? 'anthropic'), requestedAt: now, attempts: 0 } } : {}),
     },
     empire,
     jobs: { schemaVersion: 1, jobs: [] },
@@ -285,8 +322,16 @@ export function validateLimits(value: unknown): CloudLimits {
 }
 /** Reuses the host repository/provider-reference validation for a completed Anthropic cloud config. */
 export function validateExecution(value: unknown): CloudExecution {
+  if ((value as Rec | null)?.provider === 'openai') {
+    const input = rec('execution', value, ['provider', 'repository', 'openai']);
+    const o = rec('execution', input.openai, ['model', 'containerSize', 'network', 'vaultId', 'credentialId']);
+    if (!isModelFor('openai', o.model)) throw new SchemaError('execution', 'unsupported OpenAI model');
+    if (!Object.hasOwn(CONTAINER_BLOCK_CENTS, String(o.containerSize)) || o.network !== OPENAI_ENVIRONMENT.network) throw new SchemaError('execution', 'invalid OpenAI environment');
+    if (!isOpenAIId(o.vaultId) || !isOpenAIId(o.credentialId)) throw new SchemaError('execution', 'invalid OpenAI references');
+    return { provider: 'openai', repository: validateProvisionRepository(input.repository), openai: { model: o.model, containerSize: o.containerSize as ContainerSize, network: 'enabled', vaultId: o.vaultId, credentialId: o.credentialId } };
+  }
   const input = rec('execution', value, ['provider', 'repository', 'anthropic']);
-  if (input.provider !== 'anthropic') throw new SchemaError('execution', 'only the anthropic provider is implemented');
+  if (input.provider !== 'anthropic') throw new SchemaError('execution', 'unknown provider');
   const config = validateConfig({ schemaVersion: 1, completed: true, mode: 'anthropic_cloud', repository: input.repository, anthropic: input.anthropic, githubAuth: 'host_token', limits: DEFAULT_LIMITS });
   return { provider: 'anthropic', repository: config.repository, anthropic: config.anthropic };
 }
@@ -299,8 +344,8 @@ export function validateProvisionRepository(value: unknown): ExecutionConfig['re
 
 export function validateProvisioning(file: string, value: unknown): CloudProvisioning {
   const p = rec(file, value, ['provider', 'repository', 'status', 'model', 'requestedAt', 'attempts', 'lastAttemptAt', 'retryable', 'message']);
-  if (p.model !== undefined && !isWorkerModel(p.model)) throw new SchemaError(file, 'invalid provisioning model');
-  if (p.provider !== 'anthropic' || (p.status !== 'pending' && p.status !== 'failed')) throw new SchemaError(file, 'invalid provisioning');
+  if (!isProviderId(p.provider) || (p.status !== 'pending' && p.status !== 'failed')) throw new SchemaError(file, 'invalid provisioning');
+  if (p.model !== undefined && !isModelFor(p.provider, p.model)) throw new SchemaError(file, 'invalid provisioning model');
   let repository: ExecutionConfig['repository'];
   try { repository = validateProvisionRepository(p.repository); } catch { throw new SchemaError(file, 'invalid provisioning repository'); }
   time(file, p.requestedAt); int(file, p.attempts, 0, 1_000_000);
@@ -314,8 +359,11 @@ export function validateMeta(value: unknown): CloudMeta {
   const f = STATE_FILES.meta;
   const m = rec(f, value, ['schemaVersion', 'createdAt', 'revision', 'configRevision', 'lifecycle', 'coordinator', 'schedule', 'limits', 'execution', 'provisioning', 'executionProfile']);
   if (m.executionProfile !== undefined) {
-    const x = rec(f, m.executionProfile, ['model', 'networking']);
-    if (!isWorkerModel(x.model) || x.networking !== WORKER_ENVIRONMENT.config.networking.type) throw new SchemaError(f, 'invalid execution profile');
+    const x = rec(f, m.executionProfile, ['model', 'networking', 'provider', 'containerSize']);
+    const valid = x.provider === undefined
+      ? isWorkerModel(x.model) && x.networking === WORKER_ENVIRONMENT.config.networking.type && x.containerSize === undefined
+      : x.provider === 'openai' && isModelFor('openai', x.model) && x.networking === OPENAI_ENVIRONMENT.network && Object.hasOwn(CONTAINER_BLOCK_CENTS, String(x.containerSize));
+    if (!valid) throw new SchemaError(f, 'invalid execution profile');
   }
   if (m.schemaVersion !== CLOUD_SCHEMA_VERSION) throw new SchemaError(f, 'unsupported schemaVersion');
   const lifecycle = rec(f, m.lifecycle, ['status', 'changedAt', 'workflow']);
@@ -387,16 +435,25 @@ export function validateJobs(value: unknown): CloudJobs {
     if (j.promptArchive !== undefined) str(f, j.promptArchive, 120, /^archive\/prompts\/[a-f0-9-]{36}\.txt$/);
     if (j.site !== undefined && !SITES.some(s => s.id === j.site)) throw new SchemaError(f, 'invalid site');
     time(f, j.createdAt); time(f, j.updatedAt); int(f, j.configRevision); int(f, j.authorizedCents, 1, 100_000);
-    if (j.provider !== 'anthropic' || j.outputs !== 'unverified') throw new SchemaError(f, 'invalid provider/outputs');
+    if (!isProviderId(j.provider) || j.outputs !== 'unverified') throw new SchemaError(f, 'invalid provider/outputs');
     REPO(f, j.repository);
     if (j.branch !== `agent-empire/task-${id}`) throw new SchemaError(f, 'invalid branch');
     if (j.sourceCommit !== undefined) str(f, j.sourceCommit, 64, COMMIT);
-    if (j.sessionId !== undefined) str(f, j.sessionId, 120, PROVIDER_ID.session);
+    if (j.sessionId !== undefined && !(j.provider === 'openai' ? isOpenAIId(j.sessionId) : PROVIDER_ID.session.test(str(f, j.sessionId, 120)))) throw new SchemaError(f, 'invalid text field');
     if (j.providerStatus !== undefined && !['running', 'rescheduling', 'idle', 'terminated', 'archived'].includes(String(j.providerStatus))) throw new SchemaError(f, 'invalid providerStatus');
-    const stops = ['end_turn', 'requires_action', 'budget_reached', 'error', 'unknown'];
+    const stops = ['end_turn', 'requires_action', 'budget_reached', 'error', 'unknown', 'cancelled'];
     if (j.stopReason !== undefined && !stops.includes(String(j.stopReason))) throw new SchemaError(f, 'invalid stopReason');
     if (j.cursor !== undefined) {
-      const c = rec(f, j.cursor, ['after', 'page', 'newest', 'lastEventId', 'stopReason']);
+      const c = rec(f, j.cursor, ['after', 'page', 'newest', 'lastEventId', 'stopReason', 'openai']);
+      if (c.openai !== undefined) {
+        if (j.provider !== 'openai') throw new SchemaError(f, 'invalid cursor');
+        const o = rec(f, c.openai, ['createdAt', 'observedAt', 'deletedAt', 'turnId', 'model', 'containerSize', 'usage']);
+        for (const key of ['createdAt', 'observedAt', 'deletedAt']) if (o[key] !== undefined) time(f, o[key]);
+        if (o.turnId !== undefined && !isOpenAIId(o.turnId)) throw new SchemaError(f, 'invalid cursor');
+        if (o.model !== undefined) str(f, o.model, 60, /^[a-z0-9.-]{1,60}$/);
+        if (o.containerSize !== undefined && !Object.hasOwn(CONTAINER_BLOCK_CENTS, String(o.containerSize))) throw new SchemaError(f, 'invalid cursor');
+        if (o.usage !== undefined) { const u = rec(f, o.usage, ['input', 'cached', 'output', 'reasoning']); for (const key of ['input', 'cached', 'output', 'reasoning']) int(f, u[key]); }
+      }
       for (const key of ['after', 'newest']) if (c[key] !== undefined && !Number.isFinite(Date.parse(str(f, c[key], 64)))) throw new SchemaError(f, 'invalid cursor');
       if (c.page !== undefined) str(f, c.page, 2048);
       if (c.lastEventId !== undefined) str(f, c.lastEventId, 120, PROVIDER_ID.event);
@@ -411,10 +468,10 @@ export function validateJobs(value: unknown): CloudJobs {
     if (j.cost !== undefined) {
       const c = rec(f, j.cost, ['amountCents', 'currency', 'observedAt', 'basis']);
       int(f, c.amountCents); time(f, c.observedAt);
-      if (c.currency !== 'USD' || c.basis !== 'provider_reported_list_cost') throw new SchemaError(f, 'invalid cost');
+      if (c.currency !== 'USD' || c.basis !== (j.provider === 'openai' ? 'estimate_from_reported_usage' : 'provider_reported_list_cost')) throw new SchemaError(f, 'invalid cost');
     }
     if (j.dispatch !== undefined) { const d = rec(f, j.dispatch, ['runId', 'preparedAt', 'attempts']); str(f, d.runId, 80, RUN_ID); time(f, d.preparedAt); int(f, d.attempts, 0, 100); }
-    if (j.stopRequested !== undefined) { const s = rec(f, j.stopRequested, ['at', 'reason']); time(f, s.at); if (!['cancel', 'shutdown', 'turn_ended', 'review'].includes(String(s.reason))) throw new SchemaError(f, 'invalid stop reason'); }
+    if (j.stopRequested !== undefined) { const s = rec(f, j.stopRequested, ['at', 'reason']); time(f, s.at); if (!['cancel', 'shutdown', 'turn_ended', 'review', 'budget'].includes(String(s.reason))) throw new SchemaError(f, 'invalid stop reason'); }
     if (j.review !== undefined) { const r = rec(f, j.review, ['decision', 'at', 'intentId', 'note']); if (!['accepted', 'rejected'].includes(String(r.decision))) throw new SchemaError(f, 'invalid review'); time(f, r.at); str(f, r.intentId, 80); if (r.note !== undefined) str(f, r.note, 500); }
     if (j.rewarded !== undefined && typeof j.rewarded !== 'boolean') throw new SchemaError(f, 'invalid rewarded flag');
     if (holdsSlot(j as unknown as CloudJob) && !j.reservation) throw new SchemaError(f, 'active job without a budget reservation');
@@ -429,14 +486,16 @@ export function validateLedger(value: unknown): CloudLedger {
   for (const item of data.entries) {
     const e = rec(f, item, ['at', 'jobId', 'kind', 'cents', 'day', 'basis']);
     time(f, e.at); str(f, e.jobId, 36, TASK_ID); int(f, e.cents); str(f, e.day, 10, DAY);
-    if (!['reserved', 'released', 'cost_observed'].includes(String(e.kind)) || !['per_job_allowance_estimate', 'provider_reported_list_cost'].includes(String(e.basis))) throw new SchemaError(f, 'invalid spend entry');
+    if (!['reserved', 'released', 'cost_observed', 'cost_estimated'].includes(String(e.kind)) || !['per_job_allowance_estimate', 'provider_reported_list_cost', 'estimate_from_reported_usage'].includes(String(e.basis))) throw new SchemaError(f, 'invalid spend entry');
+    if ((e.kind === 'cost_estimated') !== (e.basis === 'estimate_from_reported_usage')) throw new SchemaError(f, 'invalid spend entry');
   }
   const days = rec(f, data.days);
   if (Object.keys(days).length > LIMITS.spendDays) throw new SchemaError(f, 'too many ledger days');
   for (const [day, totals] of Object.entries(days)) {
     str(f, day, 10, DAY);
-    const t = rec(f, totals, ['reservedCents', 'observedCostCents']);
+    const t = rec(f, totals, ['reservedCents', 'observedCostCents', 'estimatedCostCents']);
     int(f, t.reservedCents); int(f, t.observedCostCents);
+    if (t.estimatedCostCents !== undefined) int(f, t.estimatedCostCents);
   }
   return clone(data) as unknown as CloudLedger;
 }

@@ -18,7 +18,33 @@ export const WORKER_MODELS = [
 export type WorkerModel = (typeof WORKER_MODELS)[number]['id'];
 export const DEFAULT_WORKER_MODEL: WorkerModel = 'claude-sonnet-5';
 export const isWorkerModel = (value: unknown): value is WorkerModel => WORKER_MODELS.some(m => m.id === value);
-export const workerModelLabel = (id: string) => WORKER_MODELS.find(m => m.id === id)?.label ?? id;
+export const workerModelLabel = (id: string) => WORKER_MODELS.find(m => m.id === id)?.label ?? OPENAI_WORKER_MODELS.find(m => m.id === id)?.label ?? id;
+
+/** CLOUD-06: the execution providers a cloud Empire can run jobs on (one per Empire; Anthropic is the default). */
+export type ProviderId = 'anthropic' | 'openai';
+export const PROVIDER_IDS: readonly ProviderId[] = ['anthropic', 'openai'];
+export const isProviderId = (value: unknown): value is ProviderId => value === 'anthropic' || value === 'openai';
+export const PROVIDER_LABELS: Record<ProviderId, string> = { anthropic: 'Anthropic Managed Agents', openai: 'OpenAI Agents API' };
+
+/**
+ * CLOUD-06 OpenAI worker models (owner decision 2026-10-08: gpt-6.1-sol at medium effort by default; the others selectable).
+ * Prices from developers.openai.com/api/docs/pricing, checked 2026-10-08 (short context, per million tokens).
+ * UNVERIFIED: whether the Agents API accepts each model (spike question U2). Every one is labelled “unverified until first
+ * run” in the UI until the owner's first real run confirms it (docs/team/reports/cloud-06.md, pre-first-run checklist).
+ */
+export const OPENAI_WORKER_MODELS = [
+  { id: 'gpt-6.1-sol', label: 'GPT-6.1 Sol', price: '$2 / $10 per million input / output tokens', verified: false },
+  { id: 'gpt-6-astra', label: 'GPT-6 Astra', price: '$10 / $50 per million input / output tokens', verified: false },
+  { id: 'gpt-6-luna', label: 'GPT-6 Luna', price: '$0.10 / $0.50 per million input / output tokens', verified: false },
+] as const;
+export type OpenAIWorkerModel = (typeof OPENAI_WORKER_MODELS)[number]['id'];
+export const DEFAULT_OPENAI_MODEL: OpenAIWorkerModel = 'gpt-6.1-sol';
+export const isOpenAIWorkerModel = (value: unknown): value is OpenAIWorkerModel => OPENAI_WORKER_MODELS.some(m => m.id === value);
+/** A model of either provider. `WorkerModel` stays the Anthropic list so the Anthropic paths are unchanged. */
+export type AnyWorkerModel = WorkerModel | OpenAIWorkerModel;
+export const isModelFor = (provider: ProviderId, value: unknown): value is AnyWorkerModel => provider === 'openai' ? isOpenAIWorkerModel(value) : isWorkerModel(value);
+export const defaultModelFor = (provider: ProviderId): AnyWorkerModel => provider === 'openai' ? DEFAULT_OPENAI_MODEL : DEFAULT_WORKER_MODEL;
+export const modelsFor = (provider: ProviderId): readonly { id: string; label: string; price: string; verified?: boolean }[] => provider === 'openai' ? OPENAI_WORKER_MODELS : WORKER_MODELS;
 
 /** One agent per model, so changing the model never edits an agent that a running session may use. */
 export const workerAgentName = (model: WorkerModel) => model === DEFAULT_WORKER_MODEL ? 'Agent Empire worker' : `Agent Empire worker (${workerModelLabel(model)})`;

@@ -8,7 +8,8 @@ import { ExecutionError } from '../server/execution-errors.js';
 import { TASK_ID, validateSubmit } from '../server/execution-validation.js';
 import { INTENT_PATH, validateExecution, validateLimits, validateProvisionRepository, type CloudExecution, type CloudLimits } from './schema.js';
 import type { ExecutionConfig } from '../shared/execution.js';
-import { isWorkerModel, type WorkerModel } from './worker-spec.js';
+import { isModelFor, isProviderId, type AnyWorkerModel, type ProviderId } from './worker-spec.js';
+import { OPENAI_ID } from './schema.js';
 
 export const MAX_INTENT_BYTES = 64 * 1024;
 
@@ -25,8 +26,11 @@ export type CloudIntent = IntentBase & (
   | { kind: 'start' }
   | { kind: 'limits'; limits: CloudLimits; configRevision: number }
   | { kind: 'configure'; execution: CloudExecution; configRevision: number }
-  /** Ask the coordinator to find or create the Anthropic agent and environment for this project (free; no session). */
-  | { kind: 'provision'; repository: ExecutionConfig['repository']; model?: WorkerModel; configRevision: number }
+  /**
+   * Ask the coordinator to set up execution for this project (free; no session): Anthropic finds or creates the agent
+   * and environment; OpenAI (CLOUD-06) the vault holding the project token. `provider` absent means Anthropic.
+   */
+  | { kind: 'provision'; repository: ExecutionConfig['repository']; provider?: ProviderId; model?: AnyWorkerModel; configRevision: number }
   | { kind: 'empire_action'; action: EmpireAction }
 );
 export type IntentKind = CloudIntent['kind'];
@@ -65,7 +69,7 @@ export function parseIntent(path: string, text: string): CloudIntent {
   if (text.length > MAX_INTENT_BYTES) throw bad('Intent file is larger than 64 KiB.');
   let value: unknown;
   try { value = JSON.parse(text); } catch { throw bad('Intent file is not valid JSON.'); }
-  const base = rec(value, ['schemaVersion', 'id', 'createdAt', 'kind', 'job', 'jobId', 'decision', 'note', 'resolution', 'sessionId', 'limits', 'configRevision', 'execution', 'repository', 'model', 'action']);
+  const base = rec(value, ['schemaVersion', 'id', 'createdAt', 'kind', 'job', 'jobId', 'decision', 'note', 'resolution', 'sessionId', 'limits', 'configRevision', 'execution', 'repository', 'provider', 'model', 'action']);
   if (base.schemaVersion !== 1) throw bad('Unsupported intent schemaVersion.');
   if (typeof base.id !== 'string' || !TASK_ID.test(base.id)) throw bad('Intent id must be a UUID.');
   if (base.id.toLowerCase() !== fileId.toLowerCase()) throw bad('Intent id does not match its file name.');
@@ -97,7 +101,8 @@ export function parseIntent(path: string, text: string): CloudIntent {
       allow(['jobId', 'resolution', 'sessionId']);
       if (base.resolution === 'not_dispatched') { if (base.sessionId !== undefined) throw bad('not_dispatched takes no sessionId.'); return { ...common, kind: 'resolve_uncertain', jobId: jobId(base.jobId), resolution: 'not_dispatched' }; }
       if (base.resolution === 'attach_session') {
-        if (typeof base.sessionId !== 'string' || !/^sesn_[A-Za-z0-9]{8,100}$/.test(base.sessionId)) throw bad('attach_session needs a provider session ID.');
+        // Anthropic `sesn_…`, or an OpenAI session id (format UNVERIFIED; checked against the job's provider by the schema).
+        if (typeof base.sessionId !== 'string' || !(/^sesn_[A-Za-z0-9]{8,100}$/.test(base.sessionId) || (OPENAI_ID.test(base.sessionId) && !/^(github_pat_|gh[a-z]_|sk-)/.test(base.sessionId)))) throw bad('attach_session needs a provider session ID.');
         return { ...common, kind: 'resolve_uncertain', jobId: jobId(base.jobId), resolution: 'attach_session', sessionId: base.sessionId };
       }
       throw bad('resolution must be not_dispatched or attach_session.');
@@ -114,14 +119,18 @@ export function parseIntent(path: string, text: string): CloudIntent {
       allow(['execution', 'configRevision']);
       let execution: CloudExecution;
       try { execution = validateExecution(base.execution); } catch { throw bad('Execution references are invalid. Only repository and provider references belong here, never credentials.'); }
+      // Hand-entered IDs exist only for Anthropic; an OpenAI Empire is always set up through `provision`.
+      if (execution.provider !== 'anthropic') throw bad('Execution references are invalid. OpenAI execution is set up automatically, not with entered IDs.');
       return { ...common, kind: 'configure', execution, configRevision: configRevision(base.configRevision) };
     }
     case 'provision': {
-      allow(['repository', 'model', 'configRevision']);
-      if (base.model !== undefined && !isWorkerModel(base.model)) throw bad('Unsupported worker model.');
+      allow(['repository', 'provider', 'model', 'configRevision']);
+      if (base.provider !== undefined && !isProviderId(base.provider)) throw bad('Unsupported execution provider.');
+      const provider: ProviderId = base.provider ?? 'anthropic';
+      if (base.model !== undefined && !isModelFor(provider, base.model)) throw bad('Unsupported worker model.');
       let repository: ExecutionConfig['repository'];
       try { repository = validateProvisionRepository(base.repository); } catch { throw bad('The project repository must be an owner, a name and a base branch.'); }
-      return { ...common, kind: 'provision', repository, ...(base.model ? { model: base.model as WorkerModel } : {}), configRevision: configRevision(base.configRevision) };
+      return { ...common, kind: 'provision', repository, ...(base.provider ? { provider } : {}), ...(base.model ? { model: base.model as AnyWorkerModel } : {}), configRevision: configRevision(base.configRevision) };
     }
     case 'empire_action': {
       allow(['action']);
