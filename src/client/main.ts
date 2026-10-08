@@ -21,6 +21,8 @@ import { apiFetch } from './endpoint';
 import { store, loadProfile, loadSettings, saveSettings, type Profile } from './state';
 import { EYE_HEIGHT, PlayerController, groundAt, isTyping } from './player';
 import { buildOffice, type InteractKind, type Interactable } from './world/office';
+import { ExecutiveBodies } from './world/executives';
+import { executiveTitle, openExecutiveCard } from './ui/executives';
 import { Person, Worker } from './world/character';
 import { OfficeLife } from './world/worker-life';
 import { Laptop } from './world/laptop';
@@ -118,6 +120,11 @@ scene.add(office.group);
 const city = buildCity();
 scene.add(city.group);
 office.group.add(city.chief);
+// ORG-01: the executives sit at their loft desks (the chief of staff included); rule-based, never workers.
+const executives = new ExecutiveBodies(city.chief, store.profile.look.style);
+office.group.add(executives.group);
+executives.sync(store.org);
+store.on('org', () => executives.sync(store.org));
 office.colliders.push(...city.colliders);
 store.on('empire', () => city.sync(store.empire));
 city.sync(store.empire);
@@ -277,6 +284,7 @@ function showMyProfile(p: Profile) {
   me.setLook(p.look);
   // The chief of staff never wears the CEO's suit (shared/outfit.ts).
   city.dressChief(p.look);
+  executives.redress(p.look.style);
 }
 
 interface RemotePeer {
@@ -790,6 +798,7 @@ function interact(target: Interactable | null, key: DeskKey) {
   }
   else if (target.kind === 'gym') toast('🏋️ A quick set in the gym corner.');
   else if (target.kind === 'cafeteria') toast('🥐 Breakfast from the cafeteria counter.');
+  else if (target.kind === 'executive' && target.role && office.floor === 0) openExecutiveCard(target.role, showQueue);
 }
 
 // ---- Interaction targeting & hint -----------------------------------------------------------------
@@ -799,8 +808,10 @@ let hintKey = '';
 function pickTarget(): Interactable | null {
   let best: Interactable | null = null;
   let bestD = Infinity;
-  for (const list of [office.interactables, ...(office.floor === 0 ? [gallery.interactables] : [])]) {
+  for (const list of [office.interactables, ...(office.floor === 0 ? [gallery.interactables, office.executiveInteractables] : [])]) {
     for (const it of list) {
+      // Loft spots (executives) are only in reach from the loft floor, not from the meeting area below it.
+      if (it.y !== undefined && Math.abs(player.pos.y - office.group.position.y - it.y) > 1.2) continue;
       const d = Math.hypot(it.x - player.pos.x, it.z - player.pos.z);
       if (d < it.radius && d < bestD) {
         best = it;
@@ -872,6 +883,16 @@ function renderHint() {
   else if (target.kind === 'coffee') parts = [h('span.title', {}, '☕ Coffee machine'), key('E', 'Grab a cup')];
   else if (target.kind === 'gym') parts = [h('span.title', {}, '🏋️ Gym'), key('E', 'Work out')];
   else if (target.kind === 'cafeteria') parts = [h('span.title', {}, '🥐 Cafeteria'), key('E', 'Grab breakfast')];
+  else if (target.kind === 'executive' && target.role) {
+    const e = store.org?.executives.find((x) => x.role === target!.role);
+    k += `${e?.summary}|${e?.attention}|${e?.active}`;
+    parts = [
+      h('span.title', {}, e?.active ? e.name : `${executiveTitle(target.role)} · Not staffed yet`),
+      h('span', { style: 'opacity:.75;font-weight:600' }, 'Rule-based'),
+      e && e.attention > 0 ? h('span.cost', {}, `${e.attention} waiting for you`) : '',
+      key('E', 'Open card'),
+    ];
+  }
   else if (target.kind === 'decor') {
     const id = target.decorId;
     const d = store.decor.find((x) => x.id === id);
@@ -1045,7 +1066,7 @@ function backToGame() {
 const raycaster = new THREE.Raycaster();
 const CROSSHAIR = new THREE.Vector2(0, 0);
 /** How close (meters from your eyes) you must be to use each kind of thing. */
-const REACH: Record<InteractKind, number> = { elevator: 4, desk: 4.5, coffee: 3, gym: 5, cafeteria: 4, issues: 9, pulls: 9, services: 9, queue: 9, tv: 10, decor: 9 };
+const REACH: Record<InteractKind, number> = { executive: 4, elevator: 4, desk: 4.5, coffee: 3, gym: 5, cafeteria: 4, issues: 9, pulls: 9, services: 9, queue: 9, tv: 10, decor: 9 };
 const eye = new THREE.Vector3();
 
 /** What the ray through `ndc` lands on first, and whether it is within reach (plus `slack` meters). */
@@ -1290,6 +1311,8 @@ function frame(ts?: number) {
   canvas.dataset.vehicle = `${(Math.abs(player.drivingSpeed)*3.6).toFixed(0)} km/h · ${player.vehicle.rpm.toFixed(0)} rpm`;
   office.group.visible = !outside;
   city.chief.visible = office.floor === 0;
+  executives.group.visible = office.floor === 0;
+  if (executives.group.visible) executives.update(dt, t);
   gallery.group.visible = office.floor === 0;
   city.group.visible = outside;
   sun.position.set(player.pos.x-24, player.pos.y+40, player.pos.z+24);
@@ -1411,6 +1434,6 @@ if (saved?.look) {
 }
 
 // Debug handle for quick checks from the console / headless screenshots.
-(window as any).__office = { store, player, camera, workerViews, scene, net, renderer, me, remotes, settings, gallery, hanger, city, empireUI, life, office };
+(window as any).__office = { store, player, camera, workerViews, scene, net, renderer, me, remotes, settings, gallery, hanger, city, empireUI, life, office, executives };
 (window as any).__voice = voice;
 (window as any).__sound = sound;

@@ -8,6 +8,21 @@ import { initialEmpire, MANAGER_NAMES, type SupervisionState } from '../src/shar
 import type { ServerMsg, WorkerInfo, QueueTask } from '../src/shared/protocol.js';
 import { sanitizeOutfit } from '../src/shared/outfit.js';
 import { projectWaitingOn, withWaitingOn } from '../src/server/waiting.js';
+import { projectOrg } from '../src/server/org.js';
+import type { ConsultancyJob } from '../src/shared/consultancy.js';
+import type { OrgState } from '../src/shared/org.js';
+
+/** ORG-01: synthetic client jobs so each executive has something real-shaped to compute from (the real projection). */
+function fixtureOrg(state: ReturnType<typeof initialEmpire>, workers: WorkerInfo[], tasks: QueueTask[]): OrgState {
+  const zero = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, cost: 0, calls: 0 };
+  const job = (id: string, extra: Partial<ConsultancyJob>): ConsultancyJob => ({ id, requestId: id, client: 'Fixture client', title: id, brief: 'Synthetic', decision: 'approved', status: 'queued', createdAt: 1, createdBy: 'Fixture', items: [], ...extra });
+  const jobs = [
+    job('fixture-plan', { decision: 'pending_approval', status: 'awaiting_approval' }),
+    job('fixture-portal', { approvedBudgetUsd: 12, actualSpendUsd: 4.8 }),
+    job('fixture-audit', { approvedBudgetUsd: 3, actualSpendUsd: 3.1, budgetHold: { reachedAt: 1, spentUsd: 3.1, approvedBudgetUsd: 3 }, items: [{ id: 'item-2', title: 'Second pass', prompt: 'Synthetic', jobKey: 'fixture', status: 'queued', phase: 'iteration', held: true }] }),
+  ];
+  return projectOrg({ now: Date.now(), supervision: state.supervision, workers, queue: { tasks, maxWorkers: 3 }, jobs, usage: { total: { ...zero, cost: 7.9 }, today: { ...zero, cost: 1.2 }, day: '2026-10-08', budget: 10, pauseHiring: false } });
+}
 
 const port = Number(process.env.FIXTURE_PORT || 4613);
 if (!Number.isInteger(port) || port < 1024 || port > 65535 || port === 4610) throw new Error('Use an isolated fixture port (not 4610).');
@@ -104,6 +119,7 @@ function publish(ws: WebSocket) {
   if (!jobWorkers.length) for (const id of ['fixture-bea', 'fixture-cyrus']) send(ws, { t: 'worker.remove', workerId: id });
   send(ws, { t: 'queue', state: { tasks, maxWorkers: jobWorkers.length ? 3 : 1 } });
   send(ws, { t: 'empire', state });
+  send(ws, { t: 'org', state: fixtureOrg(state, [worker, ...jobWorkers], tasks) });
 }
 const controls = `<!doctype html><html lang="en"><meta charset="utf-8"><title>Agent Empire QA controls</title>
 <style>body{font:17px system-ui;background:#101923;color:#e7eef6;max-width:760px;margin:4rem auto;padding:1rem}button,a{font:inherit;margin:.4rem;padding:.6rem;color:inherit}button{background:#22374a;border:1px solid #8194a9;border-radius:8px}a{display:block}</style>
@@ -186,12 +202,12 @@ server.on('upgrade', (req, socket, head) => {
   sockets.handleUpgrade(req, socket, head, ws => { if (token) socketToken.set(ws, token); ws.on('close', () => socketToken.delete(ws)); sockets.emit('connection', ws); });
 });
 sockets.on('connection', ws => {
-  const {worker, tasks, jobWorkers} = snapshot();
+  const {state, worker, tasks, jobWorkers} = snapshot();
   const empty = { items: [], fetchedAt: Date.now(), loading: false };
   const zero = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, cost: 0, calls: 0 };
   send(ws, { t: 'welcome', you: 'fixture-ceo', peers: [], workers: [worker, ...jobWorkers], project: { name: 'UI fixture · synthetic data', dir: '[isolated fixture]', agentCmd: 'disabled' },
     issues: empty, pulls: empty, ice: [], chat: [], invites: false, version: 'fixture', upgrade: { available: false, phase: 'idle' },
-    services: { items: [], port }, decor: [], usage: { total: zero, today: zero, day: '2026-09-27', pauseHiring: false }, queue: { tasks, maxWorkers: jobWorkers.length ? 3 : 1 } });
+    services: { items: [], port }, decor: [], usage: { total: zero, today: zero, day: '2026-09-27', pauseHiring: false }, queue: { tasks, maxWorkers: jobWorkers.length ? 3 : 1 }, org: fixtureOrg(state, [worker, ...jobWorkers], tasks) });
   publish(ws);
   ws.on('message', raw => {
     let msg: any; try { msg = JSON.parse(raw.toString()); } catch { return; }

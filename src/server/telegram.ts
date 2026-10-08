@@ -18,7 +18,7 @@ export interface TelegramCommands {
   summary(): { fingerprint: string; text: string };
 }
 interface Checkpoint { version: 1; binding: string; offset: number; fingerprint?: string }
-const HELP = '/new Client | Job title | Brief\n/jobs — current jobs\n/job ID — review a plan\n/approve ID — start the reviewed plan\n/reject ID — decline an unstarted plan\n/status — chief report';
+const HELP = '/new Client | Job title | Brief\n/jobs — current jobs\n/job ID — review a plan\n/approve ID [budget] — start the reviewed plan\n/reject ID — decline an unstarted plan\n/status — chief report';
 export { HELP as TELEGRAM_HELP };
 
 export function telegramConfig(env: NodeJS.ProcessEnv): TelegramConfig | undefined {

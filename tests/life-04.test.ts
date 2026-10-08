@@ -18,7 +18,7 @@ import { workerTaskLine } from '../src/shared/dependencies';
 interface Spawned { desk: string; prompt: string; persona?: Persona; continues?: { branch: string; title: string } }
 type KillResult = { note?: string; error?: string };
 
-function office(opts: { desks?: number; worktrees?: boolean; branches?: Set<string>; kill?: (id: string) => Promise<KillResult> } = {}) {
+function office(opts: { desks?: number; worktrees?: boolean; branches?: Set<string>; kill?: (id: string) => Promise<KillResult>; hold?: (t: QueueTask) => string | undefined } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'life04-'));
   const workers: WorkerInfo[] = [];
   const spawned: Spawned[] = [];
@@ -56,7 +56,7 @@ function office(opts: { desks?: number; worktrees?: boolean; branches?: Set<stri
     branchExists: (b: string) => opts.branches?.has(b) ?? false,
   };
   const toasts: string[] = [];
-  queue = new TaskQueue(dir, fake, !!opts.worktrees, { update() {}, toast: (t) => { toasts.push(t); }, claimIssue: async () => undefined, refreshGitHub() {}, hiringPaused: () => paused });
+  queue = new TaskQueue(dir, fake, !!opts.worktrees, { update() {}, toast: (t) => { toasts.push(t); }, claimIssue: async () => undefined, refreshGitHub() {}, hiringPaused: () => paused, taskHold: opts.hold });
   const setStatus = (id: string, status: WorkerInfo['status']) => { const w = workers.find((x) => x.id === id)!; w.status = status; queue.onWorker({ ...w }); };
   const task = (title: string) => queue.state().tasks.find((t) => t.title === title)!;
   const reserved = () => (queue as unknown as { reserved: Map<string, unknown> }).reserved.size;
@@ -194,6 +194,22 @@ test('continuity sends the dependency worker home only when no desk is free, and
       if (blocker !== 'offline') assert.deepEqual(p.kills, [], `${blocker}: never sent home`);
     } finally { p.close(); }
   }
+});
+
+test('ORG-02 review fix 2: a budget-held task gives up its continuity desk reservation', () => {
+  let holding = false;
+  // The send-home never settles, so without the fix the reservation would be kept for the whole hold.
+  const o = office({ desks: 2, kill: () => new Promise<KillResult>(() => {}), hold: (t) => (holding && t.title === 'B' ? 'Budget reached' : undefined) });
+  try {
+    const aw = chain(o);
+    o.setStatus(aw.id, 'done');
+    assert.deepEqual(o.kills, [aw.id]);
+    assert.equal(o.reserved(), 1, 'B reserved its dependency desk');
+    holding = true;
+    o.queue.pump();
+    assert.equal(o.reserved(), 0, 'a held task keeps no funded desk out of freeDesk');
+    assert.equal(o.task('B').status, 'queued');
+  } finally { o.close(); }
 });
 
 test('a send-home that fails without awaiting, or rejects, is bounded: no retry storm, the task uses another desk', async () => {

@@ -1,4 +1,6 @@
 import type { WallId } from '../../shared/decor';
+import { LOFT, STAIRS } from '../../shared/layout';
+import { EXECUTIVE_ROLES, type ExecutiveRole } from '../../shared/org';
 
 /** A walk-blocking footprint on the ground floor, in office coordinates (it follows the floor elevation once pushed). */
 export interface Footprint {
@@ -121,6 +123,37 @@ export const FURNISHING_COLLIDERS: readonly Footprint[] = [
   rect('reception chair', RECEPTION_CHAIR[0], RECEPTION_CHAIR[1], CHAIR_SIZE, CHAIR_SIZE, 0.51),
   ...BAR_STOOLS.map(([x, z]) => rect('bar stool', x, z, STOOL_SIZE, STOOL_SIZE, 0.79)),
   ...AMENITY_COLLIDERS,
+];
+
+// ---- The loft's executive suite (ORG-01) -------------------------------------------------------
+// Loft footprints are in office x/z like the rest; `top` is measured from the loft floor (LOFT.y).
+// Executives are rule-based monitors, not AI workers: these desks are never DESKS, never funded capacity.
+
+/** Compact executive desks in a row along the north glass, looking down on the office floor. */
+export const EXECUTIVE_DESK_SIZE = { width: 1.25, depth: 0.7, height: 0.76 } as const;
+/** In EXECUTIVE_ROLES order; at rotY 0 the executive sits on the +z (aisle) side facing the glass, as at the desks. */
+export const EXECUTIVE_DESKS: readonly { role: ExecutiveRole; x: number; z: number; rotY: number }[] = EXECUTIVE_ROLES.map((role, i) => ({ role, x: 10.9 + i * 1.4, z: 8.75, rotY: 0 }));
+/** Where the executive's chair stands (the sitter is placed here). */
+export const executiveSeat = (d: { x: number; z: number }) => ({ x: d.x, z: d.z + 0.8 });
+/** Where you stand to talk to them: in the aisle behind the chair. */
+export const executiveApproach = (d: { x: number; z: number }) => ({ x: d.x, z: d.z + 1.6 });
+/** The founder's desk, moved back toward the south wall so its sitter looks over the executives to the glass. */
+export const FOUNDER_DESK = { x: 13.3, z: 11.6, width: 2.6, depth: 1.2 } as const;
+export const LOFT_COUCH = { x: LOFT.maxX - 0.65, z: 11.6, width: 1, length: 2.4 } as const;
+export const LOFT_TELESCOPE = { x: LOFT.minX + 0.9, z: LOFT.minZ + 0.9 } as const;
+export const LOFT_PLANT = { x: 11.2, z: 12.55, scale: 1 } as const;
+/** The door from the stairs, on the west side, and the landing inside it that must stay open. */
+export const LOFT_LANDING = { minX: LOFT.minX, maxX: LOFT.minX + 1.4, minZ: STAIRS.minZ, maxZ: LOFT.maxZ } as const;
+
+export const LOFT_COLLIDERS: readonly Footprint[] = [
+  ...EXECUTIVE_DESKS.flatMap((d) => {
+    const seat = executiveSeat(d);
+    return [rect(`${d.role} desk`, d.x, d.z, EXECUTIVE_DESK_SIZE.width, EXECUTIVE_DESK_SIZE.depth, EXECUTIVE_DESK_SIZE.height), rect(`${d.role} chair`, seat.x, seat.z, CHAIR_SIZE, CHAIR_SIZE, 0.51)];
+  }),
+  rect('founder desk', FOUNDER_DESK.x, FOUNDER_DESK.z, FOUNDER_DESK.width, FOUNDER_DESK.depth, 0.8),
+  rect('loft couch', LOFT_COUCH.x, LOFT_COUCH.z, LOFT_COUCH.width, LOFT_COUCH.length, 0.55),
+  rect('telescope', LOFT_TELESCOPE.x, LOFT_TELESCOPE.z, 0.5, 0.5, 1.3),
+  rect('loft plant', LOFT_PLANT.x, LOFT_PLANT.z, 0.6 * LOFT_PLANT.scale, 0.6 * LOFT_PLANT.scale, 0.5 * LOFT_PLANT.scale),
 ];
 
 /** Wall areas the furniture covers, so hung pictures avoid them: [wall, u (x or z along it), center y, width, height]. */

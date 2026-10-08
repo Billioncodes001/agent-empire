@@ -1,6 +1,6 @@
 import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync } from 'node:fs';
 import path from 'node:path';
-import type { Usage, UsageState } from '../shared/protocol.js';
+import type { QueueTask, Usage, UsageState, WorkerInfo } from '../shared/protocol.js';
 import { writeJsonAtomic } from './persistence.js';
 
 /*
@@ -307,6 +307,41 @@ export interface LedgerOptions {
 }
 
 const KEEP_DAYS = 90;
+/** Per-task spend records kept for estimates (ORG-02); the oldest go first. */
+const KEEP_TASKS = 2000;
+
+/** What one worker spent on one queue task: provider-reported list cost (an estimate while the session runs). */
+export interface TaskCost {
+  taskId: string;
+  workerId: string;
+  costUsd: number;
+  startedAt?: number;
+  finishedAt?: number;
+  outcome?: string;
+  jobKey?: string;
+  /** The finished task's worker took new work; this record no longer grows. */
+  frozen?: true;
+}
+
+/** Pure: each queue task that has a worker with recorded usage, costed by that worker. Queue workers run one task each. */
+export function taskCostObservations(tasks: QueueTask[], workers: WorkerInfo[]): TaskCost[] {
+  const byId = new Map(workers.map((w) => [w.id, w]));
+  const out: TaskCost[] = [];
+  for (const t of tasks) {
+    const w = t.workerId ? byId.get(t.workerId) : undefined;
+    const usage = w?.usage;
+    if (!t.workerId || !w || !usage) continue;
+    // A finished task's worker that took new work (the CEO prompted it again) no longer spends for this task. Until
+    // then its usage keeps counting: the final turn is re-read shortly after the Stop that finished the task.
+    if (t.status === 'done' && !['done', 'exited', 'offline'].includes(w.status)) { out.push({ taskId: t.id, workerId: t.workerId, costUsd: 0, frozen: true }); continue; }
+    out.push({ taskId: t.id, workerId: t.workerId, costUsd: usage.cost, startedAt: t.startedAt, finishedAt: t.finishedAt, outcome: t.outcome, jobKey: t.jobKey });
+  }
+  return out;
+}
+
+function withoutUndefined<T extends object>(o: T): T {
+  return Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as T;
+}
 
 function localDay(d = new Date()): string {
   const pad = (n: number) => String(n).padStart(2, '0');
@@ -324,6 +359,7 @@ export class Ledger {
   private file: string;
   private total = zeroUsage();
   private days: Record<string, Usage> = {};
+  private tasks: Record<string, TaskCost> = {};
   private warnedDay = '';
   private shownDay = '';
   private saveTimer: NodeJS.Timeout | null = null;
@@ -379,6 +415,60 @@ export class Ledger {
     }
   }
 
+  /**
+   * Records what workers spent on queue tasks, keyed per task and worker. Like the totals, a record
+   * only grows; it is a read of spend already booked by `add`, never booked again.
+   */
+  recordTaskCosts(observed: TaskCost[]) {
+    let changed = false;
+    for (const o of observed) {
+      if (!o.taskId || !o.workerId || !Number.isFinite(o.costUsd) || o.costUsd < 0) continue;
+      const key = `${o.taskId}|${o.workerId}`;
+      const prev = this.tasks[key];
+      // Frozen once the finished task's worker was given new work: the CEO chatting with it is not the task's spend.
+      if (prev?.frozen) continue;
+      if (o.frozen) {
+        if (prev) { this.tasks[key] = { ...prev, frozen: true }; changed = true; }
+        continue;
+      }
+      const next: TaskCost = { ...prev, ...withoutUndefined(o), costUsd: Math.max(prev?.costUsd ?? 0, o.costUsd) };
+      if (prev && JSON.stringify(prev) === JSON.stringify(next)) continue;
+      delete this.tasks[key]; // re-insert: insertion order is recency, for trimming
+      this.tasks[key] = next;
+      changed = true;
+    }
+    if (!changed) return;
+    const keys = Object.keys(this.tasks);
+    for (const key of keys.slice(0, Math.max(0, keys.length - KEEP_TASKS))) delete this.tasks[key];
+    this.save();
+  }
+
+  /** A queue task's recorded spend over every worker that ran it; undefined when none is recorded. */
+  taskCost(taskId: string): number | undefined {
+    let total: number | undefined;
+    for (const r of Object.values(this.tasks)) if (r.taskId === taskId) total = (total ?? 0) + r.costUsd;
+    return total;
+  }
+
+  /** One record per task (retries summed; the latest attempt's timing and outcome). */
+  taskCosts(): { taskId: string; costUsd: number; startedAt?: number; finishedAt?: number; outcome?: string; jobKey?: string }[] {
+    const byTask = new Map<string, { taskId: string; costUsd: number; startedAt?: number; finishedAt?: number; outcome?: string; jobKey?: string }>();
+    for (const r of Object.values(this.tasks)) {
+      const prev = byTask.get(r.taskId);
+      const startedAt = prev?.startedAt === undefined ? r.startedAt : r.startedAt === undefined ? prev.startedAt : Math.min(prev.startedAt, r.startedAt);
+      const latest = !prev || (r.finishedAt ?? 0) >= (prev.finishedAt ?? 0);
+      byTask.set(r.taskId, {
+        taskId: r.taskId,
+        costUsd: (prev?.costUsd ?? 0) + r.costUsd,
+        startedAt,
+        finishedAt: latest ? r.finishedAt : prev!.finishedAt,
+        outcome: latest ? r.outcome : prev!.outcome,
+        jobKey: r.jobKey ?? prev?.jobKey,
+      });
+    }
+    return [...byTask.values()];
+  }
+
   flush() {
     clearInterval(this.tick);
     if (this.saveTimer) {
@@ -407,7 +497,7 @@ export class Ledger {
 
   private write() {
     try {
-      writeJsonAtomic(this.file, { total: this.total, days: this.days });
+      writeJsonAtomic(this.file, { total: this.total, days: this.days, tasks: this.tasks });
     } catch {
       // disk issues shouldn't take the office down
     }
@@ -422,6 +512,14 @@ export class Ledger {
         for (const [day, u] of Object.entries(saved.days)) {
           const usage = asUsage(u);
           if (usage && /^\d{4}-\d{2}-\d{2}$/.test(day)) this.days[day] = usage;
+        }
+      }
+      // Absent before ORG-02; a malformed record is skipped, never fatal.
+      if (saved?.tasks && typeof saved.tasks === 'object') {
+        for (const [key, r] of Object.entries(saved.tasks as Record<string, any>)) {
+          if (!r || typeof r.taskId !== 'string' || typeof r.workerId !== 'string' || typeof r.costUsd !== 'number' || !Number.isFinite(r.costUsd) || r.costUsd < 0) continue;
+          const opt = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+          this.tasks[key] = withoutUndefined({ taskId: r.taskId, workerId: r.workerId, costUsd: r.costUsd, startedAt: opt(r.startedAt), finishedAt: opt(r.finishedAt), outcome: typeof r.outcome === 'string' ? r.outcome : undefined, jobKey: typeof r.jobKey === 'string' ? r.jobKey : undefined, frozen: r.frozen === true ? true : undefined });
         }
       }
     } catch {

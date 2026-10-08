@@ -37,6 +37,10 @@ export interface QueueEvents {
   hiringPaused(): string | undefined;
   /** Current manager ownership can reject superseded startup tasks, including legacy keys. */
   retryAllowed?(task: QueueTask): string | undefined;
+  /** Why this queued task must wait (e.g. its client job reached its approved budget). It stays queued, unfailed. */
+  taskHold?(task: QueueTask): string | undefined;
+  /** Once per seating pass, before any taskHold check: refresh what holds read (e.g. per-task spend). */
+  beforeSeat?(): void;
 }
 
 /** Who continues a project at a desk (LIFE-04 continuity). */
@@ -299,6 +303,9 @@ export class TaskQueue {
         this.again = false;
         this.reconcile();
         if (!this.storageError && this.refreshDependencies()) this.changed();
+        // Spend is recorded on every pass, even while seating is paused at startup or blocked by a storage error: a
+        // CEO prompt to a finished task's worker must freeze that task's spend record before the chat is counted.
+        this.events.beforeSeat?.();
         if (!this.storageError && !this.pauseOnStart) this.seat();
       } while (this.again);
     } finally {
@@ -536,6 +543,8 @@ export class TaskQueue {
       }
       // An unfinished dependency keeps the task queued; it never takes a desk or a worker slot. Later tasks still run.
       if (t.blockedBy?.length || dependencyState(t, this.tasks).kind !== 'ready') continue;
+      // A budget-held task (ORG-02) keeps its place, unfailed; later, unheld work may still be seated.
+      if (this.events.taskHold?.(t)) { this.reserved.delete(t.id); continue; }
       if (this.busy() >= this.maxWorkers) { this.releaseSettledReservations(); break; }
       // A spent budget holds the queue instead of failing every task; the pump seats them once hiring resumes.
       if (this.events.hiringPaused()) { this.releaseSettledReservations(); break; }
