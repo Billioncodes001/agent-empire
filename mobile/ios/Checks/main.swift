@@ -250,5 +250,16 @@ do {
     check(UpdatePolicy.releaseChannelURL("1.0.1") == "\(repoURL)/releases/download/v1.0.1/channel-beta.json", "security: signed release URL")
 } catch { check(false, "security checks threw \(error)") }
 
+// A reinstalled app starts signed out: only the first launch of an install claims the wipe.
+do {
+    let suite = "com.agentempire.checks.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    check(InstallMarker.claimFreshInstall(defaults), "reinstall: the first launch of an install wipes the stored sign-in")
+    check(!InstallMarker.claimFreshInstall(defaults), "reinstall: later launches keep the sign-in")
+    defaults.removePersistentDomain(forName: suite)
+    check(InstallMarker.claimFreshInstall(UserDefaults(suiteName: suite)!), "reinstall: deleting the app's defaults (an uninstall) wipes again")
+    UserDefaults(suiteName: suite)!.removePersistentDomain(forName: suite)
+}
+
 print(failures == 0 ? "All checks passed" : "\(failures) check(s) failed")
 exit(failures == 0 ? 0 : 1)

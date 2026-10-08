@@ -8,6 +8,7 @@ struct AgentEmpireApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     init() {
+        SecureStore.wipeIfFreshInstall()
         SecureStore.migrateLegacySession()
     }
 

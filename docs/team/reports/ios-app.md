@@ -188,3 +188,15 @@ The game rotated to landscape by itself when the game screen opened: the screens
 - **The Settings device list and revoke UI** on the web is still not built, as in APP-01.
 - **Android (APP-04) and desktop (APP-05) are pending.** `endpoint.ts` already accepts `platform: 'android' | 'desktop'`. The native bridge lookup is iOS-only for now, and other shells add theirs in `nativeBridge()`.
 - Save-Data and reduced motion weren't re-checked in the app. The web behaviour is unchanged and covered by `mobile-ui-check`.
+
+
+## Reinstall starts signed out (owner decision, 2026-10-08)
+
+iOS keeps Keychain items when an app is deleted, so a reinstalled app used to resume its old server or cloud session. The owner chose that a reinstall starts signed out.
+
+- `InstallMarker.claimFreshInstall` (`BridgeProtocol.swift`) checks a flag in UserDefaults, which an uninstall deletes. On the first launch of an install, `SecureStore.wipeIfFreshInstall` removes every Keychain item the app owns, including the APP-03 legacy session, before anything reads them. It runs first in `AgentEmpireApp.init`.
+- `Checks/run.sh` adds 3 checks: the first launch wipes, later launches keep the session, and removing the app's defaults wipes again.
+- **Simulator:** the iPhone 18 Pro had a stored session from earlier runs. After uninstalling and installing this build, the app opens on the first-launch screen (`15-reinstall-starts-signed-out.png`) instead of the city.
+- **Effects:**
+  - The app hasn't been released yet, so the only side effect is a one-time sign-out on development installs that predate the marker.
+  - Android needs no change: `allowBackup` and `fullBackupContent` are false, so an uninstall removes its encrypted storage.
