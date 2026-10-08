@@ -2,7 +2,7 @@ import { APPROVAL_KIND_LABEL, CLOUD_INBOX_NOTE, MAX_APPROVAL_BUDGET_USD, approve
 import { ACTUAL_SPEND_LABEL, EXECUTIVES, basisLabel, defaultApprovedBudget, fmtDurationRange, fmtUsdRange } from '../../shared/org';
 import { apiFetch } from '../endpoint';
 import { TOOL_DECISION_NOTE } from '../../shared/research';
-import { safeLink } from './research';
+import { safeLink } from '../research-view';
 import { store } from '../state';
 import { h, openModal } from './dom';
 
@@ -190,7 +190,8 @@ export function openInbox(focusId?: string) {
     detail.replaceChildren(
       ...head,
       ...(tool ? [h('p.setting-note', {}, TOOL_DECISION_NOTE)] : [
-        h('label.inbox-budget', { for: 'inbox-budget' }, item.kind === 'budget_increase' ? 'New budget (USD)' : 'Approved budget (USD)', h('span.inbox-dollar', {}, '
+        h('label.inbox-budget', { for: 'inbox-budget' }, item.kind === 'budget_increase' ? 'New budget (USD)' : 'Approved budget (USD)', h('span.inbox-dollar', {}, '$', input)),
+        h('p.setting-note', { id: 'inbox-budget-note' }, note)]),
       ...(error ? [h('p.inbox-error', { role: 'alert' }, error)] : []),
       confirm || h('div.inbox-actions', {},
         h('button.btn.primary', { type: 'button', disabled: busy, onclick: () => ask('approve') }, tool ? 'Approve proposal…' : item.kind === 'budget_increase' ? 'Approve increase…' : 'Approve plan…'),
@@ -235,78 +236,6 @@ export function openInbox(focusId?: string) {
       h('header', {}, h('div.inbox-heading', {}, h('small.empire-eyebrow', {}, 'CEO desk · Approval inbox'), h('h2', { id: 'inbox-title' }, 'Waiting for you ', count)), close),
       body,
       h('footer', {}, h('p.setting-note', {}, 'Plans come from Alex, budget increases from Priya, tool proposals from Sam. All are rule-based monitors of real jobs, provider spend and worker reports. Telegram: /approvals.'))),
-    { onClose: () => offs.forEach((off) => off()) },
-  );
-  const offs = (['approvals', 'cloud'] as const).map((topic) => store.on(topic, render));
-  close.addEventListener('click', () => modal.close());
-  render();
-  if (focusId && store.approvals?.items.some((i) => i.id === focusId)) select(focusId);
-  else close.focus();
-}
-
-/** The HUD badge: shown only while something waits, with the count in text (not colour alone). */
-export function mountInboxButton(btn: HTMLElement) {
-  btn.setAttribute('title', 'Approval inbox: plans and budget increases waiting for you');
-  const label = h('span', {}, 'Inbox');
-  const badge = h('span.svc-count.inbox-badge');
-  btn.replaceChildren(h('span.inbox-glyph', { 'aria-hidden': 'true' }, '📥'), label, badge);
-  const render = () => {
-    const n = pendingApprovals();
-    badge.textContent = String(n);
-    btn.setAttribute('aria-label', `Approval inbox, ${n} waiting`);
-    btn.classList.toggle('hidden', n === 0);
-  };
-  store.on('approvals', render);
-  store.on('cloud', render);
-  render();
-  btn.addEventListener('click', () => openInbox());
-}
-, input)),
-        h('p.setting-note', { id: 'inbox-budget-note' }, note)]),
-      ...(error ? [h('p.inbox-error', { role: 'alert' }, error)] : []),
-      confirm || h('div.inbox-actions', {},
-        h('button.btn.primary', { type: 'button', disabled: busy, onclick: () => ask('approve') }, item.kind === 'budget_increase' ? 'Approve increase…' : 'Approve plan…'),
-        reopen ? null : h('button.btn', { type: 'button', disabled: busy, onclick: () => ask('reject') }, 'Decline…')),
-      h('p.setting-note', {}, approveHint(item.id)),
-    );
-  };
-
-  const render = () => {
-    if (store.cloud) {
-      body.replaceChildren(h('p.inbox-empty.inbox-cloud', {}, CLOUD_INBOX_NOTE));
-      count.textContent = '';
-      return;
-    }
-    const state = store.approvals;
-    if (!state) {
-      body.replaceChildren(h('p.inbox-empty', {}, 'This server has not reported an approval inbox yet. Update the office host to use it.'));
-      return;
-    }
-    const pending = state.items.filter((i) => i.status === 'pending');
-    const decided = state.items.filter((i) => i.status !== 'pending').slice(0, 12);
-    count.textContent = pending.length ? `${pending.length} waiting` : 'All clear';
-    if (selected && !state.items.some((i) => i.id === selected)) selected = undefined;
-    if (!selected && pending[0]) selected = pending[0].id;
-    if (body.firstChild !== side) body.replaceChildren(side, detail);
-    const keep = side.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.approval : undefined;
-    list.replaceChildren(...(pending.length ? pending.map((i) => itemRow(i, i.id === selected, () => select(i.id))) : [h('li.inbox-empty', {}, 'Nothing is waiting for you.')]));
-    history.replaceChildren(...decided.map((i) => itemRow(i, i.id === selected, () => select(i.id))));
-    historyBox.hidden = !decided.length;
-    if (decided.some((i) => i.reopenable)) historyBox.open = true;
-    storageNote.textContent = state.storageError ?? '';
-    storageNote.hidden = !state.storageError;
-    if (keep) side.querySelector<HTMLElement>(`[data-approval="${CSS.escape(keep)}"]`)?.focus();
-    // Re-draw the detail only when what it shows changed, so a broadcast never steals focus from the budget input.
-    const current = state.items.find((i) => i.id === selected);
-    const key = JSON.stringify([current, confirming, busy, error]);
-    if (key !== detailKey || !detail.firstChild) { detailKey = key; renderDetail(current); }
-  };
-
-  const modal = openModal(
-    h('div.modal.inbox-modal', { role: 'dialog', 'aria-labelledby': 'inbox-title' },
-      h('header', {}, h('div.inbox-heading', {}, h('small.empire-eyebrow', {}, 'CEO desk · Approval inbox'), h('h2', { id: 'inbox-title' }, 'Waiting for you ', count)), close),
-      body,
-      h('footer', {}, h('p.setting-note', {}, 'Plans come from Alex, budget increases from Priya. Both are rule-based monitors of real jobs and provider spend. Telegram: /approvals.'))),
     { onClose: () => offs.forEach((off) => off()) },
   );
   const offs = (['approvals', 'cloud'] as const).map((topic) => store.on(topic, render));
