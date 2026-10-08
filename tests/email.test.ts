@@ -4,7 +4,7 @@ import net from 'node:net';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { EmailNotifier, approvalEmail, emailConfig, isLoopbackHost, smtpTransport, type MailMessage, type MailTransport } from '../src/server/email.js';
+import { EmailNotifier, approvalEmail, emailConfig, isLoopbackHost, renderMessage, smtpTransport, type MailMessage, type MailTransport } from '../src/server/email.js';
 import type { Approval } from '../src/shared/approvals.js';
 
 const SECRET = 'hunter2-not-real';
@@ -26,7 +26,7 @@ test('email config is off when unset, needs both variables, and never echoes the
 
 interface FakeSmtp { port: number; transcript: string[]; data: string[]; close(): Promise<void> }
 /** A scripted local SMTP server (no real network): EHLO, AUTH PLAIN/LOGIN, MAIL, RCPT, DATA, QUIT. */
-async function fakeSmtp(opts: { auth?: 'PLAIN' | 'LOGIN' | 'both'; failMail?: boolean; silent?: boolean; starttls?: boolean } = {}): Promise<FakeSmtp> {
+async function fakeSmtp(opts: { auth?: 'PLAIN' | 'LOGIN' | 'both'; failMail?: boolean; silent?: boolean; starttls?: boolean; injectAfterStarttls?: boolean } = {}): Promise<FakeSmtp> {
   const transcript: string[] = [];
   const data: string[] = [];
   const server = net.createServer((socket) => {
@@ -64,6 +64,7 @@ async function fakeSmtp(opts: { auth?: 'PLAIN' | 'LOGIN' | 'both'; failMail?: bo
         else if (verb === 'MAIL') reply(opts.failMail ? '451 try later' : '250 ok');
         else if (verb === 'RCPT') reply('250 ok');
         else if (verb === 'DATA') { inData = true; reply('354 go'); }
+        else if (verb === 'STARTTLS' && opts.injectAfterStarttls) socket.write('220 go ahead\r\n250 injected before TLS\r\n');
         else if (verb === 'QUIT') { reply('221 bye'); socket.end(); }
         else reply('502 unknown');
       }
@@ -199,4 +200,50 @@ test('a failed send is logged without secrets, retried with backoff, and shown i
   f.timers.shift()!.fn();
   await n.idle();
   assert.equal(sent.length, 1);
+});
+
+test('review fix 3: a reply pipelined after the STARTTLS 220 is refused, never read as a TLS reply', async (t) => {
+  const s = await fakeSmtp({ starttls: true, injectAfterStarttls: true });
+  t.after(() => s.close());
+  const before = s.transcript.length;
+  await assert.rejects(
+    smtpTransport({ secure: false, host: '127.0.0.1', port: s.port, user: 'ceo@example.com', pass: SECRET }, { timeoutMs: 2000 }).send(message),
+    (e: Error) => /after STARTTLS/.test(e.message) && !e.message.includes(SECRET),
+  );
+  assert.ok(!s.transcript.slice(before).some((l) => l.startsWith('AUTH')), 'no credentials were sent');
+});
+
+test('review: a subject with CR/LF stays one header line', () => {
+  const text = renderMessage({ ...message, subject: 'Hello\r\nBcc: victim@example.com\nX-Evil: 1' });
+  const headers = text.split('\r\n\r\n')[0].split('\r\n');
+  assert.equal(headers.filter((h) => h.startsWith('Subject:')).length, 1);
+  assert.ok(!headers.some((h) => /^Bcc:|^X-Evil:/.test(h)), headers.join(' | '));
+});
+
+test('review fix 4: a permanent 5xx or repeated failures give up on that item and move on', async (t) => {
+  const sent: string[] = [];
+  const f = notifierFixture(t, { async send(m) {
+    if (m.subject.includes('approval A1:')) throw new Error('SMTP server answered 550 to RCPT TO');
+    if (m.subject.includes('approval A2:')) throw new Error('SMTP connection failed (ECONNRESET)');
+    sent.push(m.subject);
+  } });
+  const n = f.make();
+  n.observe([]);
+  n.observe([item({ id: 'A1' }), item({ id: 'A3' })]);
+  await n.idle();
+  assert.equal(sent.length, 1, 'the 5xx item was given up at once and the next one sent');
+  assert.match(sent[0], /A3:/);
+  assert.equal(n.status().state, 'failed');
+  assert.equal(n.status().gaveUp, 1);
+  // A transient failure is retried, then given up after 5 attempts.
+  n.observe([item({ id: 'A2' }), item({ id: 'A4' })]);
+  await n.idle();
+  for (let i = 0; i < 4; i++) { f.timers.shift()!.fn(); await n.idle(); }
+  assert.ok(sent.some((x) => /A4:/.test(x)), 'A4 is sent after A2 is given up');
+  assert.equal(n.status().gaveUp, 2);
+  assert.ok(f.logs.some((l) => /gave up/i.test(l) && /A2/.test(l)));
+  const again = f.make();
+  again.observe([item({ id: 'A1' }), item({ id: 'A2' })]);
+  await again.idle();
+  assert.equal(sent.length, 2, 'given-up items are not retried after a restart');
 });

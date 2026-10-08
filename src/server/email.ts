@@ -15,7 +15,7 @@ export interface MailMessage { from: string; to: string; subject: string; text: 
 export interface MailTransport { send(message: MailMessage): Promise<void> }
 export interface SmtpConfig { secure: boolean; host: string; port: number; user?: string; pass?: string }
 export interface EmailConfig { smtp: SmtpConfig; to: string; from: string }
-export interface EmailStatus { state: 'not_configured' | 'configured' | 'failed'; label: string; lastSentAt?: number; lastFailedAt?: number }
+export interface EmailStatus { state: 'not_configured' | 'configured' | 'failed'; label: string; lastSentAt?: number; lastFailedAt?: number; gaveUp?: number }
 
 const ADDRESS = /^[^\s<>@"',;]{1,64}@[A-Za-z0-9.-]{1,253}$/;
 const USAGE = 'Set AGENT_EMPIRE_SMTP_URL (smtp:// or smtps://user:pass@host:port) and AGENT_EMPIRE_NOTIFY_EMAIL (one address) together to enable email notifications.';
@@ -100,7 +100,13 @@ class Session {
 
   constructor(socket: net.Socket, private readonly timeoutMs: number) { this.attach(socket); }
 
+  /** Whether the server sent anything not yet read (after STARTTLS that is an injection attempt). */
+  get hasUnread() { return this.lines.length > 0 || this.buffer.length > 0; }
+
   attach(socket: net.Socket) {
+    // Nothing read in plaintext may be taken as a reply on the encrypted connection.
+    this.lines = [];
+    this.buffer = '';
     if (this.socket) for (const [event, fn] of [['data', this.onData], ['error', this.onError], ['close', this.onClose], ['timeout', this.onTimeout]] as const) this.socket.off(event, fn as never);
     this.socket = socket;
     socket.setTimeout(this.timeoutMs);
@@ -182,6 +188,7 @@ async function smtpSend(cfg: SmtpConfig, m: MailMessage, opts: SmtpOptions): Pro
     let encrypted = cfg.secure;
     if (!encrypted && caps.some((c) => /^STARTTLS\b/i.test(c))) {
       await session.command('STARTTLS', [220]);
+      if (session.hasUnread) throw new SmtpError('SMTP server sent data after STARTTLS before the TLS handshake; refusing to continue');
       const upgraded = tls.connect({ socket, servername, ...opts.tls });
       session.attach(upgraded);
       await waitConnected(upgraded, true, timeoutMs);
@@ -218,6 +225,8 @@ async function smtpSend(cfg: SmtpConfig, m: MailMessage, opts: SmtpOptions): Pro
 const FILE = 'email-notify.json';
 const MAX_SENT = 500;
 const BACKOFF_MS = [5_000, 30_000, 2 * 60_000, 10 * 60_000, 30 * 60_000];
+/** After this many failed attempts (or any 5xx, which is permanent) an item is given up so the next one can go. */
+const MAX_ATTEMPTS = 5;
 
 export interface NotifierOptions {
   now?: () => number;
@@ -233,6 +242,8 @@ export interface NotifierOptions {
 export class EmailNotifier {
   private readonly file: string;
   private sent: string[] | undefined;
+  private gaveUp: string[] = [];
+  private gaveUpThisRun = 0;
   private queue: Approval[] = [];
   private pendingIds = new Set<string>();
   private busy?: Promise<void>;
@@ -254,15 +265,17 @@ export class EmailNotifier {
     this.backoff = opts.backoffMs ?? BACKOFF_MS;
     try {
       if (existsSync(this.file)) {
-        const data = JSON.parse(readFileSync(this.file, 'utf8')) as { version?: number; sent?: unknown };
+        const data = JSON.parse(readFileSync(this.file, 'utf8')) as { version?: number; sent?: unknown; gaveUp?: unknown };
         if (data.version === 1 && Array.isArray(data.sent) && data.sent.every((s) => typeof s === 'string')) this.sent = data.sent as string[];
+        if (Array.isArray(data.gaveUp) && data.gaveUp.every((s) => typeof s === 'string')) this.gaveUp = data.gaveUp as string[];
       }
     } catch { /* an unreadable record starts a fresh silent baseline rather than mailing everything */ }
   }
 
   status(): EmailStatus {
-    const failed = this.lastFailedAt !== undefined && (this.lastSentAt === undefined || this.lastFailedAt > this.lastSentAt);
+    const failed = this.gaveUpThisRun > 0 || (this.lastFailedAt !== undefined && (this.lastSentAt === undefined || this.lastFailedAt > this.lastSentAt));
     return { state: failed ? 'failed' : 'configured', label: failed ? 'Email: last send failed' : 'Email: configured',
+      ...(this.gaveUp.length ? { gaveUp: this.gaveUp.length } : {}),
       ...(this.lastSentAt ? { lastSentAt: this.lastSentAt } : {}), ...(this.lastFailedAt ? { lastFailedAt: this.lastFailedAt } : {}) };
   }
 
@@ -276,7 +289,7 @@ export class EmailNotifier {
       this.save();
       return;
     }
-    for (const item of pending) if (!this.sent.includes(item.id) && !this.queue.some((q) => q.id === item.id)) this.queue.push(item);
+    for (const item of pending) if (!this.sent.includes(item.id) && !this.gaveUp.includes(item.id) && !this.queue.some((q) => q.id === item.id)) this.queue.push(item);
     this.kick();
   }
 
@@ -298,7 +311,7 @@ export class EmailNotifier {
 
   private async drain() {
     while (!this.stopped) {
-      this.queue = this.queue.filter((q) => this.pendingIds.has(q.id) && !this.sent!.includes(q.id));
+      this.queue = this.queue.filter((q) => this.pendingIds.has(q.id) && !this.sent!.includes(q.id) && !this.gaveUp.includes(q.id));
       const item = this.queue[0];
       if (!item) return;
       try {
@@ -306,9 +319,20 @@ export class EmailNotifier {
       } catch (error) {
         this.attempts += 1;
         this.lastFailedAt = this.now();
+        const message = (error as Error).message;
+        if (/answered 5\d\d/.test(message) || this.attempts >= MAX_ATTEMPTS) {
+          // A permanent refusal, or too many tries: give up on this one so it never blocks the notifications behind it.
+          this.log(`[email] Gave up on the notification for approval ${item.id} after ${this.attempts} attempt${this.attempts === 1 ? '' : 's'}: ${message}.`);
+          this.gaveUp = [...this.gaveUp, item.id].slice(-MAX_SENT);
+          this.gaveUpThisRun += 1;
+          this.attempts = 0;
+          this.queue.shift();
+          this.save();
+          continue;
+        }
         const wait = this.backoff[Math.min(this.attempts - 1, this.backoff.length - 1)];
         // The transport's errors carry a status code at most; the URL and password are never logged.
-        this.log(`[email] Could not send the notification for approval ${item.id} (attempt ${this.attempts}): ${(error as Error).message}. Retrying in ${Math.round(wait / 1000)} s.`);
+        this.log(`[email] Could not send the notification for approval ${item.id} (attempt ${this.attempts}): ${message}. Retrying in ${Math.round(wait / 1000)} s.`);
         const cancel = this.schedule(() => { this.retry = undefined; this.kick(); }, wait);
         this.retry = cancel;
         return;
@@ -323,7 +347,7 @@ export class EmailNotifier {
   }
 
   private save() {
-    try { writeJsonAtomic(this.file, { version: 1, sent: this.sent }); }
+    try { writeJsonAtomic(this.file, { version: 1, sent: this.sent, gaveUp: this.gaveUp }); }
     catch (error) { this.log(`[email] Could not save ${FILE}: ${(error as Error).message}`); }
   }
 }
