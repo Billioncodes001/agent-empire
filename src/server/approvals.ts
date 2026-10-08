@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { APPROVAL_ID_RE, MAX_APPROVAL_BUDGET_USD, type Approval, type ApprovalKind, type ApprovalsState, type ApprovalStatus } from '../shared/approvals.js';
+import { APPROVAL_ID_RE, APPROVAL_KIND_LABEL, MAX_APPROVAL_BUDGET_USD, approveHint, type Approval, type ApprovalKind, type ApprovalsState, type ApprovalStatus } from '../shared/approvals.js';
 import type { ConsultancyApproveOptions, ConsultancyJob, ConsultancySnapshot } from '../shared/consultancy.js';
-import { ACTUAL_SPEND_LABEL, basisLabel, fmtUsdRange, type ExecutiveRole } from '../shared/org.js';
+import { ACTUAL_SPEND_LABEL, EXECUTIVES, basisLabel, fmtDurationRange, fmtUsdRange, type ExecutiveRole } from '../shared/org.js';
 import { ConsultancyError } from './consultancy.js';
 import { writeJsonAtomic } from './persistence.js';
 
@@ -336,4 +336,25 @@ function parseFile(value: unknown): StoredFile {
     return { ...item, raisedBy: RAISED_BY[item.kind] };
   });
   return { version: 1, revision: raw.revision as number, nextSeq: raw.nextSeq as number, items };
+}
+
+const money = (n: number) => `$${n.toFixed(2)}`;
+
+/** One line for lists (Telegram /approvals): id, kind, title and the money that matters. Never a brief. */
+export function approvalLine(item: Approval): string {
+  const parts = [item.id, APPROVAL_KIND_LABEL[item.kind], item.title];
+  if (item.kind === 'budget_increase') {
+    if (item.spentUsd !== undefined && item.approvedBudgetUsd !== undefined) parts.push(`spent ${money(item.spentUsd)} of ${money(item.approvedBudgetUsd)}`);
+    if (item.suggestedBudgetUsd !== undefined) parts.push(`suggested ${money(item.suggestedBudgetUsd)}`);
+  } else if (item.estimate) parts.push(`estimate ${fmtUsdRange(item.estimate.costUsd)}`);
+  return parts.join(' · ');
+}
+
+/** The plain-text notification for a new pending item (Telegram and email): no secrets, no action links. */
+export function approvalText(item: Approval): string {
+  const lines = [`Approval ${item.id} · ${APPROVAL_KIND_LABEL[item.kind]} · raised by ${EXECUTIVES[item.raisedBy].name} (rule-based)`, item.title, item.detail];
+  if (item.estimate) lines.push(`Estimate (not a quote): ${fmtUsdRange(item.estimate.costUsd)}${item.estimate.calendarMs ? ` · ${fmtDurationRange(item.estimate.calendarMs)} calendar time` : ''}`);
+  if (item.kind === 'budget_increase' && item.spentUsd !== undefined) lines.push(`Spend so far: ${money(item.spentUsd)} (${ACTUAL_SPEND_LABEL})${item.suggestedBudgetUsd !== undefined ? ` · suggested new budget ${money(item.suggestedBudgetUsd)}` : ''}`);
+  lines.push(approveHint(item.id));
+  return lines.join('\n');
 }

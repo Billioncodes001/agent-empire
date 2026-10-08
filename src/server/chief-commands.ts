@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 import { Consultancy, ConsultancyError } from './consultancy.js';
+import { ApprovalError, approvalLine, approvalText, type ApprovalInbox } from './approvals.js';
+import { APPROVAL_ID_RE } from '../shared/approvals.js';
 import { TELEGRAM_HELP, type TelegramCommands } from './telegram.js';
 import type { ConsultancyJob } from '../shared/consultancy.js';
 import { ACTUAL_SPEND_LABEL, PHASE_LABEL, basisLabel, fmtDurationRange, fmtUsdRange } from '../shared/org.js';
@@ -17,7 +19,20 @@ export function estimateText(job: ConsultancyJob): string {
 }
 
 /** A deterministic command surface shared with the same consultancy service as the CEO console. */
-export function chiefCommands(office: Consultancy, resourceReport: () => string): TelegramCommands {
+export function chiefCommands(office: Consultancy, resourceReport: () => string, inbox?: ApprovalInbox): TelegramCommands {
+  const ACTOR = 'CEO via Telegram';
+  /** Inbox ids (A3) are distinct from consultancy job ids (consultancy-…); both are accepted. */
+  const decideInbox = (cmd: 'approve' | 'reject', id: string, amount: string | undefined, requestId: string) => {
+    const before = inbox!.get(id);
+    if (!before) return `Unknown approval ${id}. Use /approvals for pending items.`;
+    if (before.status !== 'pending') return `${id} is already ${before.status}.`;
+    const item = cmd === 'approve' ? inbox!.approve(id, ACTOR, { requestId, ...(amount === undefined ? {} : { budgetUsd: Number(amount.replace('$', '')) }) }) : inbox!.reject(id, ACTOR, { requestId });
+    const budget = item.status === 'approved' && item.budgetUsd !== undefined ? ` · budget $${item.budgetUsd.toFixed(2)}` : '';
+    const note = item.kind === 'budget_increase'
+      ? (item.status === 'approved' ? ' Held items are released; existing execution and workstation limits still apply.' : ' The job stays held until its budget is raised.')
+      : (item.status === 'approved' ? ' The plan is queued under existing execution, budget and workstation limits.' : ' The unstarted plan was declined.');
+    return `${item.id} ${item.status}${budget}.${note}`;
+  };
   const jobsText = () => {
     const state = office.snapshot();
     if (state.storageError) throw new Error('Consultancy storage unavailable');
@@ -44,17 +59,23 @@ export function chiefCommands(office: Consultancy, resourceReport: () => string)
           // Explicit plan review can reveal the requested brief to the configured CEO, never in unsolicited updates.
           return `${job.id} · ${job.client} · ${job.title}\n${job.status.replaceAll('_', ' ')}\n\n${job.brief}${estimateText(job)}\n\nReview the complete work-item plan in the CEO console before approval. Approval submits it to this host’s local worker queue under existing budget and desk limits. /approve ${job.id} (or /approve ${job.id} 25 to set a $25 budget)`;
         }
+        if (cmd === 'approvals') {
+          if (!inbox) return 'The approval inbox is not available on this host.';
+          const pending = inbox.pending();
+          return pending.length ? `Waiting for your approval:\n${pending.map(approvalLine).join('\n')}\n\n/approve ID [budget] or /reject ID` : 'Nothing is waiting for your approval.';
+        }
         if (cmd === 'approve' || cmd === 'reject') {
           const [id = '', amount, ...extra] = raw.trim().split(/\s+/);
           if (cmd === 'approve' && extra.length) return 'Use /approve ID or /approve ID 25 (budget in USD).';
           if (cmd === 'approve' && amount !== undefined && !/^\$?\d+(\.\d{1,2})?$/.test(amount)) return 'Use /approve ID or /approve ID 25 (budget in USD).';
+          if (inbox && APPROVAL_ID_RE.test(id.toUpperCase())) return decideInbox(cmd, id.toUpperCase(), amount, requestId);
           const job = cmd === 'approve' ? office.approve(id, 'CEO via Telegram', amount === undefined ? {} : { budgetUsd: Number(amount.replace('$', '')) }) : office.reject(raw.trim(), 'CEO via Telegram');
           const budget = cmd === 'approve' && job.approvedBudgetUsd !== undefined ? ` Approved budget $${job.approvedBudgetUsd.toFixed(2)}; unstarted items are held if provider spend reaches it.` : '';
           return `Job ${job.id}: ${job.status.replaceAll('_', ' ')}. ${cmd === 'approve' ? 'Existing execution, budget and workstation limits still apply.' : 'The unstarted plan was declined.'}${budget}`;
         }
         return TELEGRAM_HELP;
       } catch (error) {
-        if (error instanceof ConsultancyError && error.status < 500) return error.message;
+        if ((error instanceof ConsultancyError || error instanceof ApprovalError) && error.status < 500) return error.message;
         // Storage/transient failure leaves Telegram offset unchanged for safe replay.
         throw error;
       }
@@ -68,6 +89,11 @@ export function chiefCommands(office: Consultancy, resourceReport: () => string)
         fingerprint: createHash('sha256').update(JSON.stringify({statuses,resources})).digest('hex'),
         text: `Chief update · rule-based\n${resources}\n\n${jobsText()}\n\nUse /status for capacity. Turn ended means review needed, not verified delivery.`,
       };
+    },
+    notifications() {
+      if (!inbox) return [];
+      if (inbox.recoveryError) throw new Error('Approval inbox storage unavailable');
+      return inbox.pending().map((item) => ({ key: item.id, text: `${approvalText(item)}\n/reject ${item.id} to decline.` }));
     },
   };
 }

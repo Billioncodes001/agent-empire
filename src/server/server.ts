@@ -408,7 +408,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   const chief = chiefCommands(office, () => {
     const r = capacityReport();
     return `${r.workstations} funded workstations · ${r.workers} running workers · concurrency ${r.concurrency} · ${r.queued === null ? 'queue count unavailable' : `${r.queued} tasks queued`} · ${r.attention} workers need input.${r.blocker ? ` Waiting: ${r.blocker}` : ''} This coordinator requires the execution host to remain running.`;
-  });
+  }, inbox);
   let telegram: TelegramBridge | undefined;
   let telegramError: string | undefined;
   try {
