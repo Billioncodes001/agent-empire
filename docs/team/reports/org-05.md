@@ -59,7 +59,7 @@ All checks ran against isolated fixtures on ports 4771–4776 (`FIXTURE_RESEARCH
 
 ## Open issues
 
-- **Importer swap.** The coordinator should swap `research-artifact.ts` for ORG-04a's `artifacts.ts` once that merges. ORG-04a's version may accept a different options argument for the project dir.
+- **Importer swap (done at the ORG-04a merge).** Research now reads through the shared `src/server/artifacts.ts` (`readArtifact(projectDir, task, kind, jobId)`); `research-artifact.ts` was removed after its tests, including the race tests, passed against the shared importer.
 - **Merge conflicts with ORG-04a.** Expect conflicts in the `ApprovalKind` union, in `parseFile` kind validation, and in the `decide` branch. ORG-04a adds `external_action` in those places.
 - **Sources aren't checked.** The URLs are the worker's citations and the Empire doesn't fetch them. The UI says so.
 - **Report import timing.** Import needs the queue task to still be present with its branch. If a task is cleared before the 5 s reconcile, its report is not imported.

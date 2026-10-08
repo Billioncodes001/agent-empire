@@ -113,7 +113,13 @@ export class Consultancy {
     return { revision: this.revision, jobs, storageError };
   }
 
-  create(input: unknown, actor: string): ConsultancyJob {
+  /** A fresh, unused job id. Internal jobs (Round 2) reserve one so the item prompt can name its artifact path. */
+  newJobId(): string {
+    return this.nextId('consultancy');
+  }
+
+  /** `options.id` (internal callers only, never HTTP): a job id from newJobId(), so prompts can name the artifact path. */
+  create(input: unknown, actor: string, options: { id?: string } = {}): ConsultancyJob {
     this.assertMutable();
     const cleanActor = cleanBounded(actor, 'actor', MAX_ACTOR);
     const input0 = validateCreateInput(input);
@@ -123,8 +129,10 @@ export class Consultancy {
       throw new ConsultancyError(409, `Request ${input0.requestId} already exists with different content`);
     }
     const now = Date.now();
-    const jobId = this.nextId('consultancy');
-    // ORG-05: an internal job's prompt names its artifact path by job id; `{{jobId}}` becomes the id before it is saved.
+    // Internal jobs name their artifact path by job id, two ways: a reserved id (ORG-04a, options.id from newJobId()),
+    // or the `{{jobId}}` token in a prompt (ORG-05), which becomes the id before the plan is saved.
+    if (options.id !== undefined && (!/^consultancy-[a-f0-9]{12}$/.test(options.id) || this.jobs.some((job) => job.id === options.id))) throw new ConsultancyError(409, 'The reserved job id is invalid or already used');
+    const jobId = options.id ?? this.nextId('consultancy');
     const clean = withJobId(input0, jobId);
     const fingerprint = inputFingerprint(clean);
     const items = clean.tasks.map((task, index) => {

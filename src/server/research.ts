@@ -6,7 +6,7 @@ import {
   CONFIDENCES, FEASIBILITIES, MAX_QUESTION, RESEARCH_DIR, URL_RE, safeHttpsUrl,
   type Confidence, type Feasibility, type ResearchReport, type ResearchReportSummary, type ResearchSections, type ResearchState, type ResearchStatus, type ToolProposal,
 } from '../shared/research.js';
-import type { ArtifactResult } from './research-artifact.js';
+import type { ParsedArtifact as ArtifactResult } from './artifacts.js';
 import { writeJsonAtomic } from './persistence.js';
 
 // ORG-05: the research executive. It is rule-based: it files the CEO's question as an internal consultancy job (which
@@ -68,7 +68,10 @@ const clip = (s: string, n = MAX_FIELD) => s.trim().slice(0, n);
 /** Strict parse of a report's frontmatter and body. Returns the first reason it is not acceptable. */
 export function parseResearchReport(artifact: ArtifactResult): ParsedReport {
   if (!artifact.ok) return artifact;
-  const fm = artifact.frontmatter;
+  // The shared parser also reads lists; every research field is a single value.
+  const listKey = Object.entries(artifact.frontmatter).find(([, v]) => typeof v !== 'string')?.[0];
+  if (listKey) return { ok: false, reason: `Frontmatter ${listKey} must be a single value, not a list.` };
+  const fm = artifact.frontmatter as Record<string, string>;
   const unknown = Object.keys(fm).filter((k) => !['question', 'feasibility', 'confidence'].includes(k));
   if (unknown.length) return { ok: false, reason: `Unexpected frontmatter key: ${unknown[0]}.` };
   const question = (fm.question ?? '').trim();
@@ -159,7 +162,7 @@ export interface ResearchPorts {
   create(input: { requestId: string; client: string; title: string; brief: string; tasks: { title: string; prompt: string }[] }, actor: string): ConsultancyJob;
   snapshot(): ConsultancySnapshot;
   queue(): QueueState;
-  /** The shared artifact importer contract (ORG-04a owns the shared module; ORG-05 ships research-artifact.ts). */
+  /** The shared artifact importer (src/server/artifacts.ts, readArtifact(projectDir, task, 'research', jobId)). */
   readArtifact(task: QueueTask, jobId: string): ArtifactResult;
   /** Raises a tool_proposal inbox item (idempotent by source) and answers its id. */
   raiseTool?(input: { source: string; jobId: string; tool: ParsedTool; question: string }): string | undefined;
