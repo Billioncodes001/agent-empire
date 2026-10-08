@@ -83,7 +83,7 @@ async function game(browser: Browser, size: { width: number; height: number; tou
       return { execs: o.executives.report(), chiefY: o.city.chief.position.y, chief, me: o.me.wearing.avatar, org: o.store.org!.executives, desks: [...o.office.desks.keys()] };
     });
     const staffed = report.execs.filter((e) => e.visible);
-    check(`${tag}: operations and finance are seated in the loft`, staffed.length === 2 && staffed.every((e) => e.pose === 'sit' && e.y === 3), JSON.stringify(staffed));
+    check(`${tag}: operations, finance and marketing & sales are seated in the loft`, staffed.length === 3 && staffed.every((e) => e.pose === 'sit' && e.y === 3), JSON.stringify(staffed));
     check(`${tag}: unstaffed roles have no body`, report.execs.filter((e) => ['research'].includes(e.role)).length === 0);
     check(`${tag}: the chief of staff sits at its loft desk`, report.chiefY === 3);
     const suits = [report.chief, ...staffed.map((e) => e.avatar)];

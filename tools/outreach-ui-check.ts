@@ -83,7 +83,7 @@ async function game(browser: Browser, size: { width: number; height: number; tou
     const cardText = squash(await card.innerText().catch(() => ''));
     check(`${tag}: the marketing & sales card is staffed, rule-based, with real counts`, /Jordan · Marketing & sales/.test(cardText) && /Rule-based/.test(cardText) && /1 campaign/.test(cardText) && /5 leads/.test(cardText) && /1 proposed to accept/.test(cardText), cardText);
     check(`${tag}: the card links to leads and campaigns on the founder desk`, (await card.locator('a[href="/consultancy.html#outreach"]').count()) === 1);
-    await page.screenshot({ path: resolve(out, `03-marketing-card-${tag}.jpg`), quality: 82 });
+    await card.screenshot({ path: resolve(out, `03-marketing-card-${tag}.jpg`), quality: 82 }).catch(() => page.screenshot({ path: resolve(out, `03-marketing-card-${tag}.jpg`), quality: 82 }));
     check(`${tag}: no console errors`, !errors.length, errors.slice(0, 4).join(' · '));
   } finally {
     await context.close();
