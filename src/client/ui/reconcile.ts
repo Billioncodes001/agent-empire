@@ -3,9 +3,10 @@
 // Rebuilding a list with replaceChildren() throws away the button a keyboard or screen-reader user is on (focus
 // falls to <body>) and swaps the element under a mouse pointer between press and release. morphChildren() instead
 // patches the existing nodes in place from a freshly built tree: rows are matched by a stable key (data-key,
-// data-task, data-approval, data-report, data-role or id), other nodes by position and tag. Text and attributes are
-// updated, listeners registered through h()'s on* attributes are swapped for the new ones, and only rows that
-// appeared or disappeared are inserted or removed. When nothing changed, the DOM is not touched at all.
+// data-task, data-approval, data-report, data-role or id; keys are per parent, so action buttons carry their action
+// as data-key), other nodes by position and tag. Text and attributes are updated, listeners registered through h()'s
+// on* attributes are swapped for the new ones, and only rows that appeared or disappeared are inserted or removed.
+// A focused or pressed element whose action would change is replaced, never repurposed. When nothing changed, the DOM is not touched at all.
 
 const listeners = new WeakMap<Element, [string, EventListener][]>();
 
@@ -57,9 +58,62 @@ function patch(from: Node, to: Node) {
   morphChildren(from as Element, [...to.childNodes]);
 }
 
-function sameKind(a: Node, b: Node) {
-  return a.nodeType === b.nodeType && a.nodeName === b.nodeName;
+/** What matching looks at for one child: its key (null for unkeyed nodes) and its node type + name. */
+export interface Desc {
+  key: string | null;
+  kind: string;
 }
+
+/**
+ * Pure matching step of morphChildren: for each wanted child, the index of the old child to reuse, or null to insert
+ * the new one. Keyed children only ever match the old child with the same key (and kind); unkeyed children match the
+ * next unused unkeyed old child of the same kind, in order. Every old child is reused at most once.
+ */
+export function matchPlan(old: Desc[], next: Desc[]): (number | null)[] {
+  const keyed = new Map<string, number>();
+  const unkeyed: number[] = [];
+  old.forEach((d, i) => {
+    if (d.key !== null && !keyed.has(d.key)) keyed.set(d.key, i);
+    else unkeyed.push(i);
+  });
+  const used = new Set<number>();
+  let cursor = 0;
+  return next.map((d) => {
+    let match: number | undefined;
+    if (d.key !== null) {
+      match = keyed.get(d.key);
+      if (match !== undefined && old[match].kind !== d.kind) match = undefined;
+    } else if (cursor < unkeyed.length && old[unkeyed[cursor]].kind === d.kind) {
+      match = unkeyed[cursor++];
+    }
+    if (match === undefined || used.has(match)) return null;
+    used.add(match);
+    return match;
+  });
+}
+
+/**
+ * Which action an element with handlers stands for: its handler types plus its key, else its label, else its text.
+ * A key or label wins over the text so a row whose "2 min ago" ticks over is still the same action.
+ */
+function actionSignature(el: Element): string {
+  const types = (listeners.get(el) ?? []).map(([t]) => t).join(',');
+  return `${types}|${keyOf(el) ?? el.getAttribute('aria-label') ?? el.textContent ?? ''}`;
+}
+
+/**
+ * Safety net: an element the user is on right now (focused, or pressed) is never turned into a different action. If
+ * its handlers would be swapped for ones that do something else, the old element is replaced instead, so a press
+ * that started on "Terminal" can never release on "Requeue".
+ */
+function mustReplace(from: Node, to: Node): boolean {
+  if (!(from instanceof Element) || !(to instanceof Element)) return false;
+  if (!listeners.has(from) && !listeners.has(to)) return false;
+  const engaged = from.ownerDocument.activeElement === from || from.matches(':active');
+  return engaged && actionSignature(from) !== actionSignature(to);
+}
+
+const describe = (n: Node): Desc => ({ key: keyOf(n), kind: `${n.nodeType}:${n.nodeName}` });
 
 /**
  * Brings `parent`'s children in line with `next` (a freshly built list of nodes, as you would pass to
@@ -70,24 +124,12 @@ export function morphChildren(parent: Element, next: Node[]) {
   const hadFocus = active instanceof HTMLElement && parent.contains(active) ? active : null;
 
   const old = [...parent.childNodes];
-  const keyed = new Map<string, Node>();
-  const unkeyed: Node[] = [];
-  for (const n of old) {
-    const k = keyOf(n);
-    if (k !== null && !keyed.has(k)) keyed.set(k, n);
-    else unkeyed.push(n);
-  }
+  const plan = matchPlan(old.map(describe), next.map(describe));
   const used = new Set<Node>();
-  let cursor = 0;
-  const result = next.map((n) => {
-    const k = keyOf(n);
-    let match: Node | undefined;
-    if (k !== null) {
-      match = keyed.get(k);
-    } else if (cursor < unkeyed.length && sameKind(unkeyed[cursor], n)) {
-      match = unkeyed[cursor++];
-    }
-    if (!match || used.has(match)) return n;
+  const result = next.map((n, i) => {
+    const at = plan[i];
+    const match = at === null ? undefined : old[at];
+    if (!match || mustReplace(match, n)) return n;
     used.add(match);
     patch(match, n);
     return match;

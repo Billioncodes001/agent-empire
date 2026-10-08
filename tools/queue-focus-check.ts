@@ -99,6 +99,26 @@ try {
         check(`${tag}: queue ${what} keeps focus through ${r.events} updates`, r.same && r.connected, `active: ${r.active}`);
         check(`${tag}: queue scroll unchanged`, r.top === r.before, `${r.before} → ${r.top}`);
       }
+      // A finished row whose worker goes home: [🖥️ Terminal, ↻ Requeue, ✕] → [↻ Requeue, ✕]. The Terminal element must
+      // go away, never become Requeue (a press that started on Terminal would otherwise re-hire a worker).
+      const swap = await page.evaluate(() => {
+        const s = (window as unknown as { __office: { store: Store & { queue: { tasks: { id: string; status: string; workerId?: string }[]; maxWorkers: number }; workers: Map<string, unknown> } } }).__office.store;
+        const t = s.queue.tasks.find((x) => x.status === 'done');
+        const wid = [...s.workers.keys()][0];
+        if (!t || !wid) return null;
+        const set = (workerId: string) => { s.queue = { ...s.queue, tasks: s.queue.tasks.map((x) => (x.id === t.id ? { ...x, workerId } : x)) }; s.emit('queue'); };
+        const row = () => document.querySelector<HTMLElement>(`.queue-list li[data-task="${CSS.escape(t.id)}"]`)!;
+        set(wid);
+        const keys = (r: HTMLElement) => [...r.querySelectorAll<HTMLElement>('.queue-actions [data-key]')].map((b) => b.dataset.key).join(',');
+        const before = keys(row());
+        const terminal = row().querySelector<HTMLElement>('[data-key="terminal"]');
+        const again = row().querySelector<HTMLElement>('[data-key="requeue"], [data-key="retry"]');
+        set('fixture-gone-home');
+        const after = keys(row());
+        const requeue = row().querySelector<HTMLElement>('[data-key="requeue"], [data-key="retry"]');
+        return { before, after, terminalGone: !!terminal && !terminal.isConnected, requeueReused: !!again && again === requeue, terminalNotReused: [...row().querySelectorAll('button')].every((b) => b !== terminal) };
+      });
+      check(`${tag}: queue Terminal → gone never repurposes the Terminal button`, !!swap && swap.terminalGone && swap.terminalNotReused && swap.requeueReused && !swap.after.includes('terminal'), JSON.stringify(swap));
       await page.keyboard.press('Escape');
       await page.waitForFunction(() => !document.querySelector('#modal-root .backdrop'), null, { timeout: 5000 });
 

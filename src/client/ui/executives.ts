@@ -34,8 +34,8 @@ export function executiveCard(e: Executive, opts: { openQueue?: () => void; befo
           {},
           h('span.exec-count', { 'aria-hidden': 'true' }, String(e.attention)),
           h('span', {}, att.label(e.attention)),
-          att.inbox ? h('button.btn.exec-link', { type: 'button', 'data-open-inbox': e.role, onclick: () => { opts.beforeInbox?.(); openInbox(); } }, 'Open inbox') : null,
-          att.queue && opts.openQueue ? h('button.btn.exec-link', { type: 'button', onclick: opts.openQueue }, 'Open task queue') : null,
+          att.inbox ? h('button.btn.exec-link', { type: 'button', 'data-key': 'inbox', 'data-open-inbox': e.role, onclick: () => { opts.beforeInbox?.(); openInbox(); } }, 'Open inbox') : null,
+          att.queue && opts.openQueue ? h('button.btn.exec-link', { type: 'button', 'data-key': 'queue', onclick: opts.openQueue }, 'Open task queue') : null,
         )
       : h('p.exec-note', {}, 'Nothing waiting for you.');
   const title = opts.heading === 'h2' ? h('h2', { id: `exec-title-${e.role}` }, e.name) : h('strong', {}, e.name);

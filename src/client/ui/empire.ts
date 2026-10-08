@@ -70,6 +70,7 @@ export function mountEmpire(
             h(
               'button.btn',
               {
+                'data-key': 'waypoint',
                 'aria-label': `Set waypoint to ${site.name}`,
                 onclick: () => {
                   waypoint = { ...entrance(site.id), name: site.name };
@@ -82,6 +83,7 @@ export function mountEmpire(
             h(
               'button.btn',
               {
+                'data-key': 'manage',
                 'aria-label': `Manage ${site.name}`,
                 onclick: () => openOperations(site.id),
               },
