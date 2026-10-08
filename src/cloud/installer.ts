@@ -31,7 +31,7 @@ import { initialCloudState, parseStateFiles, serializeState, STATE_FILES, valida
 import { intentPath, parseIntent } from './intents.js';
 import type { ExecutionConfig } from '../shared/execution.js';
 import { uuidv7 } from './uuid.js';
-import { DEFAULT_WORKER_MODEL, isWorkerModel, type WorkerModel } from './worker-spec.js';
+import { defaultModelFor, isModelFor, type AnyWorkerModel, type ProviderId } from './worker-spec.js';
 import { decodeBase64Utf8, defaultSleep, encodeBase64Utf8, GitHubClient, GitHubError, GitHubStateStore, validateRepoRef, type FileChange } from './store.js';
 import { COORDINATOR_BUNDLE_PATH, coordinatorWorkflow, WORKFLOW_FILE, WORKFLOW_PATH, type WorkflowOptions } from './workflow.js';
 
@@ -86,8 +86,10 @@ export interface InstallOptions {
    * is asked to find or create the Anthropic agent and environment for it. Ignored when `execution` is given.
    */
   provision?: ExecutionConfig['repository'];
-  /** Worker model for automatic setup (default Sonnet 5; owner decision 2026-10-02). */
-  provisionModel?: WorkerModel;
+  /** Worker model for automatic setup (default: the provider's default model). */
+  provisionModel?: AnyWorkerModel;
+  /** CLOUD-06: the provider jobs run on (one per Empire; default Anthropic). */
+  provisionProvider?: ProviderId;
   /** UUIDv7 source for the intent id (tests); defaults to uuidv7(now). */
   uuid?: () => string;
   /** Contents of the built single-file coordinator (npm run build:cloud). */
@@ -129,9 +131,11 @@ export function checkInstallOptions(options: InstallOptions) {
   const projectToken = options.secrets.PROJECT_GITHUB_TOKEN?.trim();
   if (projectToken && !projectToken.startsWith('github_pat_')) throw new InstallError('secrets', 'project_token_not_fine_grained', 'The project token must be a fine-grained personal access token scoped to the selected repositories (github_pat_…). Classic and OAuth tokens grant too much access.');
   const workflow = coordinatorWorkflow(options.workflow); // validates the interval
-  if (options.provisionModel !== undefined && !isWorkerModel(options.provisionModel)) throw new InstallError('execution', 'invalid', 'Unsupported worker model.');
-  const provisionModel = options.provisionModel ?? DEFAULT_WORKER_MODEL;
-  return { repoName, limits, execution, provision, provisionModel, workflow };
+  const provisionProvider: ProviderId = options.provisionProvider ?? 'anthropic';
+  if (provisionProvider !== 'anthropic' && provisionProvider !== 'openai') throw new InstallError('execution', 'invalid', 'Unsupported execution provider.');
+  if (options.provisionModel !== undefined && !isModelFor(provisionProvider, options.provisionModel)) throw new InstallError('execution', 'invalid', 'Unsupported worker model.');
+  const provisionModel = options.provisionModel ?? defaultModelFor(provisionProvider);
+  return { repoName, limits, execution, provision, provisionModel, provisionProvider, workflow };
 }
 
 /** Parses an existing Empire's state files with the coordinator's rules; an InstallError says why it is unusable. */
@@ -141,7 +145,7 @@ function parseExisting(step: InstallStep, files: Record<string, string>, now: nu
 }
 
 export async function installStateRepository(client: GitHubClient, options: InstallOptions, encryptSecret: EncryptSecret): Promise<InstallResult> {
-  const { repoName, limits, execution, provision, provisionModel, workflow } = checkInstallOptions(options);
+  const { repoName, limits, execution, provision, provisionModel, provisionProvider, workflow } = checkInstallOptions(options);
   const onStep: OnStep = options.onStep ?? (() => {});
   const sleep = options.sleep ?? defaultSleep;
   const steps = {} as InstallResult['steps'];
@@ -233,7 +237,7 @@ export async function installStateRepository(client: GitHubClient, options: Inst
       if ((await text(COORDINATOR_BUNDLE_PATH)) !== options.coordinatorBundle) changes.push({ path: COORDINATOR_BUNDLE_PATH, content: options.coordinatorBundle });
       // Never overwrite an existing Empire: re-running setup updates the coordinator only.
       if (!alreadyInstalled) {
-        const initial = initialCloudState(options.now, { limits, ...(execution ? { execution } : {}), ...(provision ? { provision, model: provisionModel } : {}), ...(options.workflow?.intervalMinutes ? { intervalMinutes: options.workflow.intervalMinutes } : {}) });
+        const initial = initialCloudState(options.now, { limits, ...(execution ? { execution } : {}), ...(provision ? { provision, model: provisionModel, provider: provisionProvider } : {}), ...(options.workflow?.intervalMinutes ? { intervalMinutes: options.workflow.intervalMinutes } : {}) });
         for (const [path, content] of Object.entries(serializeState(initial))) changes.push({ path, content });
         current = initial; wroteInitial = true;
       }
@@ -265,18 +269,18 @@ export async function installStateRepository(client: GitHubClient, options: Inst
         const metaText = await text(STATE_FILES.meta);
         const configRevision = metaText ? Number(JSON.parse(metaText).configRevision) : 0;
         const id = (options.uuid ?? (() => uuidv7(options.now)))();
-        const content = `${JSON.stringify({ schemaVersion: 1, id, createdAt: options.now, kind: 'provision', repository: provision, model: provisionModel, configRevision }, null, 2)}\n`;
+        const content = `${JSON.stringify({ schemaVersion: 1, id, createdAt: options.now, kind: 'provision', repository: provision, ...(provisionProvider === 'openai' ? { provider: 'openai' } : {}), model: provisionModel, configRevision }, null, 2)}\n`;
         parseIntent(intentPath(id), content); // never commit an intent the coordinator could not parse
         return { changes: [{ path: intentPath(id), content }], message: `Agent Empire intent provision ${id}` };
       });
-      if (intentCommit.changed) written.push('added a request for your coordinator to set up the Anthropic agent and environment');
+      if (intentCommit.changed) written.push(`added a request for your coordinator to set up ${provisionProvider === 'openai' ? 'the OpenAI vault' : 'the Anthropic agent and environment'}`);
       executionStep = found ? 'already_requested' : 'requested';
     }
     const executionDetail: Record<InstallResult['execution'], string> = {
       requested: 'requested: your coordinator creates or reuses them on its first run',
       already_configured: 'already set up',
       already_requested: 'already requested',
-      no_anthropic_key: options.secrets.OPENAI_API_KEY?.trim() && !options.secrets.ANTHROPIC_API_KEY?.trim() ? 'OpenAI only: jobs can’t run until the OpenAI adapter exists' : 'no Anthropic key given',
+      no_anthropic_key: 'no provider key given',
     };
     finish('execution', executionStep === 'requested' ? 'done' : 'skipped', executionDetail[executionStep]);
 

@@ -12,7 +12,7 @@ import nacl from 'tweetnacl';
 import { AnthropicManaged } from '../src/server/providers/anthropic-managed';
 import { provisionAnthropicExecution, ProvisionError, WORKER_ENVIRONMENT, WORKER_MARKER } from '../src/cloud/provisioning';
 import { AnthropicCloudAdapter } from '../src/cloud/anthropic-adapter';
-import { providerFromEnv } from '../src/cloud/cli';
+import { providerFromEnv, providersFromEnv } from '../src/cloud/cli';
 import { initialCloudState, parseStateFiles, PROVISION_RETRY_MS, serializeState } from '../src/cloud/schema';
 import { parseIntent, intentPath } from '../src/cloud/intents';
 import { MemoryStateStore } from '../src/cloud/store';
@@ -274,34 +274,29 @@ test('setup: a new Empire asks its coordinator to set up execution for the first
   assert.match(executionPlan(plan()).note, /octo\/app \(the first of your 2 projects[\s\S]*not a billed item and starts no session/);
 });
 
-test('setup: OpenAI-only says jobs can’t run yet; adding an Anthropic key later requests setup through an intent, once', async () => {
+test('setup (CLOUD-06): OpenAI-only requests OpenAI execution; both keys default to Anthropic unless OpenAI is chosen', async () => {
   const gh = github();
   const openaiOnly = plan({ providers: { anthropic: '', openai: 'sk-proj-' + 'B'.repeat(40) } });
-  const steps: string[] = [];
-  const first = await createEmpire(openaiOnly, 't', deps(gh), (s, st, d) => s === 'execution' && st !== 'running' && steps.push(`${st}:${d}`));
-  assert.equal(first.execution, 'no_anthropic_key');
-  assert.deepEqual(steps, ['skipped:OpenAI only: jobs can’t run until the OpenAI adapter exists']);
-  assert.match(executionPlan(openaiOnly).note, /OpenAI-only Empires can’t run jobs until the OpenAI adapter exists/);
-  assert.equal(JSON.parse(gh.files(STATE_REPO)['state/meta.json']).provisioning, undefined);
-  // Re-running setup with an Anthropic key keeps the Empire and asks its coordinator via an intent.
-  const second = await createEmpire(plan(), 't', deps(gh));
-  assert.equal(second.alreadyInstalled, true);
-  assert.equal(second.execution, 'requested');
-  const intents = Object.entries(gh.files(STATE_REPO)).filter(([f]) => f.startsWith('intents/'));
-  assert.equal(intents.length, 1);
-  const parsed = parseIntent(intents[0][0], intents[0][1]);
-  assert.equal(parsed.kind, 'provision');
-  assert.deepEqual((parsed as any).repository, { owner: 'octo', name: 'app', baseBranch: 'trunk' });
-  const third = await createEmpire(plan(), 't', deps(gh));
-  assert.equal(third.execution, 'already_requested');
-  assert.equal(Object.keys(gh.files(STATE_REPO)).filter((f) => f.startsWith('intents/')).length, 1, 'never requested twice');
-  // The coordinator applies it.
+  const first = await createEmpire(openaiOnly, 't', deps(gh));
+  assert.equal(first.execution, 'requested');
+  const meta = JSON.parse(gh.files(STATE_REPO)['state/meta.json']);
+  assert.equal(meta.provisioning.provider, 'openai');
+  assert.equal(meta.provisioning.model, 'gpt-6.1-sol');
+  const note = executionPlan(openaiOnly).note;
+  assert.match(note, /OpenAI Agents API[\s\S]*unverified until first run/);
+  assert.match(note, /copied into an OpenAI vault[\s\S]*api\.github\.com/);
+  assert.match(note, /no Zero Data Retention[\s\S]*US only/);
+  assert.match(note, /refuses OpenAI jobs until its first verified real run/);
+  const both = { anthropic: 'sk-ant-' + 'A'.repeat(40), openai: 'sk-proj-' + 'B'.repeat(40) };
+  assert.equal(executionPlan({ projects: openaiOnly.projects, providers: both }).provider, 'anthropic');
+  assert.equal(executionPlan({ projects: openaiOnly.projects, providers: both, jobProvider: 'openai' }).provider, 'openai');
+  // The coordinator, with an OpenAI key but before the owner's verification flag, waits without calling OpenAI.
   const state = parseStateFiles(Object.fromEntries(Object.entries(gh.files(STATE_REPO)).filter(([f]) => f.startsWith('state/'))), T0).state;
-  const store = new MemoryStateStore(serializeState(state));
-  push(store, parsed);
-  const h = harness(store);
+  const h = harness(new MemoryStateStore(serializeState(state)), providersFromEnv({ OPENAI_API_KEY: 'sk-proj-x', PROJECT_GITHUB_TOKEN: 'github_pat_x' }, async () => { throw new Error('no network in tests'); }) as any);
   await h.tick();
-  assert.deepEqual((await h.state()).meta.execution?.repository, { owner: 'octo', name: 'app', baseBranch: 'trunk' });
+  const after = (await h.state()).meta;
+  assert.equal(after.execution, undefined);
+  assert.match(after.provisioning!.message!, /switched off in this version/);
 });
 
 test('setup: an Empire with execution already set is left as it is', async () => {

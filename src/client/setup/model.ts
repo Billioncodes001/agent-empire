@@ -57,6 +57,8 @@ export interface SetupState {
   providers: Record<ProviderId, string>;
   /** Fine-grained token for the project repositories (PROJECT_GITHUB_TOKEN). In memory only, like the API keys. */
   projectToken: string;
+  /** CLOUD-06: which provider runs jobs when both keys are given (one per Empire; Anthropic by default). */
+  jobProvider: ProviderId;
   limits: Limits;
   interval: Interval;
   acceptedCosts: boolean;
@@ -74,6 +76,7 @@ export type Action =
   | { type: 'setProvider'; id: ProviderId; value: string }
   | { type: 'setLimits'; patch: Partial<Limits> }
   | { type: 'setProjectToken'; value: string }
+  | { type: 'setJobProvider'; id: ProviderId }
   | { type: 'setInterval'; interval: number }
   | { type: 'acceptCosts'; value: boolean }
   | { type: 'forgetSecrets' }
@@ -90,6 +93,7 @@ export function initialState(opts: { step?: Step; mode?: Mode; notice?: string; 
     repos: [],
     providers: { anthropic: '', openai: '' },
     projectToken: '',
+    jobProvider: 'anthropic',
     limits: { ...DEFAULT_LIMITS },
     interval: DEFAULT_INTERVAL,
     acceptedCosts: false,
@@ -151,6 +155,17 @@ export function validateProjectToken(value: string): string | null {
   return null;
 }
 export const linkedProviders = (p: Record<ProviderId, string>) => (Object.keys(p) as ProviderId[]).filter((id) => p[id].trim());
+/**
+ * The provider jobs run on (owner decision D10): the only key given, or the player's choice when both are (Anthropic by
+ * default). Null without any key.
+ */
+export function runProvider(p: Record<ProviderId, string>, choice: ProviderId = 'anthropic'): ProviderId | null {
+  const linked = linkedProviders(p);
+  if (!linked.length) return null;
+  return linked.length === 1 ? linked[0] : choice;
+}
+/** Default per-job allowance by provider: $5 for Anthropic, $3 for OpenAI (owner decision D5). */
+export const PER_JOB_DEFAULT: Record<ProviderId, string> = { anthropic: DEFAULT_LIMITS.perJob, openai: '3.00' };
 
 /** What blocks the current step from advancing (empty when it may). */
 export function blockers(s: SetupState): string[] {
@@ -201,6 +216,12 @@ export function reduce(s: SetupState, a: Action): SetupState {
     case 'next': {
       if (blockers(s).length) return s;
       if (s.step === 'welcome') return { ...s, step: 'mode' };
+      if (s.step === 'providers') {
+        // An untouched per-job allowance follows the provider's default ($3 OpenAI, $5 Anthropic).
+        const provider = runProvider(s.providers, s.jobProvider) ?? 'anthropic';
+        const untouched = Object.values(PER_JOB_DEFAULT).includes(s.limits.perJob);
+        return { ...s, step: 'limits', limits: untouched ? { ...s.limits, perJob: PER_JOB_DEFAULT[provider] } : s.limits };
+      }
       const i = cloudIndex(s.step);
       // 'create' is reached from review; 'server' and 'create' finish through their own async work.
       if (i >= 0 && i < CLOUD_STEPS.length - 1) return { ...s, step: CLOUD_STEPS[i + 1] };
@@ -228,6 +249,8 @@ export function reduce(s: SetupState, a: Action): SetupState {
       limits.maxConcurrent = Math.max(1, Math.min(LIMIT_BOUNDS.maxConcurrent, Math.round(Number(limits.maxConcurrent) || 1)));
       return { ...s, limits };
     }
+    case 'setJobProvider':
+      return a.id === 'anthropic' || a.id === 'openai' ? { ...s, jobProvider: a.id } : s;
     case 'setProjectToken':
       return { ...s, projectToken: a.value.slice(0, 400) };
     case 'setInterval':

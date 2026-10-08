@@ -6,10 +6,11 @@ import './setup.css';
 import type { Native, ShellInfo } from '../native';
 import { BridgeError } from '../native';
 import {
-  actionsEstimate, blockers, CLOUD_STEPS, DEFAULT_LIMITS, dollars, INTERVALS, LIMIT_BOUNDS, linkedProviders, MAX_REPOS, parseCents, progress, PROVIDER_NAMES, reduce, repoKey,
+  actionsEstimate, blockers, CLOUD_STEPS, DEFAULT_LIMITS, dollars, INTERVALS, LIMIT_BOUNDS, linkedProviders, MAX_REPOS, parseCents, progress, PROVIDER_NAMES, reduce, repoKey, runProvider,
   STATE_REPO_NAME, validateProjectToken, validateProviderKey, type Action, type ProviderId, type RepoRef, type SetupState, type Step,
 } from './model';
 import { PROJECT_TOKEN_GUIDANCE } from '../../cloud/installer';
+import { OPENAI_DISCLOSURES } from '../../cloud/openai-spec';
 import { defaultDeviceName, LoginFailure, parseServerAddress, revokeDevice, signInToServer, type ServerSession } from './server-login';
 import { GitHubClient, GitHubError, type RepoListing } from './github';
 import { CloudSetupError, createEmpire, CREATE_STEPS, executionPlan, type CreateStep, type StateRepo } from './cloud-setup';
@@ -696,9 +697,24 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
           el('ol', { class: 'su-howto' }, ...PROJECT_TOKEN_GUIDANCE.map((t) => el('li', { text: t })))),
       );
       rows.push(projectRow);
+      // CLOUD-06: one provider per Empire. The choice appears only when both keys are given; Anthropic is the default.
+      const choice = el('div', { class: 'su-segment', role: 'radiogroup', 'aria-labelledby': 'su-runon-l' },
+        ...(['anthropic', 'openai'] as ProviderId[]).map((id) => {
+          const rid = `su-runon-${id}`;
+          const radio = el('input', { type: 'radio', name: 'su-runon', id: rid, value: id, checked: state.jobProvider === id, onchange: () => dispatch({ type: 'setJobProvider', id }) });
+          return el('label', { class: 'su-seg', for: rid }, radio, el('span', { text: id === 'anthropic' ? 'Anthropic (default)' : 'OpenAI' }));
+        }));
+      const choiceRow = el('div', { class: 'su-field su-schedule', id: 'su-runon' }, el('span', { class: 'su-label', id: 'su-runon-l', text: 'Run jobs on' }), choice,
+        el('span', { class: 'su-hint', text: 'One provider per Empire. You can switch later under Cloud Empire → Limits when no jobs are active.' }));
+      const openaiNote = el('div', { class: 'su-callout su-callout-info', id: 'su-openai-note' }, icon(ICONS.spark, 'su-inline-ico'),
+        el('span', {}, el('strong', { text: 'OpenAI jobs: new and not yet verified. ' }),
+          'The coordinator refuses OpenAI jobs until the integration’s first verified real run, so nothing is charged before then. ', OPENAI_DISCLOSURES.join(' '), ' OpenAI jobs need the project access token below.'));
+      rows.push(choiceRow, openaiNote);
       refresh = () => {
         for (const id of Object.keys(errs) as ProviderId[]) errs[id]!.textContent = validateProviderKey(id, state.providers[id]) ?? '';
         ptErr.textContent = validateProjectToken(state.projectToken) ?? '';
+        choiceRow.hidden = linkedProviders(state.providers).length < 2;
+        openaiNote.hidden = runProvider(state.providers, state.jobProvider) !== 'openai';
         next.disabled = blockers(state).length > 0;
       };
       const { panel, heading } = frame({
@@ -766,7 +782,9 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
           el('div', { class: 'su-field su-schedule' }, el('span', { class: 'su-label', id: 'su-interval-l', text: 'How often your coordinator checks for work' }), schedule, estimate),
           el('label', { class: 'su-toggle', for: 'su-approve' }, approve, el('span', { class: 'su-toggle-text' }, el('strong', { text: 'Ask me before each job starts' }), el('span', { text: 'Recommended. Changes always arrive as pull requests for you to review.' }))),
           errors,
-          el('p', { class: 'su-note', text: 'Provider usage is measured between requests, so a job can overshoot its allowance slightly. Also set a monthly limit in your provider’s console.' }),
+          el('p', { class: 'su-note', text: runProvider(state.providers, state.jobProvider) === 'openai'
+            ? 'OpenAI has no per-job spending cap and reports tokens, not dollars. The coordinator estimates cost conservatively and cancels a job when the estimate reaches its allowance, which can lag by one coordinator run. Example: a 30-minute GPT-6.1 Sol job is estimated at about $2.90, so $3 per job is the suggested minimum. Use a dedicated OpenAI project with a hard monthly limit.'
+            : 'Provider usage is measured between requests, so a job can overshoot its allowance slightly. Also set a monthly limit in your provider’s console.' }),
         ],
         primary: next,
       });
@@ -792,7 +810,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
             row('Projects', s.repos.map((r) => `${r.owner}/${r.name}`).join(', ')),
             row('AI providers', linkedProviders(s.providers).map((id) => PROVIDER_NAMES[id]).join(' and ') + ' · key encrypted, never shown again'),
             row('Limits', `${s.limits.maxConcurrent} job${s.limits.maxConcurrent === 1 ? '' : 's'} at once · ${per === null ? '?' : dollars(per)} per job · ${day === null ? '?' : dollars(day)} per day${s.limits.approveEachJob ? ' · you approve each job' : ''}`),
-            row('Jobs run', executionPlan({ projects: s.repos, providers: s.providers }).note),
+            row('Jobs run', executionPlan({ projects: s.repos, providers: s.providers, jobProvider: s.jobProvider }).note),
             row('Project token', s.projectToken.trim() ? 'fine-grained token · encrypted, never shown again' : 'not added: jobs can’t reach your projects until you add one (run setup again)'),
             row('App closed', `Your Empire keeps working. Its coordinator runs ${s.interval === 60 ? 'hourly' : `every ${s.interval} minutes`} in GitHub Actions (about ${actionsEstimate(s.interval).minutes.toLocaleString()} Actions minutes a month), sooner when the app wakes it. Only “Shut down Empire” in the game stops it.`),
             row('Costs', 'GitHub Actions minutes are billed to your GitHub account; API usage to your AI provider. Agent Empire charges nothing.'),
@@ -830,9 +848,10 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
         result.replaceChildren();
         const token = state.github.token;
         const login = state.github.login;
+        const runOn = runProvider(state.providers, state.jobProvider); // read before the keys are forgotten
         try {
           const repo = await createEmpire(
-            { login, projects: state.repos, providers: state.providers, projectToken: state.projectToken, limits: state.limits, interval: state.interval, platform: deps.shell?.platform ?? 'web' },
+            { login, projects: state.repos, providers: state.providers, jobProvider: state.jobProvider, projectToken: state.projectToken, limits: state.limits, interval: state.interval, platform: deps.shell?.platform ?? 'web' },
             token,
             { fetch: fetchImpl, ...(deps.coordinator ? { bundle: deps.coordinator } : {}) },
             (step, s, detail) => mark(step, s, detail),
@@ -841,10 +860,12 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
           await Promise.allSettled([deps.native.secureSet('state.repo', `${repo.owner}/${repo.name}`), deps.native.secureSet('mode', 'cloud')]);
           result.replaceChildren(el('p', { class: 'su-success' }, icon(ICONS.check, 'su-inline-ico'), repo.alreadyInstalled ? `Your Empire was already in ${repo.owner}/${repo.name}; it was kept as it is and its coordinator is up to date.` : `Your Empire has a home: ${repo.owner}/${repo.name}. Nothing has been started or charged.`));
           const executionNote = {
-            requested: 'Your coordinator sets up your Anthropic agent and environment on its first run (within your schedule). Cloud Empire shows when execution is ready; until then new jobs are refused, not charged.',
+            requested: runOn === 'openai'
+              ? 'Your coordinator sets up your OpenAI vault once OpenAI support is verified (within your schedule). Cloud Empire shows when execution is ready; until then new jobs are refused, not charged.'
+              : 'Your coordinator sets up your Anthropic agent and environment on its first run (within your schedule). Cloud Empire shows when execution is ready; until then new jobs are refused, not charged.',
             already_requested: 'Execution setup is already waiting for your coordinator’s next run.',
             already_configured: 'Execution is already set up; jobs run where they did before.',
-            no_anthropic_key: 'No Anthropic key: jobs can’t run yet. OpenAI-only Empires can’t run jobs until the OpenAI adapter exists.',
+            no_anthropic_key: 'No provider key or project: jobs can’t run yet. Run setup again to add them.',
           }[repo.execution ?? 'requested'];
           result.append(el('p', { class: 'su-note', text: executionNote }));
           busy = false;

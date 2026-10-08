@@ -15,10 +15,11 @@
 import { GitHubClient as CloudGitHubClient } from '../../cloud/store';
 import { INSTALL_STEPS, InstallError, installStateRepository, writtenSummary, type InstallResult, type InstallStep, type SecretName, type StepStatus } from '../../cloud/installer';
 import type { CloudLimits } from '../../cloud/schema';
-import { linkedProviders, parseCents, STATE_REPO_NAME, type Interval, type Limits, type ProviderId, type RepoRef } from './model';
+import { linkedProviders, parseCents, runProvider, STATE_REPO_NAME, type Interval, type Limits, type ProviderId, type RepoRef } from './model';
 import { sealForGitHub } from './sealed-box';
 import { GITHUB_API, githubApiBase } from '../cloud/api-base';
-import { DEFAULT_WORKER_MODEL, workerModelLabel } from '../../cloud/worker-spec';
+import { DEFAULT_OPENAI_MODEL, DEFAULT_WORKER_MODEL, workerModelLabel } from '../../cloud/worker-spec';
+import { OPENAI_DISCLOSURES } from '../../cloud/openai-spec';
 
 export const SECRET_NAMES: Record<ProviderId, SecretName> = { anthropic: 'ANTHROPIC_API_KEY', openai: 'OPENAI_API_KEY' };
 /** Where the client build ships the coordinator (tools/ship-coordinator.mjs) and its integrity manifest. */
@@ -39,16 +40,23 @@ export interface StateRepo {
  * Where jobs run and how execution gets set up. With an Anthropic key, the coordinator finds or creates the Anthropic
  * agent and environment on its first run (src/cloud/provisioning.ts) for the first selected project. The device does
  * not call Anthropic: api.anthropic.com refuses browser calls to those endpoints, and the key is sealed into an Actions
- * secret here and never read back. OpenAI-only plans get no execution until the OpenAI adapter exists.
+ * secret here and never read back. CLOUD-06: with OpenAI as the job provider (the only key, or chosen when both are
+ * given), the coordinator instead finds or creates an OpenAI vault holding the project token (openai-adapter.ts).
  */
-export function executionPlan(plan: Pick<CloudPlan, 'projects' | 'providers'>): { repository: { owner: string; name: string; baseBranch: string } | null; note: string } {
+export function executionPlan(plan: Pick<CloudPlan, 'projects' | 'providers'> & { jobProvider?: ProviderId }): { repository: { owner: string; name: string; baseBranch: string } | null; provider: ProviderId | null; note: string } {
   const project = plan.projects[0];
-  if (!plan.providers.anthropic.trim())
-    return { repository: null, note: 'Jobs need an Anthropic key: OpenAI-only Empires can’t run jobs until the OpenAI adapter exists. Your OpenAI key is stored for then.' };
-  if (!project) return { repository: null, note: 'Choose a project repository for jobs to run on.' };
+  const provider = runProvider(plan.providers, plan.jobProvider);
+  if (!provider) return { repository: null, provider: null, note: 'Add an Anthropic or OpenAI key for jobs to run.' };
+  if (!project) return { repository: null, provider, note: 'Choose a project repository for jobs to run on.' };
   const more = plan.projects.length > 1 ? ` (the first of your ${plan.projects.length} projects; change it later in Cloud Empire → Limits)` : '';
+  const repository = { owner: project.owner, name: project.name, baseBranch: project.defaultBranch || 'main' };
+  if (provider === 'openai')
+    return {
+      repository, provider,
+      note: `Jobs run on ${project.owner}/${project.name}${more} with the OpenAI Agents API and ${workerModelLabel(DEFAULT_OPENAI_MODEL)} (unverified until first run; change the model under Cloud Empire → Limits). Your coordinator’s first run creates (or reuses) an OpenAI vault for your project token; that starts no session. Jobs run in a medium OpenAI-hosted sandbox with network access. ${OPENAI_DISCLOSURES.join(' ')} OpenAI support is new: the coordinator refuses OpenAI jobs until its first verified real run, so nothing is charged before then.`,
+    };
   return {
-    repository: { owner: project.owner, name: project.name, baseBranch: project.defaultBranch || 'main' },
+    repository, provider,
     note: `Jobs run on ${project.owner}/${project.name}${more} with ${workerModelLabel(DEFAULT_WORKER_MODEL)} (change the model under Cloud Empire → Limits). Your coordinator’s first run creates (or reuses) an Anthropic agent “Agent Empire worker” and a cloud environment in your Anthropic account. Creating them is not a billed item and starts no session; you pay only for jobs you confirm. Jobs run in an Anthropic cloud sandbox with full internet access, so a worker can install packages and also fetch untrusted content; it approves its own tool use inside the sandbox. Your keys never enter the sandbox.`,
   };
 }
@@ -57,6 +65,8 @@ export interface CloudPlan {
   login: string;
   projects: RepoRef[];
   providers: Record<ProviderId, string>;
+  /** Which provider runs jobs when both keys are given (default Anthropic). */
+  jobProvider?: ProviderId;
   projectToken?: string;
   limits: Limits;
   interval: Interval;
@@ -162,7 +172,7 @@ export async function createEmpire(plan: CloudPlan, token: string, deps: CreateD
         repo: STATE_REPO_NAME,
         secrets: planSecrets(plan),
         limits,
-        ...(executionPlan(plan).repository ? { provision: executionPlan(plan).repository! } : {}),
+        ...(executionPlan(plan).repository ? { provision: executionPlan(plan).repository!, provisionProvider: executionPlan(plan).provider! } : {}),
         coordinatorBundle: bundle,
         workflow: { intervalMinutes: plan.interval },
         now: (deps.now ?? Date.now)(),
