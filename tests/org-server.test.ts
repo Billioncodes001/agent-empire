@@ -38,7 +38,8 @@ async function fixture(t: { after(fn: () => Promise<void>): void }) {
     });
     return messages;
   }
-  return { api, connect };
+  const researchApi = (route: string, body?: unknown) => fetch(`${origin}/api/research${route}`, { method: body === undefined ? 'GET' : 'POST', headers: { cookie, origin, 'content-type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  return { api, connect, researchApi };
 }
 
 const waitFor = async (pred: () => boolean, ms = 3000) => {
@@ -53,7 +54,8 @@ test('welcome carries the rule-based roster and an org message follows a change'
   assert.equal(welcome.org.schemaVersion, 1);
   assert.deepEqual(welcome.org.executives.map((e: any) => e.role), ['chief_of_staff', 'operations', 'finance', 'marketing_sales', 'research']);
   assert.ok(welcome.org.executives.every((e: any) => e.monitor === 'rule_based'));
-  assert.equal(welcome.org.executives.find((e: any) => e.role === 'research').summary, 'Not staffed yet');
+  assert.match(welcome.org.executives.find((e: any) => e.role === 'research').summary, /No research yet/);
+  assert.deepEqual(welcome.research, { schemaVersion: 1, reports: [], openProposals: 0 });
   assert.equal(welcome.org.executives.find((e: any) => e.role === 'chief_of_staff').attention, 0);
   const created = await (await f.api('jobs', { requestId: 'org-1', client: 'Acme', title: 'Portal', brief: 'Fixture only', tasks: [{ title: 'Build', prompt: 'Build it' }, { title: 'Test', prompt: 'Test it', phase: 'testing' }] })).json();
   assert.equal(created.estimate.basis.source, 'default', 'no history yet: the stated default');
@@ -78,4 +80,24 @@ test('review fix 3: the server carries consultancy item order into the queue as 
   assert.equal(tasks.length, 2);
   assert.deepEqual(tasks[1].dependsOn, [tasks[0].id]);
   assert.ok(tasks.every((q: any) => q.status === 'queued'), 'concurrency 0: nothing started');
+});
+
+test('ORG-05: POST /api/research files an internal job pending approval and broadcasts research', async (t) => {
+  const f = await fixture(t);
+  const messages = await f.connect();
+  const bad = await f.researchApi('', { question: '' , requestId: 'q0' });
+  assert.equal(bad.status, 400);
+  const res = await f.researchApi('', { question: 'Can we sell to dentists?', requestId: 'q1' });
+  assert.equal(res.status, 200);
+  const { job, report } = await res.json();
+  assert.equal(job.client, 'Internal');
+  assert.equal(job.decision, 'pending_approval');
+  assert.equal(report.status, 'awaiting_approval');
+  await waitFor(() => messages.some((m) => m.t === 'research' && m.state.reports.length === 1));
+  await waitFor(() => messages.some((m) => m.t === 'approvals' && m.state.items.some((i: any) => i.jobId === job.id)));
+  const one = await (await f.researchApi(`/reports/${job.id}`)).json();
+  assert.equal(one.question, 'Can we sell to dentists?');
+  assert.equal((await f.researchApi('/reports/nope')).status, 404);
+  const state = await (await f.researchApi('')).json();
+  assert.equal(state.reports[0].jobId, job.id);
 });

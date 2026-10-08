@@ -3,7 +3,7 @@
 
 import type { EstimateBasis, ExecutiveRole, Range } from './org.js';
 
-export type ApprovalKind = 'job_plan' | 'budget_increase';
+export type ApprovalKind = 'job_plan' | 'budget_increase' | 'tool_proposal';
 /** `resolved`: the hold an increase was raised for cleared without any recorded budget raise (no decision is implied). */
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'resolved';
 
@@ -38,6 +38,8 @@ export interface Approval {
   budgetUsd?: number;
   /** A plain note on the decision, e.g. "Reopened after decline on …". */
   note?: string;
+  /** ORG-05 tool_proposal: the tool a research report proposes. Deciding only records the decision. */
+  tool?: { name: string; url: string; licence: string; enables: string; risk: string };
   /** A declined budget increase whose hold still stands: it can still be approved (review fix 1). */
   reopenable?: true;
 }
@@ -56,6 +58,7 @@ export const APPROVAL_ID_RE = /^A[1-9]\d{0,8}$/;
 export const APPROVAL_KIND_LABEL: Record<ApprovalKind, string> = {
   job_plan: 'Client plan',
   budget_increase: 'Budget increase',
+  tool_proposal: 'Tool proposal',
 };
 
 export const MAX_APPROVAL_BUDGET_USD = 100_000;
