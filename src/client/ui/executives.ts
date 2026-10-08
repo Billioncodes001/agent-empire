@@ -1,6 +1,7 @@
 import { EXECUTIVES, NOT_STAFFED, type Executive, type ExecutiveRole, type OrgState } from '../../shared/org';
 import { store } from '../state';
 import { h, openModal } from './dom';
+import { morphChildren } from './reconcile';
 import { openInbox } from './inbox';
 import { researchPanel } from './research';
 
@@ -70,11 +71,12 @@ export function openExecutiveCard(role: ExecutiveRole, openQueue?: () => void) {
   const close = h('button.btn.close', { type: 'button', 'aria-label': 'Close executive card' }, '✕');
   const render = () => {
     const e = store.org?.executives.find((x) => x.role === role);
-    slot.replaceChildren(
+    // Patched in place, so the Open inbox / Open task queue button keeps focus when the org broadcast repeats.
+    morphChildren(slot, [
       e
         ? executiveCard(e, { heading: 'h2', openQueue: openQueue && (() => { modal.close(); openQueue(); }), beforeInbox: () => modal.close() })
         : h('p.setting-note', {}, store.cloud ? 'Executives are not available in cloud mode yet.' : 'This server has not reported its executives yet.'),
-    );
+    ]);
   };
   // ORG-05: the research office also lists its reports and takes questions.
   const panel = role === 'research' ? researchPanel(() => modal.close()) : undefined;

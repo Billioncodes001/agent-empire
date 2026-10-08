@@ -5,6 +5,7 @@ import { TOOL_DECISION_NOTE } from '../../shared/research';
 import { safeLink } from '../research-view';
 import { store } from '../state';
 import { h, openModal } from './dom';
+import { morphChildren } from './reconcile';
 
 // ORG-03: the CEO approval inbox. Every item comes from the server's inbox, which is reconciled from consultancy state;
 // a decision here is the same decision as on the founder desk or in Telegram.
@@ -56,7 +57,7 @@ function itemRow(item: Approval, selected: boolean, onSelect: () => void): HTMLE
     : item.tool ? item.tool.licence : item.estimate ? `Estimate ${fmtUsdRange(item.estimate.costUsd)}` : '';
   return h(
     'li',
-    {},
+    { 'data-key': item.id },
     h(
       'button.inbox-row',
       { type: 'button', 'aria-current': selected ? 'true' : undefined, 'data-approval': item.id, 'data-status': item.status, onclick: onSelect },
@@ -218,13 +219,15 @@ export function openInbox(focusId?: string) {
     if (!selected && pending[0]) selected = pending[0].id;
     if (body.firstChild !== side) body.replaceChildren(side, detail);
     const keep = side.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.approval : undefined;
-    list.replaceChildren(...(pending.length ? pending.map((i) => itemRow(i, i.id === selected, () => select(i.id))) : [h('li.inbox-empty', {}, 'Nothing is waiting for you.')]));
-    history.replaceChildren(...decided.map((i) => itemRow(i, i.id === selected, () => select(i.id))));
+    // Patched in place by item id, so a focused row keeps focus and the lists keep their scroll across broadcasts.
+    morphChildren(list, pending.length ? pending.map((i) => itemRow(i, i.id === selected, () => select(i.id))) : [h('li.inbox-empty', {}, 'Nothing is waiting for you.')]);
+    morphChildren(history, decided.map((i) => itemRow(i, i.id === selected, () => select(i.id))));
+    // An item that moved from the waiting list to the history is a new row there; follow it.
+    if (keep && !side.contains(document.activeElement)) side.querySelector<HTMLElement>(`[data-approval="${CSS.escape(keep)}"]`)?.focus({ preventScroll: true });
     historyBox.hidden = !decided.length;
     if (decided.some((i) => i.reopenable)) historyBox.open = true;
     storageNote.textContent = state.storageError ?? '';
     storageNote.hidden = !state.storageError;
-    if (keep) side.querySelector<HTMLElement>(`[data-approval="${CSS.escape(keep)}"]`)?.focus();
     // Re-draw the detail only when what it shows changed, so a broadcast never steals focus from the budget input.
     const current = state.items.find((i) => i.id === selected);
     const key = JSON.stringify([current, confirming, busy, error]);

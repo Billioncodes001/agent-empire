@@ -4,6 +4,7 @@ import { store } from '../state';
 import { autoFocus } from '../keyboard';
 import { h, openModal, timeAgo, STATUS_LABEL } from './dom';
 import { confirmDialog } from './prompt';
+import { morphChildren } from './reconcile';
 import { blockedLabel, heldLabel } from '../../shared/dependencies';
 
 export interface QueueActions {
@@ -106,7 +107,7 @@ export function openQueue(net: Net, actions: QueueActions) {
 
   const section = (title: string, tasks: QueueTask[], extra?: HTMLElement) => {
     if (!tasks.length) return null;
-    return h('div', {}, h('h4', {}, title, h('span.count', {}, String(tasks.length)), extra ?? null), h('ul.queue-list', {}, ...tasks.map(row)));
+    return h('div', { 'data-key': title }, h('h4', {}, title, h('span.count', {}, String(tasks.length)), extra ?? null), h('ul.queue-list', {}, ...tasks.map(row)));
   };
 
   const row = (t: QueueTask): HTMLElement => {
@@ -177,8 +178,9 @@ export function openQueue(net: Net, actions: QueueActions) {
       section('✅ Finished', done, h('button.btn', { type: 'button', onclick: () => net.send({ t: 'queue.clear' }) }, 'Clear')),
       running.length + queued.length + done.length ? null : h('div.queue-empty', {}, 'Nothing on the queue yet.'),
     ];
-    // Only the list is rebuilt, so the task box keeps its focus and text while events stream in.
-    list.replaceChildren(...parts.filter((n): n is HTMLElement => n !== null));
+    // Only the list is re-rendered, and it is patched in place by task id: the task box keeps its text, and a
+    // focused Retry / Stop / ↑ button keeps focus (and the list its scroll) while events stream in.
+    morphChildren(list, parts.filter((n): n is HTMLElement => n !== null));
   };
 
   const unsubs = [store.on('empire', render), store.on('queue', render), store.on('workers', render), store.on('issues', render)];
