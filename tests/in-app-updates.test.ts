@@ -19,7 +19,8 @@ import { CloudRepo } from '../src/client/cloud/repo';
 import { COORDINATOR_BUNDLE_PATH } from '../src/cloud/workflow';
 import { FakeGitHub } from './fake-github';
 import { asset, channelJson, OTHER_KEYPAIR, sha256, sign, signedChannel } from './update-fixtures';
-import { DEV_RELEASE_PUBLIC_KEY, RELEASE_PUBLIC_KEY } from '../src/shared/release-key';
+import { RELEASE_PUBLIC_KEY } from '../src/shared/release-key';
+import { DEV_RELEASE_PUBLIC_KEY } from '../tools/release/dev-key.mjs';
 import { BUILD_TRUSTED_KEYS, trustedKeys } from '../src/client/update/trust';
 
 /** The owner's release key (REL-07). */
@@ -74,7 +75,8 @@ test('release key: every shell pins the owner key, dev trust is development-only
     assert.ok(text.includes(OWNER_KEY), `${file} pins the owner's RELEASE_PUBLIC_KEY`);
   }
   // The development key exists only where development builds get it.
-  assert.ok(readFileSync('src/shared/release-key.ts', 'utf8').includes(DEV_RELEASE_PUBLIC_KEY), 'tools and vite.config.ts read the dev key here');
+  assert.ok(!readFileSync('src/shared/release-key.ts', 'utf8').includes(DEV_RELEASE_PUBLIC_KEY), 'not in src/shared (it ships in dist/server)');
+  assert.equal(readFileSync('tools/release/dev-release-public-key.txt', 'utf8').trim(), DEV_RELEASE_PUBLIC_KEY, 'tools and vite.config.ts read the dev key here');
   assert.ok(!readFileSync('desktop/update-store.cjs', 'utf8').includes(DEV_RELEASE_PUBLIC_KEY), 'desktop: dev trust only via dev-trust.json');
   assert.ok(!readFileSync('mobile/android/app/src/main/java/com/agentempire/mobile/UpdatePolicy.java', 'utf8').includes(DEV_RELEASE_PUBLIC_KEY), 'android: not in main');
   assert.ok(readFileSync('mobile/android/app/src/debug/java/com/agentempire/mobile/DevTrust.java', 'utf8').includes(DEV_RELEASE_PUBLIC_KEY), 'android: debug variant');

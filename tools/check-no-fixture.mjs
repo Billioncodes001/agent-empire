@@ -14,14 +14,9 @@ import { fileURLToPath } from 'node:url';
 
 export const FIXTURE_MARKER = '__AGENT_EMPIRE_FIXTURE_BUILD__';
 const TEXT = /\.(m?js|cjs|html|json)$/i;
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+import { devReleaseKey } from './release/dev-key.mjs';
 
-/** The public development release key, read from src/shared/release-key.ts. */
-export function devReleaseKey(root = ROOT) {
-  const m = /export const DEV_RELEASE_PUBLIC_KEY = '([A-Za-z0-9+/]{43}=)';/.exec(readFileSync(path.join(root, 'src/shared/release-key.ts'), 'utf8'));
-  if (!m) throw new Error('src/shared/release-key.ts must declare DEV_RELEASE_PUBLIC_KEY as a string literal');
-  return m[1];
-}
+export { devReleaseKey };
 
 /** Files under `dir` that carry the fixture marker, the fixture override variable name, or the development key. */
 export function fixtureFiles(dir) {

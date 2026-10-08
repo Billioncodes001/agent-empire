@@ -36,10 +36,6 @@ rmSync(devTrust, { force: true });
 if (devUpdates) {
   writeFileSync(devTrust, `${JSON.stringify({ devReleasePublicKey: devReleaseKey(), note: 'Development build (prepare-desktop.mjs --dev-updates): trusts the public development release key. Never ship.' }, null, 2)}\n`);
   console.warn('warning: development desktop build (--dev-updates): it trusts the public development release key. Never ship it.');
-} else {
-  // Release shape: no shell file may carry the development key.
-  const hits = DESKTOP_FILES.filter((name) => devKeyFiles(path.join(desktop, name)).length);
-  if (hits.length) throw new Error(`Desktop shell files carry the development release key: ${hits.join(', ')}`);
 }
 const root = path.join(desktop, 'runtime');
 mkdirSync(root, { recursive: true });
@@ -50,6 +46,12 @@ for (const [from, to] of [['dist/server', 'server'], ['dist/public', 'public']])
 }
 // A fixture client (fake GitHub API) must never be packaged.
 assertNoFixtureBuild(path.join(root, 'public'));
+if (!devUpdates) {
+  // Release shape (REL-07): nothing shipped may carry the development key: shell files, the game, the bundled server.
+  const hits = [...DESKTOP_FILES.filter((name) => devKeyFiles(path.join(desktop, name)).length),
+    ...['public', 'server'].flatMap((dir) => devKeyFiles(path.join(root, dir)).map((f) => `runtime/${dir}/${f}`))];
+  if (hits.length) throw new Error(`The desktop app would carry the development release key: ${hits.slice(0, 5).join(', ')}`);
+}
 copyFileSync(path.join(project, 'dist/server/server/device-sync.js'), path.join(root, 'device-sync.js'));
 // The game window loads this bundle through empire-app://game (desktop/app-protocol.cjs); fail early if it's missing.
 for (const file of ['public/index.html', 'device-sync.js']) if (!existsSync(path.join(root, file))) throw new Error(`Bundled ${file} is missing from ${root}`);

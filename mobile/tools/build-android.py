@@ -51,10 +51,10 @@ debug_res = android / 'app/src/debug/res'
 # Per-variant sources (REL-07): app/src/debug/java has DevTrust with the public development key, app/src/release/java
 # has DevTrust without one.
 variant_java = lambda variant: android / f'app/src/{variant}/java'
-dev_key_match = re.search(r"export const DEV_RELEASE_PUBLIC_KEY = '([A-Za-z0-9+/]{43}=)';", (project / 'src/shared/release-key.ts').read_text(encoding='utf-8'))
-if not dev_key_match:
-    raise SystemExit('src/shared/release-key.ts must declare DEV_RELEASE_PUBLIC_KEY as a string literal')
-DEV_KEY = dev_key_match.group(1).encode('ascii')
+dev_key_text = (project / 'tools/release/dev-release-public-key.txt').read_text(encoding='utf-8').strip()
+if not re.fullmatch(r'[A-Za-z0-9+/]{43}=', dev_key_text):
+    raise SystemExit('tools/release/dev-release-public-key.txt must hold one base64 key')
+DEV_KEY = dev_key_text.encode('ascii')
 build = android / 'build/portable'
 game = (args.game or project / 'dist/public').resolve()
 if not (game / 'index.html').is_file():

@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createPublicKey, generateKeyPairSync, verify as cryptoVerify } from 'node:crypto';
-import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -17,7 +17,8 @@ import { buildChannel, classifyAssets, coordinatorSchema, squirrelFeed } from '.
 import { serviceAccountAssertion, uploadBundle } from '../tools/release/play-upload.mjs';
 import { checkFeed, nugetVersion, nupkgName, parseReleases, SQUIRREL_ID } from '../tools/release/package-windows-installer.mjs';
 import { createHash } from 'node:crypto';
-import { DEV_RELEASE_PUBLIC_KEY, RELEASE_PUBLIC_KEY } from '../src/shared/release-key';
+import { RELEASE_PUBLIC_KEY } from '../src/shared/release-key';
+import { DEV_RELEASE_PUBLIC_KEY } from '../tools/release/dev-key.mjs';
 import { devKeyFiles } from '../tools/check-no-fixture.mjs';
 
 /** The owner's release key (REL-07, pinned 2026-10-08). */
@@ -39,7 +40,7 @@ function fixtureRoot(): string {
   // Plus the per-build trust sources the gate inspects (REL-07).
   const trust = ['src/client/update/trust.ts', 'desktop/main.cjs', 'mobile/android/app/src/release/java/com/agentempire/mobile/DevTrust.java',
     'mobile/android/app/src/debug/java/com/agentempire/mobile/DevTrust.java', 'mobile/android/app/src/main/java/com/agentempire/mobile/GameUpdater.java', 'mobile/ios/AgentEmpire/GameUpdater.swift'];
-  for (const file of new Set(['src/shared/release-key.ts', 'tools/release/config.json', 'src/cloud/schema.ts', ...pinned, ...trust])) {
+  for (const file of new Set(['src/shared/release-key.ts', 'tools/release/dev-release-public-key.txt', 'tools/release/config.json', 'src/cloud/schema.ts', ...pinned, ...trust])) {
     mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
     copyFileSync(path.join(ROOT, file), path.join(root, file));
   }
@@ -213,13 +214,33 @@ test('release gate: refuses the dev key as release key, an unpinned shell, and a
     ['iOS outside #if DEBUG', (r) => edit(r, IOS, (t) => t.replace('static let devReleasePublicKey: String? = nil', `static let devReleasePublicKey: String? = "${DEV_RELEASE_PUBLIC_KEY}"`)), /UpdatePolicy\.swift:\d+: the development key outside #if DEBUG/],
     ['desktop shell source', (r) => edit(r, 'desktop/update-store.cjs', (t) => `${t}\nconst DEV = '${DEV_RELEASE_PUBLIC_KEY}';\n`), /update-store\.cjs: a release build would trust/],
     ['desktop dev-trust.json', (r) => writeFileSync(path.join(r, 'desktop/dev-trust.json'), JSON.stringify({ devReleasePublicKey: DEV_RELEASE_PUBLIC_KEY })), /dev-trust\.json exists/],
-    ['web client import', (r) => edit(r, 'src/client/update/trust.ts', (t) => t.replace("import { RELEASE_PUBLIC_KEY } from", "import { RELEASE_PUBLIC_KEY, DEV_RELEASE_PUBLIC_KEY } from")), /trust\.ts: a release build would trust/],
+    ['web client source', (r) => edit(r, 'src/client/update/trust.ts', (t) => `${t}\nexport const DEV = '${DEV_RELEASE_PUBLIC_KEY}';\n`), /trust\.ts: a release build would trust/],
+    // src/shared compiles into dist/server, which ships in the desktop app (review finding: release-key.ts carried it).
+    ['shared source (shipped in dist/server)', (r) => edit(r, KEYFILE, (t) => `${t}export const DEV_RELEASE_PUBLIC_KEY = '${DEV_RELEASE_PUBLIC_KEY}';\n`), /release-key\.ts: a release build would trust/],
   ];
   for (const [name, breakIt, expected] of cases) {
     const r = fresh();
     breakIt(r);
     assert.match(checkPinnedKey({ root: r }).join('\n'), expected, name);
   }
+});
+
+test('desktop release layout (shell files + runtime/server + runtime/public) carries no development key', () => {
+  // What prepare-desktop.mjs stages and electron-packager ships (resources/app): every source tsconfig.server.json compiles
+  // into dist/server, the shell files, and the built game when present. This would have caught release-key.ts.
+  const app = temp('desktop-app');
+  for (const name of readdirSync(path.join(ROOT, 'desktop'))) if (/\.(cjs|js|html|css|json)$/.test(name) && name !== 'package-lock.json') copyFileSync(path.join(ROOT, 'desktop', name), path.join(app, name));
+  const server: { include: string[] } = JSON.parse(readFileSync(path.join(ROOT, 'tsconfig.server.json'), 'utf8'));
+  for (const glob of server.include) {
+    const dir = glob.split('/**')[0];
+    cpSync(path.join(ROOT, dir), path.join(app, 'runtime/server', path.relative('src', dir)), { recursive: true });
+  }
+  for (const built of ['dist/server', 'dist/public']) if (existsSync(path.join(ROOT, built))) cpSync(path.join(ROOT, built), path.join(app, 'runtime', `built-${path.basename(built)}`), { recursive: true });
+  assert.deepEqual(devKeyFiles(app), []);
+  assert.match(execFileSync('node', [path.join(ROOT, 'tools/release/sign.mjs'), 'check-trust', app]).toString(), /no development key trust/);
+  // A development desktop build is caught.
+  writeFileSync(path.join(app, 'dev-trust.json'), JSON.stringify({ devReleasePublicKey: DEV_RELEASE_PUBLIC_KEY }));
+  assert.throws(() => execFileSync('node', [path.join(ROOT, 'tools/release/sign.mjs'), 'check-trust', app], { stdio: 'pipe' }));
 });
 
 test('check-trust: built outputs carrying the development key or dev-trust.json are development builds', () => {

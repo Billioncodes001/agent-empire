@@ -222,10 +222,10 @@ jobs:
         run: |
           echo "::warning::no Apple signing (dry run, or secrets not set): building an UNSIGNED macOS app"
           node tools/release/package-macos.mjs --out release/assets
-      - name: The packaged shell trusts only the release key
+      - name: The packaged app trusts only the release key
         run: |
           test ! -e desktop/dev-trust.json
-          node tools/release/sign.mjs check-trust desktop/*.cjs desktop/*.js desktop/*.html desktop/runtime/public
+          node tools/release/sign.mjs check-trust release/macos/*/"Agent Empire.app"/Contents/Resources/app
       - name: Remove the signing keychain
         if: always() && env.APPLE_KEYCHAIN != ''
         run: security delete-keychain "$APPLE_KEYCHAIN" || true

@@ -19,11 +19,10 @@ const GAME_VERSION: string = JSON.parse(readFileSync(resolve(import.meta.dirname
 /**
  * REL-07: development page builds (the dev server and fixture builds) also trust the public development release key, so
  * the local update fixture works; production builds trust only the owner's key and must not even carry the dev key
- * string (tools/check-no-fixture.mjs refuses dist/public when it does). Read from src/shared/release-key.ts here so no
- * client module imports it.
+ * string (tools/check-no-fixture.mjs refuses dist/public when it does). Read from tools/release (never shipped).
  */
-const DEV_RELEASE_PUBLIC_KEY = /export const DEV_RELEASE_PUBLIC_KEY = '([A-Za-z0-9+/]{43}=)';/.exec(readFileSync(resolve(import.meta.dirname, 'src/shared/release-key.ts'), 'utf8'))?.[1];
-if (!DEV_RELEASE_PUBLIC_KEY) throw new Error('src/shared/release-key.ts must declare DEV_RELEASE_PUBLIC_KEY as a string literal.');
+const DEV_RELEASE_PUBLIC_KEY = readFileSync(resolve(import.meta.dirname, 'tools/release/dev-release-public-key.txt'), 'utf8').trim();
+if (!/^[A-Za-z0-9+/]{43}=$/.test(DEV_RELEASE_PUBLIC_KEY)) throw new Error('tools/release/dev-release-public-key.txt must hold one base64 key.');
 const gameVersionFile = (): Plugin => ({
   name: 'agent-empire-game-version',
   generateBundle() {

@@ -15,6 +15,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { devKeyFiles } from '../check-no-fixture.mjs';
+import { DEV_KEY_FILE, devReleaseKey } from './dev-key.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 export const RELEASE_KEY_FILE = 'src/shared/release-key.ts';
@@ -59,22 +60,19 @@ export function verifyBytes(bytes, signatureBase64, publicKeyB64) {
   catch { return false; }
 }
 
-/** The keys in src/shared/release-key.ts. Both must be string literals so tools and shells can read them. */
+/** The release key in src/shared/release-key.ts (a string literal, so tools and shells can read it) and the dev key (dev-key.mjs). */
 export function pinnedKeys(root = ROOT) {
   const text = readFileSync(path.join(root, RELEASE_KEY_FILE), 'utf8');
-  const read = name => {
-    const m = new RegExp(`export const ${name} = '([A-Za-z0-9+/=]{44})';`).exec(text);
-    if (!m) throw new Error(`${RELEASE_KEY_FILE} must declare ${name} as a base64 string literal`);
-    return m[1];
-  };
-  return { release: read('RELEASE_PUBLIC_KEY'), dev: read('DEV_RELEASE_PUBLIC_KEY') };
+  const m = /export const RELEASE_PUBLIC_KEY = '([A-Za-z0-9+/=]{44})';/.exec(text);
+  if (!m) throw new Error(`${RELEASE_KEY_FILE} must declare RELEASE_PUBLIC_KEY as a base64 string literal`);
+  return { release: m[1], dev: devReleaseKey(root) };
 }
 
 /**
- * REL-07: where release builds come from, no source may let them trust the development key. Development trust is
- * allowed only in: src/shared/release-key.ts (read by tools and vite.config.ts, never imported for it by client code),
- * vite.config.ts (dev server / fixture define), mobile/android/app/src/debug (the debug variant's DevTrust.java), and
- * inside `#if DEBUG` in the iOS app. Desktop dev trust lives only in a dev-trust.json written by
+ * REL-07: where release builds come from, no source may let them trust the development key. It may appear only in
+ * tools/ (dev-key.mjs and its .txt; read by vite.config.ts for the dev server / fixture define), mobile/android/app/src/debug
+ * (the debug variant's DevTrust.java), and inside `#if DEBUG` in the iOS app. Nowhere under src/: src/shared and
+ * src/server compile into dist/server, which ships in the desktop app, and src/client into dist/public. Desktop dev trust lives only in a dev-trust.json written by
  * `prepare-desktop.mjs --dev-updates`, which must not exist in the tree being released. Built outputs are checked by
  * `check-trust` (packaged apps), tools/check-no-fixture.mjs (dist/public) and mobile/tools/build-android.py (APK).
  */
@@ -87,9 +85,9 @@ export function checkReleaseTrust(root = ROOT, dev = pinnedKeys(root).dev) {
     return readdirSync(dir, { recursive }).map((name) => path.join(rel, String(name))).filter((f) => /\.(ts|tsx|mts|js|mjs|cjs|java|swift|json|html)$/.test(f));
   };
   if (existsSync(path.join(root, 'desktop/dev-trust.json'))) problems.push('desktop/dev-trust.json exists: it makes the desktop app trust the development key; rerun `node tools/prepare-desktop.mjs` without --dev-updates');
-  for (const file of [...walk('desktop', false), ...walk('src/client'), ...walk('mobile/android/app/src/main'), ...walk('mobile/android/app/src/release')]) {
+  for (const file of [...walk('desktop', false), ...walk('src'), ...walk('mobile/android/app/src/main'), ...walk('mobile/android/app/src/release')]) {
     const body = text(file);
-    if (body && (body.includes(dev) || (file.startsWith('src') && /import[^;]*\bDEV_RELEASE_PUBLIC_KEY\b/.test(body)))) problems.push(`${file}: a release build would trust the development key (it may appear only in development-only sources)`);
+    if (body && body.includes(dev)) problems.push(`${file}: a release build would trust the development key (it may appear only in development-only sources)`);
   }
   const releaseTrust = text('mobile/android/app/src/release/java/com/agentempire/mobile/DevTrust.java');
   if (releaseTrust === null) problems.push('mobile/android/app/src/release/java/com/agentempire/mobile/DevTrust.java: missing (the release variant must declare no development key)');
@@ -115,7 +113,7 @@ export function checkPinnedKey({ root = ROOT, signingKey, allowDev = false } = {
   const problems = [];
   const { release, dev } = pinnedKeys(root);
   const devDerived = publicKeyBase64(devPrivateKey());
-  if (dev !== devDerived) problems.push(`${RELEASE_KEY_FILE}: DEV_RELEASE_PUBLIC_KEY is not the development key (${devDerived})`);
+  if (dev !== devDerived) problems.push(`${DEV_KEY_FILE}: is not the development key (${devDerived})`);
   if (release === devDerived && !allowDev) problems.push(`${RELEASE_KEY_FILE}: RELEASE_PUBLIC_KEY is still the development key; paste the owner's public key (node tools/release/generate-signing-key.mjs)`);
   const config = JSON.parse(readFileSync(path.join(root, 'tools/release/config.json'), 'utf8'));
   for (const file of config.pinnedKeyFiles ?? []) {

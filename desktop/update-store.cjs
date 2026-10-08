@@ -27,8 +27,7 @@ const { compareSemver, isSemver, isSha256, releaseAsset, isUpdateFetchUrl, isAss
  * gate checks this copy). A release build trusts it alone.
  *
  * Development trust (REL-07) is a build-time choice, never a runtime switch: `node tools/prepare-desktop.mjs
- * --dev-updates` writes dev-trust.json next to this file with the public development key (DEV_RELEASE_PUBLIC_KEY in
- * src/shared/release-key.ts), and every other prepare (including every release workflow run) deletes it. Only with that
+ * --dev-updates` writes dev-trust.json next to this file with the public development key (tools/release/dev-release-public-key.txt), and every other prepare (including every release workflow run) deletes it. Only with that
  * file does the shell also trust the development key, honour the loopback update fixture (main.cjs) and report the key
  * to the page (update.nativeInfo devReleaseKey). The development key string itself is not in this file, so a package
  * without dev-trust.json cannot trust it: the release workflow scans each packaged app for the key and for

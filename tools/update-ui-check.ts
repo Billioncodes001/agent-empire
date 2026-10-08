@@ -20,7 +20,7 @@ import { startUpdateFixture } from './update-fixture';
 import { FakeGitHub } from '../tests/fake-github';
 import { seed, TOKEN } from './cloud-seed';
 import { COORDINATOR_BUNDLE_PATH } from '../src/cloud/workflow';
-import { DEV_RELEASE_PUBLIC_KEY } from '../src/shared/release-key';
+import { DEV_RELEASE_PUBLIC_KEY } from './release/dev-key.mjs';
 
 const require = createRequire(import.meta.url);
 const updates = require('../desktop/update-store.cjs');

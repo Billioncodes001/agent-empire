@@ -8,7 +8,7 @@ enum UpdatePolicy {
     /// The pinned release key (src/shared/release-key.ts; listed in tools/release/config.json pinnedKeyFiles so the
     /// release gate checks this copy). A Release build trusts it alone.
     static let releasePublicKey = "rIRaOVUyoolaIritW/W8zMW7kGymgcjvg7uXhHtTqPk="
-    /// The public development key (src/shared/release-key.ts DEV_RELEASE_PUBLIC_KEY), compiled into Debug builds only
+    /// The public development key (tools/release/dev-release-public-key.txt), compiled into Debug builds only
     /// (REL-07; the release gate refuses the key outside `#if DEBUG`). Only a build that has it honours the loopback update
     /// fixture and reports it to the page (nativeInfo devReleaseKey).
     #if DEBUG
