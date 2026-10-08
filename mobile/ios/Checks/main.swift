@@ -129,7 +129,12 @@ do {
 // MARK: In-app updates (REL-04)
 
 let repoURL = "https://github.com/\(UpdatePolicy.releaseRepo)"
-check(UpdatePolicy.releaseKeyIsDevelopment && UpdatePolicy.releasePublicKey.count == 44, "updates: the development release key is pinned (same string as src/shared/release-key.ts)")
+check(UpdatePolicy.releasePublicKey == "rIRaOVUyoolaIritW/W8zMW7kGymgcjvg7uXhHtTqPk=", "updates: the owner's release key is pinned (same string as src/shared/release-key.ts)")
+#if DEBUG
+check(UpdatePolicy.devReleasePublicKey == "q7m8HRpNA8EClSZsC3KSzzInRy3LxrjPIXNU41+WLYU=" && UpdatePolicy.trustedKeys == [UpdatePolicy.releasePublicKey, "q7m8HRpNA8EClSZsC3KSzzInRy3LxrjPIXNU41+WLYU="], "updates (Debug): trusts the release key and the development key")
+#else
+check(UpdatePolicy.devReleasePublicKey == nil && UpdatePolicy.trustedKeys == [UpdatePolicy.releasePublicKey], "updates (Release): trusts only the release key")
+#endif
 check(UpdatePolicy.releaseAsset("\(repoURL)/releases/download/v1.0.0-beta.2/agent-empire-game-1.0.0-beta.2.zip")?.tag == "v1.0.0-beta.2", "updates: release asset parsed")
 check(UpdatePolicy.releaseAsset("\(repoURL)/releases/latest/download/channel-stable.json").map { $0.tag == nil } == true, "updates: latest asset")
 for bad in ["https://evil.test/a.zip", "\(repoURL)/releases/download/../a.zip", "\(repoURL)/releases/download/v1/%2e%2e", "\(repoURL)/releases/download/v1/a.zip?x=1",
@@ -241,6 +246,15 @@ do {
     check(!UpdatePolicy.verifyEd25519(msg, signatureBase64: sig), "security: another key's signature fails against the pinned key")
     check(!UpdatePolicy.verifyEd25519(Data("tampered".utf8), signatureBase64: sig, publicKeyBase64: other.publicKey.rawRepresentation.base64EncodedString()), "security: tampering fails")
     check(!UpdatePolicy.verifyEd25519(msg, signatureBase64: "garbage"), "security: garbage fails")
+    check(!UpdatePolicy.verifyTrusted(msg, signatureBase64: sig), "security: another key's signature fails against every trusted key")
+    // The public development seed (tools/release/sign.mjs DEV_KEY_SEED_TEXT): trusted only by Debug builds.
+    let devSeed = Data(SHA256.hash(data: Data("agent-empire/dev-release-key/v1: public test key, never trusted by a release build".utf8)))
+    let dev = try Curve25519.Signing.PrivateKey(rawRepresentation: devSeed)
+    let devSig = try dev.signature(for: msg).base64EncodedString()
+    check(dev.publicKey.rawRepresentation.base64EncodedString() == "q7m8HRpNA8EClSZsC3KSzzInRy3LxrjPIXNU41+WLYU=", "security: the development seed gives the development key")
+    check(!UpdatePolicy.verifyEd25519(msg, signatureBase64: devSig), "security: a dev signature fails against the release key")
+    check(UpdatePolicy.verifyTrusted(msg, signatureBase64: devSig) == (UpdatePolicy.devReleasePublicKey != nil), "security: the trusted set accepts a dev signature only in Debug")
+    check(!UpdatePolicy.verifyTrusted(Data("tampered".utf8), signatureBase64: devSig), "security: a tampered dev-signed file fails in every build")
     let url = "\(repoURL)/releases/download/v1.0.1/agent-empire-game-1.0.1.zip", sha = String(repeating: "a", count: 64)
     let doc: [String: Any] = ["schema": 1, "version": "1.0.1", "tag": "v1.0.1", "game": ["url": url, "sha256": sha, "minShell": "1.0.0"]]
     check(UpdatePolicy.releaseMismatch(doc, version: "1.0.1", url: url, sha256: sha, shellVersion: "1.0.0") == nil, "security: a request matching the signed release")

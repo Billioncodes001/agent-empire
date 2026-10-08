@@ -15,6 +15,7 @@ import type { NativeInfo, UpdateBridge } from './bridge';
 import { coordinatorDecision, commitCoordinatorUpdate, readInstalledCoordinator, type CoordinatorStatus, type InstalledCoordinator } from './coordinator';
 import type { CloudRepo } from '../cloud/repo';
 import { sha256Hex } from './verify';
+import { trustedKeys } from './trust';
 
 export const CHECK_EVERY_MS = 6 * 60 * 60_000;
 const CHANNEL_KEY = 'agent-empire.update.channel';
@@ -53,7 +54,8 @@ export interface ServiceDeps {
   /** Used without a shell (tests, the UI checks); a real browser can't read GitHub's release downloads. */
   fetcher?: Fetcher;
   now?: () => number;
-  publicKey?: string;
+  /** Keys to trust instead of trust.ts trustedKeys() (tests). */
+  publicKey?: string | readonly string[];
   /** The bundled coordinator (same-origin), used instead of a download when it is the same file. */
   bundledCoordinator?: () => Promise<string | null>;
 }
@@ -150,7 +152,7 @@ export class UpdateService {
     if (this.state.phase === 'installing') return;
     this.set({ phase: 'checking', error: null });
     try {
-      const found = await fetchChannel(this.state.channel, this.fetcher(), { cache: this.deps.storage, now: this.now(), publicKey: this.deps.publicKey });
+      const found = await fetchChannel(this.state.channel, this.fetcher(), { cache: this.deps.storage, now: this.now(), publicKey: this.deps.publicKey ?? trustedKeys(this.state.info?.devReleaseKey) });
       const channelFile = found?.file ?? null;
       const offer = channelFile ? decide(channelFile, { info: this.state.info, serverVersion: this.state.serverVersion }) : null;
       this.set({ phase: this.state.installed ? 'installed' : 'idle', checkedAt: this.now(), channelFile, offer });

@@ -9,6 +9,9 @@
 # Signing secrets live only in the GitHub Environment `release` (deployment rule: tags v* only; required reviewer:
 # the owner; see docs/RELEASING.md). A job joins that environment only on a tag run, so a dry run from any branch
 # never reads a signing secret: it signs with the public development key (--dev) and builds unsigned apps.
+# - Every run (tag and dry run) builds release-shaped apps that trust only the pinned owner key (REL-07): no
+#   prepare-desktop --dev-updates, the Android release variant, iOS Release. "check-trust" steps prove the built apps
+#   carry neither the development key nor desktop/dev-trust.json (build-android.py checks the APK itself).
 #
 # Every action is pinned to a full commit SHA (version in the comment). Secrets appear only in the steps that need
 # them; jobs see at most a true/false "HAS_*" flag, which is false outside a tag run. There is no pull_request trigger.
@@ -72,6 +75,9 @@ jobs:
       - name: Pinned release key is not the development key
         if: steps.info.outputs.release == 'true'
         run: node tools/release/sign.mjs check-key
+      - name: Release builds would trust only the pinned key (dry run, REL-07)
+        if: steps.info.outputs.release != 'true'
+        run: node tools/release/sign.mjs check-key --allow-dev
       - run: npm ci --ignore-scripts
       - run: npm ci --prefix desktop --ignore-scripts
       - run: npm run typecheck
@@ -219,6 +225,10 @@ jobs:
         run: |
           echo "::warning::no Apple signing (dry run, or secrets not set): building an UNSIGNED macOS app"
           node tools/release/package-macos.mjs --out release/assets
+      - name: The packaged app trusts only the release key
+        run: |
+          test ! -e desktop/dev-trust.json
+          node tools/release/sign.mjs check-trust release/macos/*/"Agent Empire.app"/Contents/Resources/app
       - name: Remove the signing keychain
         if: always() && env.APPLE_KEYCHAIN != ''
         run: security delete-keychain "$APPLE_KEYCHAIN" || true
@@ -300,6 +310,8 @@ jobs:
       - name: Record Azure signing
         if: env.HAS_WINDOWS_CERT != 'true' && env.HAS_AZURE_SIGNING == 'true'
         run: echo "WINDOWS_SIGNED=true" >> "$GITHUB_ENV"
+      - name: The packaged app trusts only the release key
+        run: node tools/release/sign.mjs check-trust "$APP_DIR/resources/app"
       - name: Archive
         run: |
           if [ "${WINDOWS_SIGNED:-}" = true ]; then LABEL=""; else LABEL="-unsigned"; echo "::warning::Windows signing is not configured: building an UNSIGNED Windows app"; fi
@@ -448,6 +460,7 @@ jobs:
         run: |
           xcodebuild -project mobile/ios/AgentEmpire.xcodeproj -target AgentEmpire -configuration Release \
             -sdk iphonesimulator CODE_SIGNING_ALLOWED=NO SYMROOT="$RUNNER_TEMP/ios-sim" build
+          node tools/release/sign.mjs check-trust "$RUNNER_TEMP/ios-sim/Release-iphonesimulator/AgentEmpire.app"
           (cd "$RUNNER_TEMP/ios-sim/Release-iphonesimulator" && ditto -c -k --keepParent AgentEmpire.app "$RUNNER_TEMP/AgentEmpire-simulator.zip")
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -495,6 +508,7 @@ jobs:
             -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/AgentEmpire.xcarchive" archive \
             CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CODE_SIGN_IDENTITY="Apple Distribution" \
             PROVISIONING_PROFILE_SPECIFIER="$IOS_PROFILE_NAME" OTHER_CODE_SIGN_FLAGS="--keychain $IOS_KEYCHAIN"
+          node tools/release/sign.mjs check-trust "$RUNNER_TEMP/AgentEmpire.xcarchive/Products"
           cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

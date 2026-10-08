@@ -16,6 +16,13 @@ const LOOPBACK = /^http:\/\/(127\.0\.0\.1|localhost):\d{2,5}$/;
  * they carry, and check that an installed update's file names the version they were asked to install (REL-04).
  */
 const GAME_VERSION: string = JSON.parse(readFileSync(resolve(import.meta.dirname, 'package.json'), 'utf8')).version;
+/**
+ * REL-07: development page builds (the dev server and fixture builds) also trust the public development release key, so
+ * the local update fixture works; production builds trust only the owner's key and must not even carry the dev key
+ * string (tools/check-no-fixture.mjs refuses dist/public when it does). Read from tools/release (never shipped).
+ */
+const DEV_RELEASE_PUBLIC_KEY = readFileSync(resolve(import.meta.dirname, 'tools/release/dev-release-public-key.txt'), 'utf8').trim();
+if (!/^[A-Za-z0-9+/]{43}=$/.test(DEV_RELEASE_PUBLIC_KEY)) throw new Error('tools/release/dev-release-public-key.txt must hold one base64 key.');
 const gameVersionFile = (): Plugin => ({
   name: 'agent-empire-game-version',
   generateBundle() {
@@ -23,7 +30,7 @@ const gameVersionFile = (): Plugin => ({
   },
 });
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ mode, command }) => {
   const fake = process.env.VITE_AGENT_EMPIRE_FAKE_GITHUB_API?.trim();
   const fixture = mode === 'fixture';
   if (fixture && (!fake || !LOOPBACK.test(fake))) throw new Error('A fixture build needs VITE_AGENT_EMPIRE_FAKE_GITHUB_API=http://127.0.0.1:<port>.');
@@ -38,6 +45,7 @@ export default defineConfig(({ mode }) => {
   define: {
     __AGENT_EMPIRE_FIXTURE__: fixture ? JSON.stringify({ marker: FIXTURE_MARKER, api: fake }) : 'undefined',
     __AGENT_EMPIRE_GAME_VERSION__: JSON.stringify(GAME_VERSION),
+    __AGENT_EMPIRE_DEV_UPDATE_KEY__: fixture || command === 'serve' ? JSON.stringify(DEV_RELEASE_PUBLIC_KEY) : 'undefined',
   },
   plugins: [gameVersionFile()],
   build: {

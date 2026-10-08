@@ -210,8 +210,8 @@ final class GameUpdater {
      */
     Fetched fetch(String url, String etag, long maxBytes, OutputStream sink) throws IOException {
         if (!UpdatePolicy.isFetchUrl(url)) throw new IOException("That address is not an Agent Empire release.");
-        // The loopback fixture only in a debuggable build that still pins the development key.
-        String fixture = debuggable && UpdatePolicy.RELEASE_KEY_IS_DEVELOPMENT ? fixtureOrigin : null;
+        // The loopback fixture only in a debuggable build of the debug variant (the only one that trusts the development key).
+        String fixture = debuggable && UpdatePolicy.DEV_KEY_TRUSTED ? fixtureOrigin : null;
         String current = fixture != null ? UpdatePolicy.fixtureUrl(url, fixture) : url;
         for (int hop = 0; hop <= 5; hop++) {
             HttpURLConnection c = (HttpURLConnection) new URL(current).openConnection();
@@ -262,7 +262,7 @@ final class GameUpdater {
         Fetched doc = fetch(url, null, UpdatePolicy.MAX_TEXT_BYTES, null);
         Fetched sig = fetch(url + ".sig", null, 4096, null);
         if (doc.status != 200 || sig.status != 200) throw new IOException("The signed release " + version + " could not be read.");
-        if (!UpdatePolicy.verifyEd25519(doc.body, new String(sig.body, StandardCharsets.UTF_8), UpdatePolicy.RELEASE_PUBLIC_KEY)) throw new IOException("The release's signature does not match this app's release key. Nothing was installed.");
+        if (!UpdatePolicy.verifyTrusted(doc.body, new String(sig.body, StandardCharsets.UTF_8), UpdatePolicy.TRUSTED_KEYS)) throw new IOException("The release's signature does not match this app's release key. Nothing was installed.");
         try {
             return new JSONObject(new String(doc.body, StandardCharsets.UTF_8));
         } catch (Exception bad) {
