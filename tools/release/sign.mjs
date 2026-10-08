@@ -6,13 +6,15 @@
 //   node tools/release/sign.mjs verify <file> [--public-key <base64>]               checks <file>.sig (default: pinned key)
 //   GAME_SIGNING_KEY=... node tools/release/sign.mjs public-key                       prints the key's public half
 //   GAME_SIGNING_KEY=... node tools/release/sign.mjs check-key [--allow-dev]          release gate, see checkPinnedKey()
+//   node tools/release/sign.mjs check-trust <dir|file>...                             a built app trusts only the release key
 //
 // `--dev` on sign uses the well-known development key instead of GAME_SIGNING_KEY. It is derived from a public seed,
 // so anything it signs is untrusted by design: tests and fixtures only, never a published release.
 import { createHash, createPrivateKey, createPublicKey, sign as edSign, verify as edVerify } from 'node:crypto';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { devKeyFiles } from '../check-no-fixture.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 export const RELEASE_KEY_FILE = 'src/shared/release-key.ts';
@@ -69,8 +71,45 @@ export function pinnedKeys(root = ROOT) {
 }
 
 /**
+ * REL-07: where release builds come from, no source may let them trust the development key. Development trust is
+ * allowed only in: src/shared/release-key.ts (read by tools and vite.config.ts, never imported for it by client code),
+ * vite.config.ts (dev server / fixture define), mobile/android/app/src/debug (the debug variant's DevTrust.java), and
+ * inside `#if DEBUG` in the iOS app. Desktop dev trust lives only in a dev-trust.json written by
+ * `prepare-desktop.mjs --dev-updates`, which must not exist in the tree being released. Built outputs are checked by
+ * `check-trust` (packaged apps), tools/check-no-fixture.mjs (dist/public) and mobile/tools/build-android.py (APK).
+ */
+export function checkReleaseTrust(root = ROOT, dev = pinnedKeys(root).dev) {
+  const problems = [];
+  const text = (rel) => { try { return readFileSync(path.join(root, rel), 'utf8'); } catch { return null; } };
+  const walk = (rel, recursive = true) => {
+    const dir = path.join(root, rel);
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir, { recursive }).map((name) => path.join(rel, String(name))).filter((f) => /\.(ts|tsx|mts|js|mjs|cjs|java|swift|json|html)$/.test(f));
+  };
+  if (existsSync(path.join(root, 'desktop/dev-trust.json'))) problems.push('desktop/dev-trust.json exists: it makes the desktop app trust the development key; rerun `node tools/prepare-desktop.mjs` without --dev-updates');
+  for (const file of [...walk('desktop', false), ...walk('src/client'), ...walk('mobile/android/app/src/main'), ...walk('mobile/android/app/src/release')]) {
+    const body = text(file);
+    if (body && (body.includes(dev) || (file.startsWith('src') && /import[^;]*\bDEV_RELEASE_PUBLIC_KEY\b/.test(body)))) problems.push(`${file}: a release build would trust the development key (it may appear only in development-only sources)`);
+  }
+  const releaseTrust = text('mobile/android/app/src/release/java/com/agentempire/mobile/DevTrust.java');
+  if (releaseTrust === null) problems.push('mobile/android/app/src/release/java/com/agentempire/mobile/DevTrust.java: missing (the release variant must declare no development key)');
+  for (const file of walk('mobile/ios/AgentEmpire').filter((f) => f.endsWith('.swift'))) {
+    const stack = [];
+    text(file).split('\n').forEach((line, i) => {
+      const t = line.trim();
+      if (/^#if\b/.test(t)) stack.push(t === '#if DEBUG');
+      else if (/^#else\b/.test(t) || /^#elseif\b/.test(t)) stack[stack.length - 1] = false;
+      else if (/^#endif\b/.test(t)) stack.pop();
+      else if (line.includes(dev) && !(stack.length && stack[stack.length - 1])) problems.push(`${file}:${i + 1}: the development key outside #if DEBUG (a Release build would trust it)`);
+    });
+  }
+  return problems;
+}
+
+/**
  * Release gate: the pinned key is not the development key, every file listed in tools/release/config.json
- * `pinnedKeyFiles` carries it, and (when a signing key is given) the signing key is its private half.
+ * `pinnedKeyFiles` carries it, no release build would trust the development key (checkReleaseTrust), and (when a
+ * signing key is given) the signing key is its private half.
  */
 export function checkPinnedKey({ root = ROOT, signingKey, allowDev = false } = {}) {
   const problems = [];
@@ -84,6 +123,7 @@ export function checkPinnedKey({ root = ROOT, signingKey, allowDev = false } = {
     try { text = readFileSync(path.join(root, file), 'utf8'); } catch { problems.push(`${file}: missing (listed in tools/release/config.json pinnedKeyFiles)`); continue; }
     if (!text.includes(release)) problems.push(`${file}: does not pin RELEASE_PUBLIC_KEY ${release}`);
   }
+  problems.push(...checkReleaseTrust(root, dev));
   if (signingKey) {
     const actual = publicKeyBase64(privateKey(signingKey));
     if (actual !== release) problems.push(`GAME_SIGNING_KEY's public key ${actual} is not the pinned RELEASE_PUBLIC_KEY ${release}`);
@@ -119,8 +159,14 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       const problems = checkPinnedKey({ signingKey: process.env.GAME_SIGNING_KEY || undefined, allowDev: args.includes('--allow-dev') });
       if (problems.length) { for (const p of problems) console.error(`error: ${p}`); process.exit(1); }
       console.log(`pinned release key ${pinnedKeys().release} is ready${process.env.GAME_SIGNING_KEY ? ' and matches GAME_SIGNING_KEY' : ''}`);
+    } else if (command === 'check-trust') {
+      if (!files.length) throw new Error('usage: sign.mjs check-trust <built app dir or file>...');
+      const { dev } = pinnedKeys();
+      const hits = files.flatMap((f) => devKeyFiles(f, dev).map((h) => path.join(f, h)));
+      if (hits.length) { for (const h of hits.slice(0, 20)) console.error(`error: ${h} carries the development release key (or dev-trust.json): a development build`); process.exit(1); }
+      console.log(`no development key trust in ${files.join(', ')}`);
     } else {
-      throw new Error('usage: sign.mjs sign [--dev] <file>... | verify <file> [--public-key <b64>] | public-key [--dev] | check-key [--allow-dev]');
+      throw new Error('usage: sign.mjs sign [--dev] <file>... | verify <file> [--public-key <b64>] | public-key [--dev] | check-key [--allow-dev] | check-trust <dir>...');
     }
   } catch (error) { console.error(`error: ${error.message}`); process.exit(1); }
 }

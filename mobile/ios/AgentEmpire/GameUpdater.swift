@@ -43,7 +43,7 @@ final class GameUpdater {
         let store = GameUpdater(root: support.appendingPathComponent("game-bundles", isDirectory: true), builtinRoot: builtinRoot)
         #if DEBUG
         let env = ProcessInfo.processInfo.environment["AE_UPDATE_FIXTURE"] ?? UserDefaults.standard.string(forKey: "AE_UPDATE_FIXTURE")
-        if UpdatePolicy.releaseKeyIsDevelopment, let env, case .success(let url) = HostPolicy.origin(from: env, allowLoopbackHTTP: true), url.scheme == "http" {
+        if UpdatePolicy.devReleasePublicKey != nil, let env, case .success(let url) = HostPolicy.origin(from: env, allowLoopbackHTTP: true), url.scheme == "http" {
             store.fixtureOrigin = HostPolicy.originString(url)
         }
         #endif
@@ -186,7 +186,7 @@ final class GameUpdater {
             let channel = UpdatePolicy.releaseChannelURL(version)
             let (doc, sig) = try await (fetch(channel, etag: nil), fetch(channel + ".sig", etag: nil))
             guard doc.status == 200, sig.status == 200 else { throw Failure.refused("The signed release \(version) could not be read.") }
-            guard UpdatePolicy.verifyEd25519(doc.body, signatureBase64: String(decoding: sig.body, as: UTF8.self)) else {
+            guard UpdatePolicy.verifyTrusted(doc.body, signatureBase64: String(decoding: sig.body, as: UTF8.self)) else {
                 throw Failure.refused("The release's signature does not match this app's release key. Nothing was installed.")
             }
             guard let parsed = try? JSONSerialization.jsonObject(with: doc.body) as? [String: Any] else { throw Failure.refused("The signed release is not readable.") }

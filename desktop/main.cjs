@@ -191,6 +191,7 @@ async function handleBridge(request) {
         canInstallGame: true,
         canAutoUpdate: await canAutoUpdate(),
         ...(rolledBack ? { rolledBack } : {}),
+        ...(updates.DEV_KEY_TRUSTED ? { devReleaseKey: updates.DEV_RELEASE_PUBLIC_KEY } : {}),
       };
     }
     case 'update.openNative':
@@ -235,8 +236,9 @@ async function openExternal(url) {
 /* ---------- in-app updates (REL-04) ---------- */
 /**
  * The bundle store, the 20 s rollback timer and the optional development fixture. The fixture
- * (--empire-update-fixture=http://127.0.0.1:<port>) is honoured only while the pinned release key is the public dev key
- * (update-store.cjs RELEASE_KEY_IS_DEVELOPMENT), so a release build never downloads from anywhere but GitHub.
+ * (--empire-update-fixture=http://127.0.0.1:<port>) is honoured only by a development build, which trusts the public dev
+ * key (update-store.cjs DEV_KEY_TRUSTED: prepared with --dev-updates), so a release build never downloads from anywhere
+ * but GitHub.
  */
 async function setUpUpdates() {
   bundles = updates.createBundleStore({ root: path.join(app.getPath('userData'), 'game-bundles'), builtinRoot: path.join(__dirname, 'runtime', 'public') });
@@ -244,10 +246,10 @@ async function setUpUpdates() {
   if (launched) console.warn(`Game update ${launched.rolledBack} rolled back: ${launched.reason}`);
   const fixture = app.commandLine.getSwitchValue('empire-update-fixture');
   if (fixture) {
-    if (updates.RELEASE_KEY_IS_DEVELOPMENT) {
+    if (updates.DEV_KEY_TRUSTED) {
       updateFixture = updates.fixtureMapper(fixture);
       console.warn(`Update fixture: release downloads come from ${updateFixture.origin} (development key only).`);
-    } else console.warn('Ignoring --empire-update-fixture: this build pins a release key.');
+    } else console.warn('Ignoring --empire-update-fixture: this is a release build (it trusts only the release key).');
   }
 }
 

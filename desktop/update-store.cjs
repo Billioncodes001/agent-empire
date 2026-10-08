@@ -24,12 +24,40 @@ const { compareSemver, isSemver, isSha256, releaseAsset, isUpdateFetchUrl, isAss
 
 /**
  * The pinned release key (src/shared/release-key.ts; listed in tools/release/config.json pinnedKeyFiles, so the release
- * gate checks this copy). The shell uses it to know whether it is a development build: only then does it honour the
- * loopback update fixture. The page verifies channel signatures against the same key.
+ * gate checks this copy). A release build trusts it alone.
+ *
+ * Development trust (REL-07) is a build-time choice, never a runtime switch: `node tools/prepare-desktop.mjs
+ * --dev-updates` writes dev-trust.json next to this file with the public development key (DEV_RELEASE_PUBLIC_KEY in
+ * src/shared/release-key.ts), and every other prepare (including every release workflow run) deletes it. Only with that
+ * file does the shell also trust the development key, honour the loopback update fixture (main.cjs) and report the key
+ * to the page (update.nativeInfo devReleaseKey). The development key string itself is not in this file, so a package
+ * without dev-trust.json cannot trust it: the release workflow scans each packaged app for the key and for
+ * dev-trust.json (`node tools/release/sign.mjs check-trust`).
  */
-const DEV_RELEASE_PUBLIC_KEY = 'q7m8HRpNA8EClSZsC3KSzzInRy3LxrjPIXNU41+WLYU=';
-const RELEASE_PUBLIC_KEY = 'q7m8HRpNA8EClSZsC3KSzzInRy3LxrjPIXNU41+WLYU=';
-const RELEASE_KEY_IS_DEVELOPMENT = RELEASE_PUBLIC_KEY === DEV_RELEASE_PUBLIC_KEY;
+const RELEASE_PUBLIC_KEY = 'rIRaOVUyoolaIritW/W8zMW7kGymgcjvg7uXhHtTqPk=';
+const RAW_KEY = /^[A-Za-z0-9+/]{43}=$/;
+
+/** The development key from a dev-trust.json in `dir`, or null when there is none. Throws when it is malformed. */
+function readDevTrust(dir = __dirname) {
+  let text;
+  try {
+    text = fs.readFileSync(path.join(dir, 'dev-trust.json'), 'utf8');
+  } catch {
+    return null;
+  }
+  let key;
+  try {
+    key = JSON.parse(text).devReleasePublicKey;
+  } catch {}
+  if (typeof key === 'string' && RAW_KEY.test(key) && key !== RELEASE_PUBLIC_KEY) return key;
+  throw new Error('dev-trust.json is malformed; rerun tools/prepare-desktop.mjs.');
+}
+
+/** Null in a release build. */
+const DEV_RELEASE_PUBLIC_KEY = readDevTrust();
+/** Keys this build trusts for signed release files: the release key, plus the dev key in a development build. */
+const TRUSTED_KEYS = Object.freeze(DEV_RELEASE_PUBLIC_KEY ? [RELEASE_PUBLIC_KEY, DEV_RELEASE_PUBLIC_KEY] : [RELEASE_PUBLIC_KEY]);
+const DEV_KEY_TRUSTED = DEV_RELEASE_PUBLIC_KEY !== null;
 
 const BOOT_TIMEOUT_MS = 20_000;
 const MAX_ZIP_BYTES = 512 * 1024 * 1024;
@@ -386,6 +414,11 @@ function verifyEd25519(bytes, signatureBase64, publicKeyBase64 = RELEASE_PUBLIC_
   }
 }
 
+/** True when any one of `keys` (default: this build's trusted keys) made the signature; each key is checked on its own. */
+function verifyTrusted(bytes, signatureBase64, keys = TRUSTED_KEYS) {
+  return (typeof keys === 'string' ? [keys] : keys).some((key) => verifyEd25519(bytes, signatureBase64, key));
+}
+
 const RELEASE_REPO = 'Billioncodes001/agent-empire';
 /** The signed channel file inside the release tagged v<version> (every release publishes channel-beta.json). */
 const releaseChannelUrl = (version) => `https://github.com/${RELEASE_REPO}/releases/download/v${version}/channel-beta.json`;
@@ -395,12 +428,12 @@ const releaseChannelUrl = (version) => `https://github.com/${RELEASE_REPO}/relea
  * page alone (a script injected into the page could otherwise ask for any published asset). `get(url)` returns
  * {status, body: Buffer}. Returns the parsed document for exactly `version`.
  */
-async function signedRelease(version, get, publicKey = RELEASE_PUBLIC_KEY) {
+async function signedRelease(version, get, publicKey = TRUSTED_KEYS) {
   if (!isSemver(version)) throw new Error('Malformed version.');
   const url = releaseChannelUrl(version);
   const [doc, sig] = await Promise.all([get(url), get(`${url}.sig`)]);
   if (doc.status !== 200 || sig.status !== 200) throw new Error(`The signed release ${version} could not be read (${doc.status !== 200 ? doc.status : sig.status}).`);
-  if (!verifyEd25519(doc.body, sig.body.toString('utf8'), publicKey)) throw new Error('The release’s signature does not match this app’s release key. Nothing was installed.');
+  if (!verifyTrusted(doc.body, sig.body.toString('utf8'), publicKey)) throw new Error('The release’s signature does not match this app’s release key. Nothing was installed.');
   let parsed;
   try {
     parsed = JSON.parse(doc.body.toString('utf8'));
@@ -437,4 +470,4 @@ function windowsPackage(release, version) {
 /** A one-line Squirrel RELEASES index for a package we verified ourselves. */
 const squirrelReleases = (bytes, name) => `${crypto.createHash('sha1').update(bytes).digest('hex').toUpperCase()} ${name} ${bytes.length}\r\n`;
 
-module.exports = { verifyEd25519, releaseChannelUrl, signedRelease, checkGameAgainstRelease, nugetVersion, windowsPackage, squirrelReleases, squirrelUpdateExe, squirrelEvent, autoUpdateFeed, RELEASE_PUBLIC_KEY, DEV_RELEASE_PUBLIC_KEY, RELEASE_KEY_IS_DEVELOPMENT, BOOT_TIMEOUT_MS, MAX_TEXT_BYTES, safeEntryName, zipEntries, extractZip, download, fixtureMapper, createBundleStore, bundleVersion };
+module.exports = { verifyEd25519, verifyTrusted, readDevTrust, TRUSTED_KEYS, DEV_KEY_TRUSTED, releaseChannelUrl, signedRelease, checkGameAgainstRelease, nugetVersion, windowsPackage, squirrelReleases, squirrelUpdateExe, squirrelEvent, autoUpdateFeed, RELEASE_PUBLIC_KEY, DEV_RELEASE_PUBLIC_KEY, BOOT_TIMEOUT_MS, MAX_TEXT_BYTES, safeEntryName, zipEntries, extractZip, download, fixtureMapper, createBundleStore, bundleVersion };

@@ -6,11 +6,18 @@ import Foundation
 /// desktop/update-store.cjs and Android UpdatePolicy.java.
 enum UpdatePolicy {
     /// The pinned release key (src/shared/release-key.ts; listed in tools/release/config.json pinnedKeyFiles so the
-    /// release gate checks this copy). While it is the development key, a Debug build honours the loopback update
-    /// fixture; the page verifies channel signatures against the same key.
-    static let devReleasePublicKey = "q7m8HRpNA8EClSZsC3KSzzInRy3LxrjPIXNU41+WLYU="
-    static let releasePublicKey = "q7m8HRpNA8EClSZsC3KSzzInRy3LxrjPIXNU41+WLYU="
-    static var releaseKeyIsDevelopment: Bool { releasePublicKey == devReleasePublicKey }
+    /// release gate checks this copy). A Release build trusts it alone.
+    static let releasePublicKey = "rIRaOVUyoolaIritW/W8zMW7kGymgcjvg7uXhHtTqPk="
+    /// The public development key (src/shared/release-key.ts DEV_RELEASE_PUBLIC_KEY), compiled into Debug builds only
+    /// (REL-07; the release gate refuses the key outside `#if DEBUG`). Only a build that has it honours the loopback update
+    /// fixture and reports it to the page (nativeInfo devReleaseKey).
+    #if DEBUG
+    static let devReleasePublicKey: String? = "q7m8HRpNA8EClSZsC3KSzzInRy3LxrjPIXNU41+WLYU="
+    #else
+    static let devReleasePublicKey: String? = nil
+    #endif
+    /// Keys this build trusts for signed release files.
+    static var trustedKeys: [String] { [releasePublicKey] + (devReleasePublicKey.map { [$0] } ?? []) }
 
     /// Releases come only from this repository (src/client/update/channel.ts RELEASE_REPO).
     static let releaseRepo = "Billioncodes001/agent-empire"
@@ -140,6 +147,11 @@ enum UpdatePolicy {
               let raw = Data(base64Encoded: publicKeyBase64), raw.count == 32,
               let key = try? Curve25519.Signing.PublicKey(rawRepresentation: raw) else { return false }
         return key.isValidSignature(sig, for: message)
+    }
+
+    /// True when any one of `keys` (default: this build's trusted keys) made the signature; each key is checked on its own.
+    static func verifyTrusted(_ message: Data, signatureBase64: String, keys: [String] = trustedKeys) -> Bool {
+        keys.contains { verifyEd25519(message, signatureBase64: signatureBase64, publicKeyBase64: $0) }
     }
 
     /// The signed channel file inside the release tagged v<version> (every release publishes channel-beta.json).

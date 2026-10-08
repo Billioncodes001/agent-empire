@@ -212,6 +212,7 @@ final class GameViewController: UIViewController, WKNavigationDelegate, WKUIDele
             "installSource": installSource,
         ]
         if let back = updater.takeRolledBack() { out["rolledBack"] = back }
+        if let dev = UpdatePolicy.devReleasePublicKey { out["devReleaseKey"] = dev } // Debug builds only (REL-07)
         return out
     }
 

@@ -19,12 +19,18 @@ public final class UpdatePolicy {
 
     /**
      * The pinned release key (src/shared/release-key.ts; listed in tools/release/config.json pinnedKeyFiles so the
-     * release gate checks this copy). While it is the development key, a debuggable build honours the loopback
-     * update fixture; the page verifies channel signatures against the same key.
+     * release gate checks this copy). A release APK trusts it alone.
      */
-    public static final String DEV_RELEASE_PUBLIC_KEY = "q7m8HRpNA8EClSZsC3KSzzInRy3LxrjPIXNU41+WLYU=";
-    public static final String RELEASE_PUBLIC_KEY = "q7m8HRpNA8EClSZsC3KSzzInRy3LxrjPIXNU41+WLYU=";
-    public static final boolean RELEASE_KEY_IS_DEVELOPMENT = RELEASE_PUBLIC_KEY.equals(DEV_RELEASE_PUBLIC_KEY);
+    public static final String RELEASE_PUBLIC_KEY = "rIRaOVUyoolaIritW/W8zMW7kGymgcjvg7uXhHtTqPk=";
+    /**
+     * The public development key, or null: it comes from the per-variant DevTrust (src/debug/java holds the key,
+     * src/release/java holds null; mobile/tools/build-android.py compiles one of them), so it is never in a release APK.
+     * Only a build that has it honours the loopback update fixture and reports it to the page (nativeInfo devReleaseKey).
+     */
+    public static final String DEV_RELEASE_PUBLIC_KEY = DevTrust.DEV_RELEASE_PUBLIC_KEY;
+    public static final boolean DEV_KEY_TRUSTED = DEV_RELEASE_PUBLIC_KEY != null;
+    /** Keys this build trusts for signed release files. */
+    public static final List<String> TRUSTED_KEYS = Collections.unmodifiableList(DEV_KEY_TRUSTED ? Arrays.asList(RELEASE_PUBLIC_KEY, DEV_RELEASE_PUBLIC_KEY) : Collections.singletonList(RELEASE_PUBLIC_KEY));
 
     /** Releases come only from this repository (src/client/update/channel.ts RELEASE_REPO). */
     public static final String RELEASE_REPO = "Billioncodes001/agent-empire";
@@ -173,6 +179,12 @@ public final class UpdatePolicy {
             return false;
         }
         return Ed25519.verify(raw, message, sig);
+    }
+
+    /** True when any one of `keys` made the signature (each key checked on its own). */
+    public static boolean verifyTrusted(byte[] message, String signatureBase64, List<String> keys) {
+        for (String key : keys) if (verifyEd25519(message, signatureBase64, key)) return true;
+        return false;
     }
 
     /** The signed channel file inside the release tagged v<version> (every release publishes channel-beta.json). */

@@ -8,13 +8,14 @@
  *   update.installGame({url, sha256, version}) → {version}             download, sha256, unzip into app data, pending
  *   update.activate()                          → true, then the shell restarts the game into the pending bundle
  *   update.bootOk()                            → true                  this bundle booted; the shell marks it known-good
- *   update.nativeInfo()                        → NativeInfo
+ *   update.nativeInfo()                        → NativeInfo (devReleaseKey only from development shells, REL-07)
  *   update.openNative({...})                   → {action}              the platform's native update path (desktop:
  *                                                                       'auto-update' when downloaded, then 'restart')
  */
 import { BridgeError, NativeBridge, TIMEOUTS, native, type AppPlatform, type Native } from '../native';
 import { isAppleUrl, isMacLatestFeed, isPlayUrl, releaseAsset, releaseFolder, releasePage, RELEASES_API, type DesktopArch } from './channel';
 import { isSemver } from './semver';
+import { isPublicKey } from './trust';
 
 export type DesktopOs = 'macos' | 'windows' | 'linux';
 export interface NativeInfo {
@@ -41,6 +42,8 @@ export interface NativeInfo {
   rolledBack?: string;
   /** Android: an app update handed to the system installer never finished (the app was closed meanwhile). */
   installPending?: string;
+  /** Development shells only (REL-07): the public development key that build also trusts (trust.ts). */
+  devReleaseKey?: string;
 }
 
 export interface FetchResult {
@@ -98,6 +101,7 @@ export function parseNativeInfo(raw: unknown, platform: AppPlatform): NativeInfo
   if (source && /^[a-z-]+$/.test(source)) info.installSource = source;
   if (isSemver(r.rolledBack)) info.rolledBack = r.rolledBack;
   if (isSemver(r.installPending)) info.installPending = r.installPending;
+  if (isPublicKey(r.devReleaseKey)) info.devReleaseKey = r.devReleaseKey;
   return info;
 }
 

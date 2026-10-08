@@ -4,7 +4,9 @@
 The built web client (dist/public, from `npm run build:client`) is bundled into the APK as assets/game and served
 in-app at https://appassets.androidplatform.net/. Two variants:
 
-  release  HTTPS only; not debuggable.
+  release  HTTPS only; not debuggable. Trusts only the owner's release key (REL-07): it compiles
+           app/src/release/java (DevTrust without a key), and the build fails if the public development key appears
+           anywhere in the APK.
   debug    debuggable (WebView remote debugging, debug-only test hooks) and cleartext allowed only to the local
            test hosts 10.0.2.2 / 127.0.0.1 / localhost through the src/debug/res network security config overlay.
 
@@ -18,6 +20,7 @@ a Play App Bundle (Agent-Empire-android-release.aab), signed with the same key w
 """
 import argparse
 import hashlib
+import re
 import os
 from pathlib import Path
 import shutil
@@ -45,6 +48,13 @@ project = Path(__file__).resolve().parents[2]
 android = project / 'mobile/android'
 source = android / 'app/src/main'
 debug_res = android / 'app/src/debug/res'
+# Per-variant sources (REL-07): app/src/debug/java has DevTrust with the public development key, app/src/release/java
+# has DevTrust without one.
+variant_java = lambda variant: android / f'app/src/{variant}/java'
+dev_key_match = re.search(r"export const DEV_RELEASE_PUBLIC_KEY = '([A-Za-z0-9+/]{43}=)';", (project / 'src/shared/release-key.ts').read_text(encoding='utf-8'))
+if not dev_key_match:
+    raise SystemExit('src/shared/release-key.ts must declare DEV_RELEASE_PUBLIC_KEY as a string literal')
+DEV_KEY = dev_key_match.group(1).encode('ascii')
 build = android / 'build/portable'
 game = (args.game or project / 'dist/public').resolve()
 if not (game / 'index.html').is_file():
@@ -53,8 +63,8 @@ if not (game / 'index.html').is_file():
 for item in game.rglob('*'):
     if item.suffix.lower() in ('.js', '.mjs', '.html', '.json') and item.is_file():
         text = item.read_text(encoding='utf-8', errors='replace')
-        if '__AGENT_EMPIRE_FIXTURE_BUILD__' in text or 'VITE_AGENT_EMPIRE_FAKE_GITHUB_API' in text:
-            raise SystemExit(f'{item} is from a fixture build that talks to a fake GitHub.\nRun `npm run build:client` first.')
+        if '__AGENT_EMPIRE_FIXTURE_BUILD__' in text or 'VITE_AGENT_EMPIRE_FAKE_GITHUB_API' in text or DEV_KEY.decode() in text:
+            raise SystemExit(f'{item} is from a fixture or development build (fake GitHub, or trusts the development release key).\nRun `npm run build:client` first.')
 
 tools = args.sdk.resolve() / 'build-tools/35.0.0'
 android_jar = args.sdk.resolve() / 'platforms/android-35/android.jar'
@@ -85,11 +95,14 @@ game_bytes = sum(p.stat().st_size for p in (assets / 'game').rglob('*') if p.is_
 
 # 2. Policy tests on the desktop JVM: origin, asset paths/traversal, MIME, injection, server address, bridge rules,
 #    plus every staged game file being reachable with a known MIME type.
-tests = build / 'test-classes'
-tests.mkdir()
+#    Run once per variant built, with that variant's DevTrust (the release run proves it trusts only the release key).
+variants = ['release', 'debug'] if args.variant == 'all' else [args.variant]
 policies = [source / f'java/com/agentempire/mobile/{name}.java' for name in ('AssetPolicy', 'ServerPolicy', 'BridgePolicy', 'UpdatePolicy', 'Ed25519')]
-run(javac, '-d', tests, *policies, android / 'tests/PolicyTest.java')
-run(java, '-cp', tests, 'com.agentempire.mobile.PolicyTest', assets / 'game')
+for variant in variants:
+    tests = build / f'test-classes-{variant}'
+    tests.mkdir()
+    run(javac, '-d', tests, *policies, variant_java(variant) / 'com/agentempire/mobile/DevTrust.java', android / 'tests/PolicyTest.java')
+    run(java, f'-Dae.variant={variant}', '-cp', tests, 'com.agentempire.mobile.PolicyTest', assets / 'game')
 
 # 3. Resources, compiled once; the debug variant links the debug overlay on top.
 compiled = build / 'res-main.zip'
@@ -106,7 +119,6 @@ if not keystore.exists():
 release_dir = project / 'release/android'
 release_dir.mkdir(parents=True, exist_ok=True)
 bootclasspath = os.pathsep.join([str(android_jar), str(tools / 'core-lambda-stubs.jar')])
-variants = ['release', 'debug'] if args.variant == 'all' else [args.variant]
 for variant in variants:
     out = build / variant
     out.mkdir()
@@ -120,7 +132,7 @@ for variant in variants:
     classes = out / 'classes'
     classes.mkdir()
     run(javac, '-source', '8', '-target', '8', '-Xlint:-options', '-bootclasspath', bootclasspath, '-d', classes,
-        *sorted(source.glob('java/**/*.java')), *sorted(generated.glob('**/*.java')))
+        *sorted(source.glob('java/**/*.java')), *sorted(variant_java(variant).glob('**/*.java')), *sorted(generated.glob('**/*.java')))
     dex = out / 'dex'
     dex.mkdir()
     run(java, '-cp', tools / 'lib/d8.jar', 'com.android.tools.r8.D8', '--debug' if variant == 'debug' else '--release', '--min-api', '26',
@@ -146,6 +158,14 @@ for variant in variants:
         shipped = sum(1 for n in names if n.startswith('assets/game/') and not n.endswith('/'))
         if shipped != game_files:
             raise SystemExit(f'{apk.name} has {shipped} game files, expected {game_files}')
+        # REL-07: every entry, decompressed. The release APK must not carry the development key at all; the debug APK's
+        # dex must (DevTrust from app/src/debug/java), or the local update fixture could not work.
+        carriers = [n for n in sorted(names) if not n.endswith('/') and DEV_KEY in archive.read(n)]
+        if variant == 'release' and carriers:
+            raise SystemExit(f'{apk.name} carries the development release key in {", ".join(carriers[:5])}: a release build must trust only the release key')
+        if variant == 'debug' and 'classes.dex' not in carriers:
+            raise SystemExit(f'{apk.name}: classes.dex does not carry the development key (DevTrust from app/src/debug/java)')
+        print(f'{variant} APK development-key check: ' + ('absent from every entry' if variant == 'release' else 'present in classes.dex (debug only)'))
     digest = hashlib.sha256(apk.read_bytes()).hexdigest()
     apk.with_suffix('.apk.sha256').write_text(f'{digest}  {apk.name}\n')
     print(f'{variant} APK: {apk}\n  SHA256: {digest}\n  size: {apk.stat().st_size / 1e6:.1f} MB, game: {game_files} files, {game_bytes / 1e6:.1f} MB')
