@@ -20,6 +20,7 @@ if (outreachOn) {
   art(JOBS.autumn, '---\nsubject: You are invited, {{name}} — autumn open day\naudience: [customers]\n---\n\nHi {{name}},\n\nWe are opening the studio on 24 October for customers like {{company}}: short demos, the new booking tools, and coffee.\n\nReply to this email to save a place.\n\nThe Northstar team\n');
   art(JOBS.webinar, '---\nsubject: A 30-minute walkthrough for {{company}}\naudience: [events]\nproposedLeads:\n  - Fay Lin | fay@client-preview.example | Zed Works | trade show | met at stand 12\n  - Gus Ode | gus@client-preview.example | Lumen | inbound inquiry | asked for a demo\n---\n\nHi {{name}},\n\nWould a short walkthrough of the booking portal help {{company}}? Pick any slot next week.\n');
   art(JOBS.spring, '---\nsubject: Spring follow-up\naudience: [customers]\n---\n\nHello {{first_name}}, thanks again.\n');
+}
 // ORG-05: PREVIEW_RESEARCH=seed starts with one synthetic imported report (two tool proposals) in research.json.
 if (process.env.PREVIEW_RESEARCH === 'seed') {
   const parsed = syntheticParsed();
