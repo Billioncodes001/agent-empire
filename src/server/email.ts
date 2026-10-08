@@ -225,8 +225,14 @@ async function smtpSend(cfg: SmtpConfig, m: MailMessage, opts: SmtpOptions): Pro
 const FILE = 'email-notify.json';
 const MAX_SENT = 500;
 const BACKOFF_MS = [5_000, 30_000, 2 * 60_000, 10 * 60_000, 30 * 60_000];
-/** After this many failed attempts (or any 5xx, which is permanent) an item is given up so the next one can go. */
-const MAX_ATTEMPTS = 5;
+/**
+ * Only a 5xx to the message itself (MAIL FROM, RCPT TO, DATA) is permanent: that item is given up at once. Connection
+ * errors, timeouts, 4xx and TLS problems retry with backoff up to the 30-minute cap, and an item is given up only once
+ * it has been failing for a day. A sign-in (AUTH) failure pauses the whole queue and gives nothing up.
+ */
+const PERMANENT = /answered 5\d\d to (MAIL FROM|RCPT TO|DATA|end of DATA)/;
+const SIGN_IN_FAILED = /answered 5\d\d to AUTH|neither AUTH PLAIN nor AUTH LOGIN/;
+const MAX_AGE_MS = 24 * 3_600_000;
 
 export interface NotifierOptions {
   now?: () => number;
@@ -243,7 +249,9 @@ export class EmailNotifier {
   private readonly file: string;
   private sent: string[] | undefined;
   private gaveUp: string[] = [];
-  private gaveUpThisRun = 0;
+  /** When each queued item was first tried, for the 24-hour cap. */
+  private firstTried = new Map<string, number>();
+  private signInFailed = false;
   private queue: Approval[] = [];
   private pendingIds = new Set<string>();
   private busy?: Promise<void>;
@@ -273,8 +281,10 @@ export class EmailNotifier {
   }
 
   status(): EmailStatus {
-    const failed = this.gaveUpThisRun > 0 || (this.lastFailedAt !== undefined && (this.lastSentAt === undefined || this.lastFailedAt > this.lastSentAt));
-    return { state: failed ? 'failed' : 'configured', label: failed ? 'Email: last send failed' : 'Email: configured',
+    // A later successful send clears the failed state; the last failure time stays visible.
+    const failed = this.signInFailed || (this.lastFailedAt !== undefined && (this.lastSentAt === undefined || this.lastFailedAt > this.lastSentAt));
+    const label = this.signInFailed ? 'Email: sign-in failed — check AGENT_EMPIRE_SMTP_URL' : failed ? 'Email: last send failed' : 'Email: configured';
+    return { state: failed ? 'failed' : 'configured', label,
       ...(this.gaveUp.length ? { gaveUp: this.gaveUp.length } : {}),
       ...(this.lastSentAt ? { lastSentAt: this.lastSentAt } : {}), ...(this.lastFailedAt ? { lastFailedAt: this.lastFailedAt } : {}) };
   }
@@ -314,30 +324,40 @@ export class EmailNotifier {
       this.queue = this.queue.filter((q) => this.pendingIds.has(q.id) && !this.sent!.includes(q.id) && !this.gaveUp.includes(q.id));
       const item = this.queue[0];
       if (!item) return;
+      if (!this.firstTried.has(item.id)) this.firstTried.set(item.id, this.now());
       try {
         await this.transport.send(approvalEmail(item, this.addresses));
       } catch (error) {
         this.attempts += 1;
-        this.lastFailedAt = this.now();
+        const now = this.now();
+        this.lastFailedAt = now;
         const message = (error as Error).message;
-        if (/answered 5\d\d/.test(message) || this.attempts >= MAX_ATTEMPTS) {
-          // A permanent refusal, or too many tries: give up on this one so it never blocks the notifications behind it.
+        const signIn = SIGN_IN_FAILED.test(message);
+        const tooOld = !signIn && now - (this.firstTried.get(item.id) ?? now) >= MAX_AGE_MS;
+        if (PERMANENT.test(message) || tooOld) {
+          // Refused for this message, or failing for a day: give up on it so it never blocks the ones behind it.
           this.log(`[email] Gave up on the notification for approval ${item.id} after ${this.attempts} attempt${this.attempts === 1 ? '' : 's'}: ${message}.`);
           this.gaveUp = [...this.gaveUp, item.id].slice(-MAX_SENT);
-          this.gaveUpThisRun += 1;
+          this.firstTried.delete(item.id);
           this.attempts = 0;
           this.queue.shift();
           this.save();
           continue;
         }
+        // Sign-in failures pause everything without giving up; the next attempt (or a restart) resumes the queue.
+        this.signInFailed = signIn;
         const wait = this.backoff[Math.min(this.attempts - 1, this.backoff.length - 1)];
         // The transport's errors carry a status code at most; the URL and password are never logged.
-        this.log(`[email] Could not send the notification for approval ${item.id} (attempt ${this.attempts}): ${message}. Retrying in ${Math.round(wait / 1000)} s.`);
+        this.log(signIn
+          ? `[email] Sign-in to the SMTP server failed (${message}); notifications are paused. Check AGENT_EMPIRE_SMTP_URL. Retrying in ${Math.round(wait / 1000)} s.`
+          : `[email] Could not send the notification for approval ${item.id} (attempt ${this.attempts}): ${message}. Retrying in ${Math.round(wait / 1000)} s.`);
         const cancel = this.schedule(() => { this.retry = undefined; this.kick(); }, wait);
         this.retry = cancel;
         return;
       }
       this.attempts = 0;
+      this.signInFailed = false;
+      this.firstTried.delete(item.id);
       this.lastSentAt = this.now();
       this.sent!.push(item.id);
       this.sent = this.sent!.slice(-MAX_SENT);
