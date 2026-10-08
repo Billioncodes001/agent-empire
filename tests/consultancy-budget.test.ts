@@ -191,6 +191,45 @@ test('review fix 1: the next ordered item never starts once spend reached the bu
   } finally { queue.shutdown(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('spend is still recorded while the queue is paused at startup (a worker status change still samples task costs)', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'budget-paused-'));
+  let before = 0;
+  writeFileSync(path.join(dir, 'queue.json'), JSON.stringify({ maxWorkers: 2, tasks: [] }));
+  const queue = new TaskQueue(dir, { list: () => [], deskOccupied: () => false, spawn: () => 'no', kill: async () => ({}) }, false, {
+    update() {}, toast() {}, claimIssue: async () => undefined, refreshGitHub() {}, hiringPaused: () => undefined,
+    beforeSeat: () => { before++; },
+  }, true);
+  try {
+    before = 0;
+    queue.pump();
+    assert.ok(before >= 1, 'beforeSeat runs although seating is paused at startup');
+    assert.equal(queue.state().maxWorkers, 0, 'still paused: nothing is seated');
+  } finally { queue.shutdown(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('re-review: spend is recorded once per seating pass, and the hold predicate is free for non-client tasks', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'budget-cheap-'));
+  let costReads = 0;
+  let before = 0;
+  writeFileSync(path.join(dir, 'queue.json'), JSON.stringify({ maxWorkers: 0, tasks: [] }));
+  let office!: Consultancy;
+  const queue = new TaskQueue(dir, { list: () => [], deskOccupied: () => false, spawn: () => 'no', kill: async () => ({}) }, false, {
+    update() {}, toast() {}, claimIssue: async () => undefined, refreshGitHub() {}, hiringPaused: () => undefined,
+    beforeSeat: () => { before++; },
+    taskHold: (t) => office.holdReason(t),
+  });
+  try {
+    office = new Consultancy(dir, queue, undefined, { taskCost: () => { costReads++; return undefined; } });
+    for (let i = 0; i < 5; i++) queue.add(`work ${i}`, 'CEO', `Task ${i}`);
+    before = 0;
+    queue.setLimit(1); // paused → one worker: seats (and fails to spawn) in one pump
+    queue.pump();
+    assert.ok(before >= 1 && before <= 4, `beforeSeat runs per pass, not per task (${before})`);
+    for (const t of queue.state().tasks) office.holdReason({ ...t, status: 'queued' });
+    assert.equal(costReads, 0, 'non-consultancy tasks never read spend');
+  } finally { queue.shutdown(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('a consultancy.json from before estimates loads unchanged', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'consultancy-legacy-'));
   try {

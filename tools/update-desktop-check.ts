@@ -2,7 +2,7 @@
  * Packaged macOS app, in-app game update end to end (REL-04), against the isolated UI fixture and the local update
  * fixture. Isolated --user-data-dir (never the real profile), mock keychain, driven over CDP.
  *
- *   npm run desktop:package
+ *   npm run build && node tools/prepare-desktop.mjs --dev-updates && npm run package --prefix desktop   (development build, REL-07)
  *   FIXTURE_PORT=4720 FIXTURE_PASSWORD=fixture-office npx tsx tools/ui-fixture.ts
  *   UPDATE_FIXTURE_PORT=4721 UPDATE_GOOD=1.0.0-beta.2 UPDATE_BROKEN=1.0.0-beta.3 UPDATE_OLDER=0.1.1 npx tsx tools/update-fixture.ts
  *   USER_DATA=<scratch>/ud-updates FIXTURE_URL=http://127.0.0.1:4720 UPDATE_FIXTURE_URL=http://127.0.0.1:4721 \

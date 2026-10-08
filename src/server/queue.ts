@@ -39,6 +39,8 @@ export interface QueueEvents {
   retryAllowed?(task: QueueTask): string | undefined;
   /** Why this queued task must wait (e.g. its client job reached its approved budget). It stays queued, unfailed. */
   taskHold?(task: QueueTask): string | undefined;
+  /** Once per seating pass, before any taskHold check: refresh what holds read (e.g. per-task spend). */
+  beforeSeat?(): void;
 }
 
 /** Who continues a project at a desk (LIFE-04 continuity). */
@@ -301,6 +303,9 @@ export class TaskQueue {
         this.again = false;
         this.reconcile();
         if (!this.storageError && this.refreshDependencies()) this.changed();
+        // Spend is recorded on every pass, even while seating is paused at startup or blocked by a storage error: a
+        // CEO prompt to a finished task's worker must freeze that task's spend record before the chat is counted.
+        this.events.beforeSeat?.();
         if (!this.storageError && !this.pauseOnStart) this.seat();
       } while (this.again);
     } finally {

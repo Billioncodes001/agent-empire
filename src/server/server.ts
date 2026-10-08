@@ -346,8 +346,10 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     hiringPaused: () => localExecutionBlocker() || (!localQueueApproved ? 'Choose queue concurrency explicitly to start pending local tasks.' : undefined) || ledger.hiringPaused,
     retryAllowed: task => empire.managerTaskRetryBlocker(task),
     // ORG-02: a client job that reached its approved budget keeps its unstarted items queued.
-    // Record the latest worker spend first, so a task that just finished over budget holds the next item at once.
-    taskHold: task => { ledger.recordTaskCosts(taskCostObservations(queue.state().tasks, workers.list())); return consultancy?.holdReason(task); },
+    // Record the latest worker spend once per seating pass, so a task that just finished over budget holds the next item.
+    beforeSeat: () => { if (queue) ledger.recordTaskCosts(taskCostObservations(queue.state().tasks, workers.list())); },
+    // Side-effect free, and free for non-client tasks.
+    taskHold: task => (task.jobKey?.startsWith('consultancy:') ? consultancy?.holdReason(task) : undefined),
   }, runtime.requireExecutionSetup);
   // Saved appointment flags are historical until worker/queue evidence has been reconciled.
   startupCleanup.push(() => queue.shutdown());

@@ -319,6 +319,8 @@ export interface TaskCost {
   finishedAt?: number;
   outcome?: string;
   jobKey?: string;
+  /** The finished task's worker took new work; this record no longer grows. */
+  frozen?: true;
 }
 
 /** Pure: each queue task that has a worker with recorded usage, costed by that worker. Queue workers run one task each. */
@@ -326,8 +328,12 @@ export function taskCostObservations(tasks: QueueTask[], workers: WorkerInfo[]):
   const byId = new Map(workers.map((w) => [w.id, w]));
   const out: TaskCost[] = [];
   for (const t of tasks) {
-    const usage = t.workerId ? byId.get(t.workerId)?.usage : undefined;
-    if (!t.workerId || !usage) continue;
+    const w = t.workerId ? byId.get(t.workerId) : undefined;
+    const usage = w?.usage;
+    if (!t.workerId || !w || !usage) continue;
+    // A finished task's worker that took new work (the CEO prompted it again) no longer spends for this task. Until
+    // then its usage keeps counting: the final turn is re-read shortly after the Stop that finished the task.
+    if (t.status === 'done' && !['done', 'exited', 'offline'].includes(w.status)) { out.push({ taskId: t.id, workerId: t.workerId, costUsd: 0, frozen: true }); continue; }
     out.push({ taskId: t.id, workerId: t.workerId, costUsd: usage.cost, startedAt: t.startedAt, finishedAt: t.finishedAt, outcome: t.outcome, jobKey: t.jobKey });
   }
   return out;
@@ -419,8 +425,12 @@ export class Ledger {
       if (!o.taskId || !o.workerId || !Number.isFinite(o.costUsd) || o.costUsd < 0) continue;
       const key = `${o.taskId}|${o.workerId}`;
       const prev = this.tasks[key];
-      // Frozen once its task finished: the CEO chatting with that worker before it goes home is not the task's spend.
-      if (prev?.finishedAt !== undefined) continue;
+      // Frozen once the finished task's worker was given new work: the CEO chatting with it is not the task's spend.
+      if (prev?.frozen) continue;
+      if (o.frozen) {
+        if (prev) { this.tasks[key] = { ...prev, frozen: true }; changed = true; }
+        continue;
+      }
       const next: TaskCost = { ...prev, ...withoutUndefined(o), costUsd: Math.max(prev?.costUsd ?? 0, o.costUsd) };
       if (prev && JSON.stringify(prev) === JSON.stringify(next)) continue;
       delete this.tasks[key]; // re-insert: insertion order is recency, for trimming
@@ -509,7 +519,7 @@ export class Ledger {
         for (const [key, r] of Object.entries(saved.tasks as Record<string, any>)) {
           if (!r || typeof r.taskId !== 'string' || typeof r.workerId !== 'string' || typeof r.costUsd !== 'number' || !Number.isFinite(r.costUsd) || r.costUsd < 0) continue;
           const opt = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
-          this.tasks[key] = withoutUndefined({ taskId: r.taskId, workerId: r.workerId, costUsd: r.costUsd, startedAt: opt(r.startedAt), finishedAt: opt(r.finishedAt), outcome: typeof r.outcome === 'string' ? r.outcome : undefined, jobKey: typeof r.jobKey === 'string' ? r.jobKey : undefined });
+          this.tasks[key] = withoutUndefined({ taskId: r.taskId, workerId: r.workerId, costUsd: r.costUsd, startedAt: opt(r.startedAt), finishedAt: opt(r.finishedAt), outcome: typeof r.outcome === 'string' ? r.outcome : undefined, jobKey: typeof r.jobKey === 'string' ? r.jobKey : undefined, frozen: r.frozen === true ? true : undefined });
         }
       }
     } catch {
