@@ -4,6 +4,7 @@ import { apiFetch } from '../endpoint';
 import { STATUS_LABEL, reportBody, reportFacts } from '../research-view';
 import { store } from '../state';
 import { h } from './dom';
+import { morphChildren } from './reconcile';
 import { openInbox } from './inbox';
 
 // ORG-05: the research card's panel in the game. It lists the real reports and tool proposals the server reports, lets
@@ -20,7 +21,7 @@ async function ask(question: string, requestId: string) {
 
 function reportRow(r: ResearchReportSummary, onOpen: () => void): HTMLElement {
   const open = r.tools.filter((t) => t.decision === 'pending').length;
-  return h('li', {},
+  return h('li', { 'data-key': r.jobId },
     h('button.research-row', { type: 'button', 'data-report': r.jobId, 'data-status': r.status, onclick: onOpen },
       h('strong.research-q', {}, r.question),
       reportFacts(r),
@@ -74,9 +75,8 @@ export function researchPanel(onLeave?: () => void): { el: HTMLElement; dispose(
     if (state.storageError) { list.replaceChildren(h('li.inbox-error', { role: 'alert' }, state.storageError)); return; }
     const done = state.reports.filter((r) => r.status === 'imported').length;
     summary.textContent = `${done} report${done === 1 ? '' : 's'} · ${state.openProposals} open tool proposal${state.openProposals === 1 ? '' : 's'} · every report is the worker's work, not verified`;
-    const keep = list.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.report : undefined;
-    list.replaceChildren(...(state.reports.length ? state.reports.map((r) => reportRow(r, () => void showReport(r.jobId))) : [h('li.setting-note', {}, 'No research yet. Ask the first question above.')]));
-    if (keep) list.querySelector<HTMLElement>(`[data-report="${CSS.escape(keep)}"]`)?.focus();
+    // Patched in place by job id, so a focused report row keeps focus and the list its scroll across broadcasts.
+    morphChildren(list, state.reports.length ? state.reports.map((r) => reportRow(r, () => void showReport(r.jobId))) : [h('li.setting-note', {}, 'No research yet. Ask the first question above.')]);
   };
   const listView = h('div.research-list-view', {},
     h('h3', { id: 'research-panel-title' }, 'Research'),

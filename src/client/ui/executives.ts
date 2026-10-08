@@ -1,6 +1,7 @@
 import { EXECUTIVES, NOT_STAFFED, type Executive, type ExecutiveRole, type OrgState } from '../../shared/org';
 import { store } from '../state';
 import { h, openModal } from './dom';
+import { morphChildren } from './reconcile';
 import { openInbox } from './inbox';
 import { researchPanel } from './research';
 
@@ -37,8 +38,8 @@ export function executiveCard(e: Executive, opts: { openQueue?: () => void; befo
           {},
           h('span.exec-count', { 'aria-hidden': 'true' }, String(e.attention)),
           h('span', {}, att.label(e.attention)),
-          att.inbox ? h('button.btn.exec-link', { type: 'button', 'data-open-inbox': e.role, onclick: () => { opts.beforeInbox?.(); openInbox(); } }, 'Open inbox') : null,
-          att.queue && opts.openQueue ? h('button.btn.exec-link', { type: 'button', onclick: opts.openQueue }, 'Open task queue') : null,
+          att.inbox ? h('button.btn.exec-link', { type: 'button', 'data-key': 'inbox', 'data-open-inbox': e.role, onclick: () => { opts.beforeInbox?.(); openInbox(); } }, 'Open inbox') : null,
+          att.queue && opts.openQueue ? h('button.btn.exec-link', { type: 'button', 'data-key': 'queue', onclick: opts.openQueue }, 'Open task queue') : null,
         )
       : h('p.exec-note', {}, 'Nothing waiting for you.');
   const title = opts.heading === 'h2' ? h('h2', { id: `exec-title-${e.role}` }, e.name) : h('strong', {}, e.name);
@@ -77,11 +78,12 @@ export function openExecutiveCard(role: ExecutiveRole, openQueue?: () => void) {
   const close = h('button.btn.close', { type: 'button', 'aria-label': 'Close executive card' }, '✕');
   const render = () => {
     const e = store.org?.executives.find((x) => x.role === role);
-    slot.replaceChildren(
+    // Patched in place, so the Open inbox / Open task queue button keeps focus when the org broadcast repeats.
+    morphChildren(slot, [
       e
         ? executiveCard(e, { heading: 'h2', openQueue: openQueue && (() => { modal.close(); openQueue(); }), beforeInbox: () => modal.close() })
         : h('p.setting-note', {}, store.cloud ? 'Executives are not available in cloud mode yet.' : 'This server has not reported its executives yet.'),
-    );
+    ]);
   };
   // ORG-05: the research office also lists its reports and takes questions.
   const panel = role === 'research' ? researchPanel(() => modal.close()) : undefined;
