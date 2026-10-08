@@ -1,4 +1,5 @@
 import { Consultancy, ConsultancyError } from './consultancy.js';
+import { ApprovalError, ApprovalInbox } from './approvals.js';
 import { TelegramBridge, telegramConfig, type TelegramConfig, type TelegramTransport } from './telegram.js';
 import { chiefCommands } from './chief-commands.js';
 import { Empire } from './empire.js';
@@ -172,6 +173,8 @@ export interface ServerRuntime {
   execution?: ExecutionOptions;
   /** Explicit test injection; false prevents use of host Telegram environment. */
   telegram?: { config: TelegramConfig; transport?: TelegramTransport } | false;
+  /** Explicit test injection; false prevents use of host email environment. */
+  email?: false;
   /** Packaged first-run desktops require an explicit execution choice before any local process. */
   requireExecutionSetup?: boolean;
 }
@@ -237,6 +240,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   };
   let changes!: Changes;
   let consultancy: Consultancy | undefined;
+  let inbox: ApprovalInbox | undefined;
   let observing = false;
   const storageError = () => [workers?.recoveryError, queue?.recoveryError, consultancy?.recoveryError].filter(Boolean).join(' ') || undefined;
   const observeContinuity = () => {
@@ -358,16 +362,30 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     state: () => ({ ...queue.state(), storageError: queue.recoveryError }),
     // dependsOn carries LIFE-04's item order into the queue.
     add: (prompt, by, title, issue, jobKey, dependsOn) => queue.add(prompt, by, title, issue, jobKey, dependsOn),
-  }, () => publishOrg(), {
+  }, () => { inbox?.reconcile(); publishOrg(); }, {
     estimate: (items) => estimateJob(items, historyFromTaskCosts(ledger.taskCosts(), phaseOfJobKey), { maxWorkers: queue.limit }),
     taskCost: (taskId) => ledger.taskCost(taskId),
   });
   const office = consultancy;
+  // ORG-03: the CEO approval inbox, reconciled from consultancy state and re-sent only when an item changes.
+  let approvalsSent = '';
+  const publishApprovals = () => {
+    if (!inbox) return;
+    const state = inbox.state();
+    const sig = JSON.stringify([state.items, state.storageError]);
+    if (sig === approvalsSent) return;
+    approvalsSent = sig;
+    broadcast({ t: 'approvals', state });
+    publishOrg();
+  };
+  inbox = new ApprovalInbox(cfg.dataDir, office, publishApprovals);
+  approvalsSent = JSON.stringify([inbox.state().items, inbox.state().storageError]);
   // ORG-01: the executive roster is a pure projection, re-sent only when a summary or attention count changes.
   let orgSent = '';
   const currentOrg = () => projectOrg({
     now: Date.now(), supervision: empire.state.supervision, workers: workersForClients(), queue: queue.state(),
     jobs: (() => { try { return office.snapshot().jobs; } catch { return []; } })(), usage: ledger.state(),
+    approvals: inbox?.state().items,
   });
   publishOrg = () => {
     if (!queue || !consultancy) return;
@@ -668,6 +686,33 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
           return send(res, 500, { error: 'Consultancy service could not complete this request.' });
         }
       }
+      if (p === '/api/approvals' || p.startsWith('/api/approvals/')) {
+        if (req.method !== 'GET' && !trusted()) return send(res, 403, { error: 'A same-origin Origin header is required' });
+        const approvals = inbox!;
+        try {
+          office.reconcile();
+          approvals.reconcile();
+          if (p === '/api/approvals' && req.method === 'GET') return send(res, 200, approvals.state());
+          const action = /^\/api\/approvals\/(A[1-9]\d{0,8})\/(approve|reject)$/.exec(p);
+          if (action && req.method === 'POST') {
+            // The body may carry budgetUsd (validated as in ORG-02) and a requestId; an empty body is fine.
+            let body: { budgetUsd?: unknown; requestId?: unknown } = {};
+            try { const raw = await readBody(req, 4_000); body = raw.trim() ? JSON.parse(raw) : {}; }
+            catch { return send(res, 400, { error: 'Expected a JSON decision.' }); }
+            if (!body || typeof body !== 'object' || Array.isArray(body)) return send(res, 400, { error: 'Expected a JSON decision.' });
+            const options = { budgetUsd: body.budgetUsd, requestId: body.requestId };
+            const item = action[2] === 'approve' ? approvals.approve(action[1], 'CEO', options) : approvals.reject(action[1], 'CEO', options);
+            // A raised budget releases held items: let the queue seat them now rather than on its next tick.
+            queue.pump();
+            publishApprovals();
+            return send(res, 200, item);
+          }
+          return send(res, 404, { error: 'Unknown approval endpoint.' });
+        } catch (error) {
+          if (error instanceof ApprovalError || error instanceof ConsultancyError) return send(res, error.status, { error: error.message });
+          return send(res, 500, { error: 'The approval inbox could not complete this request.' });
+        }
+      }
       if (p.startsWith('/api/execution/')) {
         if (req.method !== 'GET' && !trusted()) return send(res, 403, {error:'A same-origin Origin header is required'});
         try {
@@ -872,6 +917,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
       decor: decor.list(),
       usage: ledger.state(),
       org: currentOrg(),
+      approvals: inbox?.state(),
       queue: queue.state(),
     });
     sendTo(client, { t: 'empire', state: empire.state });
@@ -1187,7 +1233,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
 
   // Drop dead connections so ghosts don't linger in the office.
   empire.dispatchManagers(queue, 'Chief of staff');
-  const empireTimer = setInterval(() => { empire.tick(workers.list(), queue.state()); try { office.reconcile(); } catch { /* Durable service exposes recovery errors through its snapshot. */ } }, 5000);
+  const empireTimer = setInterval(() => { empire.tick(workers.list(), queue.state()); try { office.reconcile(); inbox?.reconcile(); } catch { /* Durable service exposes recovery errors through its snapshot. */ } }, 5000);
   const heartbeat = setInterval(() => {
     for (const c of clients.values()) {
       if ((c.ws as any).isAlive === false) {

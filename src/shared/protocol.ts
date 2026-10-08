@@ -6,6 +6,7 @@ import type { Look } from './avatar.js';
 import type { Outfit } from './outfit.js';
 import type { DecorPlacement, Decoration } from './decor.js';
 import type { OrgState } from './org.js';
+import type { ApprovalsState } from './approvals.js';
 
 export type WorkerStatus =
   | 'starting' // PTY launched, agent booting
@@ -520,6 +521,8 @@ export type ServerMsg =
       queue: QueueState;
       /** The rule-based executive roster (ORG-01); absent from servers older than it. */
       org?: OrgState;
+      /** The CEO approval inbox (ORG-03); absent from servers older than it. */
+      approvals?: ApprovalsState;
     }
   | { t: 'peer.join'; peer: PeerInfo }
   | { t: 'peer.update'; peer: PeerInfo }
@@ -547,6 +550,8 @@ export type ServerMsg =
   | { t: 'queue'; state: QueueState }
   /** The executive roster changed (summaries or attention); timestamps alone never trigger it. */
   | { t: 'org'; state: OrgState }
+  /** The approval inbox changed (an item raised or decided); sent on change only. */
+  | { t: 'approvals'; state: ApprovalsState }
   /** Sent to whoever watches that worker's changes, whenever they change. */
   | { t: 'changes'; state: ChangesState }
   | { t: 'changes.diff'; workerId: string; path: string; diff: string; truncated: boolean; error?: string }
