@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -51,19 +52,20 @@ class FakeQueue {
   }
 }
 
-function setup(dir = mkdtempSync(path.join(tmpdir(), 'research-'))) {
+function setup(dir = mkdtempSync(path.join(tmpdir(), 'research-')), auto = true) {
   const queue = new FakeQueue();
   const files = new Map<string, string>();
   let inbox!: ApprovalInbox;
   let research: ResearchDesk | undefined;
-  const office = new Consultancy(dir, queue, () => { inbox?.reconcile(); research?.reconcile(); }, { itemIssue: (key) => research?.issue(key) });
+  const office = new Consultancy(dir, queue, () => { inbox?.reconcile(); if (auto) research?.reconcile(); }, { itemIssue: (key) => research?.issue(key) });
   inbox = new ApprovalInbox(dir, office, () => research?.reconcile());
   const reads: string[] = [];
+  const branches: (string | undefined)[] = [];
   research = new ResearchDesk(dir, {
     create: (input, actor) => office.create(input, actor),
     snapshot: () => office.snapshot(),
     queue: () => queue.state(),
-    readArtifact: (task, jobId) => { reads.push(jobId); const t = files.get(jobId); return t === undefined ? { ok: false, reason: `The worker did not write docs/empire/research/${jobId}.md.` } : parseArtifact(Buffer.from(t)); },
+    readArtifact: (task, jobId) => { reads.push(jobId); branches.push(task.branch); const t = files.get(jobId); return t === undefined ? { ok: false, reason: `The worker did not write docs/empire/research/${jobId}.md.` } : parseArtifact(Buffer.from(t)); },
     raiseTool: ({ source, jobId, tool }) => inbox.raise({ source, kind: 'tool_proposal', jobId, tool, title: `Tool: ${tool.name}`, detail: 'd' }),
     decision: (id) => inbox.get(id),
   });
@@ -74,7 +76,7 @@ function setup(dir = mkdtempSync(path.join(tmpdir(), 'research-'))) {
     office.reconcile();
     research!.reconcile();
   };
-  return { dir, queue, office, inbox, research, files, reads, finish, done: () => rmSync(dir, { recursive: true, force: true }) };
+  return { dir, queue, office, inbox, research, files, reads, branches, finish, done: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
 // ---- strict parsing ---------------------------------------------------------------------------------------------------
@@ -402,4 +404,120 @@ test('the prompt asks for every contract field', () => {
   const p = researchPrompt('Q');
   for (const needle of ['question:', 'feasibility: feasible | partial | not_yet | unknown', 'confidence: low | medium | high', '## Findings', '## What we can do now', "## What we can't do yet and why", '## Proposed tools', '| Name | URL | Licence | Enables | Risk |', 'docs/empire/research/{{jobId}}.md'])
     assert.ok(p.includes(needle), needle);
+});
+
+// ---- review fixes -------------------------------------------------------------------------------------------------
+
+test('review fix 1: a leaf swapped after the lstat (FIFO, /dev/zero symlink, huge file) is rejected without hanging', async () => {
+  const { __setArtifactRaceHook } = await import('../src/server/research-artifact.js');
+  const r = repo();
+  try {
+    r.git('worktree', 'add', '-q', '-b', 'office/bea-1', '.agent-office/worktrees/bea-1');
+    const wt = path.join(r.dir, '.agent-office/worktrees/bea-1');
+    mkdirSync(path.join(wt, 'docs/empire/research'), { recursive: true });
+    const leaf = path.join(wt, REL);
+    const read = () => readArtifact({ branch: 'office/bea-1' }, 'research', JOB, { projectDir: r.dir });
+    const swap = (to: () => void) => { writeFileSync(leaf, GOOD); __setArtifactRaceHook(() => { unlinkSync(leaf); to(); }); };
+    try {
+      swap(() => execFileSync('mkfifo', [leaf]));
+      const t0 = Date.now();
+      assert.equal(read().ok, false);
+      assert.ok(Date.now() - t0 < 2000, 'returns quickly');
+      unlinkSync(leaf);
+      swap(() => symlinkSync('/dev/zero', leaf));
+      assert.equal(read().ok, false);
+      unlinkSync(leaf);
+      swap(() => writeFileSync(leaf, Buffer.alloc(MAX_ARTIFACT_BYTES * 4, 'a')));
+      const huge = read();
+      assert.equal(huge.ok, false);
+      assert.match((huge as { reason: string }).reason, /changed while|256 KB/);
+      unlinkSync(leaf);
+      // A swapped parent directory: same name, different file.
+      const parent = path.join(wt, 'docs/empire/research');
+      writeFileSync(leaf, GOOD);
+      __setArtifactRaceHook(() => { rmSync(parent, { recursive: true }); mkdirSync(parent); writeFileSync(leaf, GOOD); });
+      assert.match((read() as { reason: string }).reason, /changed while/);
+    } finally { __setArtifactRaceHook(undefined); }
+    rmSync(leaf, { force: true });
+    writeFileSync(leaf, GOOD);
+    assert.equal(read().ok, true, 'unraced, the same file reads fine');
+  } finally { r.done(); }
+});
+
+test('review fix 2: a report is imported from the saved branch when its task was cleared before reconcile', () => {
+  const f = setup(undefined, false);
+  try {
+    const { job } = f.research.ask('Q?', 'CEO', 'r1');
+    f.office.approve(job.id, 'CEO');
+    const task = f.queue.tasks[0];
+    Object.assign(task, { status: 'running', workerName: 'Bea', branch: 'office/bea-1', attempt: 0 });
+    f.research.reconcile(); // first sight: the binding is saved
+    Object.assign(task, { status: 'done', outcome: 'done', finishedAt: 9 });
+    f.office.reconcile(); // consultancy records finishedOk
+    f.queue.tasks.length = 0; // the CEO clears the queue before research reconciles
+    f.office.reconcile();
+    f.files.set(job.id, GOOD);
+    f.research.reconcile();
+    const report = f.research.report(job.id)!;
+    assert.equal(report.status, 'imported');
+    assert.equal(report.worker, 'Bea');
+    assert.equal(f.branches.at(-1), 'office/bea-1');
+    // Without a recorded finish, a vanished task is never imported.
+    const g = setup(undefined, false);
+    try {
+      const { job: j2 } = g.research.ask('Q2?', 'CEO', 'r2');
+      g.office.approve(j2.id, 'CEO');
+      Object.assign(g.queue.tasks[0], { status: 'running', branch: 'office/cy-1' });
+      g.research.reconcile();
+      g.queue.tasks.length = 0;
+      g.files.set(j2.id, GOOD);
+      g.research.reconcile();
+      assert.notEqual(g.research.report(j2.id)!.status, 'imported');
+    } finally { g.done(); }
+  } finally { f.done(); }
+});
+
+test('review minor: sections must come in the required order', () => {
+  const swapped = GOOD.replace("## What we can do now\nBuild an integration prototype.\n\n## What we can't do yet and why\nWe lack a sandbox account.", "## What we can't do yet and why\nWe lack a sandbox account.\n\n## What we can do now\nBuild an integration prototype.");
+  assert.notEqual(swapped, GOOD);
+  assert.match(reason(swapped), /out of order/);
+});
+
+test('review minor: a pending tool proposal whose approval id is unknown (restored approvals.json) is raised again', () => {
+  const f = setup();
+  try {
+    const { job } = f.research.ask('Q?', 'CEO', 'r1');
+    f.office.approve(job.id, 'CEO');
+    f.files.set(job.id, GOOD);
+    f.finish(job.id);
+    rmSync(path.join(f.dir, 'approvals.json'));
+    const inbox = new ApprovalInbox(f.dir, f.office);
+    assert.equal(inbox.state().items.filter((i) => i.kind === 'tool_proposal').length, 0);
+    const desk = new ResearchDesk(f.dir, {
+      create: f.office.create.bind(f.office), snapshot: () => f.office.snapshot(), queue: () => f.queue.state(), readArtifact: () => ({ ok: false, reason: 'x' }),
+      raiseTool: ({ source, jobId, tool }) => inbox.raise({ source, kind: 'tool_proposal', jobId, tool, title: 't', detail: 'd' }), decision: (id) => inbox.get(id),
+    });
+    desk.reconcile();
+    const raised = inbox.state().items.filter((i) => i.kind === 'tool_proposal');
+    assert.equal(raised.length, 2);
+    assert.deepEqual(desk.report(job.id)!.tools.map((t) => t.approvalId), raised.map((i) => i.id));
+    desk.reconcile();
+    assert.equal(inbox.state().items.filter((i) => i.kind === 'tool_proposal').length, 2, 'once');
+  } finally { f.done(); }
+});
+
+test('review minor: a plan without {{jobId}} fingerprints as before; a token plan reloads and replays', () => {
+  const f = setup();
+  try {
+    const plain = f.office.create({ requestId: 'p1', client: 'Acme', title: 'T', brief: 'B', tasks: [{ title: 'Build', prompt: 'Build it' }] }, 'CEO');
+    const journal = JSON.parse(readFileSync(path.join(f.dir, 'consultancy.json'), 'utf8'));
+    const stored = journal.jobs.find((j: { id: string }) => j.id === plain.id);
+    const expected = createHash('sha256').update(JSON.stringify({ requestId: 'p1', client: 'Acme', title: 'T', brief: 'B', tasks: [{ title: 'Build', prompt: 'Build it' }] })).digest('hex');
+    assert.equal(stored.requestFingerprint, expected);
+    const { job } = f.research.ask('Q?', 'CEO', 'r1');
+    const reloaded = new Consultancy(f.dir, f.queue);
+    assert.equal(reloaded.recoveryError, undefined);
+    assert.equal(reloaded.create({ requestId: 'p1', client: 'Acme', title: 'T', brief: 'B', tasks: [{ title: 'Build', prompt: 'Build it' }] }, 'CEO').id, plain.id);
+    assert.equal(reloaded.create({ requestId: 'research-r1', client: 'Internal', title: job.title, brief: job.brief, tasks: [{ title: 'Research report', prompt: researchPrompt('Q?') }] }, 'CEO').id, job.id);
+  } finally { f.done(); }
 });

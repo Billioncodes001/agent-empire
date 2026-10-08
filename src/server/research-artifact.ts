@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { lstatSync, readFileSync, realpathSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import type { QueueTask } from '../shared/protocol.js';
 import { BRANCH_PREFIX, WORKTREES_DIR } from './worktrees.js';
@@ -24,6 +24,10 @@ export interface ArtifactOptions {
   /** The project directory (the server's `cfg.dir`). Defaults to the current directory. */
   projectDir?: string;
 }
+
+/** Test-only: runs between the lstat walk and the open, to simulate a worker swapping the file (review fix 1). */
+let raceHook: (() => void) | undefined;
+export function __setArtifactRaceHook(hook: (() => void) | undefined) { raceHook = hook; }
 
 type Raw = { ok: true; bytes: Buffer } | { ok: false; reason: string } | { ok: false; missing: true };
 
@@ -51,6 +55,7 @@ function fromWorktree(projectDir: string, slug: string, rel: string): Raw {
   try { rootStat = lstatSync(root); } catch { return { ok: false, missing: true }; }
   if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) return { ok: false, reason: 'The worker worktree is not a plain folder.' };
   let current = root;
+  let leaf: { dev: number; ino: number } | undefined;
   const parts = rel.split('/');
   for (let i = 0; i < parts.length; i++) {
     current = path.join(current, parts[i]);
@@ -58,15 +63,42 @@ function fromWorktree(projectDir: string, slug: string, rel: string): Raw {
     try { st = lstatSync(current); } catch { return { ok: false, missing: true }; }
     if (st.isSymbolicLink()) return { ok: false, reason: `${rel} is or passes through a symlink; symlinks are not read.` };
     if (i < parts.length - 1 ? !st.isDirectory() : !st.isFile()) return { ok: false, reason: `${rel} is not a plain file.` };
-    if (i === parts.length - 1 && st.size > MAX_ARTIFACT_BYTES) return { ok: false, reason: `${rel} is larger than 256 KB.` };
+    if (i === parts.length - 1) {
+      if (st.size > MAX_ARTIFACT_BYTES) return { ok: false, reason: `${rel} is larger than 256 KB.` };
+      leaf = { dev: st.dev, ino: st.ino };
+    }
   }
   // Belt and braces: the resolved file must still be inside the resolved worktree.
-  const realRoot = realpathSync(root);
-  const realFile = realpathSync(current);
-  if (path.relative(realRoot, realFile).startsWith('..') || path.isAbsolute(path.relative(realRoot, realFile))) return { ok: false, reason: `${rel} resolves outside the worker worktree.` };
-  const bytes = readFileSync(current);
-  if (bytes.length > MAX_ARTIFACT_BYTES) return { ok: false, reason: `${rel} is larger than 256 KB.` };
-  return { ok: true, bytes };
+  try {
+    const relative = path.relative(realpathSync(root), realpathSync(current));
+    if (relative.startsWith('..') || path.isAbsolute(relative)) return { ok: false, reason: `${rel} resolves outside the worker worktree.` };
+  } catch { return { ok: false, reason: `${rel} changed while it was being read.` }; }
+  raceHook?.();
+  // Review fix 1: a running worker can swap the file between the checks and the read. Open without following a
+  // symlink and without blocking on a FIFO, then check the opened file itself: a regular file, within the cap, and the
+  // very file (dev/ino) the lstat walk approved, which also catches a swapped parent. Read at most cap + 1 bytes.
+  let fd: number;
+  try { fd = openSync(current, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+  catch { return { ok: false, reason: `${rel} changed while it was being read.` }; }
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile() || !leaf || st.dev !== leaf.dev || st.ino !== leaf.ino) return { ok: false, reason: `${rel} changed while it was being read.` };
+    if (st.size > MAX_ARTIFACT_BYTES) return { ok: false, reason: `${rel} is larger than 256 KB.` };
+    const buffer = Buffer.alloc(MAX_ARTIFACT_BYTES + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const n = readSync(fd, buffer, length, buffer.length - length, length);
+      if (n <= 0) break;
+      length += n;
+    }
+    if (length > MAX_ARTIFACT_BYTES) return { ok: false, reason: `${rel} is larger than 256 KB.` };
+    const bytes = buffer.subarray(0, length);
+    return { ok: true, bytes: Buffer.from(bytes) };
+  } catch {
+    return { ok: false, reason: `${rel} could not be read.` };
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /** The worker's committed branch, when its worktree is gone. A symlink blob (mode 120000) is refused. */
