@@ -12,7 +12,10 @@ const STATE_LABEL: Record<CampaignView['state'], string> = {
   sending: 'Sending', paused: 'Paused', completed: 'Completed', cancelled: 'Cancelled', rejected: 'Declined',
 };
 
+/** What needs the CEO first: sends to approve and drafts that need attention, then live sends, then the rest. */
+const ORDER: CampaignView['state'][] = ['awaiting_approval', 'needs_attention', 'sending', 'paused', 'ready', 'drafting', 'completed', 'cancelled', 'rejected'];
 let state: OutreachState | undefined;
+const seen = new Set<string>();
 let busy = false;
 let lastRendered = '';
 let campaignRequest = newRequestId();
@@ -35,7 +38,7 @@ function tally(c: CampaignView): HTMLElement {
   const box = el('dl', '', 'tally');
   const n = c.counts;
   if (!n) { box.append(el('div', 'No send approved yet — no email has left for this campaign.', 'tally-none')); return box; }
-  for (const [label, value, tone] of [['Recipients', n.recipients, ''], ['Sent', n.sent, 'good'], ['Pending', n.pending + n.inFlight, ''], ['Refused', n.refused, n.refused ? 'warn' : ''], ['Failed', n.failed, n.failed ? 'warn' : ''], ['Suppressed', n.suppressed, ''], ['Unknown', n.unknown, n.unknown ? 'warn' : '']] as const) {
+  for (const [label, value, tone] of [['Recipients', n.recipients, ''], ['Sent', n.sent, n.sent ? 'good' : ''], ['Pending', n.pending + n.inFlight, ''], ['Refused', n.refused, n.refused ? 'warn' : ''], ['Failed', n.failed, n.failed ? 'warn' : ''], ['Suppressed', n.suppressed, ''], ['Unknown', n.unknown, n.unknown ? 'warn' : '']] as const) {
     const d = el('div');
     if (tone) d.dataset.tone = tone;
     d.append(el('dt', label), el('dd', String(value)));
@@ -48,6 +51,8 @@ function campaignCard(c: CampaignView): HTMLElement {
   const card = el('article', '', 'campaign');
   card.dataset.state = c.state;
   card.dataset.campaign = c.id;
+  // Only a campaign appearing for the first time slides in; re-renders never replay the motion.
+  if (!seen.has(c.id)) { card.classList.add('is-new'); seen.add(c.id); }
   const head = el('header');
   const title = el('div');
   title.append(el('small', `${c.id} · created ${new Date(c.createdAt).toLocaleDateString()}`), el('strong', c.title));
@@ -84,7 +89,12 @@ function campaignCard(c: CampaignView): HTMLElement {
       busy = true; render(true);
       try { await api(`/campaigns/${encodeURIComponent(c.id)}/${action}`, {}); await refresh(); }
       catch (e) { report('outreach-status', (e as Error).message, 'error'); }
-      finally { busy = false; render(true); }
+      finally {
+        busy = false; render(true);
+        // The control just used may have changed (Pause → Resume): keep keyboard focus within this campaign.
+        const card = $('campaigns').querySelector<HTMLElement>(`.campaign[data-campaign="${CSS.escape(c.id)}"]`);
+        (card?.querySelector<HTMLElement>('.campaign-actions button') ?? card?.querySelector<HTMLElement>('summary'))?.focus();
+      }
     });
     return b;
   };
@@ -120,9 +130,16 @@ function render(force = false) {
   report('outreach-status', state.storageError ? state.storageError : s.sendingEnabled ? `${s.label} · from ${s.from} · ${sent}` : `${s.label}. ${s.problems.slice(1).join(' ')} Drafts and leads still work; nothing can be sent until this is set on the host.`, state.storageError || !s.sendingEnabled ? 'error' : 'ok');
   $('outreach-status').dataset.enabled = String(s.sendingEnabled);
   const campaigns = $('campaigns');
-  const focused = campaigns.contains(document.activeElement) ? (document.activeElement as HTMLElement).textContent : undefined;
-  campaigns.replaceChildren(...(state.campaigns.length ? state.campaigns.map(campaignCard) : [el('p', 'No campaigns yet. Import your leads, then brief a campaign; a worker drafts it after you approve the drafting job.', 'empty')]));
-  if (focused) [...campaigns.querySelectorAll<HTMLElement>('button')].find((b) => b.textContent === focused)?.focus();
+  const active = campaigns.contains(document.activeElement) ? document.activeElement as HTMLElement : undefined;
+  const focused = active?.textContent;
+  const focusedCampaign = active?.closest<HTMLElement>('.campaign')?.dataset.campaign;
+  campaigns.replaceChildren(...(state.campaigns.length ? [...state.campaigns].sort((a, b) => ORDER.indexOf(a.state) - ORDER.indexOf(b.state)).map(campaignCard) : [el('p', 'No campaigns yet. Import your leads, then brief a campaign; a worker drafts it after you approve the drafting job.', 'empty')]));
+  // Keep keyboard focus in the same campaign: the same control, or its first action after Pause became Resume.
+  if (focusedCampaign) {
+    const card = campaigns.querySelector<HTMLElement>(`.campaign[data-campaign="${CSS.escape(focusedCampaign)}"]`);
+    const buttons = [...(card?.querySelectorAll<HTMLElement>('button') ?? [])];
+    (buttons.find((b) => b.textContent === focused) ?? buttons[0] ?? card?.querySelector<HTMLElement>('summary'))?.focus();
+  }
   const confirmed = state.leads.filter((l) => l.status === 'confirmed');
   const proposed = state.leads.filter((l) => l.status === 'proposed');
   $('lead-count').textContent = `${confirmed.length}`;

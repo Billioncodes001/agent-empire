@@ -15,7 +15,7 @@ import type { Collider, Interactable } from './office';
 const SUITS: Record<Exclude<ExecutiveRole, 'chief_of_staff'>, { avatars: [AvatarId, AvatarId]; colors: Omit<Outfit, 'avatar'> }> = {
   operations: { avatars: ['business-m03', 'business-m04'], colors: { suit: '#24402f', shirt: '#f4f3ef', tie: '#c19a35' } },
   finance: { avatars: ['business-f04', 'business-f02'], colors: { suit: '#1f2c4a', shirt: '#bcd3ea' } },
-  marketing_sales: { avatars: ['business-f03', 'business-f01'], colors: { suit: '#5e1f2a', shirt: '#eee3c8' } },
+  marketing_sales: { avatars: ['business-f01', 'business-f03'], colors: { suit: '#5e1f2a', shirt: '#eee3c8' } },
   research: { avatars: ['business-m05', 'business-m06'], colors: { suit: '#6b7178', shirt: '#cfc6e6', tie: '#1f7a78' } },
 };
 

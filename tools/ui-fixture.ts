@@ -11,7 +11,8 @@ import { projectWaitingOn, withWaitingOn } from '../src/server/waiting.js';
 import { projectOrg } from '../src/server/org.js';
 import type { ConsultancyJob } from '../src/shared/consultancy.js';
 import type { OrgState } from '../src/shared/org.js';
-import { mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { Outreach } from '../src/server/outreach.js';
 import { tmpdir } from 'node:os';
 import { Consultancy } from '../src/server/consultancy.js';
 import { ApprovalError, ApprovalInbox } from '../src/server/approvals.js';
@@ -44,6 +45,42 @@ if (process.env.FIXTURE_APPROVALS !== 'none') {
   fxOffice.reconcile();
 }
 
+/**
+ * ORG-04a (FIXTURE_OUTREACH=1): a real Outreach over the same fixture inbox, with a fake transport that only records.
+ * Synthetic leads, one drafted campaign whose artifact sits in the temp project folder, so marketing & sales raised a
+ * campaign send (external_action) with the exact samples and recipient list. No message ever leaves this process.
+ */
+let fxOutreach: Outreach | undefined;
+if (process.env.FIXTURE_OUTREACH === '1') {
+  const fakeSent: string[] = [];
+  fxOutreach = new Outreach(inboxDir, {
+    projectDir: inboxDir, office: fxOffice, queue: () => ({ tasks: fxTasks.map((t) => ({ ...t })), maxWorkers: 0 }),
+    config: { from: 'hello@northwind-fixture.example', fromName: 'Northwind Studio', address: 'Northwind Studio Ltd, 14 Harbour Row, Bristol BS1 4XX, United Kingdom', dailyCap: 200, intervalMs: 3_600_000, problems: [] },
+    transport: { send: async (m) => { fakeSent.push(m.to); } },
+    log: () => undefined,
+    onChange: () => { for (const ws of sockets.clients) send(ws, { t: 'approvals', state: inbox!.state() }); },
+  });
+  fxOutreach.setInbox(inbox!);
+  inbox!.setExternal(fxOutreach);
+  fxOutreach.importCsv(['name,email,company,source,basis,tags',
+    'Ann Lee,ann.lee@client-fixture.example,Harbor Labs,inbound inquiry,existing customer,customers',
+    'Bob Ray,bob.ray@client-fixture.example,Atlas Commerce,conference contact,legitimate interest,customers',
+    'Cleo Park,cleo@client-fixture.example,Orbit Health,referral,existing customer,customers',
+    'Dev Shah,dev@client-fixture.example,Kite Labs,inbound inquiry,consent,customers',
+    'Eli Moss,eli@client-fixture.example,Fjord Bank,existing customer,existing customer,customers'].join('\n'), 'Fixture CEO');
+  fxOutreach.suppress('dev@client-fixture.example', 'opt_out', 'Fixture CEO', 'Replied STOP');
+  const jobId = fxOffice.newJobId();
+  const c = fxOutreach.createCampaign({ requestId: 'fx-campaign', title: 'Autumn studio open day', brief: 'Invite existing customers to the autumn open day. Synthetic fixture.' }, 'Fixture CEO', { jobId });
+  inbox!.approve(inbox!.state().items.find((i) => i.kind === 'job_plan' && i.jobId === c.jobId)!.id, 'Fixture CEO');
+  fxOffice.reconcile();
+  Object.assign(fxTasks.find((t) => t.jobKey === `consultancy:${jobId}:item-1`)!, { status: 'done', outcome: 'done', workerName: 'Wren', finishedAt: Date.now() - 120_000 });
+  const file = resolve(inboxDir, 'docs/empire/campaigns', `${jobId}.md`);
+  mkdirSync(resolve(file, '..'), { recursive: true });
+  writeFileSync(file, '---\nsubject: You are invited, {{name}} — autumn open day\naudience: [customers]\nproposedLeads:\n  - Fay Lin | fay@client-fixture.example | Zed Works | trade show | met at stand 12\n---\n\nHi {{name}},\n\nWe are opening the studio on 24 October for customers like {{company}}: short demos, the new booking tools, and coffee.\n\nReply to this email to save a place.\n\nThe Northwind team\n');
+  fxOffice.reconcile();
+  fxOutreach.reconcile();
+}
+
 /** ORG-01: synthetic client jobs so each executive has something real-shaped to compute from (the real projection). */
 function fixtureOrg(state: ReturnType<typeof initialEmpire>, workers: WorkerInfo[], tasks: QueueTask[]): OrgState {
   const zero = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, cost: 0, calls: 0 };
@@ -53,7 +90,7 @@ function fixtureOrg(state: ReturnType<typeof initialEmpire>, workers: WorkerInfo
     job('fixture-portal', { approvedBudgetUsd: 12, actualSpendUsd: 4.8 }),
     job('fixture-audit', { approvedBudgetUsd: 3, actualSpendUsd: 3.1, budgetHold: { reachedAt: 1, spentUsd: 3.1, approvedBudgetUsd: 3 }, items: [{ id: 'item-2', title: 'Second pass', prompt: 'Synthetic', jobKey: 'fixture', status: 'queued', phase: 'iteration', held: true }] }),
   ];
-  return projectOrg({ now: Date.now(), supervision: state.supervision, workers, queue: { tasks, maxWorkers: 3 }, jobs, approvals: inbox?.state().items, usage: { total: { ...zero, cost: 7.9 }, today: { ...zero, cost: 1.2 }, day: '2026-10-08', budget: 10, pauseHiring: false } });
+  return projectOrg({ now: Date.now(), supervision: state.supervision, workers, queue: { tasks, maxWorkers: 3 }, jobs, approvals: inbox?.state().items, outreach: fxOutreach?.summary(), usage: { total: { ...zero, cost: 7.9 }, today: { ...zero, cost: 1.2 }, day: '2026-10-08', budget: 10, pauseHiring: false } });
 }
 
 const port = Number(process.env.FIXTURE_PORT || 4613);

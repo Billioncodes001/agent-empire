@@ -316,7 +316,7 @@ html[data-save-data="true"] *, html[data-save-data="true"] *::before, html[data-
 /* ORG-04a outreach — a mail room under the engagements: campaigns as dispatch slips on ink, leads and
    suppression as ivory ledger cards. Every figure is a real per-recipient result from the host. */
 .outreach { margin-top: clamp(64px, 8vw, 112px); scroll-margin-top: 24px; }
-.kicker-tag { padding: 2px 6px; border: 1px solid var(--copper); color: var(--champagne); }
+.kicker-tag { white-space: nowrap; padding: 2px 6px; border: 1px solid var(--copper); color: var(--champagne); }
 .outreach-status { margin: 0 0 22px; padding: 12px 16px; border-left: 3px solid var(--copper); background: var(--ink-1); font: 500 13px/1.6 var(--mono); color: var(--ivory-2); overflow-wrap: anywhere; }
 .outreach-status[data-enabled="true"] { border-left-color: #7fb69a; }
 .outreach-status[data-tone="error"] { background: #2a1813; color: #f6d2bf; }
@@ -324,7 +324,8 @@ html[data-save-data="true"] *, html[data-save-data="true"] *::before, html[data-
 .outreach-h { margin: 0 0 10px; font: 600 11px/1.4 var(--mono); letter-spacing: .2em; text-transform: uppercase; color: var(--copper-hi); }
 .outreach-lede { margin: 0 0 18px; color: var(--muted); font-size: 13.5px; max-width: 62ch; }
 #campaigns { display: grid; gap: 18px; }
-.campaign { position: relative; padding: 22px 24px 20px; background: linear-gradient(180deg, var(--ink-2), var(--ink-1)); border: 1px solid var(--line); animation: job-in .5s var(--ease) both; }
+.campaign { position: relative; padding: 22px 24px 20px; background: linear-gradient(180deg, var(--ink-2), var(--ink-1)); border: 1px solid var(--line); }
+.campaign.is-new { animation: job-in .5s var(--ease) both; }
 .campaign::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--line-2); }
 .campaign[data-state="sending"]::before { background: linear-gradient(180deg, var(--copper-hi), var(--copper), var(--copper-hi)); background-size: 100% 200%; animation: dispatch 2.4s linear infinite; }
 .campaign[data-state="awaiting_approval"]::before, .campaign[data-state="needs_attention"]::before { background: var(--copper); }
