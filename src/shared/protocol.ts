@@ -5,6 +5,7 @@ import type { ContinuityStatus } from './continuity.js';
 import type { Look } from './avatar.js';
 import type { Outfit } from './outfit.js';
 import type { DecorPlacement, Decoration } from './decor.js';
+import type { OrgState } from './org.js';
 
 export type WorkerStatus =
   | 'starting' // PTY launched, agent booting
@@ -491,6 +492,8 @@ export type ServerMsg =
       decor: Decoration[];
       usage: UsageState;
       queue: QueueState;
+      /** The rule-based executive roster (ORG-01); absent from servers older than it. */
+      org?: OrgState;
     }
   | { t: 'peer.join'; peer: PeerInfo }
   | { t: 'peer.update'; peer: PeerInfo }
@@ -516,6 +519,8 @@ export type ServerMsg =
   | { t: 'decor'; items: Decoration[] }
   | { t: 'usage'; state: UsageState }
   | { t: 'queue'; state: QueueState }
+  /** The executive roster changed (summaries or attention); timestamps alone never trigger it. */
+  | { t: 'org'; state: OrgState }
   /** Sent to whoever watches that worker's changes, whenever they change. */
   | { t: 'changes'; state: ChangesState }
   | { t: 'changes.diff'; workerId: string; path: string; diff: string; truncated: boolean; error?: string }
