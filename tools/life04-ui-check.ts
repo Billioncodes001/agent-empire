@@ -20,6 +20,39 @@ const check = (name: string, ok: boolean, detail = '') => {
   results.push({ name, ok, detail });
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
 };
+const message = (e: unknown) => (e instanceof Error ? e.message : String(e)).split('\n')[0];
+// Any stray rejection becomes a FAIL line and a non-zero exit, never a bare Node stack trace.
+process.on('unhandledRejection', (e) => { check('unexpected error', false, message(e)); process.exitCode = 1; });
+
+/** Screenshots are evidence, not the check itself: a slow WebGL frame on a busy machine reports FAIL instead of crashing. */
+async function shot(page: Page, name: string) {
+  try {
+    await page.screenshot({ path: resolve(out, name), timeout: 90_000, animations: 'disabled' });
+    check(`screenshot ${name}`, true);
+  } catch (e) { check(`screenshot ${name}`, false, message(e)); }
+}
+
+type QueueRows = { blocked: string; held: string; retry: number; remove: number };
+/**
+ * The queue modal rebuilds its whole list on every workers/queue/empire event (the fixture republishes every 3 s), so
+ * a resolved row can be detached between Playwright's actionability steps ("waiting for element to be stable" →
+ * "Element is not attached to the DOM"). Wait for explicit DOM state, then read both rows and scroll in one
+ * synchronous evaluate against whichever list is current.
+ */
+async function readQueue(page: Page): Promise<QueueRows> {
+  await page.waitForFunction(() => !!document.querySelector('.queue-list li.blocked .queue-meta') && !!document.querySelector('.queue-list li.held'), null, { timeout: 30_000 });
+  return page.evaluate(() => {
+    const blocked = document.querySelector<HTMLElement>('.queue-list li.blocked')!;
+    const held = document.querySelector<HTMLElement>('.queue-list li.held')!;
+    blocked.scrollIntoView({ block: 'nearest' });
+    return {
+      blocked: blocked.querySelector<HTMLElement>('.queue-meta')!.innerText,
+      held: held.innerText,
+      retry: [...held.querySelectorAll('button')].filter((b) => b.textContent?.includes('Retry')).length,
+      remove: held.querySelectorAll('button[aria-label="Remove"]').length,
+    };
+  });
+}
 
 type Snap = { id: string; phase: string; place: string; activity: string; reason: string; typing: boolean };
 const lifeOf = (page: Page, id: string) => page.evaluate((wid) => {
@@ -64,8 +97,10 @@ async function lookAtWorker(page: Page, id: string, distance: number) {
 const browser = await chromium.launch({ channel: 'chrome' });
 try {
   for (const [w, h, touch, tag] of [[1440, 900, false, '1440x900'], [874, 402, true, '874x402']] as const) {
-    const { context, page, errors } = await open(browser, w, h, touch);
+    let opened: Awaited<ReturnType<typeof open>> | undefined;
     try {
+      opened = await open(browser, w, h, touch);
+      const { page, errors } = opened;
       await page.waitForFunction(() => {
         const o = (window as unknown as { __office?: { life: { snapshot(): Snap[] } } }).__office;
         const c = o?.life.snapshot().find((l) => l.id === 'fixture-cyrus');
@@ -78,23 +113,23 @@ try {
       check(`${tag}: waiting worker never types`, cyrus?.typing === false);
       check(`${tag}: working worker types at its desk`, bea?.place === 'desk' && bea.typing === true, JSON.stringify(bea));
       await lookAtWorker(page, 'fixture-cyrus', 3.2);
-      await page.screenshot({ path: resolve(out, `waiting-amenity-${tag}.png`) });
+      await shot(page, `waiting-amenity-${tag}.png`);
       await page.evaluate(() => (document.getElementById('btn-queue') as HTMLElement).click());
-      await page.waitForSelector('.queue-list li.blocked', { timeout: 10_000 });
-      const blocked = await page.locator('.queue-list li.blocked .queue-meta').innerText();
-      const held = await page.locator('.queue-list li.held').innerText();
-      check(`${tag}: queue shows the blocked task waiting on its dependency`, blocked.includes('Waiting on “Build checkout API”'), blocked.split('\n')[0]);
-      check(`${tag}: queue shows the held task with Retry and Remove`, /Held — dependency “Draft launch email copy” did not finish/.test(held)
-        && (await page.locator('.queue-list li.held button', { hasText: 'Retry' }).count()) === 1
-        && (await page.locator('.queue-list li.held button[aria-label="Remove"]').count()) === 1, held.replace(/\s+/g, ' ').slice(0, 120));
-      await page.locator('.queue-list li.blocked').scrollIntoViewIfNeeded();
-      await page.screenshot({ path: resolve(out, `queue-blocked-${tag}.png`) });
+      const q = await readQueue(page);
+      check(`${tag}: queue shows the blocked task waiting on its dependency`, q.blocked.includes('Waiting on “Build checkout API”'), q.blocked.split('\n')[0]);
+      check(`${tag}: queue shows the held task with Retry and Remove`, /Held — dependency “Draft launch email copy” did not finish/.test(q.held)
+        && q.retry === 1 && q.remove === 1, q.held.replace(/\s+/g, ' ').slice(0, 120));
+      await shot(page, `queue-blocked-${tag}.png`);
       check(`${tag}: no console errors`, errors.length === 0, errors.slice(0, 3).join(' | '));
-    } finally { await context.close(); }
+    } catch (e) {
+      check(`${tag}: check run completed`, false, message(e));
+    } finally { await opened?.context.close().catch(() => undefined); }
   }
   // Reduced motion: the waiting worker is placed at the amenity without a walking phase.
-  const { context, page, errors } = await open(browser, 874, 402, true, true);
+  let opened: Awaited<ReturnType<typeof open>> | undefined;
   try {
+    opened = await open(browser, 874, 402, true, true);
+    const { page, errors } = opened;
     await page.waitForFunction(() => {
       const c = (window as unknown as { __office?: { life: { snapshot(): Snap[] } } }).__office?.life.snapshot().find((l) => l.id === 'fixture-cyrus');
       return !!c && c.place !== 'desk';
@@ -103,9 +138,14 @@ try {
     for (let i = 0; i < 10; i++) { phases.add((await lifeOf(page, 'fixture-cyrus'))?.phase ?? 'none'); await page.waitForTimeout(100); }
     check('reduced motion: waiting worker teleports (never walks)', !phases.has('walk') && phases.has('using'), [...phases].join(','));
     check('reduced motion: no console errors', errors.length === 0, errors.slice(0, 3).join(' | '));
-  } finally { await context.close(); }
-} finally { await browser.close(); }
+  } catch (e) {
+    check('reduced motion: check run completed', false, message(e));
+  } finally { await opened?.context.close().catch(() => undefined); }
+} catch (e) {
+  check('check run completed', false, message(e));
+} finally { await browser.close().catch(() => undefined); }
 
+if (!results.length) check('check run completed', false, 'no checks ran');
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
 process.exit(failed.length ? 1 : 0);
