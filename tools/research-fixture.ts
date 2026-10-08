@@ -1,5 +1,5 @@
 /** ORG-05 synthetic research reports for the isolated UI fixture and founder preview. No worker, network or model. */
-import { parseArtifact } from '../src/server/research-artifact.js';
+import { parseArtifact } from '../src/server/artifacts.js';
 import { parseResearchReport } from '../src/server/research.js';
 
 export const SYNTHETIC_QUESTION = 'Can we offer appointment booking for dental practices?';

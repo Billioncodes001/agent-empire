@@ -10,7 +10,11 @@ import { ApprovalInbox } from '../src/server/approvals.js';
 import { chiefCommands } from '../src/server/chief-commands.js';
 import { projectOrg } from '../src/server/org.js';
 import { ResearchDesk, parseResearchReport, researchPrompt } from '../src/server/research.js';
-import { MAX_ARTIFACT_BYTES, parseArtifact, readArtifact } from '../src/server/research-artifact.js';
+import { MAX_ARTIFACT_BYTES, artifactTestHooks, parseArtifact, readArtifact as readShared } from '../src/server/artifacts.js';
+
+// Ported to the shared importer (src/server/artifacts.ts) when ORG-04a and ORG-05 merged. Same call shape as before.
+const readArtifact = (task: { branch?: string }, kind: 'research' | 'campaigns', jobId: string, o: { projectDir: string }) =>
+  readShared(o.projectDir, { status: 'done', outcome: 'done', ...task }, kind, jobId);
 import type { QueueState, QueueTask } from '../src/shared/protocol.js';
 
 // ---- fixtures ---------------------------------------------------------------------------------------------------------
@@ -93,14 +97,14 @@ test('a complete report parses: frontmatter, four sections, sources counted, too
 });
 
 test('strict parse: missing or invalid frontmatter and sections are rejected with a reason', () => {
-  assert.match(reason(GOOD.replace(/^---\n/, '')), /no frontmatter/);
+  assert.match(reason(GOOD.replace(/^---\n/, '')), /no frontmatter|must start with a "---" frontmatter line/);
   assert.match(reason(GOOD.replace('feasibility: partial\n', '')), /missing feasibility/);
   assert.match(reason(GOOD.replace('feasibility: partial', 'feasibility: maybe')), /feasibility must be/);
   assert.match(reason(GOOD.replace('confidence: medium', 'confidence: very')), /confidence must be/);
   assert.match(reason(GOOD.replace('confidence: medium\n', '')), /missing confidence/);
   assert.match(reason(GOOD.replace('question: Can we sell to dentists?\n', '')), /missing question/);
   assert.match(reason(GOOD.replace('confidence: medium', 'confidence: medium\nextra: 1')), /Unexpected frontmatter key/);
-  assert.match(reason(GOOD.replace('confidence: medium', 'confidence: medium\nconfidence: low')), /appears twice/);
+  assert.match(reason(GOOD.replace('confidence: medium', 'confidence: medium\nconfidence: low')), /appears twice|duplicate key/);
   assert.match(reason(GOOD.replace('## What we can do now', '## Next steps')), /"What we can do now" is missing/);
   assert.match(reason(GOOD.replace('## Proposed tools', '## Tools')), /"Proposed tools" is missing/);
   assert.match(reason(GOOD + '\n## Findings\n- again https://x.example\n'), /appears twice/);
@@ -125,9 +129,9 @@ test('Findings must cite a source URL for every claim', () => {
 });
 
 test('the artifact parse is strict about encoding, NUL and frontmatter shape', () => {
-  assert.deepEqual(parseArtifact(Buffer.from([0xff, 0xfe, 0x00])), { ok: false, reason: 'The report is not valid UTF-8.' });
+  assert.match((parseArtifact(Buffer.from([0xff, 0xfe, 0x00])) as { reason: string }).reason, /not valid UTF-8/);
   assert.equal(parseArtifact(Buffer.from('---\nq: a\0\n---\n')).ok, false);
-  assert.match((parseArtifact(Buffer.from('---\nquestion: a\n')) as { reason: string }).reason, /not closed/);
+  assert.match((parseArtifact(Buffer.from('---\nquestion: a\n')) as { reason: string }).reason, /no closing/);
   assert.match((parseArtifact(Buffer.from('---\nnot a pair\n---\n')) as { reason: string }).reason, /key: value/);
   assert.equal(parseArtifact(Buffer.alloc(MAX_ARTIFACT_BYTES + 1, 'a')).ok, false);
   const quoted = parseArtifact(Buffer.from('---\nquestion: "Can we: do it?"\n---\nbody'));
@@ -166,7 +170,7 @@ test('readArtifact reads the worker worktree, and falls back to the committed br
     assert.equal(fromBranch.ok, true);
     assert.equal(fromBranch.ok && fromBranch.frontmatter.feasibility, 'partial');
     const missing = readArtifact({ branch: 'office/bea-1' }, 'research', 'consultancy-ffffffffffff', { projectDir: r.dir });
-    assert.match((missing as { reason: string }).reason, /did not write/);
+    assert.match((missing as { reason: string }).reason, /did not (write|commit)/);
   } finally { r.done(); }
 });
 
@@ -191,10 +195,12 @@ test('readArtifact refuses symlinks, .., unsafe names, oversize files and wrong 
     writeFileSync(path.join(wt, REL), 'a'.repeat(MAX_ARTIFACT_BYTES + 1));
     assert.match((readArtifact({ branch: 'office/bea-1' }, 'research', JOB, { projectDir: r.dir }) as { reason: string }).reason, /256 KB/);
     // `..` and unsafe ids or branches never reach the file system.
-    assert.match((readArtifact({ branch: 'office/bea-1' }, 'research', '../secret', { projectDir: r.dir }) as { reason: string }).reason, /safe file name/);
+    assert.match((readArtifact({ branch: 'office/bea-1' }, 'research', '../secret', { projectDir: r.dir }) as { reason: string }).reason, /not a consultancy job id/);
     assert.match((readArtifact({ branch: 'office/../../etc' }, 'research', JOB, { projectDir: r.dir }) as { reason: string }).reason, /not safe/);
-    assert.match((readArtifact({ branch: 'main' }, 'research', JOB, { projectDir: r.dir }) as { reason: string }).reason, /no worker branch/);
-    assert.match((readArtifact({}, 'research', JOB, { projectDir: r.dir }) as { reason: string }).reason, /no worker branch/);
+    assert.match((readArtifact({ branch: 'main' }, 'research', JOB, { projectDir: r.dir }) as { reason: string }).reason, /not a worker branch/);
+    // Shared contract: a task without a worktree worked in the project folder, so that folder is read (confined the
+    // same way); here nothing is there.
+    assert.match((readArtifact({}, 'research', JOB, { projectDir: r.dir }) as { reason: string }).reason, /missing/);
     // The wrong kind's folder is not read: a campaign file is not a research report.
     rmSync(path.join(wt, REL));
     mkdirSync(path.join(wt, 'docs/empire/campaigns'));
@@ -409,7 +415,7 @@ test('the prompt asks for every contract field', () => {
 // ---- review fixes -------------------------------------------------------------------------------------------------
 
 test('review fix 1: a leaf swapped after the lstat (FIFO, /dev/zero symlink, huge file) is rejected without hanging', async () => {
-  const { __setArtifactRaceHook } = await import('../src/server/research-artifact.js');
+  const __setArtifactRaceHook = (hook: (() => void) | undefined) => { artifactTestHooks.beforeOpen = hook && (() => hook()); };
   const r = repo();
   try {
     r.git('worktree', 'add', '-q', '-b', 'office/bea-1', '.agent-office/worktrees/bea-1');

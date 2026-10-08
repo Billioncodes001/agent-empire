@@ -22,7 +22,7 @@ export interface TelegramCommands {
 interface Checkpoint { version: 1; binding: string; offset: number; fingerprint?: string; notified?: string[] }
 /** Announced approval keys kept for de-duplication; older ones are long decided. */
 const MAX_NOTIFIED = 500;
-const HELP = '/new Client | Job title | Brief\n/jobs — current jobs\n/job ID — review a plan\n/approvals — what waits for your approval\n/approve ID [budget] — approve an inbox item (A3) or a reviewed plan (job id)\n/reject ID — decline an inbox item or an unstarted plan\n/research QUESTION — ask the research executive (needs your approval before work starts)\n/status — chief report';
+const HELP = '/new Client | Job title | Brief\n/jobs — current jobs\n/job ID — review a plan\n/approvals — what waits for your approval\n/approve ID [budget] — approve an inbox item (A3) or a reviewed plan (job id)\n/reject ID — decline an inbox item or an unstarted plan\n/research QUESTION — ask the research executive (needs your approval before work starts)\n/optout EMAIL — never email this address again (outreach)\n/status — chief report';
 export { HELP as TELEGRAM_HELP };
 
 export function telegramConfig(env: NodeJS.ProcessEnv): TelegramConfig | undefined {

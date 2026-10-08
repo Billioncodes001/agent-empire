@@ -20,7 +20,7 @@ export function estimateText(job: ConsultancyJob): string {
 }
 
 /** A deterministic command surface shared with the same consultancy service as the CEO console. */
-export function chiefCommands(office: Consultancy, resourceReport: () => string, inbox?: ApprovalInbox, afterDecision?: () => void, research?: ResearchDesk): TelegramCommands {
+export function chiefCommands(office: Consultancy, resourceReport: () => string, inbox?: ApprovalInbox, afterDecision?: () => void, research?: ResearchDesk, outreach?: { optOutCommand(email: string, actor: string): string }): TelegramCommands {
   const ACTOR = 'CEO via Telegram';
   /** Inbox ids the owner already heard about in a command reply (/new); announced silently. */
   const announced = new Set<string>();
@@ -34,7 +34,9 @@ export function chiefCommands(office: Consultancy, resourceReport: () => string,
     // Like the HTTP route: a raised budget releases held items, so the queue seats them now.
     try { afterDecision?.(); } catch { /* the decision is saved; seating retries on the queue's own timer */ }
     const budget = item.status === 'approved' && item.budgetUsd !== undefined ? ` · budget $${item.budgetUsd.toFixed(2)}` : '';
-    const note = item.kind === 'budget_increase'
+    const note = item.kind === 'external_action'
+      ? (item.status === 'approved' ? ' Sending starts now, one message per recipient within the rate limit and daily cap. Pause or cancel it on the founder desk.' : ' Nothing was sent.')
+      : item.kind === 'budget_increase'
       ? (item.status === 'approved' ? ' Held items are released; existing execution and workstation limits still apply.' : ` The job stays held. To release it later, approve this item in the game inbox (Recent decisions) or send /approve ${item.id} [budget].`)
       : (item.status === 'approved' ? ' The plan is queued under existing execution, budget and workstation limits.' : ' The unstarted plan was declined.');
     return `${item.id} ${item.status}${budget}.${note}`;
@@ -79,6 +81,12 @@ export function chiefCommands(office: Consultancy, resourceReport: () => string,
           if (!job) return 'Job not found. Use /jobs for its ID.';
           // Explicit plan review can reveal the requested brief to the configured CEO, never in unsolicited updates.
           return `${job.id} · ${job.client} · ${job.title}\n${job.status.replaceAll('_', ' ')}\n\n${job.brief}${estimateText(job)}\n\nReview the complete work-item plan in the CEO console before approval. Approval submits it to this host’s local worker queue under existing budget and desk limits. /approve ${job.id} (or /approve ${job.id} 25 to set a $25 budget)`;
+        }
+        if (cmd === 'optout') {
+          if (!outreach) return 'Email outreach is not available on this host.';
+          const email = raw.trim();
+          if (!email || /\s/.test(email)) return 'Use /optout name@example.com';
+          return outreach.optOutCommand(email, ACTOR);
         }
         if (cmd === 'approvals') {
           if (!inbox) return 'The approval inbox is not available on this host.';
