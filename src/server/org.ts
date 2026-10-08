@@ -3,6 +3,7 @@ import type { SupervisionState } from '../shared/empire.js';
 import { EXECUTIVE_ROLES, EXECUTIVES, NOT_STAFFED, type Executive, type ExecutiveRole, type OrgState } from '../shared/org.js';
 import { heldDependencyId } from '../shared/dependencies.js';
 import type { QueueState, UsageState, WorkerInfo } from '../shared/protocol.js';
+import type { Approval } from '../shared/approvals.js';
 
 /** Everything the executives read. All of it is existing runtime state; nothing is fetched or asked of a model. */
 export interface OrgInput {
@@ -12,12 +13,15 @@ export interface OrgInput {
   queue: QueueState;
   jobs: ConsultancyJob[];
   usage: UsageState;
+  /** ORG-03: the approval inbox. When present, chief and finance attention count the pending items each raised. */
+  approvals?: Approval[];
 }
 
 
 
 
 
+const raised = (input: OrgInput, role: Approval['raisedBy']) => input.approvals?.filter((a) => a.raisedBy === role && a.status === 'pending').length;
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const usd = (n: number) => `$${n.toFixed(2)}`;
 
@@ -43,7 +47,7 @@ function chiefOfStaff(input: OrgInput): Pick<Executive, 'summary' | 'attention'>
     ? [PHASE[sup.chief.phase], `${sup.workforce.active} active`, `${sup.workforce.attention} need${sup.workforce.attention === 1 ? 's' : ''} input`]
     : ['No supervision evidence yet'];
   if (plans) parts.push(`${plural(plans, 'plan')} awaiting approval`);
-  return { summary: parts.join(' · '), attention: plans };
+  return { summary: parts.join(' · '), attention: raised(input, 'chief_of_staff') ?? plans };
 }
 
 function operations(input: OrgInput): Pick<Executive, 'summary' | 'attention'> {
@@ -73,8 +77,8 @@ function finance(input: OrgInput): Pick<Executive, 'summary' | 'attention'> {
     const spent = budgeted.reduce((n, j) => n + (j.actualSpendUsd ?? 0), 0);
     parts.push(`${plural(budgeted.length, 'job')}: ${usd(spent)} spent of ${usd(approved)} approved`);
   } else parts.push('no approved job budgets');
-  // Each hold is a budget_increase this executive raises; ORG-03 turns it into an inbox item.
-  const holds = input.jobs.filter((j) => j.budgetHold).length;
+  // Each hold is a budget_increase this executive raises in the inbox; without inbox data, the holds themselves.
+  const holds = raised(input, 'finance') ?? input.jobs.filter((j) => j.budgetHold).length;
   if (holds) parts.push(`${plural(holds, 'budget increase')} needed`);
   return { summary: parts.join(' · '), attention: holds };
 }

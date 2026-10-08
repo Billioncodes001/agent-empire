@@ -54,6 +54,8 @@ for this round and says so in the UI.
     finish'`. It needs the CEO to retry or remove it, and is never auto-run.
 - Approved items of one consultancy job run in order: item N depends on item N−1, and a plan may opt out per item
   with `parallel: true`.
+  - **Owner confirmed** the `parallel` semantics: a parallel step runs beside the previous one, and the next step
+    waits for both.
 - **Continuity:** when a task unblocks, it prefers the desk of the worker that finished its dependency, if that
   desk is free. It has to be the same person continuing the project.
 - **`WorkerInfo.waitingOn?: { id: string; name: string; taskId: string }`** is set for an `idle`/`done` worker when

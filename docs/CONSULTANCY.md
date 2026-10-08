@@ -34,6 +34,10 @@ Send the bot `/start` from the allowlisted account in a private chat. Supported 
 
 Only the configured owner in their private chat can issue commands. Delayed commands older than ten minutes are rejected with a request to resend. The bridge remembers the Telegram cursor and sends compact updates when job states change. Unsolicited updates contain job identity, client/title and status, not worker terminal output or full prompts. Command replies can include a requested brief. Outbound delivery is at-least-once: a crash after sending a response but before saving its cursor can repeat the message; the domain command must remain idempotent. This is not a claim of exactly-once Telegram delivery.
 
+## Approval inbox and email
+
+Plans waiting for approval and budget increases for held jobs also appear in the CEO approval inbox: in the game at the founder's desk, through `/approvals` in Telegram, and optionally by email (`AGENT_EMPIRE_SMTP_URL`, `AGENT_EMPIRE_NOTIFY_EMAIL`). Approving in any of them is the same consultancy decision. See [APPROVALS.md](APPROVALS.md).
+
 ## Persistence and availability
 
 `consultancy.json` holds durable jobs, decisions and queue identity evidence. `telegram.json` holds the bot/owner binding hash, update cursor and latest notification fingerprint; it contains no bot token. Existing city, worker and queue saves remain authoritative. Invalid storage fails closed instead of silently resetting or replaying work.

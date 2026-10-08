@@ -23,6 +23,7 @@ import { EYE_HEIGHT, PlayerController, groundAt, isTyping } from './player';
 import { buildOffice, type InteractKind, type Interactable } from './world/office';
 import { ExecutiveBodies } from './world/executives';
 import { executiveTitle, openExecutiveCard } from './ui/executives';
+import { mountInboxButton, openInbox, pendingApprovals } from './ui/inbox';
 import { Person, Worker } from './world/character';
 import { OfficeLife } from './world/worker-life';
 import { Laptop } from './world/laptop';
@@ -125,6 +126,11 @@ const executives = new ExecutiveBodies(city.chief, store.profile.look.style);
 office.group.add(executives.group);
 executives.sync(store.org);
 store.on('org', () => executives.sync(store.org));
+// ORG-03: the inbox tray on the founder's desk shows the real pending count (dashes when there is no inbox).
+const syncTray = () => office.inboxTray.setCount(store.cloud || !store.approvals ? null : store.approvals.pending);
+store.on('approvals', syncTray);
+store.on('cloud', syncTray);
+syncTray();
 office.colliders.push(...city.colliders);
 store.on('empire', () => city.sync(store.empire));
 city.sync(store.empire);
@@ -799,6 +805,7 @@ function interact(target: Interactable | null, key: DeskKey) {
   else if (target.kind === 'gym') toast('🏋️ A quick set in the gym corner.');
   else if (target.kind === 'cafeteria') toast('🥐 Breakfast from the cafeteria counter.');
   else if (target.kind === 'executive' && target.role && office.floor === 0) openExecutiveCard(target.role, showQueue);
+  else if (target.kind === 'inbox' && office.floor === 0) openInbox();
 }
 
 // ---- Interaction targeting & hint -----------------------------------------------------------------
@@ -883,6 +890,11 @@ function renderHint() {
   else if (target.kind === 'coffee') parts = [h('span.title', {}, '☕ Coffee machine'), key('E', 'Grab a cup')];
   else if (target.kind === 'gym') parts = [h('span.title', {}, '🏋️ Gym'), key('E', 'Work out')];
   else if (target.kind === 'cafeteria') parts = [h('span.title', {}, '🥐 Cafeteria'), key('E', 'Grab breakfast')];
+  else if (target.kind === 'inbox') {
+    const n = pendingApprovals();
+    k += `${n}|${!!store.cloud}`;
+    parts = [h('span.title', {}, `📥 CEO inbox${n ? ` · ${n} waiting` : ''}`), store.cloud ? h('span', { style: 'opacity:.75;font-weight:600' }, 'Not in cloud mode yet') : '', key('E', 'Open inbox')];
+  }
   else if (target.kind === 'executive' && target.role) {
     const e = store.org?.executives.find((x) => x.role === target!.role);
     k += `${e?.summary}|${e?.attention}|${e?.active}`;
@@ -1066,7 +1078,7 @@ function backToGame() {
 const raycaster = new THREE.Raycaster();
 const CROSSHAIR = new THREE.Vector2(0, 0);
 /** How close (meters from your eyes) you must be to use each kind of thing. */
-const REACH: Record<InteractKind, number> = { executive: 4, elevator: 4, desk: 4.5, coffee: 3, gym: 5, cafeteria: 4, issues: 9, pulls: 9, services: 9, queue: 9, tv: 10, decor: 9 };
+const REACH: Record<InteractKind, number> = { executive: 4, inbox: 4, elevator: 4, desk: 4.5, coffee: 3, gym: 5, cafeteria: 4, issues: 9, pulls: 9, services: 9, queue: 9, tv: 10, decor: 9 };
 const eye = new THREE.Vector3();
 
 /** What the ray through `ndc` lands on first, and whether it is within reach (plus `slack` meters). */
@@ -1215,6 +1227,7 @@ $('btn-issues').addEventListener('click', () => openBoard('issues', net, boardAc
 $('btn-pulls').addEventListener('click', () => openBoard('pulls', net, boardActions()));
 mountServicesButton($('btn-services'));
 mountQueueButton($('btn-queue'), showQueue);
+mountInboxButton($('btn-inbox'));
 $('btn-team').addEventListener('click', () => openTeam(net));
 $('btn-upgrade').addEventListener('click', () => openUpgrade(net));
 $('btn-help').addEventListener('click', () => openHelp(settings.keys));
@@ -1312,7 +1325,7 @@ function frame(ts?: number) {
   office.group.visible = !outside;
   city.chief.visible = office.floor === 0;
   executives.group.visible = office.floor === 0;
-  if (executives.group.visible) executives.update(dt, t);
+  if (executives.group.visible) { executives.update(dt, t); office.inboxTray.update(t, reducedMotion.matches); }
   gallery.group.visible = office.floor === 0;
   city.group.visible = outside;
   sun.position.set(player.pos.x-24, player.pos.y+40, player.pos.z+24);

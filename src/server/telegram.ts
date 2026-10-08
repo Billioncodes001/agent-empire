@@ -16,9 +16,13 @@ export interface TelegramCommands {
   execute(text: string, requestId: string): string;
   /** Compact status without task briefs, credentials, paths or worker terminal output. */
   summary(): { fingerprint: string; text: string };
+  /** ORG-03: one message per key, sent once each; keys pending before the first poll are a silent baseline. */
+  notifications?(): { key: string; text: string; silent?: boolean }[];
 }
-interface Checkpoint { version: 1; binding: string; offset: number; fingerprint?: string }
-const HELP = '/new Client | Job title | Brief\n/jobs — current jobs\n/job ID — review a plan\n/approve ID [budget] — start the reviewed plan\n/reject ID — decline an unstarted plan\n/status — chief report';
+interface Checkpoint { version: 1; binding: string; offset: number; fingerprint?: string; notified?: string[] }
+/** Announced approval keys kept for de-duplication; older ones are long decided. */
+const MAX_NOTIFIED = 500;
+const HELP = '/new Client | Job title | Brief\n/jobs — current jobs\n/job ID — review a plan\n/approvals — what waits for your approval\n/approve ID [budget] — approve an inbox item (A3) or a reviewed plan (job id)\n/reject ID — decline an inbox item or an unstarted plan\n/status — chief report';
 export { HELP as TELEGRAM_HELP };
 
 export function telegramConfig(env: NodeJS.ProcessEnv): TelegramConfig | undefined {
@@ -70,7 +74,8 @@ export class TelegramBridge {
       try {
         const data = JSON.parse(readFileSync(this.file, 'utf8')) as Checkpoint;
         if (data.version !== 1 || data.binding !== binding || !Number.isSafeInteger(data.offset) || data.offset < 0 ||
-          (data.fingerprint !== undefined && typeof data.fingerprint !== 'string')) throw new Error();
+          (data.fingerprint !== undefined && typeof data.fingerprint !== 'string') ||
+          (data.notified !== undefined && (!Array.isArray(data.notified) || data.notified.length > MAX_NOTIFIED || data.notified.some((k) => typeof k !== 'string')))) throw new Error();
         this.saved = data;
       } catch { this.storageError = 'Telegram checkpoint is invalid or belongs to another bot/owner. Preserve it and reconcile before connecting.'; }
     }
@@ -132,6 +137,16 @@ export class TelegramBridge {
         if (this.saved.fingerprint !== undefined) await this.send(report.text, signal);
         assertCurrent();
         this.save({ ...this.saved, fingerprint: report.fingerprint });
+      }
+      const notes = this.commands.notifications?.() ?? [];
+      if (this.saved.notified === undefined) this.save({ ...this.saved, notified: notes.map((n) => n.key).slice(-MAX_NOTIFIED) });
+      else for (const note of notes) {
+        if (this.saved.notified!.includes(note.key)) continue;
+        // Silent: the command reply already told the owner (a plan created with /new).
+        if (!note.silent) await this.send(note.text, signal);
+        assertCurrent();
+        // Saved per message, so a failed send retries only what was not sent.
+        this.save({ ...this.saved, notified: [...this.saved.notified!, note.key].slice(-MAX_NOTIFIED) });
       }
       this.lastPollAt = this.now();
       this.error = undefined;
