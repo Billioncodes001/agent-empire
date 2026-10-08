@@ -59,7 +59,7 @@ function estimateSection(job: ConsultancyJob): HTMLElement | null {
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const labels: Record<string, string> = { awaiting_approval: 'Your approval', queued: 'Queued', running: 'In progress', needs_attention: 'Needs attention', awaiting_review: 'Ready for review', rejected: 'Declined' };
 interface Snapshot { revision: number; jobs: ConsultancyJob[]; storageError?: string }
-interface Status { repository: string; resources: { workstations: number; workers: number; attention: number; concurrency: number; queued: number | null; blocker?: string; mode: string }; telegram: {configured: boolean; running: boolean; error?: string; lastPollAt?: number} }
+interface Status { repository: string; resources: { workstations: number; workers: number; attention: number; concurrency: number; queued: number | null; blocker?: string; mode: string }; telegram: {configured: boolean; running: boolean; error?: string; lastPollAt?: number}; email?: { label: string; error?: string } }
 let jobs: ConsultancyJob[] = [], fresh = false, selected: string | undefined, busy = false, refreshing = false;
 let lastRendered = '';
 let refreshFlight: Promise<void> | undefined;
@@ -159,6 +159,7 @@ async function refreshNow() {
     metric('workers-count', String(status.resources.workers)); metric('desks-count', String(status.resources.workstations));
     $('chief-report').textContent = status.resources.blocker || `${status.resources.attention} workers need input. ${status.resources.queued} tasks waiting. Up to ${status.resources.concurrency} workers can run at once within the funded desk limit. Work is scoped to ${status.repository}.`;
     $('telegram-status').textContent = status.telegram.error || (!status.telegram.configured ? 'Not connected yet. Connect your private bot to send briefs, approve plans and receive updates.' : status.telegram.lastPollAt ? 'Connected to your configured private bot.' : 'Configured. Waiting for the first successful connection.');
+    $('email-status').textContent = status.email ? `${status.email.label}${status.email.error ? ` — ${status.email.error}` : ''}` : 'Email: not configured';
     showJobs(); if (detail.open && (changed || !wasFresh)) renderDetail();
   } catch (e) {
     fresh = false; $('connection').textContent = 'Host unavailable · last view retained'; error('error',(e as Error).message);

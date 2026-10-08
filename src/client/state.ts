@@ -9,8 +9,9 @@ import type { ScreenState } from './world/laptop';
 import { randomLook, sanitizeLook, type Look } from '../shared/avatar';
 import type { Decoration } from '../shared/decor';
 import type { OrgState } from '../shared/org';
+import type { ApprovalsState } from '../shared/approvals';
 
-type Topic = 'cloud' | 'empire' | 'peers' | 'workers' | 'issues' | 'pulls' | 'chat' | 'project' | 'screens' | 'team' | 'upgrade' | 'services' | 'decor' | 'usage' | 'queue' | 'connection' | 'freshness' | 'continuity' | 'org';
+type Topic = 'cloud' | 'empire' | 'peers' | 'workers' | 'issues' | 'pulls' | 'chat' | 'project' | 'screens' | 'team' | 'upgrade' | 'services' | 'decor' | 'usage' | 'queue' | 'connection' | 'freshness' | 'continuity' | 'org' | 'approvals';
 
 const zeroUsage = (): Usage => ({ input: 0, output: 0, cacheWrite: 0, cacheRead: 0, cost: 0, calls: 0 });
 
@@ -121,6 +122,8 @@ class Store {
   queue: QueueState = { tasks: [], maxWorkers: 0 };
   /** The rule-based executive roster (ORG-01); null until a server that has one says so. */
   org: OrgState | null = null;
+  /** The CEO approval inbox (ORG-03); null until a server that has one says so. */
+  approvals: ApprovalsState | null = null;
   /** Cloud mode only: the state-repository snapshot this game is showing, with its age. Null in server mode. */
   cloud: CloudInfo | null = null;
   private subs = new Map<Topic, Set<() => void>>();
@@ -221,7 +224,8 @@ class Store {
         this.usage = msg.usage;
         this.queue = msg.queue;
         this.org = msg.org ?? null;
-        for (const t of ['peers', 'workers', 'issues', 'pulls', 'chat', 'project', 'upgrade', 'services', 'decor', 'usage', 'queue', 'org'] as Topic[]) this.emit(t);
+        this.approvals = msg.approvals ?? null;
+        for (const t of ['peers', 'workers', 'issues', 'pulls', 'chat', 'project', 'upgrade', 'services', 'decor', 'usage', 'queue', 'org', 'approvals'] as Topic[]) this.emit(t);
         break;
       case 'peer.join':
       case 'peer.update':
@@ -293,6 +297,10 @@ class Store {
       case 'org':
         this.org = msg.state;
         this.emit('org');
+        break;
+      case 'approvals':
+        this.approvals = msg.state;
+        this.emit('approvals');
         break;
       case 'chat':
         this.chat.push(msg);

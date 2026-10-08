@@ -1,12 +1,13 @@
 import { EXECUTIVES, NOT_STAFFED, type Executive, type ExecutiveRole, type OrgState } from '../../shared/org';
 import { store } from '../state';
 import { h, openModal } from './dom';
+import { openInbox } from './inbox';
 
-/** Where each executive's waiting items are handled until ORG-03 adds the in-game approval inbox. */
-const ATTENTION: Partial<Record<ExecutiveRole, { label: (n: number) => string; href?: string; queue?: true }>> = {
-  chief_of_staff: { label: (n) => `${n} client plan${n === 1 ? '' : 's'} waiting for your approval`, href: '/consultancy.html' },
+/** Where each executive's waiting items are handled: the approval inbox (ORG-03) or the task queue. */
+const ATTENTION: Partial<Record<ExecutiveRole, { label: (n: number) => string; inbox?: true; queue?: true }>> = {
+  chief_of_staff: { label: (n) => `${n} client plan${n === 1 ? '' : 's'} waiting for your approval`, inbox: true },
   operations: { label: (n) => `${n} task${n === 1 ? '' : 's'} held after a dependency failed — retry or remove ${n === 1 ? 'it' : 'them'}`, queue: true },
-  finance: { label: (n) => `${n} job${n === 1 ? '' : 's'} reached the approved budget — unstarted items are held`, href: '/consultancy.html' },
+  finance: { label: (n) => `${n} budget increase${n === 1 ? '' : 's'} waiting — the job reached the approved budget and unstarted items are held`, inbox: true },
 };
 
 export const executiveTitle = (role: ExecutiveRole) => EXECUTIVES[role].title;
@@ -20,7 +21,7 @@ function tone(e: Executive) {
 }
 
 /** One executive as a card: role, name, the honest Rule-based label, the summary and what waits on you. */
-export function executiveCard(e: Executive, opts: { openQueue?: () => void; heading?: 'h2' | 'strong' } = {}): HTMLElement {
+export function executiveCard(e: Executive, opts: { openQueue?: () => void; beforeInbox?: () => void; heading?: 'h2' | 'strong' } = {}): HTMLElement {
   const att = ATTENTION[e.role];
   const attention = !e.active
     ? h('p.exec-note', {}, 'This office is furnished but nobody works here yet. It arrives in a later phase.')
@@ -30,7 +31,7 @@ export function executiveCard(e: Executive, opts: { openQueue?: () => void; head
           {},
           h('span.exec-count', { 'aria-hidden': 'true' }, String(e.attention)),
           h('span', {}, att.label(e.attention)),
-          att.href ? h('a.btn.exec-link', { href: att.href }, 'Open founder desk') : null,
+          att.inbox ? h('button.btn.exec-link', { type: 'button', 'data-open-inbox': e.role, onclick: () => { opts.beforeInbox?.(); openInbox(); } }, 'Open inbox') : null,
           att.queue && opts.openQueue ? h('button.btn.exec-link', { type: 'button', onclick: opts.openQueue }, 'Open task queue') : null,
         )
       : h('p.exec-note', {}, 'Nothing waiting for you.');
@@ -69,7 +70,7 @@ export function openExecutiveCard(role: ExecutiveRole, openQueue?: () => void) {
     const e = store.org?.executives.find((x) => x.role === role);
     slot.replaceChildren(
       e
-        ? executiveCard(e, { heading: 'h2', openQueue: openQueue && (() => { modal.close(); openQueue(); }) })
+        ? executiveCard(e, { heading: 'h2', openQueue: openQueue && (() => { modal.close(); openQueue(); }), beforeInbox: () => modal.close() })
         : h('p.setting-note', {}, store.cloud ? 'Executives are not available in cloud mode yet.' : 'This server has not reported its executives yet.'),
     );
   };

@@ -12,6 +12,7 @@ import { mesh, roundedBox, textPlane, toon } from './toon';
 import { deskAccessories, furnishOffice } from './furnishing';
 import { FOUNDER_DESK, FURNISHING_FIXTURES, LOFT_COUCH, LOFT_PLANT } from './furnishing-layout';
 import { buildExecutiveDesks } from './executives';
+import { buildInboxTray, type InboxTray } from './inbox-tray';
 import type { ExecutiveRole } from '../../shared/org';
 import { buildAmenities } from './amenities';
 
@@ -25,7 +26,7 @@ export interface Collider {
   bottom?: number;
 }
 
-export type InteractKind = 'desk' | 'issues' | 'pulls' | 'services' | 'queue' | 'tv' | 'coffee' | 'gym' | 'cafeteria' | 'decor' | 'elevator' | 'executive';
+export type InteractKind = 'desk' | 'issues' | 'pulls' | 'services' | 'queue' | 'tv' | 'coffee' | 'gym' | 'cafeteria' | 'decor' | 'elevator' | 'executive' | 'inbox';
 
 /** Something you can use. Its scene object carries it as `userData.interact`, for clicking. */
 export interface Interactable {
@@ -61,6 +62,8 @@ export interface Office {
   interactables: Interactable[];
   /** The loft's executive desks; only HQ's ground-floor office has executives. */
   executiveInteractables: Interactable[];
+  /** ORG-03: the CEO's inbox tray on the founder's desk in the loft. */
+  inboxTray: InboxTray;
   desks: Map<string, DeskView>;
   boardMeshes: Record<keyof typeof BOARDS, THREE.Mesh>;
   tvScreen: THREE.Mesh;
@@ -526,7 +529,7 @@ export function buildOffice(): Office {
   interactables.push(...buildAmenities(group));
   for (const f of FURNISHING_FIXTURES) fixture(...f);
 
-  const executiveInteractables = buildLoft(group, colliders);
+  const { interactables: executiveInteractables, tray: inboxTray } = buildLoft(group, colliders);
   // Pictures stay clear of the stairs (step by step, so they can hang above them) and of what's on
   // the loft's walls upstairs, as buildLoft places it: a window on each wall, the couch, the sign.
   const run = (STAIRS.toX - STAIRS.fromX) / STAIRS.steps;
@@ -589,7 +592,7 @@ export function buildOffice(): Office {
       });
       office.setElevation(floor * FLOOR_RISE);
       elevator.setFloor(floor);
-    }, group, colliders, interactables, executiveInteractables, desks, boardMeshes, tvScreen, entranceDoor, fixtures: () => (signRect ? [...fixtures, signRect] : fixtures), setProjectName, update };
+    }, group, colliders, interactables, executiveInteractables, inboxTray, desks, boardMeshes, tvScreen, entranceDoor, fixtures: () => (signRect ? [...fixtures, signRect] : fixtures), setProjectName, update };
   return office;
 }
 
@@ -597,7 +600,7 @@ export function buildOffice(): Office {
  * The upstairs office: a loft on posts in the south-east corner, with glass on the two sides that
  * face the desks, reached by stairs along the south wall.
  */
-function buildLoft(group: THREE.Group, colliders: Collider[]): Interactable[] {
+function buildLoft(group: THREE.Group, colliders: Collider[]): { interactables: Interactable[]; tray: InboxTray } {
   const { minX, maxX, minZ, maxZ, y: floorY, height } = LOFT;
   const w = maxX - minX;
   const d = maxZ - minZ;
@@ -736,6 +739,8 @@ function buildLoft(group: THREE.Group, colliders: Collider[]): Interactable[] {
   desk.add(bossChair);
   desk.position.set(deskX, floorY, deskZ);
   group.add(desk);
+  // ORG-03: the inbox tray on the desk's east end; you use it from the CEO's side, beside the chair.
+  const tray = buildInboxTray(desk, { x: deskX + 1.1, z: deskZ + 0.95, y: floorY });
   colliders.push({ minX: deskX - 1.3, maxX: deskX + 1.3, minZ: deskZ - 0.6, maxZ: deskZ + 0.6, bottom: floorY, top: floorY + 0.8 });
 
   const couch = new THREE.Group();
@@ -796,5 +801,5 @@ function buildLoft(group: THREE.Group, colliders: Collider[]): Interactable[] {
   outside.rotation.y = Math.PI;
   group.add(outside);
 
-  return buildExecutiveDesks(group, colliders);
+  return { interactables: [...buildExecutiveDesks(group, colliders), tray.interactable], tray };
 }
