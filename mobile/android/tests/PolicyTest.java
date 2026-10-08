@@ -128,7 +128,12 @@ public final class PolicyTest {
     /** In-app updates (REL-04): URLs, versions, zip-slip names and the bundle state machine with its 20 s rollback. */
     private static void updates() throws Exception {
         String repo = "https://github.com/" + UpdatePolicy.RELEASE_REPO;
-        check(UpdatePolicy.RELEASE_PUBLIC_KEY.length() == 44 && UpdatePolicy.RELEASE_KEY_IS_DEVELOPMENT, "dev release key pinned (same string as src/shared/release-key.ts)");
+        // REL-07: the owner's key is pinned; only the debug variant (DevTrust from src/debug/java) also trusts the dev key.
+        String variant = System.getProperty("ae.variant", "debug");
+        check(UpdatePolicy.RELEASE_PUBLIC_KEY.equals("rIRaOVUyoolaIritW/W8zMW7kGymgcjvg7uXhHtTqPk="), "owner release key pinned (same string as src/shared/release-key.ts)");
+        if (variant.equals("release")) check(!UpdatePolicy.DEV_KEY_TRUSTED && UpdatePolicy.TRUSTED_KEYS.equals(java.util.Collections.singletonList(UpdatePolicy.RELEASE_PUBLIC_KEY)), "release variant: trusts only the release key");
+        else check(UpdatePolicy.DEV_KEY_TRUSTED && "q7m8HRpNA8EClSZsC3KSzzInRy3LxrjPIXNU41+WLYU=".equals(UpdatePolicy.DEV_RELEASE_PUBLIC_KEY)
+            && UpdatePolicy.TRUSTED_KEYS.equals(java.util.Arrays.asList(UpdatePolicy.RELEASE_PUBLIC_KEY, UpdatePolicy.DEV_RELEASE_PUBLIC_KEY)), "debug variant: trusts the release key and the dev key");
         String[] a = UpdatePolicy.releaseAsset(repo + "/releases/download/v1.0.0-beta.2/agent-empire-game-1.0.0-beta.2.zip");
         check(a != null && a[0].equals("v1.0.0-beta.2") && a[1].equals("agent-empire-game-1.0.0-beta.2.zip"), "release asset parsed");
         check(UpdatePolicy.releaseAsset(repo + "/releases/latest/download/channel-stable.json")[0] == null, "latest asset");
@@ -251,11 +256,15 @@ public final class PolicyTest {
         signer.initSign(key);
         signer.update(msg);
         String sig = java.util.Base64.getEncoder().encodeToString(signer.sign());
-        check(Boolean.TRUE.equals(UpdatePolicy.verifyEd25519(msg, sig + "\n", UpdatePolicy.RELEASE_PUBLIC_KEY)), "Ed25519: the dev-signed release verifies against the pinned key");
+        String devKey = "q7m8HRpNA8EClSZsC3KSzzInRy3LxrjPIXNU41+WLYU=";
+        check(Boolean.TRUE.equals(UpdatePolicy.verifyEd25519(msg, sig + "\n", devKey)), "Ed25519: the dev-signed release verifies against the dev key");
+        check(!UpdatePolicy.verifyEd25519(msg, sig, UpdatePolicy.RELEASE_PUBLIC_KEY), "Ed25519: a dev-signed release does not verify against the owner's release key");
+        check(UpdatePolicy.verifyTrusted(msg, sig, UpdatePolicy.TRUSTED_KEYS) == UpdatePolicy.DEV_KEY_TRUSTED, "Ed25519: the trusted set accepts a dev signature only in the debug variant (" + System.getProperty("ae.variant", "debug") + ")");
+        check(!UpdatePolicy.verifyTrusted(msg, sig, java.util.Collections.singletonList(UpdatePolicy.RELEASE_PUBLIC_KEY)), "Ed25519: the release set refuses a dev signature");
         byte[] tampered = msg.clone();
         tampered[3] ^= 1;
-        check(Boolean.FALSE.equals(UpdatePolicy.verifyEd25519(tampered, sig, UpdatePolicy.RELEASE_PUBLIC_KEY)), "Ed25519: tampering fails");
-        check(Boolean.FALSE.equals(UpdatePolicy.verifyEd25519(msg, "garbage", UpdatePolicy.RELEASE_PUBLIC_KEY)), "Ed25519: garbage fails");
+        check(Boolean.FALSE.equals(UpdatePolicy.verifyEd25519(tampered, sig, devKey)) && !UpdatePolicy.verifyTrusted(tampered, sig, UpdatePolicy.TRUSTED_KEYS), "Ed25519: tampering fails");
+        check(Boolean.FALSE.equals(UpdatePolicy.verifyEd25519(msg, "garbage", devKey)) && !UpdatePolicy.verifyTrusted(msg, "garbage", UpdatePolicy.TRUSTED_KEYS), "Ed25519: garbage fails");
         // In an Android 13+ app process the first "Ed25519" KeyFactory and Signature come from Android Keystore, which only
         // handles keys kept in the Keystore: importing the pinned raw key throws (found on the Android 15 emulator,
         // docs/team/reports/update-device-rerun.md). That must never turn a genuine release into "signature does not match".
@@ -267,13 +276,13 @@ public final class PolicyTest {
         for (java.security.Provider p : software) java.security.Security.removeProvider(p.getName());
         java.security.Security.insertProviderAt(new FakeKeystoreProvider(), 1);
         try {
-            check(UpdatePolicy.verifyEd25519(msg, sig, UpdatePolicy.RELEASE_PUBLIC_KEY), "Ed25519: with only Android Keystore's Ed25519 the shell still verifies a genuine release itself");
-            check(!UpdatePolicy.verifyEd25519(tampered, sig, UpdatePolicy.RELEASE_PUBLIC_KEY), "Ed25519: with only Android Keystore's Ed25519 tampering is still refused");
+            check(UpdatePolicy.verifyEd25519(msg, sig, devKey), "Ed25519: with only Android Keystore's Ed25519 the shell still verifies a genuine release itself");
+            check(!UpdatePolicy.verifyEd25519(tampered, sig, devKey), "Ed25519: with only Android Keystore's Ed25519 tampering is still refused");
         } finally {
             java.security.Security.removeProvider("AndroidKeyStore");
             for (java.security.Provider p : software) java.security.Security.insertProviderAt(p, java.util.Arrays.asList(installed).indexOf(p) + 1);
         }
-        check(Boolean.TRUE.equals(UpdatePolicy.verifyEd25519(msg, sig, UpdatePolicy.RELEASE_PUBLIC_KEY)), "Ed25519: providers restored");
+        check(Boolean.TRUE.equals(UpdatePolicy.verifyEd25519(msg, sig, devKey)), "Ed25519: providers restored");
         String url = "https://github.com/" + UpdatePolicy.RELEASE_REPO + "/releases/download/v1.0.1/agent-empire-game-1.0.1.zip", sha = repeat("a", 64);
         check(UpdatePolicy.releaseMismatch("1.0.1", "v1.0.1", url, sha, "1.0.0", "1.0.1", url, sha, "1.0.0") == null, "request matches the signed release");
         check(UpdatePolicy.releaseMismatch("1.0.1", "v1.0.1", url, sha, "1.0.0", "1.0.1", url, repeat("b", 64), "1.0.0") != null, "another sha256 is refused");

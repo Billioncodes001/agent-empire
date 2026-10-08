@@ -3,12 +3,13 @@
  * game zips, a coordinator and the releases listing at the same paths github.com and api.github.com use, so the app
  * sends real release URLs and the shells map them here:
  *
- *   desktop  --empire-update-fixture=http://127.0.0.1:<port>      (honoured only while the dev release key is pinned)
- *   Android  adb shell am start ... --es ae.debug.updates http://10.0.2.2:<port>   (debuggable build + dev key)
- *   iOS      simctl launch ... -AE_UPDATE_FIXTURE http://127.0.0.1:<port>          (Debug build + dev key)
+ *   desktop  --empire-update-fixture=http://127.0.0.1:<port>      (development build: prepare-desktop.mjs --dev-updates)
+ *   Android  adb shell am start ... --es ae.debug.updates http://10.0.2.2:<port>   (debug variant)
+ *   iOS      simctl launch ... -AE_UPDATE_FIXTURE http://127.0.0.1:<port>          (Debug build)
  *
- * Everything is signed with the PUBLIC development key (tests/update-fixtures.ts), which a release build never trusts:
- * the release gate refuses to publish with that key, and every shell ignores the fixture once a real key is pinned.
+ * Everything is signed with the PUBLIC development key (tests/update-fixtures.ts), which only development builds trust
+ * (REL-07): release builds trust only the owner's key and ignore the fixture, and the release gate refuses any release
+ * build that would trust the development key.
  *
  *   npm run build:client && UPDATE_FIXTURE_PORT=4719 npx tsx tools/update-fixture.ts
  *

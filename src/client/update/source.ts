@@ -43,7 +43,7 @@ async function get(fetcher: Fetcher, url: string, etag?: string): Promise<FetchR
   }
 }
 
-async function signed(fetcher: Fetcher, channel: Channel, tag: string | undefined, publicKey?: string): Promise<FetchedChannel | null> {
+async function signed(fetcher: Fetcher, channel: Channel, tag: string | undefined, publicKey?: string | readonly string[]): Promise<FetchedChannel | null> {
   const urls = channelUrls(channel, tag);
   const [json, sig] = await Promise.all([get(fetcher, urls.json), get(fetcher, urls.sig)]);
   if (json.status === 404 || sig.status === 404) return null; // no release on this channel yet
@@ -86,7 +86,7 @@ async function betaTag(fetcher: Fetcher, cache: KeyValue | null, now: number): P
 }
 
 /** The newest verified channel file for `channel`, or null when the channel has no release yet. */
-export async function fetchChannel(channel: Channel, fetcher: Fetcher, opts: { cache?: KeyValue | null; now?: number; publicKey?: string } = {}): Promise<FetchedChannel | null> {
+export async function fetchChannel(channel: Channel, fetcher: Fetcher, opts: { cache?: KeyValue | null; now?: number; publicKey?: string | readonly string[] } = {}): Promise<FetchedChannel | null> {
   if (channel === 'stable') return signed(fetcher, 'stable', undefined, opts.publicKey);
   // Beta: a problem with the stable file doesn't hide a valid pre-release (and the reverse).
   const [s, b] = await Promise.allSettled([
