@@ -42,17 +42,25 @@ test('the ledger keeps per-task spend durably, as a high-water mark, summed over
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('review: a finished task’s spend is frozen, so chatting with its worker afterwards never counts toward the job', () => {
+test('re-review: the final turn’s rescan after finish counts; spend after the worker is reprompted does not', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'task-costs-frozen-'));
   try {
     const ledger = ledgerIn(dir);
-    ledger.recordTaskCosts([{ taskId: 't1', workerId: 'w1', costUsd: 1, startedAt: 1 }]);
-    ledger.recordTaskCosts([{ taskId: 't1', workerId: 'w1', costUsd: 2, startedAt: 1, finishedAt: 10, outcome: 'done' }]);
-    ledger.recordTaskCosts([{ taskId: 't1', workerId: 'w1', costUsd: 9, startedAt: 1, finishedAt: 10, outcome: 'done' }]);
-    assert.equal(ledger.taskCost('t1'), 2, 'spend at finish is kept; later growth on that worker is not the task’s');
+    const finished = task('t1', { workerId: 'w1', startedAt: 1, finishedAt: 10, status: 'done', outcome: 'done' });
+    const w = (status: WorkerInfo['status'], cost: number) => ({ ...worker('w1', cost), status });
+    ledger.recordTaskCosts(taskCostObservations([task('t1', { workerId: 'w1', startedAt: 1 })], [w('working', 1)]));
+    // Stop: the queue finishes the task before usage is re-read (workers.ts rescans ~300 ms later).
+    ledger.recordTaskCosts(taskCostObservations([finished], [w('done', 2)]));
+    ledger.recordTaskCosts(taskCostObservations([finished], [w('done', 2.6)]));
+    assert.equal(ledger.taskCost('t1'), 2.6, 'the final turn’s cost from the rescan is counted');
+    // The CEO prompts the finished worker again: from then on its spend is not the task’s, even once it is done again.
+    ledger.recordTaskCosts(taskCostObservations([finished], [w('working', 3)]));
+    ledger.recordTaskCosts(taskCostObservations([finished], [w('done', 9)]));
+    assert.equal(ledger.taskCost('t1'), 2.6, 'chatting after a reprompt never counts toward the job');
     ledger.recordTaskCosts([{ taskId: 't1', workerId: 'w2', costUsd: 0.5, startedAt: 20 }]);
-    assert.equal(ledger.taskCost('t1'), 2.5, 'a retry by a new worker still counts');
+    assert.equal(ledger.taskCost('t1'), 3.1, 'a retry by a new worker still counts');
     ledger.flush();
+    assert.equal(ledgerIn(dir).taskCost('t1'), 3.1, 'the freeze survives a restart');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
