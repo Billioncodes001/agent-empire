@@ -1,5 +1,6 @@
 import { Consultancy, ConsultancyError } from './consultancy.js';
 import { ApprovalError, ApprovalInbox } from './approvals.js';
+import { EmailNotifier, NOT_CONFIGURED, emailConfig, smtpTransport, type MailTransport } from './email.js';
 import { TelegramBridge, telegramConfig, type TelegramConfig, type TelegramTransport } from './telegram.js';
 import { chiefCommands } from './chief-commands.js';
 import { Empire } from './empire.js';
@@ -173,8 +174,8 @@ export interface ServerRuntime {
   execution?: ExecutionOptions;
   /** Explicit test injection; false prevents use of host Telegram environment. */
   telegram?: { config: TelegramConfig; transport?: TelegramTransport } | false;
-  /** Explicit test injection; false prevents use of host email environment. */
-  email?: false;
+  /** Explicit test injection (a fake transport); false prevents use of the host email environment. */
+  email?: { transport: MailTransport; to: string; from: string } | false;
   /** Packaged first-run desktops require an explicit execution choice before any local process. */
   requireExecutionSetup?: boolean;
 }
@@ -376,10 +377,21 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     if (sig === approvalsSent) return;
     approvalsSent = sig;
     broadcast({ t: 'approvals', state });
+    email?.observe(state.items);
     publishOrg();
   };
+  // ORG-03: optional email, one per new pending approval. Never blocks; the URL and password are never logged.
+  let email: EmailNotifier | undefined;
+  let emailError: string | undefined;
+  try {
+    const setup = runtime.email === false || runtime.backgroundServices === false && !runtime.email ? undefined
+      : runtime.email ? runtime.email : (() => { const c = emailConfig(process.env); return c && { transport: smtpTransport(c.smtp), to: c.to, from: c.from }; })();
+    if (setup) email = new EmailNotifier(cfg.dataDir, setup.transport, { to: setup.to, from: setup.from });
+  } catch (error) { emailError = (error as Error).message; }
+  startupCleanup.push(() => email?.stop());
   inbox = new ApprovalInbox(cfg.dataDir, office, publishApprovals);
   approvalsSent = JSON.stringify([inbox.state().items, inbox.state().storageError]);
+  email?.observe(inbox.state().items);
   // ORG-01: the executive roster is a pure projection, re-sent only when a summary or attention count changes.
   let orgSent = '';
   const currentOrg = () => projectOrg({
@@ -662,6 +674,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
           if (p === '/api/consultancy/status' && req.method === 'GET') return send(res, 200, {
             mode: 'rule_based', observedAt: Date.now(), repository: project.name,
             resources: capacityReport(), telegram: telegram?.status() ?? { configured: false, running: false, error: telegramError },
+            email: email?.status() ?? (emailError ? { ...NOT_CONFIGURED, error: emailError } : NOT_CONFIGURED),
             hostRequired: true,
           });
           if (p === '/api/consultancy/jobs' && req.method === 'POST') {
@@ -1257,6 +1270,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
 
   const shutdown = () => {
     telegram?.stop();
+    email?.stop();
     execution.stop();
     clearInterval(empireTimer);
     empire.flush();

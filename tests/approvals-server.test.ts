@@ -4,18 +4,18 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { WebSocket } from 'ws';
-import { startServer } from '../src/server/server.js';
+import { startServer, type ServerRuntime } from '../src/server/server.js';
 import { Auth } from '../src/server/auth.js';
 import type { Config } from '../src/server/config.js';
 import type { WorkerRuntime } from '../src/server/workers.js';
 
 // No worker process ever starts (concurrency 0, a runtime that refuses to spawn), no Telegram, no email.
-async function fixture(t: { after(fn: () => Promise<void>): void }) {
+async function fixture(t: { after(fn: () => Promise<void>): void }, extra: Partial<ServerRuntime> = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'empire-approvals-server-'));
   writeFileSync(path.join(dir, 'queue.json'), JSON.stringify({ tasks: [], maxWorkers: 0 }));
   const cfg: Config = { dir, dataDir: dir, host: '127.0.0.1', port: 0, passwordGenerated: false, verifier: Buffer.alloc(32, 1), salt: Buffer.alloc(16, 2), secret: 'fixture-only-secret', claimed: true, markClaimed() {}, agentCmd: 'claude', agentArgs: [], trustProxy: false, iceServers: [], budgetPause: false };
   const runtime: WorkerRuntime = { taskNaming: false, resolveCommand: () => '/fixture/claude', processExists: () => false, spawn: (() => { throw new Error('no worker may start in this test'); }) as WorkerRuntime['spawn'] };
-  const running = await startServer(cfg, { publicDir: dir, backgroundServices: false, workers: runtime, telegram: false, email: false });
+  const running = await startServer(cfg, { publicDir: dir, backgroundServices: false, workers: runtime, telegram: false, email: false, ...extra });
   const port = (running.server.address() as { port: number }).port;
   const origin = `http://127.0.0.1:${port}`;
   const cookie = `ao_session_${port}=${new Auth(cfg.verifier, cfg.salt, cfg.secret).issue()}`;
@@ -86,6 +86,21 @@ test('a new plan reaches the inbox, the welcome and an approvals message; approv
   await new Promise((r) => setTimeout(r, 300));
   await f.call('/api/approvals');
   assert.equal(messages.filter((m) => m.t === 'approvals').length, count, 'approvals is sent on change only');
+});
+
+test('status reports email; with email set up, a new pending approval sends exactly one email', async (t) => {
+  const plain = await fixture(t);
+  const status = await (await plain.call('/api/consultancy/status')).json();
+  assert.equal(status.email.label, 'Email: not configured');
+  const sent: any[] = [];
+  const f = await fixture(t, { email: { transport: { async send(m) { sent.push(m); } }, to: 'ceo@example.com', from: 'empire@example.com' } });
+  assert.equal((await (await f.call('/api/consultancy/status')).json()).email.label, 'Email: configured');
+  await f.call('/api/consultancy/jobs', { requestId: 'mail-1', client: 'Acme', title: 'Mailed', brief: 'Secret brief only' });
+  await waitFor(() => sent.length === 1);
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].subject, /A1/);
+  assert.doesNotMatch(sent[0].text, /Secret brief/);
 });
 
 test('a plan approved on the founder desk resolves its inbox item', async (t) => {
