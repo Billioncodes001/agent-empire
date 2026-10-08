@@ -207,3 +207,18 @@ enum BridgeProtocol {
         return "Object.defineProperty(window,'AGENT_EMPIRE_APP',{value:Object.freeze(\(json(payload))),writable:false,configurable:false,enumerable:false});"
     }
 }
+
+/// iOS keeps Keychain items after an app is deleted, but deletes its UserDefaults. A missing marker therefore means
+/// a fresh install or a reinstall, and the app starts signed out: SecureStore.wipeIfFreshInstall clears every item it
+/// owns before anything reads them, then sets the marker. (Android needs nothing: backups are off, so uninstalling
+/// removes its encrypted storage.)
+enum InstallMarker {
+    static let key = "com.agentempire.mobile.installed"
+
+    /// True when the stored sign-in must be wiped. Sets the marker either way, so it only happens once per install.
+    static func claimFreshInstall(_ defaults: UserDefaults) -> Bool {
+        if defaults.bool(forKey: key) { return false }
+        defaults.set(true, forKey: key)
+        return true
+    }
+}
