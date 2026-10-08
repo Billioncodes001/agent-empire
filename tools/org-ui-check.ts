@@ -83,8 +83,8 @@ async function game(browser: Browser, size: { width: number; height: number; tou
       return { execs: o.executives.report(), chiefY: o.city.chief.position.y, chief, me: o.me.wearing.avatar, org: o.store.org!.executives, desks: [...o.office.desks.keys()] };
     });
     const staffed = report.execs.filter((e) => e.visible);
-    check(`${tag}: operations and finance are seated in the loft`, staffed.length === 2 && staffed.every((e) => e.pose === 'sit' && e.y === 3), JSON.stringify(staffed));
-    check(`${tag}: unstaffed roles have no body`, report.execs.filter((e) => ['marketing_sales', 'research'].includes(e.role)).length === 0);
+    // ORG-04a and ORG-05 staffed marketing & sales and research: every executive office has someone at its desk.
+    check(`${tag}: operations, finance, marketing & sales and research are seated in the loft`, staffed.length === 4 && staffed.every((e) => e.pose === 'sit' && e.y === 3), JSON.stringify(staffed));
     check(`${tag}: the chief of staff sits at its loft desk`, report.chiefY === 3);
     const suits = [report.chief, ...staffed.map((e) => e.avatar)];
     check(`${tag}: executives wear distinct suits, never the CEO's`, new Set(suits).size === suits.length && !suits.includes(report.me), `${report.me} vs ${suits.join(',')}`);
@@ -123,7 +123,7 @@ async function game(browser: Browser, size: { width: number; height: number; tou
     await section.waitFor({ timeout: 5000 }).catch(() => undefined);
     await section.scrollIntoViewIfNeeded().catch(() => undefined);
     const sec = (await section.innerText().catch(() => '')).replace(/\s+/g, ' ');
-    check(`${tag}: Management lists five executives, two "Not staffed yet"`, (await section.locator('.exec-card').count()) === 5 && (sec.match(/Not staffed yet/g) ?? []).length >= 2, sec.slice(0, 160));
+    check(`${tag}: Management lists five executives, all staffed`, (await section.locator('.exec-card').count()) === 5 && !/Not staffed yet/.test(sec), sec.slice(0, 160));
     check(`${tag}: Management executives are labelled rule-based`, /rule-based/i.test(sec));
     await s.page.screenshot({ path: resolve(out, `03-management-executives-${tag}.jpg`), quality: 82 });
     check(`${tag}: no console errors`, !s.errors.length, s.errors.slice(0, 4).join(' · '));

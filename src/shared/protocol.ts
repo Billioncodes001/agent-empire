@@ -7,6 +7,7 @@ import type { Outfit } from './outfit.js';
 import type { DecorPlacement, Decoration } from './decor.js';
 import type { OrgState } from './org.js';
 import type { ApprovalsState } from './approvals.js';
+import type { ResearchState } from './research.js';
 
 export type WorkerStatus =
   | 'starting' // PTY launched, agent booting
@@ -523,6 +524,8 @@ export type ServerMsg =
       org?: OrgState;
       /** The CEO approval inbox (ORG-03); absent from servers older than it. */
       approvals?: ApprovalsState;
+      /** The research executive's reports and tool proposals (ORG-05); absent from servers older than it. */
+      research?: ResearchState;
     }
   | { t: 'peer.join'; peer: PeerInfo }
   | { t: 'peer.update'; peer: PeerInfo }
@@ -552,6 +555,8 @@ export type ServerMsg =
   | { t: 'org'; state: OrgState }
   /** The approval inbox changed (an item raised or decided); sent on change only. */
   | { t: 'approvals'; state: ApprovalsState }
+  /** Research reports or tool-proposal decisions changed (ORG-05); sent on change only. */
+  | { t: 'research'; state: ResearchState }
   /** Sent to whoever watches that worker's changes, whenever they change. */
   | { t: 'changes'; state: ChangesState }
   | { t: 'changes.diff'; workerId: string; path: string; diff: string; truncated: boolean; error?: string }

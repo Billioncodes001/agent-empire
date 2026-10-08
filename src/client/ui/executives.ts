@@ -1,19 +1,26 @@
 import { EXECUTIVES, NOT_STAFFED, type Executive, type ExecutiveRole, type OrgState } from '../../shared/org';
 import { store } from '../state';
 import { h, openModal } from './dom';
+import { morphChildren } from './reconcile';
 import { openInbox } from './inbox';
+import { researchPanel } from './research';
 
 /** Where each executive's waiting items are handled: the approval inbox (ORG-03) or the task queue. */
 const ATTENTION: Partial<Record<ExecutiveRole, { label: (n: number) => string; inbox?: true; queue?: true }>> = {
   chief_of_staff: { label: (n) => `${n} client plan${n === 1 ? '' : 's'} waiting for your approval`, inbox: true },
   operations: { label: (n) => `${n} task${n === 1 ? '' : 's'} held after a dependency failed — retry or remove ${n === 1 ? 'it' : 'them'}`, queue: true },
   finance: { label: (n) => `${n} budget increase${n === 1 ? '' : 's'} waiting — the job reached the approved budget and unstarted items are held`, inbox: true },
+  marketing_sales: { label: (n) => `${n} campaign send${n === 1 ? '' : 's'} waiting — review the exact message and every recipient`, inbox: true },
+  research: { label: (n) => `${n} tool proposal${n === 1 ? '' : 's'} waiting — approving only records your decision`, inbox: true },
 };
+
+/** ORG-04a: leads, campaigns, opt-outs, pause and cancel live on the founder desk page. */
+const OUTREACH_DESK = '/consultancy.html#outreach';
 
 export const executiveTitle = (role: ExecutiveRole) => EXECUTIVES[role].title;
 
 /** Plain description of the executive's evidence, so nobody mistakes a rule for a model. */
-const RULE_NOTE = 'Rule-based: computed from the live queue, workers, client jobs and provider usage. No model is called.';
+const RULE_NOTE = 'Rule-based: computed from the live queue, workers, client jobs, provider usage, outreach results and worker reports. No model is called.';
 
 function tone(e: Executive) {
   if (!e.active) return 'unknown';
@@ -31,8 +38,8 @@ export function executiveCard(e: Executive, opts: { openQueue?: () => void; befo
           {},
           h('span.exec-count', { 'aria-hidden': 'true' }, String(e.attention)),
           h('span', {}, att.label(e.attention)),
-          att.inbox ? h('button.btn.exec-link', { type: 'button', 'data-open-inbox': e.role, onclick: () => { opts.beforeInbox?.(); openInbox(); } }, 'Open inbox') : null,
-          att.queue && opts.openQueue ? h('button.btn.exec-link', { type: 'button', onclick: opts.openQueue }, 'Open task queue') : null,
+          att.inbox ? h('button.btn.exec-link', { type: 'button', 'data-key': 'inbox', 'data-open-inbox': e.role, onclick: () => { opts.beforeInbox?.(); openInbox(); } }, 'Open inbox') : null,
+          att.queue && opts.openQueue ? h('button.btn.exec-link', { type: 'button', 'data-key': 'queue', onclick: opts.openQueue }, 'Open task queue') : null,
         )
       : h('p.exec-note', {}, 'Nothing waiting for you.');
   const title = opts.heading === 'h2' ? h('h2', { id: `exec-title-${e.role}` }, e.name) : h('strong', {}, e.name);
@@ -43,6 +50,9 @@ export function executiveCard(e: Executive, opts: { openQueue?: () => void; befo
     title,
     h('p.exec-summary', {}, h('span.status-dot', { 'aria-hidden': 'true' }), e.active ? e.summary : NOT_STAFFED),
     attention,
+    e.role === 'marketing_sales' && e.active
+      ? h('p.exec-note', {}, 'Coordinates email outreach; workers draft, you approve every send. ', h('a.btn.exec-link', { href: OUTREACH_DESK, target: '_blank', rel: 'noopener' }, 'Leads & campaigns ↗'))
+      : null,
   );
 }
 
@@ -68,14 +78,19 @@ export function openExecutiveCard(role: ExecutiveRole, openQueue?: () => void) {
   const close = h('button.btn.close', { type: 'button', 'aria-label': 'Close executive card' }, '✕');
   const render = () => {
     const e = store.org?.executives.find((x) => x.role === role);
-    slot.replaceChildren(
+    // Patched in place, so the Open inbox / Open task queue button keeps focus when the org broadcast repeats.
+    morphChildren(slot, [
       e
         ? executiveCard(e, { heading: 'h2', openQueue: openQueue && (() => { modal.close(); openQueue(); }), beforeInbox: () => modal.close() })
         : h('p.setting-note', {}, store.cloud ? 'Executives are not available in cloud mode yet.' : 'This server has not reported its executives yet.'),
-    );
+    ]);
   };
-  const modal = openModal(h('div.modal.exec-modal', { role: 'dialog', 'aria-labelledby': `exec-title-${role}`, 'aria-label': executiveTitle(role) }, h('header', {}, h('small.empire-eyebrow', {}, 'Executive office'), close), slot), {
-    onClose: () => off(),
+  // ORG-05: the research office also lists its reports and takes questions.
+  const panel = role === 'research' ? researchPanel(() => modal.close()) : undefined;
+  const modal = openModal(h('div.modal.exec-modal', { role: 'dialog', 'aria-labelledby': `exec-title-${role}`, 'aria-label': executiveTitle(role), 'data-role': role }, h('header', {}, h('small.empire-eyebrow', {}, 'Executive office'), close), slot, panel ? h('div.exec-body.research-body', {}, panel.el) : null), {
+    onClose: () => { off(); panel?.dispose(); },
+    // ORG-05 review fix 3: Esc in a report steps back to the research list first.
+    onEscape: () => panel?.back() ?? false,
   });
   const off = store.on('org', render);
   close.addEventListener('click', () => modal.close());

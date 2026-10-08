@@ -10,7 +10,7 @@ export interface Executive {
   name: string;
   /** Honest label; no model behind it this round. */
   monitor: 'rule_based';
-  /** marketing_sales and research are inactive until ORG-04/05 ("Not staffed yet"). */
+  /** marketing_sales is inactive until ORG-04 ("Not staffed yet"); research is active since ORG-05. */
   active: boolean;
   /** One line computed from real state, e.g. "2 tasks blocked · 1 waiting worker". */
   summary: string;
@@ -31,8 +31,8 @@ export const EXECUTIVES: Record<ExecutiveRole, { name: string; title: string; ac
   chief_of_staff: { name: 'Alex · Chief of staff', title: 'Chief of staff', active: true },
   operations: { name: 'Morgan · Operations', title: 'Operations', active: true },
   finance: { name: 'Priya · Finance', title: 'Finance', active: true },
-  marketing_sales: { name: 'Jordan · Marketing & sales', title: 'Marketing & sales', active: false },
-  research: { name: 'Sam · Research', title: 'Research', active: false },
+  marketing_sales: { name: 'Jordan · Marketing & sales', title: 'Marketing & sales', active: true },
+  research: { name: 'Sam · Research', title: 'Research', active: true },
 };
 
 export const NOT_STAFFED = 'Not staffed yet';
