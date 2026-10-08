@@ -215,10 +215,10 @@ enum BridgeProtocol {
 enum InstallMarker {
     static let key = "com.agentempire.mobile.installed"
 
-    /// True when the stored sign-in must be wiped. Sets the marker either way, so it only happens once per install.
-    static func claimFreshInstall(_ defaults: UserDefaults) -> Bool {
-        if defaults.bool(forKey: key) { return false }
-        defaults.set(true, forKey: key)
-        return true
-    }
+    /// True when the stored sign-in must be wiped (no marker yet).
+    static func isFreshInstall(_ defaults: UserDefaults) -> Bool { !defaults.bool(forKey: key) }
+
+    /// Set only once the wipe succeeded, so a failed delete (for example a launch before the device's first unlock,
+    /// when the Keychain refuses changes) is retried on the next launch instead of leaving the old session behind.
+    static func markInstalled(_ defaults: UserDefaults) { defaults.set(true, forKey: key) }
 }

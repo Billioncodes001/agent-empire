@@ -254,10 +254,12 @@ do {
 do {
     let suite = "com.agentempire.checks.\(UUID().uuidString)"
     let defaults = UserDefaults(suiteName: suite)!
-    check(InstallMarker.claimFreshInstall(defaults), "reinstall: the first launch of an install wipes the stored sign-in")
-    check(!InstallMarker.claimFreshInstall(defaults), "reinstall: later launches keep the sign-in")
+    check(InstallMarker.isFreshInstall(defaults), "reinstall: the first launch of an install wipes the stored sign-in")
+    check(InstallMarker.isFreshInstall(defaults), "reinstall: a wipe that did not complete is retried on the next launch")
+    InstallMarker.markInstalled(defaults)
+    check(!InstallMarker.isFreshInstall(defaults), "reinstall: after a completed wipe, later launches keep the sign-in")
     defaults.removePersistentDomain(forName: suite)
-    check(InstallMarker.claimFreshInstall(UserDefaults(suiteName: suite)!), "reinstall: deleting the app's defaults (an uninstall) wipes again")
+    check(InstallMarker.isFreshInstall(UserDefaults(suiteName: suite)!), "reinstall: deleting the app's defaults (an uninstall) wipes again")
     UserDefaults(suiteName: suite)!.removePersistentDomain(forName: suite)
 }
 

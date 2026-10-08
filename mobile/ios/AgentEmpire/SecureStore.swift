@@ -41,10 +41,12 @@ enum SecureStore {
     /// A fresh install or reinstall starts signed out (InstallMarker): removes every Keychain item this app owns,
     /// including the APP-03 legacy session, before anything reads them.
     static func wipeIfFreshInstall(_ defaults: UserDefaults = .standard) {
-        guard InstallMarker.claimFreshInstall(defaults) else { return }
-        for svc in [service, "com.agentempire.mobile.device-session"] {
-            SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: svc] as CFDictionary)
+        guard InstallMarker.isFreshInstall(defaults) else { return }
+        let cleared = [service, "com.agentempire.mobile.device-session"].allSatisfy { svc in
+            let status = SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: svc] as CFDictionary)
+            return status == errSecSuccess || status == errSecItemNotFound
         }
+        if cleared { InstallMarker.markInstalled(defaults) }
     }
 
     /// APP-03 builds kept one JSON item {host, token, deviceId}. Move it to the per-key layout once, as a server session.
