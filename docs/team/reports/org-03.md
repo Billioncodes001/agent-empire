@@ -96,8 +96,45 @@ Screenshots are in `org-03/`. Screenshots that the other checks regenerated were
 | after approval | desktop |
 | cloud message | desktop |
 
+## Review fixes
+
+The security review verdict was ACCEPT WITH FIXES. Each fix has a test that failed before it, except where noted.
+
+1. **A declined budget increase was a dead end** (`129ec85`, UI `57bec24`).
+   - A `rejected` `budget_increase` now carries `reopenable` while the very hold it was raised for still stands.
+   - Approving it records a new decision with the new actor and time, plus a note: "Reopened after decline on … by …". It uses the same budget validation and calls `raiseBudget` exactly once.
+   - In the game, Recent decisions shows "Still held · Approve increase…". The detail offers only "Approve increase…", with confirmation.
+   - Telegram `/approve A5 [budget]` works on such items. The decline reply now says how to release the job later.
+   - Tests: inbox, Telegram, and `inbox-ui-check` (decline, then reopen and approve).
+2. **The HUD wrapped to two rows at 1440** (`4bf9649`).
+   - At 1680 px and below, Join voice, Share screen and Inbox become icon buttons. Their `aria-label` and `title` are kept, and the row is tightened.
+   - At 1360 px and below, Services also becomes an icon button.
+   - `inbox-ui-check` asserts a single row and accessible names at 1280, 1440 and 1920. Screenshots: `07-hud-one-row-*`.
+3. **STARTTLS response injection** (`0512e2a`). Anything left unread after the STARTTLS 220 aborts the send before the handshake, and `attach()` clears plaintext state. Test: a fake server pipelines a reply after the 220, and no AUTH is sent.
+4. **A failing email blocked the queue** (`0512e2a`).
+   - A 5xx, or 5 failed attempts, gives up on that item. The give-up is logged, persisted in `email-notify.json` as `gaveUp`, and shown in the status as "last send failed".
+   - The next item is sent.
+5. **Telegram decisions now pump the queue and re-publish the inbox**, like the HTTP route (`129ec85`).
+6. **A hold that clears is recorded as approved outside the inbox only with evidence of a raise**: the job's approved budget is above the one the hold was reached at. Otherwise the item is `resolved` (`129ec85`).
+7. **A plan created with `/new` is no longer announced twice.** Its inbox key is recorded silently, and the reply names the approval id (`129ec85`).
+
+Also added, as regression coverage; these already passed:
+- a subject with CR/LF stays one header line;
+- bearer-device auth on `/api/approvals`, including decisions without an Origin, and a bad token gets 401;
+- the game and Telegram approving the same item call `raiseBudget` once.
+
+Re-run results:
+
+| Check | Result |
+| --- | --- |
+| typecheck | clean |
+| `npm test` | **650/650** |
+| build | OK |
+| `inbox-ui-check` | **44/44** |
+| `org-ui-check` | 32/32 |
+| `mobile-ui-check` | **411/411** |
+
 ## Open issues
-- **Declined budget increases:** after you decline one, the job stays held, and no surface raises its budget later. A new hold (after a raise) does raise a new item.
 - **375x812 portrait:** the game asks you to rotate. The inbox layout was checked under the rotate prompt using DOM clicks.
 - **Cloud mode:** the cloud-mode message was checked by marking the store as cloud in the running fixture, not with the cloud build.
 - **Duplicate Telegram message:** a new plan produces both the existing job summary update and the new approval message.
