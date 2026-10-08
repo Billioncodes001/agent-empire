@@ -539,7 +539,7 @@ export class TaskQueue {
       // An unfinished dependency keeps the task queued; it never takes a desk or a worker slot. Later tasks still run.
       if (t.blockedBy?.length || dependencyState(t, this.tasks).kind !== 'ready') continue;
       // A budget-held task (ORG-02) keeps its place, unfailed; later, unheld work may still be seated.
-      if (this.events.taskHold?.(t)) continue;
+      if (this.events.taskHold?.(t)) { this.reserved.delete(t.id); continue; }
       if (this.busy() >= this.maxWorkers) { this.releaseSettledReservations(); break; }
       // A spent budget holds the queue instead of failing every task; the pump seats them once hiring resumes.
       if (this.events.hiringPaused()) { this.releaseSettledReservations(); break; }
