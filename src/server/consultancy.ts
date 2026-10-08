@@ -205,8 +205,20 @@ export class Consultancy {
   /** Why the queue must not start this task now: its job reached its approved budget. Running work is never affected. */
   holdReason(task: Pick<QueueTask, 'jobKey' | 'status'>): string | undefined {
     if (task.status !== 'queued' || !task.jobKey?.startsWith('consultancy:')) return undefined;
-    const job = this.jobs.find((j) => j.decision === 'approved' && j.budgetHold && j.items.some((item) => item.jobKey === task.jobKey));
-    return job?.budgetHold ? holdText(job.budgetHold) : undefined;
+    const job = this.jobs.find((j) => j.decision === 'approved' && j.items.some((item) => item.jobKey === task.jobKey));
+    const hold = job && this.activeHold(job, this.readQueue().state);
+    return hold ? holdText(hold) : undefined;
+  }
+
+  /**
+   * The job's hold, checked live: the persisted budgetHold is the record, but the queue may seat the next item the
+   * moment the previous one finishes, before reconcile() writes that record. Spend at or over budget holds at once.
+   */
+  private activeHold(job: StoredJob, state: QueueState | undefined): BudgetHold | undefined {
+    if (job.budgetHold) return job.budgetHold;
+    if (job.decision !== 'approved' || job.approvedBudgetUsd === undefined) return undefined;
+    const spent = this.jobSpend(job, state);
+    return spent !== undefined && spent >= job.approvedBudgetUsd ? { reachedAt: Date.now(), spentUsd: roundUsd(spent), approvedBudgetUsd: job.approvedBudgetUsd } : undefined;
   }
 
   reconcile(): void {
@@ -312,18 +324,19 @@ export class Consultancy {
 
   private projectJob(job: StoredJob, queue: QueueRead): JobProjection {
     const estimate = job.decision === 'pending_approval' ? this.estimateFor(job) : job.estimate;
+    const hold = this.activeHold(job, queue.state);
     const items = job.items.map((item, index) => {
       const projected = this.projectItem(job, item, queue);
       const cost = this.itemCost(item, queue.state);
       if (estimate?.items[index]) projected.estimate = estimate.items[index];
       if (cost !== undefined) projected.actualSpendUsd = roundUsd(cost);
-      if (job.budgetHold && projected.status === 'queued') projected.held = true;
+      if (hold && projected.status === 'queued') projected.held = true;
       return projected;
     });
     const weight = Math.max(...items.map((item) => item._weight));
     const status = statusFromWeight(weight);
     const attention = items.find((item) => item.status === 'needs_attention')?.attention
-      ?? (job.budgetHold && items.some((item) => item.held) ? holdText(job.budgetHold) : undefined);
+      ?? (hold && items.some((item) => item.held) ? holdText(hold) : undefined);
     const spent = this.jobSpend(job, queue.state);
     return {
       _weight: weight,

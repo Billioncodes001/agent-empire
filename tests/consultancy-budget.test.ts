@@ -155,6 +155,42 @@ test('the queue skips a held task without failing it and seats other work', () =
   } finally { queue.shutdown(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('review fix 1: the next ordered item never starts once spend reached the budget, even before reconcile records it', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'budget-live-'));
+  const live: WorkerInfo[] = [];
+  const costs: Record<string, number> = {};
+  const workers: QueueWorkers = {
+    list: () => live,
+    deskOccupied: (d) => live.some((w) => w.deskId === d),
+    spawn: (deskId) => { const w = { id: `w-${live.length + 1}`, kind: 'agent', name: 'W', deskId, status: 'working', processState: 'running', viewers: [] } as unknown as WorkerInfo; live.push(w); return w; },
+    kill: async () => ({}),
+  };
+  writeFileSync(path.join(dir, 'queue.json'), JSON.stringify({ maxWorkers: 2, tasks: [] }));
+  let office!: Consultancy;
+  const queue = new TaskQueue(dir, workers, false, {
+    update() {}, toast() {}, claimIssue: async () => undefined, refreshGitHub() {}, hiringPaused: () => undefined,
+    taskHold: (t) => office?.holdReason(t),
+  });
+  try {
+    office = new Consultancy(dir, queue, undefined, { taskCost: (id) => costs[id] });
+    const job = office.create({ requestId: 'live-1', client: 'Acme', title: 'Two steps', brief: 'b', tasks: [{ title: 'One', prompt: 'one' }, { title: 'Two', prompt: 'two' }] }, 'CEO');
+    office.approve(job.id, 'CEO', { budgetUsd: 3 });
+    const [t1, t2] = queue.state().tasks;
+    assert.equal(t1.status, 'running');
+    assert.deepEqual(t2.dependsOn, [t1.id]);
+    // Item 1 finishes over budget; the queue pumps on the worker update, with no reconcile in between.
+    costs[t1.id] = 3.2;
+    live[0].status = 'done';
+    queue.onWorker({ ...live[0] });
+    const after = queue.state().tasks;
+    assert.equal(after[0].status, 'done');
+    assert.equal(after[1].status, 'queued', 'item 2 waits for a budget increase');
+    assert.equal(live.length, 1, 'no second worker was hired');
+    assert.match(office.holdReason(after[1])!, /budget/i);
+    assert.ok(office.snapshot().jobs[0].items[1].held, 'the review shows it held before reconcile');
+  } finally { queue.shutdown(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('a consultancy.json from before estimates loads unchanged', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'consultancy-legacy-'));
   try {
