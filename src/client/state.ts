@@ -10,8 +10,9 @@ import { randomLook, sanitizeLook, type Look } from '../shared/avatar';
 import type { Decoration } from '../shared/decor';
 import type { OrgState } from '../shared/org';
 import type { ApprovalsState } from '../shared/approvals';
+import type { ResearchState } from '../shared/research';
 
-type Topic = 'cloud' | 'empire' | 'peers' | 'workers' | 'issues' | 'pulls' | 'chat' | 'project' | 'screens' | 'team' | 'upgrade' | 'services' | 'decor' | 'usage' | 'queue' | 'connection' | 'freshness' | 'continuity' | 'org' | 'approvals';
+type Topic = 'cloud' | 'empire' | 'peers' | 'workers' | 'issues' | 'pulls' | 'chat' | 'project' | 'screens' | 'team' | 'upgrade' | 'services' | 'decor' | 'usage' | 'queue' | 'connection' | 'freshness' | 'continuity' | 'org' | 'approvals' | 'research';
 
 const zeroUsage = (): Usage => ({ input: 0, output: 0, cacheWrite: 0, cacheRead: 0, cost: 0, calls: 0 });
 
@@ -124,6 +125,8 @@ class Store {
   org: OrgState | null = null;
   /** The CEO approval inbox (ORG-03); null until a server that has one says so. */
   approvals: ApprovalsState | null = null;
+  /** The research executive's reports and tool proposals (ORG-05); null until a server that has them says so. */
+  research: ResearchState | null = null;
   /** Cloud mode only: the state-repository snapshot this game is showing, with its age. Null in server mode. */
   cloud: CloudInfo | null = null;
   private subs = new Map<Topic, Set<() => void>>();
@@ -225,7 +228,8 @@ class Store {
         this.queue = msg.queue;
         this.org = msg.org ?? null;
         this.approvals = msg.approvals ?? null;
-        for (const t of ['peers', 'workers', 'issues', 'pulls', 'chat', 'project', 'upgrade', 'services', 'decor', 'usage', 'queue', 'org', 'approvals'] as Topic[]) this.emit(t);
+        this.research = msg.research ?? null;
+        for (const t of ['peers', 'workers', 'issues', 'pulls', 'chat', 'project', 'upgrade', 'services', 'decor', 'usage', 'queue', 'org', 'approvals', 'research'] as Topic[]) this.emit(t);
         break;
       case 'peer.join':
       case 'peer.update':
@@ -301,6 +305,10 @@ class Store {
       case 'approvals':
         this.approvals = msg.state;
         this.emit('approvals');
+        break;
+      case 'research':
+        this.research = msg.state;
+        this.emit('research');
         break;
       case 'chat':
         this.chat.push(msg);

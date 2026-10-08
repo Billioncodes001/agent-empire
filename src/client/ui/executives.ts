@@ -2,18 +2,20 @@ import { EXECUTIVES, NOT_STAFFED, type Executive, type ExecutiveRole, type OrgSt
 import { store } from '../state';
 import { h, openModal } from './dom';
 import { openInbox } from './inbox';
+import { researchPanel } from './research';
 
 /** Where each executive's waiting items are handled: the approval inbox (ORG-03) or the task queue. */
 const ATTENTION: Partial<Record<ExecutiveRole, { label: (n: number) => string; inbox?: true; queue?: true }>> = {
   chief_of_staff: { label: (n) => `${n} client plan${n === 1 ? '' : 's'} waiting for your approval`, inbox: true },
   operations: { label: (n) => `${n} task${n === 1 ? '' : 's'} held after a dependency failed — retry or remove ${n === 1 ? 'it' : 'them'}`, queue: true },
   finance: { label: (n) => `${n} budget increase${n === 1 ? '' : 's'} waiting — the job reached the approved budget and unstarted items are held`, inbox: true },
+  research: { label: (n) => `${n} tool proposal${n === 1 ? '' : 's'} waiting — approving only records your decision`, inbox: true },
 };
 
 export const executiveTitle = (role: ExecutiveRole) => EXECUTIVES[role].title;
 
 /** Plain description of the executive's evidence, so nobody mistakes a rule for a model. */
-const RULE_NOTE = 'Rule-based: computed from the live queue, workers, client jobs and provider usage. No model is called.';
+const RULE_NOTE = 'Rule-based: computed from the live queue, workers, client jobs, provider usage and worker reports. No model is called.';
 
 function tone(e: Executive) {
   if (!e.active) return 'unknown';
@@ -74,8 +76,12 @@ export function openExecutiveCard(role: ExecutiveRole, openQueue?: () => void) {
         : h('p.setting-note', {}, store.cloud ? 'Executives are not available in cloud mode yet.' : 'This server has not reported its executives yet.'),
     );
   };
-  const modal = openModal(h('div.modal.exec-modal', { role: 'dialog', 'aria-labelledby': `exec-title-${role}`, 'aria-label': executiveTitle(role) }, h('header', {}, h('small.empire-eyebrow', {}, 'Executive office'), close), slot), {
-    onClose: () => off(),
+  // ORG-05: the research office also lists its reports and takes questions.
+  const panel = role === 'research' ? researchPanel(() => modal.close()) : undefined;
+  const modal = openModal(h('div.modal.exec-modal', { role: 'dialog', 'aria-labelledby': `exec-title-${role}`, 'aria-label': executiveTitle(role), 'data-role': role }, h('header', {}, h('small.empire-eyebrow', {}, 'Executive office'), close), slot, panel ? h('div.exec-body.research-body', {}, panel.el) : null), {
+    onClose: () => { off(); panel?.dispose(); },
+    // ORG-05 review fix 3: Esc in a report steps back to the research list first.
+    onEscape: () => panel?.back() ?? false,
   });
   const off = store.on('org', render);
   close.addEventListener('click', () => modal.close());

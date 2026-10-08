@@ -81,6 +81,8 @@ type QueuePort = {
 export interface ConsultancyOrgPorts {
   estimate?(items: PlannedItem[]): JobEstimate;
   taskCost?(taskId: string): number | undefined;
+  /** ORG-05: why a finished item still needs attention (an internal job's artifact was not accepted), or undefined. */
+  itemIssue?(jobKey: string): string | undefined;
 }
 
 export class ConsultancyError extends Error {
@@ -114,15 +116,17 @@ export class Consultancy {
   create(input: unknown, actor: string): ConsultancyJob {
     this.assertMutable();
     const cleanActor = cleanBounded(actor, 'actor', MAX_ACTOR);
-    const clean = validateCreateInput(input);
-    const fingerprint = inputFingerprint(clean);
-    const known = this.jobs.find((job) => job.requestId === clean.requestId);
+    const input0 = validateCreateInput(input);
+    const known = this.jobs.find((job) => job.requestId === input0.requestId);
     if (known) {
-      if (known.requestFingerprint === fingerprint) return this.projectJob(known, this.readQueue()).job;
-      throw new ConsultancyError(409, `Request ${clean.requestId} already exists with different content`);
+      if (known.requestFingerprint === inputFingerprint(withJobId(input0, known.id))) return this.projectJob(known, this.readQueue()).job;
+      throw new ConsultancyError(409, `Request ${input0.requestId} already exists with different content`);
     }
     const now = Date.now();
     const jobId = this.nextId('consultancy');
+    // ORG-05: an internal job's prompt names its artifact path by job id; `{{jobId}}` becomes the id before it is saved.
+    const clean = withJobId(input0, jobId);
+    const fingerprint = inputFingerprint(clean);
     const items = clean.tasks.map((task, index) => {
       const itemId = `item-${index + 1}`;
       return { id: itemId, title: task.title, prompt: task.prompt, jobKey: `consultancy:${jobId}:${itemId}`, phase: task.phase ?? 'build', ...(task.parallel ? { parallel: true as const } : {}) };
@@ -399,14 +403,15 @@ export class Consultancy {
     const task = findTask(state?.tasks ?? [], item);
     const key = this.itemKey(job.id, item.id);
     // Finished successfully, then cleared from the queue: still delivered work, not a problem.
-    if (!task && item.finishedOk) return { ...item, status: 'awaiting_review', _weight: statusWeight('awaiting_review') };
+    const issue = this.ports.itemIssue?.(item.jobKey);
+    if (!task && item.finishedOk) return issue ? { ...item, status: 'needs_attention', attention: issue, _weight: statusWeight('needs_attention') } : { ...item, status: 'awaiting_review', _weight: statusWeight('awaiting_review') };
     if (!task) {
       const reason = this.queueIssues.get(key) ?? (item.queueTaskId ? 'Previously observed queue task is missing; automatic requeue is blocked.' : 'Task is not visible in the queue.');
       return { ...item, status: 'needs_attention', attention: reason, _weight: statusWeight('needs_attention') };
     }
     if (task.status === 'running') return { ...item, status: 'running', _weight: statusWeight('running') };
     if (task.status === 'queued') return { ...item, status: 'queued', _weight: statusWeight('queued') };
-    if (task.outcome === 'done') return { ...item, status: 'awaiting_review', _weight: statusWeight('awaiting_review') };
+    if (task.outcome === 'done') return issue ? { ...item, status: 'needs_attention', attention: issue, _weight: statusWeight('needs_attention') } : { ...item, status: 'awaiting_review', _weight: statusWeight('awaiting_review') };
     const reason = task.interruption ? `Queue interruption: ${task.interruption.reason}` : task.error ?? (task.outcome ? `Queue task ended with ${task.outcome}` : 'Queue task ended without success');
     return { ...item, status: 'needs_attention', attention: reason, _weight: statusWeight('needs_attention') };
   }
@@ -621,6 +626,12 @@ export function itemDependencies<T extends { parallel?: true }>(items: readonly 
     if (!items[i].parallel) break;
   }
   return out;
+}
+
+/** Replaces the `{{jobId}}` token in task prompts (ORG-05 internal jobs); plans without it are unchanged. */
+function withJobId(input: Required<ConsultancyCreateInput>, jobId: string): Required<ConsultancyCreateInput> {
+  if (!input.tasks.some((task) => task.prompt.includes('{{jobId}}'))) return input;
+  return { ...input, tasks: input.tasks.map((task) => ({ ...task, prompt: task.prompt.replaceAll('{{jobId}}', jobId) })) };
 }
 
 function inputFingerprint(input: Required<ConsultancyCreateInput>): string {

@@ -16,6 +16,9 @@ import { tmpdir } from 'node:os';
 import { Consultancy } from '../src/server/consultancy.js';
 import { ApprovalError, ApprovalInbox } from '../src/server/approvals.js';
 import { estimateJob } from '../src/server/estimate.js';
+import { ResearchDesk, ResearchError } from '../src/server/research.js';
+import { parseArtifact } from '../src/server/research-artifact.js';
+import { SYNTHETIC_REPORT, UNSOURCED_REPORT } from './research-fixture.js';
 
 /**
  * ORG-03: a real approval inbox over a real consultancy journal in a throwaway temp directory, with a fake queue that
@@ -32,8 +35,23 @@ const fxOffice = new Consultancy(inboxDir, {
     if (!fxTasks.some((t) => t.jobKey === jobKey)) fxTasks.push({ id: `fx-q${fxTasks.length + 1}`, jobKey, prompt, title: title ?? 'task', addedBy: by, addedAt: Date.now(), status: 'queued', ...(dependsOn?.length ? { dependsOn: [...dependsOn] } : {}) });
     return undefined;
   },
-}, () => inbox?.reconcile(), { estimate: (items) => estimateJob(items, [], { maxWorkers: 2, now: Date.now() }), taskCost: (id) => fxCosts[id] });
-inbox = new ApprovalInbox(inboxDir, fxOffice, () => { for (const ws of sockets.clients) send(ws, { t: 'approvals', state: inbox!.state() }); });
+}, () => { inbox?.reconcile(); research?.reconcile(); }, { itemIssue: (key) => research?.issue(key), estimate: (items) => estimateJob(items, [], { maxWorkers: 2, now: Date.now() }), taskCost: (id) => fxCosts[id] });
+inbox = new ApprovalInbox(inboxDir, fxOffice, () => { research?.reconcile(); for (const ws of sockets.clients) send(ws, { t: 'approvals', state: inbox!.state() }); });
+/**
+ * ORG-05: a real ResearchDesk over the same journal. Reports are synthetic markdown "read" from memory (no worktree, no
+ * worker). FIXTURE_RESEARCH=seed adds one imported report with two tool proposals, one question awaiting approval and
+ * one report rejected for missing sources.
+ */
+const fxReports = new Map<string, string>();
+let research: ResearchDesk | undefined;
+research = new ResearchDesk(inboxDir, {
+  create: (input, actor) => fxOffice.create(input, actor),
+  snapshot: () => fxOffice.snapshot(),
+  queue: () => ({ tasks: fxTasks.map((t) => ({ ...t })), maxWorkers: 0 }),
+  readArtifact: (_task, jobId) => { const text = fxReports.get(jobId); return text ? parseArtifact(Buffer.from(text)) : { ok: false, reason: `The worker did not write docs/empire/research/${jobId}.md.` }; },
+  raiseTool: ({ source, jobId, tool, question }) => inbox!.raise({ source, kind: 'tool_proposal', jobId, tool, title: `Tool: ${tool.name}`, detail: `Proposed in research on “${question}”. Licence ${tool.licence}. Approving records your decision only; nothing is installed.` }),
+  decision: (id) => inbox!.get(id),
+}, () => { for (const ws of sockets.clients) send(ws, { t: 'research', state: research!.state() }); });
 if (process.env.FIXTURE_APPROVALS !== 'none') {
   fxOffice.create({ requestId: 'fx-plan', client: 'Northwind', title: 'Booking portal', brief: 'Synthetic fixture brief', tasks: [{ title: 'Build the booking API', prompt: 'Synthetic' }, { title: 'Iterate on the UI', prompt: 'Synthetic', phase: 'iteration' }] }, 'Fixture CEO');
   const audit = fxOffice.create({ requestId: 'fx-audit', client: 'Harbor Labs', title: 'Security audit', brief: 'Synthetic fixture brief', tasks: [{ title: 'First pass', prompt: 'Synthetic' }, { title: 'Second pass', prompt: 'Synthetic', phase: 'iteration' }] }, 'Fixture CEO');
@@ -42,6 +60,21 @@ if (process.env.FIXTURE_APPROVALS !== 'none') {
   Object.assign(first, { status: 'done', outcome: 'done', finishedAt: Date.now() - 60_000 });
   fxCosts[first.id] = 3.2;
   fxOffice.reconcile();
+}
+if (process.env.FIXTURE_RESEARCH === 'seed') {
+  const finishResearch = (question: string, text: string, worker: string, n: number) => {
+    const { job } = research!.ask(question, 'Fixture CEO', `fx-research-${n}`);
+    fxOffice.approve(job.id, 'Fixture CEO', { budgetUsd: 2 });
+    fxReports.set(job.id, text);
+    const task = fxTasks.find((t) => t.jobKey === `consultancy:${job.id}:item-1`)!;
+    Object.assign(task, { status: 'done', outcome: 'done', workerName: worker, branch: `office/${worker.toLowerCase()}-fx`, finishedAt: Date.now() - 3_600_000 });
+    fxCosts[task.id] = 0.84 + n / 10;
+  };
+  finishResearch('Can we offer appointment booking for dental practices?', SYNTHETIC_REPORT, 'Bea', 1);
+  finishResearch('Could we resell cloud GPUs?', UNSOURCED_REPORT, 'Cyrus', 2);
+  fxOffice.reconcile();
+  research.reconcile();
+  research.ask('Is there an open-source way to transcribe client calls on our own server?', 'Fixture CEO', 'fx-research-3');
 }
 
 /** ORG-01: synthetic client jobs so each executive has something real-shaped to compute from (the real projection). */
@@ -53,7 +86,7 @@ function fixtureOrg(state: ReturnType<typeof initialEmpire>, workers: WorkerInfo
     job('fixture-portal', { approvedBudgetUsd: 12, actualSpendUsd: 4.8 }),
     job('fixture-audit', { approvedBudgetUsd: 3, actualSpendUsd: 3.1, budgetHold: { reachedAt: 1, spentUsd: 3.1, approvedBudgetUsd: 3 }, items: [{ id: 'item-2', title: 'Second pass', prompt: 'Synthetic', jobKey: 'fixture', status: 'queued', phase: 'iteration', held: true }] }),
   ];
-  return projectOrg({ now: Date.now(), supervision: state.supervision, workers, queue: { tasks, maxWorkers: 3 }, jobs, approvals: inbox?.state().items, usage: { total: { ...zero, cost: 7.9 }, today: { ...zero, cost: 1.2 }, day: '2026-10-08', budget: 10, pauseHiring: false } });
+  return projectOrg({ now: Date.now(), supervision: state.supervision, workers, queue: { tasks, maxWorkers: 3 }, jobs, approvals: inbox?.state().items, research: research?.state(), usage: { total: { ...zero, cost: 7.9 }, today: { ...zero, cost: 1.2 }, day: '2026-10-08', budget: 10, pauseHiring: false } });
 }
 
 const port = Number(process.env.FIXTURE_PORT || 4613);
@@ -214,6 +247,19 @@ const server = createServer(async (req, res) => {
   }
   if (url.pathname === '/__fixture/jobs') return json(res, 200, fxOffice.snapshot());
   if (url.pathname === '/api/approvals' && req.method === 'GET') return json(res, 200, inbox!.state());
+  if (url.pathname === '/api/research' && req.method === 'GET') return json(res, 200, research!.state());
+  const reportRoute = /^\/api\/research\/reports\/([a-zA-Z0-9_-]{1,80})$/.exec(url.pathname);
+  if (reportRoute && req.method === 'GET') { const r = research!.report(reportRoute[1]); return r ? json(res, 200, r) : json(res, 404, { error: 'Unknown research report.' }); }
+  if (url.pathname === '/api/research' && req.method === 'POST') {
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    let body: { question?: unknown; requestId?: unknown } = {}; try { body = JSON.parse(raw); } catch { return json(res, 400, { error: 'Expected a JSON question.' }); }
+    try {
+      const asked = research!.ask(body.question, 'Fixture CEO', String(body.requestId ?? ''));
+      inbox!.reconcile();
+      for (const ws of sockets.clients) { send(ws, { t: 'approvals', state: inbox!.state() }); send(ws, { t: 'research', state: research!.state() }); publish(ws); }
+      return json(res, 200, asked);
+    } catch (error) { return json(res, error instanceof ResearchError ? error.status : 500, { error: (error as Error).message }); }
+  }
   const decision = /^\/api\/approvals\/(A[1-9]\d{0,8})\/(approve|reject)$/.exec(url.pathname);
   if (decision && req.method === 'POST') {
     let raw = ''; for await (const chunk of req) raw += chunk;
@@ -251,7 +297,7 @@ sockets.on('connection', ws => {
   const zero = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, cost: 0, calls: 0 };
   send(ws, { t: 'welcome', you: 'fixture-ceo', peers: [], workers: [worker, ...jobWorkers], project: { name: 'UI fixture · synthetic data', dir: '[isolated fixture]', agentCmd: 'disabled' },
     issues: empty, pulls: empty, ice: [], chat: [], invites: false, version: 'fixture', upgrade: { available: false, phase: 'idle' },
-    services: { items: [], port }, decor: [], usage: { total: zero, today: zero, day: '2026-09-27', pauseHiring: false }, queue: { tasks, maxWorkers: jobWorkers.length ? 3 : 1 }, org: fixtureOrg(state, [worker, ...jobWorkers], tasks), approvals: inbox!.state() });
+    services: { items: [], port }, decor: [], usage: { total: zero, today: zero, day: '2026-09-27', pauseHiring: false }, queue: { tasks, maxWorkers: jobWorkers.length ? 3 : 1 }, org: fixtureOrg(state, [worker, ...jobWorkers], tasks), approvals: inbox!.state(), research: research!.state() });
   publish(ws);
   ws.on('message', raw => {
     let msg: any; try { msg = JSON.parse(raw.toString()); } catch { return; }
