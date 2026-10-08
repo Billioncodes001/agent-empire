@@ -8,7 +8,7 @@ import { h, openModal } from './dom';
 // a decision here is the same decision as on the founder desk or in Telegram.
 
 const usd = (n: number) => `$${n.toFixed(2)}`;
-const KIND_ICON: Record<Approval['kind'], string> = { job_plan: '📄', budget_increase: '💵' };
+const KIND_ICON: Record<Approval['kind'], string> = { job_plan: '📄', budget_increase: '💵', external_action: '✉️' };
 
 export const pendingApprovals = () => (store.cloud ? 0 : store.approvals?.pending ?? 0);
 
@@ -41,9 +41,31 @@ function moneyFacts(item: Approval): HTMLElement {
   return h('dl.inbox-facts', {}, ...rows);
 }
 
+/** ORG-04a: the exact campaign send being approved — rendered samples, every recipient, what was excluded, sender and cap. */
+function outreachFacts(item: Approval): HTMLElement {
+  const o = item.outreach;
+  if (!o) return h('p.setting-note', {}, 'This send has no snapshot to show.');
+  const ex = o.excluded;
+  return h('div.inbox-outreach', {},
+    h('dl.inbox-facts', {},
+      h('div', {}, h('dt', {}, 'Recipients'), h('dd', {}, `${o.recipients.length} · one message each, never CC or BCC`)),
+      h('div', {}, h('dt', {}, 'Excluded'), h('dd', {}, `${ex.suppressed} suppressed · ${ex.invalid} invalid · ${ex.unconfirmed} unconfirmed (proposed, not accepted)`)),
+      h('div', {}, h('dt', {}, 'Sender'), h('dd', {}, o.from)),
+      h('div', {}, h('dt', {}, 'Pace'), h('dd', {}, `one every ${o.intervalSec} s · at most ${o.dailyCap} a day`)),
+      h('div', {}, h('dt', {}, 'Draft'), h('dd', {}, `Drafted by ${o.draftedBy} — not verified`))),
+    ...o.samples.map((s, i) => h('figure.inbox-sample', {},
+      h('figcaption', {}, `Exact message ${i + 1} of ${o.recipients.length} · to ${s.to}`),
+      h('p.inbox-sample-subject', {}, h('span', {}, 'Subject: '), s.subject),
+      h('pre.inbox-sample-body', { tabindex: 0, 'aria-label': `Message body for ${s.to}` }, s.text))),
+    h('details.inbox-recipients', {}, h('summary', {}, `All ${o.recipients.length} recipient${o.recipients.length === 1 ? '' : 's'}`),
+      h('ol', {}, ...o.recipients.map((r) => h('li', {}, r)))),
+  );
+}
+
 function itemRow(item: Approval, selected: boolean, onSelect: () => void): HTMLElement {
   const money = item.kind === 'budget_increase' && item.spentUsd !== undefined && item.approvedBudgetUsd !== undefined
     ? `${usd(item.spentUsd)} of ${usd(item.approvedBudgetUsd)} spent`
+    : item.outreach ? `${item.outreach.recipients.length} recipient${item.outreach.recipients.length === 1 ? '' : 's'}`
     : item.estimate ? `Estimate ${fmtUsdRange(item.estimate.costUsd)}` : '';
   return h(
     'li',
@@ -109,7 +131,7 @@ export function openInbox(focusId?: string) {
       h('h3', { tabindex: -1, id: 'inbox-detail-title' }, item.title),
       h('p.inbox-raised', {}, `Raised by ${EXECUTIVES[item.raisedBy].name} `, h('span.empire-tag', { title: 'Computed from real state. No model is called.' }, 'Rule-based')),
       h('p.inbox-detail-text', {}, item.detail),
-      moneyFacts(item),
+      item.kind === 'external_action' ? outreachFacts(item) : moneyFacts(item),
     ];
     const verdict = { approved: '✓ Approved', rejected: '✕ Declined', resolved: '○ Resolved', pending: '' }[item.status];
     const decidedLine = item.status !== 'pending'
@@ -122,6 +144,27 @@ export function openInbox(focusId?: string) {
       return;
     }
     if (reopen) head.push(decidedLine!, h('p.setting-note', {}, 'The job is still held. You can still approve the increase.'));
+    if (item.kind === 'external_action') {
+      const n = item.outreach?.recipients.length ?? 0;
+      const runSend = async (action: 'approve' | 'reject') => {
+        busy = true; error = ''; render();
+        try { await decide(item, action); confirming = null; } catch (e) { error = (e as Error).message; }
+        finally { busy = false; render(); detail.querySelector<HTMLElement>('h3')?.focus(); }
+      };
+      const askSend = (action: 'approve' | 'reject') => { confirming = action; error = ''; render(); detail.querySelector<HTMLElement>('.inbox-confirm .btn.primary, .inbox-confirm .btn.danger')?.focus(); };
+      const confirmSend = confirming && h('div.inbox-confirm', { role: 'group', 'aria-label': 'Confirm decision' },
+        h('p', {}, confirming === 'approve' ? `Send exactly this message to ${n} recipient${n === 1 ? '' : 's'}, one at a time from ${item.outreach?.from}? Real email leaves the Empire.` : 'Decline this send? Nothing is emailed.'),
+        h('div.inbox-actions', {},
+          h(`button.btn.${confirming === 'approve' ? 'primary' : 'danger'}`, { type: 'button', disabled: busy, onclick: () => void runSend(confirming!) }, busy ? 'Saving…' : confirming === 'approve' ? 'Confirm send' : 'Confirm decline'),
+          h('button.btn', { type: 'button', disabled: busy, onclick: () => { confirming = null; render(); } }, 'Cancel')));
+      detail.replaceChildren(...head,
+        ...(error ? [h('p.inbox-error', { role: 'alert' }, error)] : []),
+        confirmSend || h('div.inbox-actions', {},
+          h('button.btn.primary', { type: 'button', disabled: busy, onclick: () => askSend('approve') }, 'Approve send…'),
+          h('button.btn', { type: 'button', disabled: busy, onclick: () => askSend('reject') }, 'Decline…')),
+        h('p.setting-note', {}, `Any change to the recipients or sender makes a new item. Pause or cancel a send on the founder desk. ${approveHint(item.id)}`));
+      return;
+    }
     const fallback = defaultBudget(item);
     const input = h('input', { id: 'inbox-budget', type: 'number', inputmode: 'decimal', min: '1', max: String(MAX_APPROVAL_BUDGET_USD), step: '0.01', value: budgetDraft ?? (fallback !== undefined ? String(fallback) : ''), 'aria-describedby': 'inbox-budget-note' }) as HTMLInputElement;
     input.addEventListener('input', () => { budgetDraft = input.value; if (confirming) { confirming = null; render(); input.focus(); } });
@@ -221,7 +264,7 @@ export function openInbox(focusId?: string) {
     h('div.modal.inbox-modal', { role: 'dialog', 'aria-labelledby': 'inbox-title' },
       h('header', {}, h('div.inbox-heading', {}, h('small.empire-eyebrow', {}, 'CEO desk · Approval inbox'), h('h2', { id: 'inbox-title' }, 'Waiting for you ', count)), close),
       body,
-      h('footer', {}, h('p.setting-note', {}, 'Plans come from Alex, budget increases from Priya. Both are rule-based monitors of real jobs and provider spend. Telegram: /approvals.'))),
+      h('footer', {}, h('p.setting-note', {}, 'Plans come from Alex, budget increases from Priya, campaign sends from Jordan. All are rule-based monitors of real jobs, spend and outreach. Telegram: /approvals.'))),
     { onClose: () => offs.forEach((off) => off()) },
   );
   const offs = (['approvals', 'cloud'] as const).map((topic) => store.on(topic, render));
@@ -233,7 +276,7 @@ export function openInbox(focusId?: string) {
 
 /** The HUD badge: shown only while something waits, with the count in text (not colour alone). */
 export function mountInboxButton(btn: HTMLElement) {
-  btn.setAttribute('title', 'Approval inbox: plans and budget increases waiting for you');
+  btn.setAttribute('title', 'Approval inbox: plans, budget increases and campaign sends waiting for you');
   const label = h('span', {}, 'Inbox');
   const badge = h('span.svc-count.inbox-badge');
   btn.replaceChildren(h('span.inbox-glyph', { 'aria-hidden': 'true' }, '📥'), label, badge);

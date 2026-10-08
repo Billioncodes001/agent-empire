@@ -1283,6 +1283,17 @@ html.ae-cloud #hud .status-strip.cloud-strip .status-monitor { white-space: nowr
 .inbox-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 10px; }
 .inbox-actions .btn { min-width: 132px; }
 .inbox-confirm { margin: 14px 0 10px; padding: 12px 14px; border: 1px solid #d9b36a80; border-radius: 8px; background: #d9b36a14; }
+/* ORG-04a: a campaign send shows the exact rendered message (on paper, like a letter) and every recipient. */
+.inbox-sample { margin: 0 0 12px; padding: 0; border: 1px solid var(--hud-line); border-radius: 8px; overflow: hidden; }
+.inbox-sample figcaption { padding: 7px 12px; font-size: 12px; color: var(--hud-muted); background: #00000033; overflow-wrap: anywhere; }
+.inbox-sample-subject { margin: 0; padding: 10px 14px 6px; background: #f3ecdf; color: #19160f; font-weight: 650; font-size: 14px; overflow-wrap: anywhere; }
+.inbox-sample-subject span { font-weight: 500; color: #4d4538; }
+.inbox-sample-body { margin: 0; padding: 6px 14px 14px; max-height: 240px; overflow: auto; background: #f3ecdf; color: #19160f; font: 13px/1.6 ui-sans-serif, system-ui, sans-serif; white-space: pre-wrap; overflow-wrap: anywhere; }
+.inbox-sample-body:focus-visible { outline: 2px solid #d9b36a; outline-offset: -2px; }
+.inbox-recipients { margin: 0 0 14px; }
+.inbox-recipients summary { cursor: pointer; min-height: 40px; display: flex; align-items: center; font-weight: 600; }
+.inbox-recipients ol { margin: 6px 0 0; padding: 8px 8px 8px 34px; max-height: 180px; overflow: auto; border: 1px solid var(--hud-line); border-radius: 8px; font: 12.5px/1.7 ui-monospace, Menlo, monospace; columns: 2 220px; }
+@media (max-width: 720px) { .inbox-recipients ol { columns: 1; } .inbox-sample-body { max-height: 180px; } }
 .inbox-confirm p { margin: 0; line-height: 1.45; }
 .inbox-error { color: #ffb4a2; font-weight: 600; margin: 10px 0 0; }
 .inbox-empty { color: var(--hud-muted); padding: 16px 4px; margin: 0; line-height: 1.5; }

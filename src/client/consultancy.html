@@ -148,11 +148,50 @@
           <p class="small">The host must stay running for coordination and Telegram. This view uses this host’s repository; client labels do not create separate repositories.</p>
         </aside>
       </section>
+      <section class="outreach" id="outreach" aria-labelledby="outreach-title">
+        <div class="section-title"><div><p class="kicker">Jordan / Marketing &amp; sales · <span class="kicker-tag">Rule-based</span></p><h2 id="outreach-title" tabindex="-1">Email outreach</h2></div><button id="new-campaign" class="quiet" type="button"><span aria-hidden="true">＋</span> New campaign</button></div>
+        <p id="outreach-status" class="outreach-status" role="status">Checking outreach…</p>
+        <div class="outreach-grid">
+          <div class="campaigns" aria-labelledby="campaigns-title">
+            <h3 id="campaigns-title" class="outreach-h">Campaigns</h3>
+            <p class="outreach-lede">A worker drafts each campaign as an internal job you approve first. Nothing is emailed until you approve the exact message and recipient list in the inbox.</p>
+            <div id="campaigns" aria-live="polite"><p class="empty">Loading campaigns…</p></div>
+          </div>
+          <aside class="ledger">
+            <section class="ledger-card" aria-labelledby="leads-title">
+              <h3 id="leads-title" class="outreach-h">Leads <span id="lead-count" class="count-chip"></span></h3>
+              <p class="compliance" id="lawful-note"></p>
+              <p class="ledger-note" id="scraping-note"></p>
+              <form id="lead-import" novalidate>
+                <label for="lead-csv">Import CSV <span class="ledger-hint">name,email,company,source,basis (optional tags)</span></label>
+                <textarea id="lead-csv" name="csv" rows="4" spellcheck="false" placeholder="name,email,company,source,basis,tags&#10;Ann Lee,ann@example.com,Northwind,inbound inquiry,existing customer,customers"></textarea>
+                <div class="ledger-row"><label class="file-pick"><input id="lead-file" type="file" accept=".csv,text/csv" /> <span>Choose file…</span></label><button class="quiet" type="submit" id="import-leads">Import leads</button></div>
+              </form>
+              <p id="import-report" class="ledger-report" role="status" hidden></p>
+              <div id="proposed"></div>
+              <details id="lead-details"><summary>All leads</summary><ul id="lead-list" class="ledger-list"></ul></details>
+            </section>
+            <section class="ledger-card" aria-labelledby="suppression-title">
+              <h3 id="suppression-title" class="outreach-h">Suppression <span id="suppression-count" class="count-chip"></span></h3>
+              <p class="ledger-note" id="imap-note"></p>
+              <form id="optout-form" novalidate>
+                <label for="optout-email">Never email this address again</label>
+                <div class="ledger-row"><input id="optout-email" type="email" inputmode="email" autocomplete="off" placeholder="name@example.com" /><select id="optout-reason" aria-label="Reason"><option value="opt_out">Opted out (replied STOP)</option><option value="blocked">Blocked by you</option></select></div>
+                <button class="quiet" type="submit">Add to suppression</button>
+              </form>
+              <p id="optout-report" class="ledger-report" role="status" hidden></p>
+              <ul id="suppression-list" class="ledger-list"></ul>
+            </section>
+          </aside>
+        </div>
+      </section>
       <footer class="site-footer"><span class="footer-mark">Agent Empire</span><span>Client work, with a clear line of sight.</span></footer>
     </div>
   </main>
   <dialog id="intake" aria-labelledby="form-title"><form id="brief-form"><header><p class="eyebrow" id="step-label">01 / THE BRIEF</p><button type="button" class="close" id="close-intake" aria-label="Close new job">×</button></header><h2 id="form-title">Bring a new opportunity.</h2><div id="brief-fields"><label>Client<input name="client" maxlength="100" required autocomplete="organization" placeholder="e.g. Northstar Studio" /></label><label>Job title<input name="title" maxlength="120" required placeholder="e.g. Customer booking portal" /></label><label>What does success look like?<textarea name="brief" maxlength="8000" required rows="5" placeholder="Describe the outcome, constraints and what the team should deliver."></textarea></label></div><div id="brief-review" hidden></div><p id="form-error" role="alert" hidden></p><footer><button type="button" id="back" class="quiet" hidden>← Edit brief</button><button type="submit" class="primary" id="save-job">Review brief →</button></footer></form></dialog>
   <dialog id="job-detail" aria-labelledby="detail-title"><header><p class="eyebrow">ENGAGEMENT / REVIEW</p><button type="button" class="close" id="close-detail" aria-label="Close job details">×</button></header><div id="detail-content"></div><p id="action-error" role="alert" hidden></p><footer id="detail-actions"></footer></dialog>
+  <dialog id="campaign-intake" aria-labelledby="campaign-form-title"><form id="campaign-form"><header><p class="eyebrow">OUTREACH / NEW CAMPAIGN</p><button type="button" class="close" id="close-campaign" aria-label="Close new campaign">×</button></header><h2 id="campaign-form-title">Brief the campaign.</h2><p>Saving creates an internal drafting job for your approval, with an estimate. A worker then writes the subject and plain-text body; the server adds your postal address and the STOP line.</p><label for="campaign-title">Title</label><input id="campaign-title" name="title" maxlength="120" required /><label for="campaign-brief">Brief</label><textarea id="campaign-brief" name="brief" rows="5" maxlength="4000" required placeholder="Who it is for, what to say, the tone. Audience tags, e.g. customers."></textarea><p id="campaign-error" role="alert" hidden></p><footer><button type="submit" class="primary" id="save-campaign">Save for approval</button></footer></form></dialog>
   <script type="module" src="/consultancy.ts"></script>
+  <script type="module" src="/outreach-desk.ts"></script>
   <script type="module" src="/consultancy-scene-entry.ts"></script>
 </body></html>

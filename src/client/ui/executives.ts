@@ -8,12 +8,16 @@ const ATTENTION: Partial<Record<ExecutiveRole, { label: (n: number) => string; i
   chief_of_staff: { label: (n) => `${n} client plan${n === 1 ? '' : 's'} waiting for your approval`, inbox: true },
   operations: { label: (n) => `${n} task${n === 1 ? '' : 's'} held after a dependency failed — retry or remove ${n === 1 ? 'it' : 'them'}`, queue: true },
   finance: { label: (n) => `${n} budget increase${n === 1 ? '' : 's'} waiting — the job reached the approved budget and unstarted items are held`, inbox: true },
+  marketing_sales: { label: (n) => `${n} campaign send${n === 1 ? '' : 's'} waiting — review the exact message and every recipient`, inbox: true },
 };
+
+/** ORG-04a: leads, campaigns, opt-outs, pause and cancel live on the founder desk page. */
+const OUTREACH_DESK = '/consultancy.html#outreach';
 
 export const executiveTitle = (role: ExecutiveRole) => EXECUTIVES[role].title;
 
 /** Plain description of the executive's evidence, so nobody mistakes a rule for a model. */
-const RULE_NOTE = 'Rule-based: computed from the live queue, workers, client jobs and provider usage. No model is called.';
+const RULE_NOTE = 'Rule-based: computed from the live queue, workers, client jobs, provider usage and outreach results. No model is called.';
 
 function tone(e: Executive) {
   if (!e.active) return 'unknown';
@@ -43,6 +47,9 @@ export function executiveCard(e: Executive, opts: { openQueue?: () => void; befo
     title,
     h('p.exec-summary', {}, h('span.status-dot', { 'aria-hidden': 'true' }), e.active ? e.summary : NOT_STAFFED),
     attention,
+    e.role === 'marketing_sales' && e.active
+      ? h('p.exec-note', {}, 'Coordinates email outreach; workers draft, you approve every send. ', h('a.btn.exec-link', { href: OUTREACH_DESK, target: '_blank', rel: 'noopener' }, 'Leads & campaigns ↗'))
+      : null,
   );
 }
 
