@@ -1212,3 +1212,23 @@ html.ae-cloud #hud .status-strip.cloud-strip .status-monitor { white-space: nowr
   .outfit-stage { min-height: 190px; }
 }
 @media (prefers-reduced-motion: reduce) { .outfit-pick summary::after { transition: none; } }
+
+/* ---- Executives (ORG-01): brass-plate office cards, honest about being rule-based ---------------- */
+.exec-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 230px), 1fr)); gap: 10px; }
+.exec-card { position: relative; padding: 14px 16px 14px 18px; background: linear-gradient(160deg, #ffffff0a, #ffffff02 60%), var(--hud-raised); border: 1px solid var(--hud-line); border-radius: 10px; overflow: hidden; }
+.exec-card::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 4px; background: linear-gradient(#e0c387, #a07a3c); opacity: .85; }
+.exec-card[data-tone=unknown] { border-style: dashed; }
+.exec-card[data-tone=unknown]::before { background: repeating-linear-gradient(#8a8f93 0 6px, transparent 6px 10px); }
+.exec-card[data-tone=attention] { border-color: #f2a48866; }
+.exec-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.exec-head .empire-tag { margin-left: 0; }
+.exec-card > strong, .exec-card > h2 { display: block; margin: 6px 0; font-size: 16px; font-weight: 600; letter-spacing: .01em; }
+.exec-summary { margin: 0; font-size: 13px; line-height: 1.5; }
+.exec-note { margin: 8px 0 0; font-size: 12px; color: var(--hud-muted); }
+.exec-attention { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0 0; font-size: 12px; line-height: 1.45; }
+.exec-count { display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 999px; background: var(--tone-attention); color: #1b1410; font-weight: 700; font-size: 12px; }
+.exec-link { min-height: 32px; font-size: 12px; }
+.exec-modal { width: min(440px, calc(100vw - 32px)); }
+.exec-modal header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.exec-modal-body { padding: 4px 18px 18px; }
+.exec-modal .exec-card > h2 { font-size: 20px; }

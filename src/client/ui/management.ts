@@ -3,6 +3,7 @@ import { store } from '../state';
 import type { Net } from '../net';
 import { h, openModal } from './dom';
 import { fmtCost } from './usage';
+import { executivesSection } from './executives';
 import { cloudManagerView, cloudStatus, jobCounts } from '../cloud/map';
 import { ageLabel, chiefView, delegationLabel, managerView, monitorView, unknownView, workforceView, type StatusView } from './status';
 
@@ -101,7 +102,7 @@ export function openManagement(net: Net, actions: ManagementActions, selected?: 
       const sector = store.empire.sectors.find((s) => s.id === site.id);
       return sector ? managerView(sector, store.queue.tasks, store.workers, ev) : null;
     });
-    const next = JSON.stringify([tab, selected, rest, sup, ev.fresh, ev.reason, managers, store.usage, [...store.workers.keys()], store.cloud && [store.cloud.snapshot?.sha, store.cloud.source, store.cloud.error?.code, cloudAge()]]);
+    const next = JSON.stringify([tab, selected, rest, sup, ev.fresh, ev.reason, managers, store.usage, store.org?.executives, [...store.workers.keys()], store.cloud && [store.cloud.snapshot?.sha, store.cloud.source, store.cloud.error?.code, cloudAge()]]);
     // Freshness ticks only touch the header text; the panel is rebuilt when what it shows changes.
     if (next === signature) return;
     signature = next;
@@ -169,6 +170,7 @@ export function openManagement(net: Net, actions: ManagementActions, selected?: 
         ),
         h('div.sector-actions', {}, button('queue', 'Open task queue', actions.openQueue)),
       ),
+      executivesSection(store.org, !!store.cloud, actions.openQueue),
       h(
         'section.empire-section',
         { 'aria-labelledby': 'empire-credits' },
@@ -399,7 +401,7 @@ export function openManagement(net: Net, actions: ManagementActions, selected?: 
     ];
   }
 
-  const offs = (['empire', 'workers', 'queue', 'usage', 'connection'] as const).map((topic) => store.on(topic, refresh));
+  const offs = (['empire', 'workers', 'queue', 'usage', 'connection', 'org'] as const).map((topic) => store.on(topic, refresh));
   // Keeps the freshness label honest while no messages arrive.
   const timer = setInterval(refresh, 1000);
   select(tab, false);
