@@ -130,6 +130,8 @@ export function renderMessage(m: MailMessage, now = new Date()): string {
  */
 export class SmtpError extends Error {
   uncertain?: true;
+  /** The RFC 3463 enhanced status of a refusal (e.g. "5.1.1"), when the server sent one. Digits only, never text. */
+  enhanced?: string;
 }
 
 /** Line-oriented reader over the current socket; swapped to the TLS socket after STARTTLS. */
@@ -193,7 +195,12 @@ class Session {
     this.socket.write(`${line}\r\n`);
     const reply = await this.read();
     // Only the verb and the status code are reported: never the line, which may carry credentials.
-    if (!expect.includes(reply.code)) throw new SmtpError(`SMTP server answered ${reply.code} to ${label}`);
+    if (!expect.includes(reply.code)) {
+      const error = new SmtpError(`SMTP server answered ${reply.code} to ${label}`);
+      const enhanced = /^([245]\.\d{1,3}\.\d{1,3})\b/.exec(reply.lines[reply.lines.length - 1] ?? '')?.[1];
+      if (enhanced) error.enhanced = enhanced;
+      throw error;
+    }
     return reply.lines;
   }
 }

@@ -351,6 +351,8 @@ export class Outreach {
   private cancelTimer?: () => void;
   private consecutiveFailures = 0;
   private refusalStreak = 0;
+  /** The recipients refused in the current RCPT streak (any code); cleared on success, resume and pause. */
+  private streakEmails: { campaign: string; email: string }[] = [];
   private stopped = false;
   private readonly now: () => number;
   private readonly schedule: (fn: () => void, ms: number) => () => void;
@@ -505,6 +507,7 @@ export class Outreach {
     if (c.state !== 'paused') throw new OutreachError(409, 'Only a paused campaign can be resumed.');
     this.consecutiveFailures = 0;
     this.refusalStreak = 0;
+    this.streakEmails = [];
     this.commit(() => { c.state = 'sending'; c.note = `Resumed by ${clean(actor, 120) || 'CEO'}`; });
     this.pump();
     return this.view(c);
@@ -749,7 +752,7 @@ export class Outreach {
     let message: MailMessage;
     try { message = renderOutreach(snapshot, r); } catch (error) { this.sending = false; this.finish(c, r, { status: 'failed', detail: (error as Error).message }); return; }
     void this.opts.transport!.send(message).then(
-      () => { this.consecutiveFailures = 0; this.refusalStreak = 0; this.finish(c, r, { status: 'sent' }); this.confirmBounces(); },
+      () => { this.consecutiveFailures = 0; this.refusalStreak = 0; this.streakEmails = []; this.finish(c, r, { status: 'sent' }); this.confirmBounces(); },
       (error: unknown) => this.failed(c, r, error),
     ).finally(() => { this.sending = false; this.pump(); });
   }
@@ -779,14 +782,21 @@ export class Outreach {
       if (this.refusalStreak >= PAUSE_AFTER_REFUSALS) {
         // Several refusals in a row look like a server or policy problem: revert them to pending, suppress nobody.
         const streak = this.refusalStreak;
+        const refused = this.streakEmails.filter((x) => x.campaign === c.id).map((x) => x.email);
         this.refusalStreak = 0;
+        this.streakEmails = [];
+        // Every refusal in the streak goes back to pending, whatever its code, and its day-count slot is refunded.
         this.commit(() => {
-          for (const [email, s] of Object.entries(c.sends)) if (s.status === 'refused' && s.bounce === 'pending') { delete c.sends[email]; this.data.daily.count = Math.max(0, this.data.daily.count - 1); }
+          for (const email of refused) if (c.sends[email]?.status === 'refused') { delete c.sends[email]; this.data.daily.count = Math.max(0, this.data.daily.count - 1); }
         });
         return this.pauseFor(c, r, `Paused after ${streak} refusals in a row (last: ${rcpt[1]} to RCPT TO). This looks like a server or policy problem rather than bad addresses, so nobody was suppressed and they will be retried. Check the SMTP account, then resume.`);
       }
-      const specific = RECIPIENT_CODES.has(rcpt[1]);
-      this.finish(c, r, { status: 'refused', detail: specific ? `Refused (${rcpt[1]} to RCPT TO); suppressed as a bounce once a later send succeeds` : `Refused (${rcpt[1]} to RCPT TO); not suppressed (not a mailbox error)`, ...(specific ? { bounce: 'pending' as const } : {}) });
+      this.streakEmails.push({ campaign: c.id, email: r.email });
+      // A mailbox bounce needs a mailbox code and, when the server gives one, an enhanced status of 5.1.x (address)
+      // or 5.2.x (mailbox). 5.7.x is policy or reputation and never suppresses.
+      const enhanced = (error as SmtpError).enhanced;
+      const specific = RECIPIENT_CODES.has(rcpt[1]) && (!enhanced || /^5\.[12]\./.test(enhanced));
+      this.finish(c, r, { status: 'refused', detail: specific ? `Refused (${rcpt[1]} to RCPT TO); suppressed as a bounce once a later send succeeds` : `Refused (${rcpt[1]}${enhanced ? ` ${enhanced}` : ''} to RCPT TO); not suppressed (not a mailbox error)`, ...(specific ? { bounce: 'pending' as const } : {}) });
       return;
     }
     if (/answered 5\d\d to MAIL FROM/.test(message)) return this.pauseFor(c, r, 'The mail server refused the sender address (5xx to MAIL FROM). Check AGENT_EMPIRE_OUTREACH_FROM, then resume.');
@@ -832,6 +842,8 @@ export class Outreach {
       c.note = note;
     });
     this.consecutiveFailures = 0;
+    this.refusalStreak = 0;
+    this.streakEmails = [];
   }
 
   // ---- Views ----

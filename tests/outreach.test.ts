@@ -370,6 +370,41 @@ test('review fix 2: three RCPT refusals in a row pause the campaign, revert them
   assert.equal(d.campaign().counts!.sent, 4);
 });
 
+test('re-review 1: three 554 refusals pause the campaign and put all three back to pending, refunding the day count', async () => {
+  const f = setup({ behave: () => { throw new SmtpError('SMTP server answered 554 to RCPT TO'); } });
+  f.outreach.importCsv(CSV, 'CEO');
+  const d = f.draft(DRAFT().replace('[customers]', '[all]'));
+  f.inbox.approve(f.pendingSend()!.id, 'CEO');
+  for (let i = 0; i < 6; i++) await f.advance(10_000);
+  const view = d.campaign();
+  assert.equal(view.state, 'paused');
+  assert.deepEqual([view.counts!.pending, view.counts!.refused], [3, 0]);
+  assert.equal(f.outreach.status().sentToday, 0);
+  assert.deepEqual(f.outreach.state().suppression, []);
+});
+
+test('re-review 2: a 550 with enhanced status 5.7.x (policy) never suppresses; 5.1.1 does', async () => {
+  const policy = Object.assign(new SmtpError('SMTP server answered 550 to RCPT TO'), { enhanced: '5.7.1' });
+  const unknown = Object.assign(new SmtpError('SMTP server answered 550 to RCPT TO'), { enhanced: '5.1.1' });
+  const f = setup({ behave: (m) => { if (m.to === 'ann@client.example') throw policy; if (m.to === 'bob@client.example') throw unknown; } });
+  f.outreach.importCsv(CSV, 'CEO');
+  f.draft(DRAFT().replace('[customers]', '[all]'));
+  f.inbox.approve(f.pendingSend()!.id, 'CEO');
+  for (let i = 0; i < 4; i++) await f.advance(10_000);
+  assert.deepEqual(f.sent.map((m) => m.to), ['cid@client.example']);
+  assert.deepEqual(f.outreach.state().suppression.map((s) => s.email), ['bob@client.example']);
+});
+
+test('re-review minor: a stored tool_proposal without valid tool fields is refused on restore', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'empire-approvals-tool-'));
+  const item = { id: 'A1', kind: 'tool_proposal', raisedBy: 'research', source: 'tool:x', jobId: 'consultancy-0123456789ab', title: 't', detail: 'd', createdAt: 1, status: 'pending' };
+  writeFileSync(path.join(dir, 'approvals.json'), JSON.stringify({ version: 1, revision: 1, nextSeq: 2, items: [{ ...item, tool: { name: 'X', url: 'javascript:alert(1)', licence: 'MIT', enables: 'e', risk: 'r' } }] }));
+  const office = new Consultancy(dir, { state: () => ({ tasks: [], maxWorkers: 0 }), add: () => undefined });
+  assert.match(new ApprovalInbox(dir, office).recoveryError ?? '', /tool is invalid/);
+  writeFileSync(path.join(dir, 'approvals.json'), JSON.stringify({ version: 1, revision: 1, nextSeq: 2, items: [{ ...item, tool: { name: 'X', url: 'https://x.example', licence: 'MIT', enables: 'e', risk: 'r' } }] }));
+  assert.equal(new ApprovalInbox(dir, office).recoveryError, undefined);
+});
+
 test('review fix 2: a 554 (policy) RCPT refusal never suppresses; a 550 suppresses only once a later send succeeds', async () => {
   const f = setup({ behave: (m) => {
     if (m.to === 'ann@client.example') throw new SmtpError('SMTP server answered 554 to RCPT TO');

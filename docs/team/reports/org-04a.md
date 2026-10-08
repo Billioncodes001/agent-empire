@@ -149,6 +149,29 @@ Re-run results:
 
 Unrelated screenshots that the checks regenerated were reverted.
 
+## Re-review fixes
+
+The re-review verdict was ACCEPT WITH FIXES. Each fix has a test that failed before it.
+
+1. **Refusals with a non-mailbox code could be skipped silently.**
+   - When three RCPT refusals in a row paused the campaign, only pending bounces went back to pending. A refusal with any other code (for example 554 relay denied) stayed `refused`: the recipient was silently skipped and its day-count slot was never refunded.
+   - The current streak's addresses are now tracked, and cleared on a success, a resume or a pause. On pause, every `refused` send in the streak goes back to pending, whatever its code, and its day-count slot is refunded.
+   - Test: three 554s pause the campaign, all three are pending again, `sentToday` is 0, and nobody is suppressed.
+2. **Bounce suppression is tighter.**
+   - `SmtpError.enhanced` carries the RFC 3463 code from the reply (digits only).
+   - A 550, 551 or 553 is a mailbox bounce only when that code is absent, 5.1.x or 5.2.x. A 5.7.x (policy or reputation) never suppresses.
+   - Test: a 550 with 5.7.1 is not suppressed, and a 550 with 5.1.1 is.
+3. **Minor:** a stored `tool_proposal` must carry string `name`, `url`, `licence`, `enables` and `risk` fields, with an https `url`. Otherwise the file is refused on restore, with a test.
+
+Re-run results:
+
+| Check | Result |
+| --- | --- |
+| typecheck | clean |
+| `npm test` | **709/709** |
+| build | OK |
+| `outreach-ui-check` | **62/62** |
+
 ## Open issues
 - **No independent review yet.** No real SMTP provider acceptance run was made.
 - **Not built:** unsubscribe headers (`List-Unsubscribe`), per-campaign caps, and re-sending `unknown` recipients after the CEO checks them.

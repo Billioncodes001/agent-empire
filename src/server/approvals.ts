@@ -416,6 +416,10 @@ function parseFile(value: unknown): StoredFile {
     if (!item || typeof item !== 'object') throw new Error(`${label} must be an object`);
     if (typeof item.id !== 'string' || !APPROVAL_ID_RE.test(item.id) || Number(item.id.slice(1)) >= (raw.nextSeq as number)) throw new Error(`${label} id is invalid`);
     if (item.kind !== 'job_plan' && item.kind !== 'budget_increase' && item.kind !== 'external_action' && item.kind !== 'tool_proposal') throw new Error(`${label} kind is invalid`);
+    if (item.kind === 'tool_proposal') {
+      const t = item.tool as Record<string, unknown> | undefined;
+      if (!t || typeof t !== 'object' || ['name', 'url', 'licence', 'enables', 'risk'].some((k) => typeof t[k] !== 'string' || (t[k] as string).length > 2000) || !/^https:\/\//.test(t.url as string)) throw new Error(`${label} tool is invalid`);
+    }
     if (item.kind === 'external_action' && (!item.outreach || typeof item.outreach.campaignId !== 'string' || !Array.isArray(item.outreach.recipients))) throw new Error(`${label} outreach snapshot is invalid`);
     if (!['pending', 'approved', 'rejected', 'resolved'].includes(item.status)) throw new Error(`${label} status is invalid`);
     if (item.reopenable !== undefined && (item.reopenable !== true || item.status !== 'rejected' || item.kind !== 'budget_increase')) throw new Error(`${label} reopenable is invalid`);
