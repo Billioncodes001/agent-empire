@@ -68,3 +68,14 @@ test('welcome carries the rule-based roster and an org message follows a change'
   const defaulted = await (await f.api(`jobs/${other.id}/approve`, {})).json();
   assert.equal(defaulted.approvedBudgetUsd, 3, 'default: the top of the rough default range');
 });
+
+test('review fix 3: the server carries consultancy item order into the queue as dependsOn', async (t) => {
+  const f = await fixture(t);
+  const job = await (await f.api('jobs', { requestId: 'order-1', client: 'Acme', title: 'Ordered', brief: 'Fixture only', tasks: [{ title: 'First', prompt: 'one' }, { title: 'Second', prompt: 'two' }] })).json();
+  assert.equal((await f.api(`jobs/${job.id}/approve`, {})).status, 200);
+  const welcome = (await f.connect())[0];
+  const tasks = welcome.queue.tasks.filter((q: any) => q.jobKey?.startsWith(`consultancy:${job.id}:`));
+  assert.equal(tasks.length, 2);
+  assert.deepEqual(tasks[1].dependsOn, [tasks[0].id]);
+  assert.ok(tasks.every((q: any) => q.status === 'queued'), 'concurrency 0: nothing started');
+});
