@@ -11,6 +11,38 @@ import { projectWaitingOn, withWaitingOn } from '../src/server/waiting.js';
 import { projectOrg } from '../src/server/org.js';
 import type { ConsultancyJob } from '../src/shared/consultancy.js';
 import type { OrgState } from '../src/shared/org.js';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { Consultancy } from '../src/server/consultancy.js';
+import { ApprovalError, ApprovalInbox } from '../src/server/approvals.js';
+import { estimateJob } from '../src/server/estimate.js';
+
+/**
+ * ORG-03: a real approval inbox over a real consultancy journal in a throwaway temp directory, with a fake queue that
+ * never starts anything. One client plan waits for approval, and one approved job reached its $3 budget, so finance
+ * raised a budget increase and its second item is held. FIXTURE_APPROVALS=none starts with an empty inbox.
+ */
+const inboxDir = mkdtempSync(resolve(tmpdir(), 'empire-fixture-inbox-'));
+const fxTasks: QueueTask[] = [];
+const fxCosts: Record<string, number> = {};
+let inbox: ApprovalInbox | undefined;
+const fxOffice = new Consultancy(inboxDir, {
+  state: () => ({ tasks: fxTasks.map((t) => ({ ...t })), maxWorkers: 0 }),
+  add: (prompt, by, title, _issue, jobKey, dependsOn) => {
+    if (!fxTasks.some((t) => t.jobKey === jobKey)) fxTasks.push({ id: `fx-q${fxTasks.length + 1}`, jobKey, prompt, title: title ?? 'task', addedBy: by, addedAt: Date.now(), status: 'queued', ...(dependsOn?.length ? { dependsOn: [...dependsOn] } : {}) });
+    return undefined;
+  },
+}, () => inbox?.reconcile(), { estimate: (items) => estimateJob(items, [], { maxWorkers: 2, now: Date.now() }), taskCost: (id) => fxCosts[id] });
+inbox = new ApprovalInbox(inboxDir, fxOffice, () => { for (const ws of sockets.clients) send(ws, { t: 'approvals', state: inbox!.state() }); });
+if (process.env.FIXTURE_APPROVALS !== 'none') {
+  fxOffice.create({ requestId: 'fx-plan', client: 'Northwind', title: 'Booking portal', brief: 'Synthetic fixture brief', tasks: [{ title: 'Build the booking API', prompt: 'Synthetic' }, { title: 'Iterate on the UI', prompt: 'Synthetic', phase: 'iteration' }] }, 'Fixture CEO');
+  const audit = fxOffice.create({ requestId: 'fx-audit', client: 'Harbor Labs', title: 'Security audit', brief: 'Synthetic fixture brief', tasks: [{ title: 'First pass', prompt: 'Synthetic' }, { title: 'Second pass', prompt: 'Synthetic', phase: 'iteration' }] }, 'Fixture CEO');
+  fxOffice.approve(audit.id, 'Fixture CEO', { budgetUsd: 3 });
+  const first = fxTasks.find((t) => t.jobKey?.endsWith(':item-1'))!;
+  Object.assign(first, { status: 'done', outcome: 'done', finishedAt: Date.now() - 60_000 });
+  fxCosts[first.id] = 3.2;
+  fxOffice.reconcile();
+}
 
 /** ORG-01: synthetic client jobs so each executive has something real-shaped to compute from (the real projection). */
 function fixtureOrg(state: ReturnType<typeof initialEmpire>, workers: WorkerInfo[], tasks: QueueTask[]): OrgState {
@@ -21,7 +53,7 @@ function fixtureOrg(state: ReturnType<typeof initialEmpire>, workers: WorkerInfo
     job('fixture-portal', { approvedBudgetUsd: 12, actualSpendUsd: 4.8 }),
     job('fixture-audit', { approvedBudgetUsd: 3, actualSpendUsd: 3.1, budgetHold: { reachedAt: 1, spentUsd: 3.1, approvedBudgetUsd: 3 }, items: [{ id: 'item-2', title: 'Second pass', prompt: 'Synthetic', jobKey: 'fixture', status: 'queued', phase: 'iteration', held: true }] }),
   ];
-  return projectOrg({ now: Date.now(), supervision: state.supervision, workers, queue: { tasks, maxWorkers: 3 }, jobs, usage: { total: { ...zero, cost: 7.9 }, today: { ...zero, cost: 1.2 }, day: '2026-10-08', budget: 10, pauseHiring: false } });
+  return projectOrg({ now: Date.now(), supervision: state.supervision, workers, queue: { tasks, maxWorkers: 3 }, jobs, approvals: inbox?.state().items, usage: { total: { ...zero, cost: 7.9 }, today: { ...zero, cost: 1.2 }, day: '2026-10-08', budget: 10, pauseHiring: false } });
 }
 
 const port = Number(process.env.FIXTURE_PORT || 4613);
@@ -180,6 +212,18 @@ const server = createServer(async (req, res) => {
     for (const [ws, token] of socketToken) if (token === entry[0]) ws.close(4401, 'Device signed out');
     return json(res, 200, { ok: true });
   }
+  if (url.pathname === '/__fixture/jobs') return json(res, 200, fxOffice.snapshot());
+  if (url.pathname === '/api/approvals' && req.method === 'GET') return json(res, 200, inbox!.state());
+  const decision = /^\/api\/approvals\/(A[1-9]\d{0,8})\/(approve|reject)$/.exec(url.pathname);
+  if (decision && req.method === 'POST') {
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    let body: { budgetUsd?: unknown } = {}; try { body = raw.trim() ? JSON.parse(raw) : {}; } catch { return json(res, 400, { error: 'Expected a JSON decision.' }); }
+    try {
+      const item = decision[2] === 'approve' ? inbox!.approve(decision[1], 'Fixture CEO', { budgetUsd: body.budgetUsd }) : inbox!.reject(decision[1], 'Fixture CEO');
+      for (const ws of sockets.clients) publish(ws);
+      return json(res, 200, item);
+    } catch (error) { return json(res, error instanceof ApprovalError ? error.status : 500, { error: (error as Error).message }); }
+  }
   if (req.method !== 'GET') { res.writeHead(405); return res.end(); }
   try {
     const file = resolve(root, '.' + decodeURIComponent(url.pathname === '/' ? '/index.html' : url.pathname));
@@ -207,7 +251,7 @@ sockets.on('connection', ws => {
   const zero = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, cost: 0, calls: 0 };
   send(ws, { t: 'welcome', you: 'fixture-ceo', peers: [], workers: [worker, ...jobWorkers], project: { name: 'UI fixture · synthetic data', dir: '[isolated fixture]', agentCmd: 'disabled' },
     issues: empty, pulls: empty, ice: [], chat: [], invites: false, version: 'fixture', upgrade: { available: false, phase: 'idle' },
-    services: { items: [], port }, decor: [], usage: { total: zero, today: zero, day: '2026-09-27', pauseHiring: false }, queue: { tasks, maxWorkers: jobWorkers.length ? 3 : 1 }, org: fixtureOrg(state, [worker, ...jobWorkers], tasks) });
+    services: { items: [], port }, decor: [], usage: { total: zero, today: zero, day: '2026-09-27', pauseHiring: false }, queue: { tasks, maxWorkers: jobWorkers.length ? 3 : 1 }, org: fixtureOrg(state, [worker, ...jobWorkers], tasks), approvals: inbox!.state() });
   publish(ws);
   ws.on('message', raw => {
     let msg: any; try { msg = JSON.parse(raw.toString()); } catch { return; }
