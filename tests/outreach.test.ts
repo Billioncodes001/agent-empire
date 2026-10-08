@@ -291,6 +291,52 @@ test('any change to what would be sent makes a new item; the old one can no long
   assert.equal(f.sent.length, 0);
 });
 
+test('review fix 1: a snapshot that changes A→B→A raises a fresh pending item, and an unchanged campaign is not rewritten', () => {
+  // The sender settings change and change back (the daily cap is part of the snapshot): A → B → A.
+  const config = { ...CONFIG };
+  const f = setup({ config });
+  f.outreach.importCsv(CSV, 'CEO');
+  const d = f.draft();
+  const a = f.pendingSend()!;
+  config.dailyCap = 100;
+  f.outreach.reconcile();
+  const b = f.pendingSend()!;
+  assert.notEqual(b.id, a.id);
+  assert.equal(f.inbox.get(a.id)!.status, 'resolved');
+  // Back to A's snapshot: A is resolved, so a new pending item must stand in for it.
+  config.dailyCap = 200;
+  f.outreach.reconcile();
+  const again = f.pendingSend();
+  assert.ok(again, 'the inbox must hold a pending send');
+  assert.ok(![a.id, b.id].includes(again!.id));
+  assert.equal(again!.outreach!.snapshotHash, a.outreach!.snapshotHash);
+  assert.equal(d.campaign().state, 'awaiting_approval');
+  assert.equal(d.campaign().approvalId, again!.id);
+  const file = path.join(f.dir, 'outreach.json');
+  const before = readFileSync(file, 'utf8');
+  f.outreach.reconcile();
+  f.outreach.reconcile();
+  assert.equal(readFileSync(file, 'utf8'), before, 'nothing changed, so outreach.json is not rewritten');
+  f.inbox.approve(again!.id, 'CEO');
+  assert.equal(d.campaign().state, 'sending');
+});
+
+test('review fix (lower): the approval decision is durable before the campaign starts sending', () => {
+  const f = setup();
+  f.outreach.importCsv(CSV, 'CEO');
+  const d = f.draft();
+  const item = f.pendingSend()!;
+  let recordedWhenStarted: string | undefined;
+  const original = f.outreach.apply.bind(f.outreach);
+  f.outreach.apply = (i, decision, actor) => {
+    recordedWhenStarted = JSON.parse(readFileSync(path.join(f.dir, 'approvals.json'), 'utf8')).items.find((x: { id: string }) => x.id === i.id).status;
+    original(i, decision, actor);
+  };
+  f.inbox.approve(item.id, 'CEO');
+  assert.equal(recordedWhenStarted, 'approved');
+  assert.equal(d.campaign().state, 'sending');
+});
+
 test('suppression always wins: before the snapshot, at send time, and after a 5xx refusal (bounce)', async () => {
   const f = setup({ behave: (m) => { if (m.to === 'ann@client.example') throw new SmtpError('SMTP server answered 550 to RCPT TO'); } });
   f.outreach.importCsv(CSV, 'CEO');

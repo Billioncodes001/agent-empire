@@ -21,11 +21,13 @@ export interface InboxConsultancy {
 }
 
 /**
- * ORG-04a: whoever owns an external_action (outreach) checks the item still matches what it would act on, then acts.
- * It throws an ApprovalError (409) when the item is out of date; the inbox then records nothing.
+ * ORG-04a: the owner of an external_action (outreach). `check` throws an ApprovalError (409) when the item no longer
+ * matches what it would act on, and the inbox records nothing. Otherwise the inbox saves the decision first and only
+ * then calls `apply`, so nothing is ever sent without a durable approval.
  */
 export interface ExternalActionPort {
-  decide(item: Approval, decision: 'approved' | 'rejected', actor: string): void;
+  check(item: Approval, decision: 'approved' | 'rejected'): void;
+  apply(item: Approval, decision: 'approved' | 'rejected', actor: string): void;
 }
 
 export interface DecisionOptions {
@@ -158,14 +160,16 @@ export class ApprovalInbox {
   setExternal(port: ExternalActionPort) { this.external = port; }
 
   /**
-   * Raises an external_action item once per `source` (a campaign id plus its snapshot hash). Raising the same source
-   * again returns the existing item, so a frozen snapshot is never asked about twice.
+   * Raises an external_action item for `source` (a campaign id plus its snapshot hash). A still-pending item for the
+   * same source is returned rather than asked twice; a decided or resolved one never is (review fix 1): a snapshot
+   * that changes A→B→A gets a fresh item, its stored source suffixed with the item sequence to stay unique.
    */
   raiseExternal(fields: { source: string; title: string; detail: string; jobId: string; outreach: NonNullable<Approval['outreach']> }): Approval {
     if (this.storageError) throw new ApprovalError(503, this.storageError);
-    const existing = this.data.items.find((i) => i.source === fields.source);
+    const existing = this.data.items.find((i) => i.status === 'pending' && (i.source === fields.source || i.source.startsWith(`${fields.source}#`)));
     if (existing) return publicItem(existing);
-    this.add({ kind: 'external_action', createdAt: this.now(), ...structuredClone(fields) });
+    const taken = this.data.items.some((i) => i.source === fields.source);
+    this.add({ kind: 'external_action', createdAt: this.now(), ...structuredClone(fields), ...(taken ? { source: `${fields.source}#${this.data.nextSeq}` } : {}) });
     const item = this.data.items[this.data.items.length - 1];
     this.trim();
     this.save();
@@ -230,13 +234,16 @@ export class ApprovalInbox {
     const declined = reopen ? { at: item.decidedAt ?? 0, by: item.decidedBy ?? 'CEO' } : undefined;
     if (item.kind === 'external_action' && options.budgetUsd !== undefined && options.budgetUsd !== null) throw new ApprovalError(400, 'No budget applies to a campaign send. Approve it without an amount.');
     const budget = decision === 'approved' && options.budgetUsd !== undefined && options.budgetUsd !== null ? validBudget(options.budgetUsd) : undefined;
+    let externalApply: (() => void) | undefined;
     this.deciding = true;
     try {
       if (item.kind === 'external_action') {
         if (!this.external) throw new ApprovalError(503, 'Outreach is not available on this host, so this item cannot be decided here.');
-        // The owner checks the frozen snapshot still stands (409 otherwise) and acts; only then is the decision recorded.
-        this.external.decide(publicItem(item), decision, who);
+        // The owner checks the frozen snapshot still stands (409 otherwise); the decision is saved before anything acts.
+        this.external.check(publicItem(item), decision);
         this.record(item, decision, who, requestId);
+        this.save();
+        externalApply = () => this.external!.apply(publicItem(item), decision, who);
       } else if (item.kind === 'job_plan') {
         try {
           if (decision === 'approved') this.office.approve(item.jobId, who, budget === undefined ? {} : { budgetUsd: budget });
@@ -269,7 +276,8 @@ export class ApprovalInbox {
       this.deciding = false;
     }
     if (item.kind === 'job_plan' && requestId) item.requestId = requestId;
-    if (!this.reconcile() && item.kind !== 'job_plan') this.save();
+    if (externalApply) externalApply();
+    else if (!this.reconcile() && item.kind !== 'job_plan') this.save();
     return publicItem(item);
   }
 

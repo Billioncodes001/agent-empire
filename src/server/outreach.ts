@@ -497,8 +497,8 @@ export class Outreach {
     return this.view(c);
   }
 
-  /** ExternalActionPort: the CEO decided an external_action item. Only the exact pending snapshot can be approved. */
-  decide(item: Approval, decision: 'approved' | 'rejected', actor: string): void {
+  /** ExternalActionPort.check: only the exact pending snapshot can be decided; anything else is out of date (409). */
+  check(item: Approval, decision: 'approved' | 'rejected'): void {
     if (this.storageError) throw new ApprovalError(503, this.storageError);
     const o = item.outreach;
     const c = o && this.data.campaigns.find((x) => x.id === o.campaignId);
@@ -512,8 +512,14 @@ export class Outreach {
         queueMicrotask(() => this.reconcile());
         throw new ApprovalError(409, 'This approval is out of date: what would be sent changed, so a new approval item replaces it. Nothing was sent.');
       }
+      if (!this.sendingEnabled) throw new ApprovalError(409, `Sending is disabled: ${this.opts.config.problems.join(' ') || 'no SMTP transport'}`);
     }
-    if (decision === 'approved' && !this.sendingEnabled) throw new ApprovalError(409, `Sending is disabled: ${this.opts.config.problems.join(' ') || 'no SMTP transport'}`);
+  }
+
+  /** ExternalActionPort.apply: called only after the inbox saved the decision. Approving starts the send. */
+  apply(item: Approval, decision: 'approved' | 'rejected', actor: string): void {
+    const c = this.data.campaigns.find((x) => x.id === item.outreach?.campaignId);
+    if (!c || c.state !== 'awaiting_approval' || c.approvalId !== item.id) return;
     this.commit(() => {
       c.state = decision === 'approved' ? 'sending' : 'rejected';
       c.decidedBy = actor;
@@ -647,6 +653,7 @@ export class Outreach {
         samples, recipients: next.recipients.map((r) => r.email), excluded: next.excluded, draftedBy: c.draft.draftedBy,
       },
     });
+    if (item.status !== 'pending') { c.note = `The inbox returned ${item.id} as ${item.status}; it cannot be approved.`; return; }
     c.snapshot = next;
     c.approvalId = item.id;
     c.state = 'awaiting_approval';
