@@ -37,6 +37,20 @@ const LEAD_ID = /^L[1-9]\d{0,8}$/;
 const CAMPAIGN_ID = /^C[1-9]\d{0,8}$/;
 const MERGE = /\{\{\s*([^{}]*?)\s*\}\}/g;
 const ACTOR = 'Jordan · Marketing & sales (rule-based)';
+/** RCPT refusals in a row that look like a server or policy problem rather than bad addresses (review fix 2). */
+const PAUSE_AFTER_REFUSALS = 3;
+/** RCPT TO codes that mean this one mailbox does not exist or will not take mail. Others (554 relay, policy) never suppress. */
+const RECIPIENT_CODES = new Set(['550', '551', '553']);
+/** Each body line at most this many UTF-8 bytes (SMTP allows 998; leave room for merge values). */
+const MAX_LINE_BYTES = 900;
+
+/** One address as stored and compared: trimmed, Unicode NFC, lowercase. C0 controls are refused. Plus-addressing is distinct. */
+export function normalizeEmail(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const email = raw.trim().normalize('NFC').toLowerCase();
+  if (!email || email.length > 254 || /[\u0000-\u001f\u007f]/.test(email) || !isEmailAddress(email)) return undefined;
+  return email;
+}
 
 export class OutreachError extends Error {
   constructor(public readonly status: number, message: string) {
@@ -127,7 +141,11 @@ interface Snapshot {
   createdAt: number;
 }
 
-const fill = (template: string, r: Recipient) => template.replace(MERGE, (_m, field: string) => mergeValue(field === 'name' ? r.name : r.company));
+const fill = (template: string, r: Recipient, header = false) => template.replace(MERGE, (_m, field: string) => {
+  const value = mergeValue(field === 'name' ? r.name : r.company);
+  // In the Subject, a literal "=?…?=" would be decoded by mail clients; break it so the preview equals what is shown.
+  return header ? value.replace(/=\?/g, '= ?').replace(/\?=/g, '? =') : value;
+});
 
 /** Exactly what one recipient receives: one message, one To address, the fixed footer always last. */
 export function renderOutreach(s: Pick<Snapshot, 'subject' | 'body' | 'footer' | 'from' | 'fromName'>, r: Recipient): MailMessage {
@@ -135,7 +153,7 @@ export function renderOutreach(s: Pick<Snapshot, 'subject' | 'body' | 'footer' |
     from: s.from,
     ...(s.fromName ? { fromName: s.fromName } : {}),
     to: r.email,
-    subject: clean(fill(s.subject, r), 200),
+    subject: clean(fill(s.subject, r, true), 200),
     text: `${fill(s.body, r)}\n\n${s.footer}\n`,
   };
 }
@@ -186,9 +204,10 @@ interface LeadInput { name: string; email: string; company: string; source: stri
 /** Validates one lead. Returns the clean fields or why it is refused. */
 export function validateLead(input: LeadInput): { ok: true; lead: Pick<Lead, 'email' | 'name' | 'company' | 'source' | 'basis' | 'tags'> } | { ok: false; reason: string } {
   const bad = (s: string) => /[\u0000-\u001f\u007f\u2028\u2029]/.test(s);
-  const email = String(input.email ?? '').trim().toLowerCase();
-  if (!email) return { ok: false, reason: 'email is missing' };
-  if (email.length > 254 || !isEmailAddress(email)) return { ok: false, reason: `"${email.slice(0, 80)}" is not a valid email address` };
+  const raw = String(input.email ?? '').trim();
+  if (!raw) return { ok: false, reason: 'email is missing' };
+  const email = normalizeEmail(raw);
+  if (!email) return { ok: false, reason: `"${raw.replace(/[\u0000-\u001f\u007f]/g, '?').slice(0, 80)}" is not a valid email address` };
   const fields = { name: String(input.name ?? '').trim(), company: String(input.company ?? '').trim(), source: String(input.source ?? '').trim(), basis: String(input.basis ?? '').trim() };
   for (const [k, v] of Object.entries(fields)) if (bad(v)) return { ok: false, reason: `${k} contains a line break or control character` };
   if (fields.name.length > 120) return { ok: false, reason: 'name is longer than 120 characters' };
@@ -212,6 +231,7 @@ export function validateDraft(frontmatter: Frontmatter, body: string): { ok: tru
   const subject = frontmatter.subject;
   if (typeof subject !== 'string' || !subject.trim()) return fail('subject is required (one line)');
   if (subject.length > MAX_SUBJECT) return fail(`subject is longer than ${MAX_SUBJECT} characters`);
+  if (subject.includes('=?')) return fail('subject contains "=?", which mail clients read as an encoded word; rephrase it');
   const audience = frontmatter.audience;
   if (!Array.isArray(audience) || !audience.length) return fail('audience is required: a list of lead tags or ids, or [all]');
   if (audience.length > 50 || audience.some((a) => !TAG.test(a))) return fail('audience entries must be lead tags, lead ids (L3) or "all"');
@@ -223,6 +243,8 @@ export function validateDraft(frontmatter: Frontmatter, body: string): { ok: tru
     if (/\{\{|\}\}/.test(text.replace(MERGE, ''))) return fail(`${label} has an unmatched {{ or }}`);
   }
   if (/[\u0000-\u0008\u000b-\u001f\u007f]/.test(body)) return fail('the body contains control characters');
+  const longLine = body.split('\n').findIndex((line) => Buffer.byteLength(line, 'utf8') > MAX_LINE_BYTES);
+  if (longLine >= 0) return fail(`body line ${longLine + 1} is longer than ${MAX_LINE_BYTES} bytes; break it into shorter lines`);
   const proposed: ValidDraft['proposedLeads'] = [];
   const raw = frontmatter.proposedLeads;
   if (raw !== undefined) {
@@ -255,7 +277,8 @@ export function campaignPrompt(jobId: string, title: string, brief: string, tags
 
 // ---- Storage ------------------------------------------------------------------------------------
 
-interface Send { status: SendStatus; at: number; detail?: string }
+/** `bounce`: a recipient-specific RCPT refusal; suppressed as a bounce once a later send succeeds ('confirmed'). */
+interface Send { status: SendStatus; at: number; detail?: string; bounce?: 'pending' | 'confirmed' }
 
 interface StoredCampaign {
   id: string;
@@ -327,6 +350,7 @@ export class Outreach {
   private sending = false;
   private cancelTimer?: () => void;
   private consecutiveFailures = 0;
+  private refusalStreak = 0;
   private stopped = false;
   private readonly now: () => number;
   private readonly schedule: (fn: () => void, ms: number) => () => void;
@@ -414,13 +438,13 @@ export class Outreach {
     this.commitLeads(() => { this.leads.leads = this.leads.leads.filter((l) => l !== lead); });
   }
 
-  isSuppressed(email: string) { return this.leads.suppression.some((s) => s.email === email.toLowerCase()); }
+  isSuppressed(email: string) { const e = normalizeEmail(email) ?? email.toLowerCase(); return this.leads.suppression.some((s) => s.email === e); }
 
   /** Adds an address to the suppression list. Idempotent; the first reason recorded stays. */
   suppress(emailInput: unknown, reason: SuppressionReason, actor: string, note?: string): Suppression {
     this.assertMutable();
-    const email = typeof emailInput === 'string' ? emailInput.trim().toLowerCase() : '';
-    if (!isEmailAddress(email) || email.length > 254) throw new OutreachError(400, 'Enter one valid email address.');
+    const email = normalizeEmail(emailInput) ?? '';
+    if (!email) throw new OutreachError(400, 'Enter one valid email address.');
     if (!['opt_out', 'bounce', 'blocked'].includes(reason)) throw new OutreachError(400, 'reason must be opt_out or blocked');
     const existing = this.leads.suppression.find((s) => s.email === email);
     if (existing) return { ...existing };
@@ -480,6 +504,7 @@ export class Outreach {
     if (c.state === 'sending') return this.view(c);
     if (c.state !== 'paused') throw new OutreachError(409, 'Only a paused campaign can be resumed.');
     this.consecutiveFailures = 0;
+    this.refusalStreak = 0;
     this.commit(() => { c.state = 'sending'; c.note = `Resumed by ${clean(actor, 120) || 'CEO'}`; });
     this.pump();
     return this.view(c);
@@ -718,14 +743,14 @@ export class Outreach {
     let message: MailMessage;
     try { message = renderOutreach(snapshot, r); } catch (error) { this.sending = false; this.finish(c, r, { status: 'failed', detail: (error as Error).message }); return; }
     void this.opts.transport!.send(message).then(
-      () => { this.consecutiveFailures = 0; this.finish(c, r, { status: 'sent' }); },
+      () => { this.consecutiveFailures = 0; this.refusalStreak = 0; this.finish(c, r, { status: 'sent' }); this.confirmBounces(); },
       (error: unknown) => this.failed(c, r, error),
     ).finally(() => { this.sending = false; this.pump(); });
   }
 
-  private finish(c: StoredCampaign, r: Recipient, result: { status: SendStatus; detail?: string } | null, extra?: () => void) {
+  private finish(c: StoredCampaign, r: Recipient, result: { status: SendStatus; detail?: string; bounce?: 'pending' } | null, extra?: () => void) {
     this.commit(() => {
-      if (result) c.sends[r.email] = { status: result.status, at: this.now(), ...(result.detail ? { detail: result.detail } : {}) };
+      if (result) c.sends[r.email] = { status: result.status, at: this.now(), ...(result.detail ? { detail: result.detail } : {}), ...(result.bounce ? { bounce: result.bounce } : {}) };
       else { delete c.sends[r.email]; this.data.daily.count = Math.max(0, this.data.daily.count - 1); }
       extra?.();
     });
@@ -739,13 +764,23 @@ export class Outreach {
       this.finish(c, r, { status: 'unknown', detail: 'Unknown — the server may have accepted it; check before resending' });
       return;
     }
-    const refusal = /answered (5\d\d) to (RCPT TO|end of DATA)/.exec(message);
-    if (refusal) {
-      this.consecutiveFailures = 0;
-      this.finish(c, r, { status: 'refused', detail: `Refused by the mail server (${refusal[1]} to ${refusal[2]}); added to suppression as a bounce` }, () => {
-        if (!this.leads.suppression.some((s) => s.email === r.email)) this.leads.suppression.push({ email: r.email, reason: 'bounce', at: this.now(), by: ACTOR, note: `SMTP ${refusal[1]}` });
-      });
-      this.saveLeads();
+    // The message itself was refused (content, size, policy): the same would happen for everyone. Nobody is suppressed.
+    const dataRefusal = /answered (5\d\d) to end of DATA/.exec(message);
+    if (dataRefusal) return this.pauseFor(c, r, `The mail server refused the message itself (${dataRefusal[1]} at end of DATA) — usually its content, size or a sending policy. Nobody was suppressed. Check the draft and the SMTP account, then resume.`);
+    const rcpt = /answered (5\d\d) to RCPT TO/.exec(message);
+    if (rcpt) {
+      this.refusalStreak++;
+      if (this.refusalStreak >= PAUSE_AFTER_REFUSALS) {
+        // Several refusals in a row look like a server or policy problem: revert them to pending, suppress nobody.
+        const streak = this.refusalStreak;
+        this.refusalStreak = 0;
+        this.commit(() => {
+          for (const [email, s] of Object.entries(c.sends)) if (s.status === 'refused' && s.bounce === 'pending') { delete c.sends[email]; this.data.daily.count = Math.max(0, this.data.daily.count - 1); }
+        });
+        return this.pauseFor(c, r, `Paused after ${streak} refusals in a row (last: ${rcpt[1]} to RCPT TO). This looks like a server or policy problem rather than bad addresses, so nobody was suppressed and they will be retried. Check the SMTP account, then resume.`);
+      }
+      const specific = RECIPIENT_CODES.has(rcpt[1]);
+      this.finish(c, r, { status: 'refused', detail: specific ? `Refused (${rcpt[1]} to RCPT TO); suppressed as a bounce once a later send succeeds` : `Refused (${rcpt[1]} to RCPT TO); not suppressed (not a mailbox error)`, ...(specific ? { bounce: 'pending' as const } : {}) });
       return;
     }
     if (/answered 5\d\d to MAIL FROM/.test(message)) return this.pauseFor(c, r, 'The mail server refused the sender address (5xx to MAIL FROM). Check AGENT_EMPIRE_OUTREACH_FROM, then resume.');
@@ -757,6 +792,30 @@ export class Outreach {
     if (attempts >= MAX_TRANSIENT_ATTEMPTS) this.finish(c, r, { status: 'failed', detail: `Not sent after ${attempts} attempts (${message})` });
     else this.finish(c, r, null, () => { c.attempts = { ...c.attempts, [r.email]: attempts }; });
     if (this.consecutiveFailures >= PAUSE_AFTER_FAILURES) this.pauseFor(c, undefined, `Paused after ${this.consecutiveFailures} failed sends in a row (last: ${message}). Check the SMTP server, then resume.`);
+  }
+
+  /**
+   * A send succeeded, so earlier recipient-specific refusals were about those mailboxes, not the server: confirm them as
+   * bounces. outreach.json records the confirmation first; leads.json follows, and restore() repairs any gap.
+   */
+  private confirmBounces() {
+    let any = false;
+    for (const c of this.data.campaigns) for (const s of Object.values(c.sends)) if (s.bounce === 'pending') { s.bounce = 'confirmed'; any = true; }
+    if (!any) return;
+    this.save();
+    this.applyBounces();
+  }
+
+  /** Every confirmed bounce in outreach.json is on the suppression list (idempotent). */
+  private applyBounces(): boolean {
+    let added = false;
+    for (const c of this.data.campaigns) for (const [email, s] of Object.entries(c.sends)) {
+      if (s.bounce !== 'confirmed' || this.leads.suppression.some((x) => x.email === email)) continue;
+      this.leads.suppression.push({ email, reason: 'bounce', at: s.at, by: ACTOR, note: `SMTP ${/\((\d{3})/.exec(s.detail ?? '')?.[1] ?? '5xx'}` });
+      added = true;
+    }
+    if (added) { this.saveLeads(); this.changed(); }
+    return added;
   }
 
   private pauseFor(c: StoredCampaign, r: Recipient | undefined, note: string) {
@@ -919,6 +978,8 @@ export class Outreach {
     if (changed) {
       try { writeJsonAtomic(this.outreachFile, this.data); } catch (error) { this.storageError = `outreach.json could not be saved after restart. ${(error as Error).message}`; }
     }
+    // A bounce confirmed in outreach.json whose suppression entry was not saved (a crash in between) is repaired here.
+    try { this.applyBounces(); } catch { /* saveLeads sets storageError */ }
   }
 }
 

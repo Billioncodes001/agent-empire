@@ -55,6 +55,7 @@ async function game(browser: Browser, size: { width: number; height: number; tou
     const detail = modal.locator('.inbox-detail');
     const text = squash(await detail.innerText());
     check(`${tag}: two exact sample messages with the server footer and STOP line`, (await detail.locator('.inbox-sample').count()) === 2 && (text.match(/Reply STOP to stop receiving these emails\./g) ?? []).length === 2 && /Northwind Studio Ltd, 14 Harbour Row/.test(text), text.slice(0, 160));
+    check(`${tag}: each sample pins the server footer (address and STOP line) below its scrolling body`, (await detail.locator('.inbox-sample-footer').count()) === 2 && /Reply STOP/.test(await detail.locator('.inbox-sample-footer').first().innerText()));
     check(`${tag}: merge fields are filled per recipient`, /You are invited, Ann Lee/.test(text) && /customers like Harbor Labs/.test(text));
     check(`${tag}: recipient count, exclusions, sender, pace and the unverified label`, /4 · one message each/.test(text) && /1 suppressed · 0 invalid/.test(text) && /hello@northwind-fixture\.example/.test(text) && /at most 200 a day/.test(text) && /Drafted by Wren — not verified/.test(text), text.slice(0, 400));
     await detail.locator('.inbox-recipients summary').click();

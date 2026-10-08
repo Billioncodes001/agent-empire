@@ -38,7 +38,7 @@ export function emailConfig(env: NodeJS.ProcessEnv): EmailConfig | undefined {
 }
 
 /** Whether a string is one plain email address (no display name, no list, no CR/LF). */
-export const isEmailAddress = (s: string) => ADDRESS.test(s) && /\.[A-Za-z]{2,}$/.test(s);
+export const isEmailAddress = (s: string) => ADDRESS.test(s) && /\.[A-Za-z]{2,}$/.test(s) && !/[\u0000-\u001f\u007f]/.test(s);
 
 /** Parses AGENT_EMPIRE_SMTP_URL (ORG-03; reused by ORG-04a outreach). Errors never echo the URL, which holds a password. */
 export function smtpConfigFromUrl(raw: string, usage = USAGE): SmtpConfig {
@@ -82,7 +82,28 @@ function displayName(name?: string): string {
   return /^[\x20-\x7e]*$/.test(clean) ? `"${clean}"` : encodeHeader(clean);
 }
 
-/** RFC 5322 text with CRLF line endings, dot-stuffed for DATA (a line starting with "." gets one more). */
+/** Quoted-printable (RFC 2045) for one CRLF-separated body: no line over 76 characters, no raw 8-bit byte. */
+export function quotedPrintable(text: string): string {
+  return text.split('\r\n').map((line) => {
+    const bytes = Buffer.from(line, 'utf8');
+    let out = '';
+    let width = 0;
+    bytes.forEach((b, i) => {
+      const last = i === bytes.length - 1;
+      const literal = (b >= 33 && b <= 126 && b !== 61) || ((b === 32 || b === 9) && !last);
+      const piece = literal ? String.fromCharCode(b) : `=${b.toString(16).toUpperCase().padStart(2, '0')}`;
+      if (width + piece.length > 75) { out += '=\r\n'; width = 0; }
+      out += piece;
+      width += piece.length;
+    });
+    return out;
+  }).join('\r\n');
+}
+
+/**
+ * RFC 5322 text with CRLF line endings, dot-stuffed for DATA (a line starting with "." gets one more). An ASCII body
+ * with short lines goes as is; anything else is quoted-printable, so no server needs 8BITMIME and no line is too long.
+ */
 export function renderMessage(m: MailMessage, now = new Date()): string {
   const domain = m.from.split('@')[1] ?? 'agent-empire.local';
   const headers = [
@@ -93,9 +114,11 @@ export function renderMessage(m: MailMessage, now = new Date()): string {
     `Message-ID: <${randomBytes(12).toString('hex')}@${domain}>`,
     'MIME-Version: 1.0',
     'Content-Type: text/plain; charset=utf-8',
-    'Content-Transfer-Encoding: 8bit',
   ];
-  const body = m.text.replace(/\r?\n/g, '\r\n');
+  let body = m.text.replace(/\r?\n/g, '\r\n');
+  const plain = /^[\x09\x0d\x0a\x20-\x7e]*$/.test(body) && body.split('\r\n').every((line) => line.length <= 998);
+  headers.push(`Content-Transfer-Encoding: ${plain ? '8bit' : 'quoted-printable'}`);
+  if (!plain) body = quotedPrintable(body);
   return `${headers.join('\r\n')}\r\n\r\n${body}`.replace(/(^|\r\n)\./g, '$1..');
 }
 

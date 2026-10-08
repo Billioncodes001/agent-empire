@@ -337,6 +337,83 @@ test('review fix (lower): the approval decision is durable before the campaign s
   assert.equal(d.campaign().state, 'sending');
 });
 
+test('review fix 2: a 5xx at the end of DATA is a message problem — the campaign pauses and nobody is suppressed', async () => {
+  const f = setup({ behave: () => { throw new SmtpError('SMTP server answered 552 to end of DATA'); } });
+  f.outreach.importCsv(CSV, 'CEO');
+  const d = f.draft();
+  f.inbox.approve(f.pendingSend()!.id, 'CEO');
+  for (let i = 0; i < 4; i++) await f.advance(10_000);
+  const view = d.campaign();
+  assert.equal(view.state, 'paused');
+  assert.match(view.note!, /refused the message itself \(552 at end of DATA\)/);
+  assert.deepEqual(f.outreach.state().suppression, []);
+  assert.equal(view.counts!.pending, 2, 'the refused message was not accepted, so its recipient is still pending');
+  assert.equal(f.outreach.status().sentToday, 0);
+});
+
+test('review fix 2: three RCPT refusals in a row pause the campaign, revert them to pending and suppress nobody', async () => {
+  const f = setup({ behave: () => { throw new SmtpError('SMTP server answered 550 to RCPT TO'); } });
+  f.outreach.importCsv(`${CSV}Dee,dee@client.example,Orbit,inbound,consent,customers\n`, 'CEO');
+  const d = f.draft(DRAFT().replace('[customers]', '[all]'));
+  f.inbox.approve(f.pendingSend()!.id, 'CEO');
+  for (let i = 0; i < 8; i++) await f.advance(10_000);
+  const view = d.campaign();
+  assert.equal(view.state, 'paused');
+  assert.match(view.note!, /3 refusals in a row/);
+  assert.deepEqual(f.outreach.state().suppression, []);
+  assert.equal(view.counts!.pending, 4);
+  assert.equal(view.counts!.refused, 0);
+  // Resuming needs the CEO, and retries them.
+  f.box.behave = () => undefined;
+  f.outreach.resume(view.id, 'CEO');
+  for (let i = 0; i < 5; i++) await f.advance(10_000);
+  assert.equal(d.campaign().counts!.sent, 4);
+});
+
+test('review fix 2: a 554 (policy) RCPT refusal never suppresses; a 550 suppresses only once a later send succeeds', async () => {
+  const f = setup({ behave: (m) => {
+    if (m.to === 'ann@client.example') throw new SmtpError('SMTP server answered 554 to RCPT TO');
+    if (m.to === 'bob@client.example') throw new SmtpError('SMTP server answered 550 to RCPT TO');
+  } });
+  f.outreach.importCsv(CSV, 'CEO');
+  f.draft(DRAFT().replace('[customers]', '[all]'));
+  f.inbox.approve(f.pendingSend()!.id, 'CEO');
+  await f.advance(0);
+  await f.advance(10_000);
+  assert.deepEqual(f.outreach.state().suppression, [], 'not yet: two refusals could be a server problem');
+  await f.advance(10_000);
+  assert.deepEqual(f.sent.map((m) => m.to), ['cid@client.example']);
+  assert.deepEqual(f.outreach.state().suppression.map((s) => [s.email, s.reason]), [['bob@client.example', 'bounce']]);
+  // The bounce is recorded with its result, so a restart repairs a suppression list that missed it.
+  writeFileSync(path.join(f.dir, 'leads.json'), JSON.stringify({ ...JSON.parse(readFileSync(path.join(f.dir, 'leads.json'), 'utf8')), suppression: [] }));
+  const o = f.restart();
+  assert.equal(o.isSuppressed('bob@client.example'), true);
+  assert.equal(o.isSuppressed('ann@client.example'), false);
+});
+
+test('review fixes: long lines are refused, non-ASCII bodies go out quoted-printable, encoded words are neutralised, addresses normalised', () => {
+  const p = parseArtifact(`---\nsubject: Hi\naudience: [all]\n---\n${'é'.repeat(460)}`);
+  assert.ok(p.ok);
+  const long = validateDraft(p.frontmatter, p.body);
+  assert.equal(long.ok, false);
+  assert.match((long as { reason: string }).reason, /line 1 is longer than 900 bytes/);
+  const enc = parseArtifact('---\nsubject: Hi =?utf-8?B?SGk=?=\naudience: [all]\n---\nBody');
+  assert.ok(enc.ok);
+  assert.match((validateDraft(enc.frontmatter, enc.body) as { reason: string }).reason, /encoded word/);
+  const m = renderOutreach({ subject: 'Hi {{name}}', body: 'Grüße, {{name}}', footer: `--\nAcme\n${STOP_LINE}`, from: 'sales@acme.example' }, { email: 'ann@client.example', name: '=?utf-8?B?Rm9v?=', company: 'X' });
+  assert.ok(!m.subject.includes('=?'), m.subject);
+  const raw = renderMessage(m);
+  assert.match(raw, /Content-Transfer-Encoding: quoted-printable/);
+  assert.match(raw, /Gr=C3=BC=C3=9Fe/);
+  assert.ok(raw.split('\r\n').every((line) => line.length <= 998));
+  // Addresses: trimmed, NFC and lowercase; C0 controls refused; plus-addressing is a distinct address.
+  const f = setup();
+  const r = f.outreach.importCsv('name,email,company,source,basis\nA,"  Ann@Client.EXAMPLE ",X,s,b\nB,"bad\u0001@client.example",X,s,b\nC,ann+news@client.example,X,s,b', 'CEO');
+  assert.deepEqual([r.added, r.errors.length], [2, 1]);
+  assert.deepEqual(f.outreach.state().leads.map((l) => l.email), ['ann@client.example', 'ann+news@client.example']);
+  assert.throws(() => f.outreach.suppress('x\u0007@client.example', 'opt_out', 'CEO'), /valid email/);
+});
+
 test('suppression always wins: before the snapshot, at send time, and after a 5xx refusal (bounce)', async () => {
   const f = setup({ behave: (m) => { if (m.to === 'ann@client.example') throw new SmtpError('SMTP server answered 550 to RCPT TO'); } });
   f.outreach.importCsv(CSV, 'CEO');

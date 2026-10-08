@@ -53,10 +53,17 @@ function outreachFacts(item: Approval): HTMLElement {
       h('div', {}, h('dt', {}, 'Sender'), h('dd', {}, o.from)),
       h('div', {}, h('dt', {}, 'Pace'), h('dd', {}, `one every ${o.intervalSec} s · at most ${o.dailyCap} a day`)),
       h('div', {}, h('dt', {}, 'Draft'), h('dd', {}, `Drafted by ${o.draftedBy} — not verified`))),
-    ...o.samples.map((s, i) => h('figure.inbox-sample', {},
-      h('figcaption', {}, `Exact message ${i + 1} of ${o.recipients.length} · to ${s.to}`),
-      h('p.inbox-sample-subject', {}, h('span', {}, 'Subject: '), s.subject),
-      h('pre.inbox-sample-body', { tabindex: 0, 'aria-label': `Message body for ${s.to}` }, s.text))),
+    ...o.samples.map((s, i) => {
+      // The server footer (postal address, STOP line) is pinned below the scrolling body, so it is always in view.
+      const cut = s.text.lastIndexOf('\n\n--\n');
+      const body = cut >= 0 ? s.text.slice(0, cut) : s.text;
+      const footer = cut >= 0 ? s.text.slice(cut + 2).trimEnd() : '';
+      return h('figure.inbox-sample', {},
+        h('figcaption', {}, `Exact message ${i + 1} of ${o.recipients.length} · to ${s.to}`),
+        h('p.inbox-sample-subject', {}, h('span', {}, 'Subject: '), s.subject),
+        h('pre.inbox-sample-body', { tabindex: 0, 'aria-label': `Message body for ${s.to}` }, body),
+        footer ? h('pre.inbox-sample-footer', { 'aria-label': 'Footer added by the server to every email' }, footer) : null);
+    }),
     h('details.inbox-recipients', {}, h('summary', {}, `All ${o.recipients.length} recipient${o.recipients.length === 1 ? '' : 's'}`),
       h('ol', {}, ...o.recipients.map((r) => h('li', {}, r)))),
   );

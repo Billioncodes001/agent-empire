@@ -1289,6 +1289,7 @@ html.ae-cloud #hud .status-strip.cloud-strip .status-monitor { white-space: nowr
 .inbox-sample-subject { margin: 0; padding: 10px 14px 6px; background: #f3ecdf; color: #19160f; font-weight: 650; font-size: 14px; overflow-wrap: anywhere; }
 .inbox-sample-subject span { font-weight: 500; color: #4d4538; }
 .inbox-sample-body { margin: 0; padding: 6px 14px 14px; max-height: 240px; overflow: auto; background: #f3ecdf; color: #19160f; font: 13px/1.6 ui-sans-serif, system-ui, sans-serif; white-space: pre-wrap; overflow-wrap: anywhere; }
+.inbox-sample-footer { margin: 0; padding: 8px 14px 10px; background: #e7dcc9; color: #19160f; border-top: 1px dashed #b9ab92; font: 12px/1.55 ui-monospace, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .inbox-sample-body:focus-visible { outline: 2px solid #d9b36a; outline-offset: -2px; }
 .inbox-recipients { margin: 0 0 14px; }
 .inbox-recipients summary { cursor: pointer; min-height: 40px; display: flex; align-items: center; font-weight: 600; }

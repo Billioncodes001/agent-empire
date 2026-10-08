@@ -26,7 +26,7 @@ Without the three required settings, sending is disabled and the founder desk sa
 
 ## How a campaign runs
 
-1. **Import leads** on the founder desk (`/consultancy.html#outreach`) or with `POST /api/outreach/leads/import {"csv": "…"}`. The header row must name `name,email,company,source,basis`; an optional `tags` column takes words separated by `;` or spaces. Each refused row is reported with its line and reason. Leads are kept in `leads.json`, de-duplicated by lowercase address.
+1. **Import leads** on the founder desk (`/consultancy.html#outreach`) or with `POST /api/outreach/leads/import {"csv": "…"}`. The header row must name `name,email,company,source,basis`; an optional `tags` column takes words separated by `;` or spaces. Each refused row is reported with its line and reason. Leads are kept in `leads.json`, de-duplicated by address. An address is trimmed, Unicode NFC-normalised and lowercased before it is stored or compared, and an address with control characters is refused. Plus-addressing (`ann+news@…`) counts as a different address from `ann@…`, so opt out each form a person uses.
 2. **Brief a campaign** (New campaign). This creates an internal consultancy job with client "Internal" and an estimate. Approve it like any job, on the founder desk, in the game inbox or with Telegram.
 3. **The worker drafts** one file, `docs/empire/campaigns/<jobId>.md`, with strict frontmatter:
 
@@ -42,14 +42,17 @@ Without the three required settings, sending is disabled and the founder desk sa
 
    `audience` lists lead tags, lead ids (`L3`) or `all`. When the task finishes with outcome done, the server reads the file from the worker's worktree, from its committed branch, or from the project folder for a task without a worktree. A missing, oversized (over 256 KB), symlinked or invalid file makes the item need attention, with the reason. Nothing is guessed. The imported draft is labelled "Drafted by <worker> — not verified".
 4. **Jordan raises a campaign send** in the inbox (an `external_action` item). It shows the exact subject and body rendered for 2 recipients, footer included; every recipient; how many were excluded as suppressed, invalid or unconfirmed; the sender; and the pace and daily cap.
-5. **You approve or decline.** Approving sends exactly that frozen snapshot. If anything changes before you decide (a new lead, an opt-out, a sender setting), the old item is resolved and a new one replaces it. Approving an out-of-date item is refused and sends nothing. No budget applies to a send. Telegram `/approve A7` and `/reject A7` work too.
+5. **You approve or decline.** Your decision is saved before anything is sent. Approving sends exactly that frozen snapshot. If anything changes before you decide (a new lead, an opt-out, a sender setting), the old item is resolved and a new one replaces it. Approving an out-of-date item is refused and sends nothing. No budget applies to a send. Telegram `/approve A7` and `/reject A7` work too.
 
 ## Sending
 
+- Body lines may be at most 900 bytes; a longer line makes the draft need attention. A body with non-ASCII text or long lines is sent quoted-printable, so no server needs 8BITMIME. A literal `=?…?=` is refused in a draft subject and broken apart in merge values, so the preview matches what mail clients display.
 - One message per recipient, with the recipient alone in `To`. There are never CC or BCC lists. Merge values lose line breaks and control characters, so a name or company can't add a header.
 - At most one message per interval and the daily cap per UTC day. When the cap is reached, sending resumes after midnight UTC.
 - Each recipient's result is saved in `outreach.json`: sent, refused, failed, suppressed or unknown.
-  - **Refused:** the server answered 5xx to the recipient or the message. The address is added to suppression as a bounce.
+  - **Refused:** the server answered 5xx to `RCPT TO` for that recipient. Only a mailbox error (550, 551, 553) adds the address to suppression as a bounce, and only once a later message is accepted, which shows the server itself is fine. Other codes, such as a 554 relay or policy refusal, never suppress anyone.
+  - **Three refusals in a row** pause the campaign until you resume it. The refusals in that streak go back to pending, nobody is suppressed, and they are retried when you resume.
+  - **The message itself refused** (a 5xx after the text, for example 552 for size or content): the campaign pauses, nobody is suppressed, and that recipient stays pending.
   - **Failed:** connection or 4xx problems before the message was sent, three times.
   - **Unknown:** the message text was sent but no final reply arrived, or the server stopped during a send. The server may have accepted it, so it is never re-sent automatically. Check before sending again.
 - A send is recorded as in flight before it starts. After a restart, nobody already sent or in flight is emailed again.
