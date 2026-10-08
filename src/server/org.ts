@@ -4,6 +4,7 @@ import { EXECUTIVE_ROLES, EXECUTIVES, NOT_STAFFED, type Executive, type Executiv
 import { heldDependencyId } from '../shared/dependencies.js';
 import type { QueueState, UsageState, WorkerInfo } from '../shared/protocol.js';
 import type { Approval } from '../shared/approvals.js';
+import type { ResearchState } from '../shared/research.js';
 
 /** Everything the executives read. All of it is existing runtime state; nothing is fetched or asked of a model. */
 export interface OrgInput {
@@ -15,6 +16,8 @@ export interface OrgInput {
   usage: UsageState;
   /** ORG-03: the approval inbox. When present, chief and finance attention count the pending items each raised. */
   approvals?: Approval[];
+  /** ORG-05: the research index (reports and tool proposals). */
+  research?: ResearchState;
 }
 
 
@@ -83,10 +86,28 @@ function finance(input: OrgInput): Pick<Executive, 'summary' | 'attention'> {
   return { summary: parts.join(' · '), attention: holds };
 }
 
+/** ORG-05: reports by state, and the tool proposals it raised that still wait on the CEO. */
+function research(input: OrgInput): Pick<Executive, 'summary' | 'attention'> {
+  const reports = input.research?.reports ?? [];
+  const done = reports.filter((r) => r.status === 'imported').length;
+  const working = reports.filter((r) => r.status === 'queued' || r.status === 'running').length;
+  const asked = reports.filter((r) => r.status === 'awaiting_approval').length;
+  const attention = reports.filter((r) => r.status === 'needs_attention').length;
+  const proposals = raised(input, 'research') ?? input.research?.openProposals ?? 0;
+  if (!reports.length) return { summary: 'No research yet · ask a question from the founder desk, this card or /research', attention: proposals };
+  const parts = [plural(done, 'report')];
+  if (working) parts.push(`${working} in progress`);
+  if (asked) parts.push(`${plural(asked, 'question')} awaiting approval`);
+  if (attention) parts.push(`${attention} need${attention === 1 ? 's' : ''} attention`);
+  if (proposals) parts.push(`${plural(proposals, 'tool proposal')} to decide`);
+  return { summary: parts.join(' · '), attention: proposals };
+}
+
 const COMPUTE: Partial<Record<ExecutiveRole, (input: OrgInput) => Pick<Executive, 'summary' | 'attention'>>> = {
   chief_of_staff: chiefOfStaff,
   operations,
   finance,
+  research,
 };
 
 /** Pure: the executive roster as the real state shows it right now. */
