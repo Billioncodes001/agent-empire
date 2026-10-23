@@ -35,7 +35,7 @@ export class Tower {
     const close = h('button.btn', { 'aria-label': 'Close headquarters' }, 'Close');
     const body = h('div.body.tower-body');
     let unsub = () => {};
-    const modal = openModal(h('div.modal.tower-modal', { role: 'dialog', 'aria-label': 'Headquarters' },
+    const modal = openModal(h('div.modal.tower-modal.ae-dark', { role: 'dialog', 'aria-label': 'Headquarters' },
       h('header', {}, h('h2', {}, 'Headquarters'), close), body), { onClose: () => unsub() });
     let rendered = "";
     const draw = () => {

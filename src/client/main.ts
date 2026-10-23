@@ -760,7 +760,7 @@ function watchShare(share?: [string, MediaStream]) {
   const [who, stream] = pick;
   video.srcObject = stream;
   const close = h('button.btn.close', { 'aria-label': 'Close' }, '✕');
-  const el = h('div.modal.viewer', { role: 'dialog', 'aria-label': 'Screen share' }, h('header', {}, h('h2', {}, `🖥️ ${who}'s screen`), close), video);
+  const el = h('div.modal.viewer.ae-dark', { role: 'dialog', 'aria-label': 'Screen share' }, h('header', {}, h('h2', {}, `🖥️ ${who}'s screen`), close), video);
   // Close once that share stops: its track ends, or its sharer stops or leaves.
   const gone = () => {
     if (!currentShares().some(([, s]) => s === stream)) modal.close();
