@@ -97,8 +97,8 @@ function workerRows(onOpen: (id: string) => void): HTMLElement[] {
         'aria-label': `${w.name}, ${w.kind === 'shell' ? 'shell' : engine}, ${pill.spoken}. Open terminal.`,
       },
       h('span.dot', { style: `background:${w.color}` }),
-      h('span.name', {}, w.name, engine ? h('span.engine', { 'data-engine': w.engine?.id ?? 'claude-code' }, engine) : null, sub ? h('span.sub', {}, sub) : null),
-      spend ? h('span.cost', { title: 'Provider spend for a local model is zero. City credits are separate.' }, 'US$0') : w.usage?.calls ? h('span.cost', { title: usageTitle(w.usage) }, fmtCost(w.usage.cost)) : null,
+      h('span.name', {}, w.name, engine ? h('span.engine', { 'data-engine': w.engine?.id ?? 'claude-code', title: spend ? `${engine} · ${spend}. City credits are separate.` : engine }, engine, spend ? ' · US$0' : '') : null, sub ? h('span.sub', {}, sub) : null),
+      !spend && w.usage?.calls ? h('span.cost', { title: usageTitle(w.usage) }, fmtCost(w.usage.cost)) : null,
       h('span.pill', { class: pill.tone, title: fresh ? undefined : 'No fresh update from the server; this is the last reported status.' }, pill.text),
     );
   });

@@ -43,7 +43,7 @@ async function open(browser: Browser, o: { width: number; height: number; touch:
 async function openSettings(page: Page) {
   await page.evaluate(() => (document.getElementById('btn-settings') as HTMLButtonElement | null)?.click());
   await page.waitForSelector('.linked-accounts .engine-card', { timeout: 15_000 });
-  await page.locator('.linked-accounts').scrollIntoViewIfNeeded();
+  await page.evaluate(() => document.querySelector('.linked-accounts')?.scrollIntoView({ block: 'start' }));
   await page.waitForTimeout(400);
 }
 
@@ -76,15 +76,18 @@ async function main() {
       const chosen = await p.evaluate(() => { const s = document.querySelector('#engine-choice') as HTMLSelectElement; return { text: s.selectedOptions[0]?.textContent ?? '', note: document.querySelector('.engine-note')?.textContent ?? '', disabled: [...s.options].filter((o) => o.disabled).map((o) => o.textContent) }; });
       check('no healthy premium: the free engine is offered with its label', /^Qwen Code · gpt-oss:20b \(local\) · free$/.test(chosen.text) && /Free · /.test(chosen.note), JSON.stringify(chosen));
       check('unready premium engines are listed but not selectable, with reasons', chosen.disabled.some((t) => /Claude Code · your Claude account — not ready/.test(t ?? '')));
+      await p.waitForTimeout(900); // the dialog's fade-in
       await p.screenshot({ path: resolve(out, '06-hire-dialog-engine-choice-1440x900.jpg'), quality: 82 });
       const before = await p.locator('#workers li[data-worker]').count();
       await p.fill('#modal-root textarea', 'Fixture hire on the free engine');
       await p.locator('#modal-root button[type=submit]').click();
       await p.waitForFunction((n) => document.querySelectorAll('#workers li[data-worker]').length > n, before, { timeout: 10_000 }).catch(() => {});
       const hired = await p.evaluate(() => [...document.querySelectorAll('#workers li[data-worker] .engine')].map((e) => e.textContent));
-      check('the hire carries the chosen engine to the worker card', hired.filter((t) => t === 'Qwen Code · gpt-oss:20b (local)').length >= 2, hired.join(' | '));
+      check('the hire carries the chosen engine to the worker card', hired.filter((t) => t?.startsWith('Qwen Code · gpt-oss:20b (local)')).length >= 2, hired.join(' | '));
     }
     await openSettings(p);
+    await p.waitForTimeout(3500); // let the hire toast clear
+    await p.screenshot({ path: resolve(out, '01-settings-linked-accounts-1440x900.jpg'), quality: 82 });
     const panel = (await p.locator('.linked-accounts').textContent()) ?? '';
     check('panel shows Claude Code login state from CLI output', /Claude Code · premium/.test(panel) && /Not signed in/.test(panel), '');
     check('panel offers "Sign in to Claude" and says the Empire never sees credentials', /Sign in to Claude/.test(panel) && /never signs you in or sees your Claude credentials/.test(panel));
@@ -94,7 +97,7 @@ async function main() {
     await p.locator('.hosted-free summary').click();
     const terms = (await p.locator('.hosted-free').textContent()) ?? '';
     check('free hosted keys are opt-in with data-use terms shown', /opt-in/.test(terms) && /human reviewers may read them/.test(terms) && /has not verified them/.test(terms));
-    await p.screenshot({ path: resolve(out, '01-settings-linked-accounts-1440x900.jpg'), quality: 82 });
+    await p.screenshot({ path: resolve(out, '01b-settings-free-hosted-terms-1440x900.jpg'), quality: 82 });
 
     // Explicit, confirmed download (synthetic progress), then cancel.
     await p.locator('.model-recs button:has-text("Download (19 GB)")').click();
@@ -120,9 +123,9 @@ async function main() {
 
     // Engine labels and status unknown on the worker card (HUD list), name plate and terminal header.
     const rows = await p.evaluate(() => [...document.querySelectorAll('#workers li[data-worker]')].map((li) => ({ id: (li as HTMLElement).dataset.worker, engine: li.querySelector('.engine')?.textContent ?? '', pill: li.querySelector('.pill')?.textContent ?? '', cost: li.querySelector('.cost')?.textContent ?? '' })));
-    const qwen = rows.find((r) => r.engine === 'Qwen Code · gpt-oss:20b (local)');
-    const codex = rows.find((r) => r.engine === 'Codex · gpt-oss:20b (local)');
-    check('worker card shows "Qwen Code · gpt-oss:20b (local)" with US$0 spend', !!qwen && qwen.cost === 'US$0', JSON.stringify(qwen));
+    const qwen = rows.find((r) => r.engine.startsWith('Qwen Code · gpt-oss:20b (local)'));
+    const codex = rows.find((r) => r.engine.startsWith('Codex · gpt-oss:20b (local)'));
+    check('worker card shows "Qwen Code · gpt-oss:20b (local)" with US$0 spend', !!qwen && qwen.engine.endsWith('· US$0'), JSON.stringify(qwen));
     check('an engine that cannot report shows "status unknown"', !!codex && /status unknown/.test(codex.pill), JSON.stringify(codex));
     check('Claude worker card says "your Claude account"', rows.some((r) => r.engine === 'Claude Code · your Claude account'));
     const plates = await p.evaluate(() => [...(window as unknown as { __office: { workerViews: Map<string, { plate: string }> } }).__office.workerViews.values()].map((v) => v.plate));
