@@ -1,6 +1,6 @@
 # LIFE-04: Dependencies and recreation while waiting
 
-Branch `claude/life-04-waiting`, based on `codex/empire-world` at `fa5c6e0`. This is a candidate for independent review. It is not merged and not pushed.
+Branch `claude/life-04-waiting`, based on `codex/empire-world` at `fa5c6e0`. It was independently reviewed (ACCEPT WITH FIXES, then ACCEPT) and merged by PR #14.
 
 ## What shipped
 
