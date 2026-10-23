@@ -140,6 +140,11 @@ const APP_ORIGINS = new Set(['empire-app://game', 'https://appassets.androidplat
 const fixturePassword = process.env.FIXTURE_PASSWORD || '';
 const devices = new Map<string, { id: string; name: string; createdAt: number }>();
 const socketToken = new Map<WebSocket, string>();
+// FIXTURE_DEVICES=1 seeds two signed-in app devices (synthetic tokens nobody holds) for the Settings device list.
+if (process.env.FIXTURE_DEVICES === '1') {
+  devices.set(randomBytes(32).toString('base64url'), { id: 'fx-iphone', name: 'iPhone', createdAt: Date.now() - 6 * 86_400_000 });
+  devices.set(randomBytes(32).toString('base64url'), { id: 'fx-android', name: 'Android device', createdAt: Date.now() - 2 * 86_400_000 });
+}
 const bearer = (req: import('node:http').IncomingMessage) => /^Bearer ([A-Za-z0-9_-]+)$/.exec(req.headers.authorization ?? '')?.[1];
 const json = (res: import('node:http').ServerResponse, status: number, body: unknown) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
 const send = (ws: WebSocket, msg: ServerMsg) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg)); };
@@ -271,9 +276,13 @@ const server = createServer(async (req, res) => {
   const device = auth ? devices.get(auth) : undefined;
   if (auth && !device && url.pathname.startsWith('/api/')) return json(res, 401, { error: 'Signed out' });
   if (url.pathname === '/api/whoami') return json(res, 200, device ? { ok: true, deviceId: device.id } : { ok: true });
+  // A browser page (no bearer) stands for a cookie session, as on the real server: it sees every device, none current.
+  const sameOrigin = !req.headers.origin || [`http://localhost:${port}`, `http://127.0.0.1:${port}`].includes(req.headers.origin);
+  if (url.pathname === '/api/devices' && req.method === 'GET' && !auth)
+    return json(res, 200, { devices: [...devices.values()].map((d) => ({ ...d, lastUsedAt: d.createdAt + 3_600_000, current: false })) });
   if (url.pathname === '/api/devices' && req.method === 'GET' && device)
     return json(res, 200, { devices: [...devices.values()].map((d) => ({ ...d, lastUsedAt: Date.now(), current: d === device })) });
-  if (url.pathname.startsWith('/api/devices/') && req.method === 'DELETE' && device) {
+  if (url.pathname.startsWith('/api/devices/') && req.method === 'DELETE' && (device || (!auth && sameOrigin))) {
     const id = decodeURIComponent(url.pathname.slice('/api/devices/'.length));
     const entry = [...devices].find(([, d]) => d.id === id);
     if (!entry) return json(res, 404, { error: 'Not found' });

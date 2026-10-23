@@ -851,6 +851,15 @@ a.when:hover { text-decoration: underline; }
 .app-panel .status-card p { color: #a8bec3; }
 .app-panel .status-card .setting-note { margin-top: 8px; color: #8fa6aa; font-size: 11px; }
 .app-panel .empire-eyebrow { color: #8fa39c; font-size: 10px; letter-spacing: .14em; text-transform: uppercase; }
+.app-panel .devices-card { margin-top: 10px; }
+.device-list { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 8px; }
+.device-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid #425359; border-radius: 10px; background: #13202a; }
+.device-row > div { min-width: 0; }
+.device-row strong { display: block; color: #e7f0ef; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.device-row .device-meta { display: block; margin-top: 2px; color: #a8bec3; font-size: 12px; }
+.device-row .device-this { flex: none; padding: 4px 10px; border: 1px solid #9bd1ba88; border-radius: 999px; color: #c9eedd; font-size: 12px; font-weight: 600; }
+.device-row .btn { flex: none; }
+@media (max-width: 420px) { .device-row { flex-direction: column; align-items: stretch; } }
 .app-install { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
 .app-install .setting-note { flex: 1; margin: 0; }
 @media (max-width: 600px) { .app-panel .status-cards { grid-template-columns: 1fr; } .app-install { flex-direction: column; align-items: stretch; } #hud #conn { top: auto; bottom: 200px; } }
