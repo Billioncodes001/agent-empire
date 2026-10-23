@@ -48,7 +48,7 @@ async function openSettings(page: Page) {
 }
 
 async function main() {
-  const browser = await chromium.launch({ channel: 'chrome', headless: true, args: ['--enable-webgl', '--ignore-gpu-blocklist'] });
+  const browser = await chromium.launch({ channel: 'chrome', headless: true, args: ['--enable-webgl', '--ignore-gpu-blocklist', '--use-angle=metal'] });
   try {
     // ---- Desktop 1440x900 ----
     const d = await open(browser, { width: 1440, height: 900, touch: false });
@@ -61,9 +61,13 @@ async function main() {
       return desks.filter((it) => !desks.some((n) => Math.hypot(n.x - it.x, n.z - it.z) < 3 && o.store.workerAtDesk(n.deskId!))).map((x) => ({ id: x.deskId!, x: x.x, z: x.z }));
     });
     let desk: { id: string } | null = null;
+    // As the outfit check does: stand and look inside the office first, so the desk targeting settles.
+    await p.evaluate(() => { const o = (window as unknown as { __office: { player: { pos: { set(x: number, y: number, z: number): void }; view: string; camYaw: number; lookPitch: number; facing: number } } }).__office; o.player.view = 'first'; o.player.pos.set(-1.5, 0, -8); o.player.camYaw = Math.PI; o.player.facing = Math.PI; o.player.lookPitch = -0.12; });
+    await p.waitForTimeout(2500);
     for (const c of candidates) {
       await p.evaluate((q) => { const o = (window as unknown as { __office: { player: { pos: { set(x: number, y: number, z: number): void }; view: string } } }).__office; o.player.view = 'first'; o.player.pos.set(q.x, 0, q.z); }, c);
       if (await p.waitForFunction(() => /Desk \d+ · empty/.test(document.getElementById('hint')?.textContent ?? ''), null, { timeout: 5000 }).then(() => true, () => false)) { desk = c; break; }
+      console.log(`      ${c.id} @${c.x.toFixed(1)},${c.z.toFixed(1)}: hint “${await p.locator('#hint').textContent()}” pos ${await p.evaluate(() => { const o = (window as unknown as { __office: { player: { pos: { x: number; y: number; z: number } }; office: { floor: number } } }).__office; return `${o.player.pos.x.toFixed(1)},${o.player.pos.y.toFixed(1)},${o.player.pos.z.toFixed(1)} floor ${o.office.floor}`; })}`);
     }
     check('an empty desk is available to hire at', !!desk, `${candidates.length} candidates; modals ${await p.locator('#modal-root .backdrop').count()}; hint “${await p.locator('#hint').textContent().catch(() => '')}”`);
     if (desk) {
