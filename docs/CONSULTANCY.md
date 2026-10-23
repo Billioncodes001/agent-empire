@@ -49,3 +49,7 @@ Closing the founder desk or 3D browser view does not stop a running host. Quitti
 Automated tests use fake workers and Telegram transport: no customer messages, provider charges or live city changes. A real configured bot, speech conversations, automatic expansion and cross-device deployments require their own acceptance checks. See `docs/team/CONSULTANCY_PLAN.md` for the next phases.
 
 Protocol reference: [Telegram Bot API](https://core.telegram.org/bots/api).
+
+## Server mode only
+
+The founder desk, client jobs, estimates, the approval inbox, Telegram, email outreach and the research executive run on an office server (server mode). Cloud mode — the Empire in your own GitHub state repository — has cloud jobs you submit from the game with explicit paid confirmation, and in-app shut down and start, but no founder desk, consultancy journal, Telegram bridge or outreach. Its city economy follows the same rules (see [economy](ECONOMY.md#server-mode-and-cloud-mode)).
