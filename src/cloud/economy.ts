@@ -1,14 +1,12 @@
 /**
- * Pure city economy for cloud mode, following docs/ECONOMY.md with the shared rate helpers in
- * src/shared/empire.ts. The host's Empire class (src/server/empire.ts) owns the same rules for a
- * running server but is bound to the filesystem and live queue; this module is its clock-injected,
- * queue-free counterpart. All amounts are simulation credits, never provider spending.
+ * City economy for cloud mode. The rules themselves (costs, rewards, validation, hourly settlement)
+ * live once in src/shared/economy-rules.ts and are shared with the host's Empire class
+ * (src/server/empire.ts). This module adds only the clock-injected, queue-free cloud parts: the
+ * settle cap, the cloud job → manager mapping and the cloud report wording. All amounts are
+ * simulation credits, never provider spending.
  */
-import {
-  hourlyRates, MANAGER_NAMES, officeFloorCost, SITES, STARTER_SITES, upgradeCost, workstationCost,
-  type EmpireAction, type EmpireState, type SectorState, type SiteId,
-} from '../shared/empire.js';
-import { DESKS_PER_FLOOR } from '../shared/layout.js';
+import { SITES, type EmpireAction, type EmpireState } from '../shared/empire.js';
+import { applyCityAction, creditTaskReward, serviceCoverage, settleOperatingHour, TASK_REWARD, type CityActionText } from '../shared/economy-rules.js';
 import { LIMITS, type CloudJob } from './schema.js';
 
 /**
@@ -22,97 +20,27 @@ function report(state: EmpireState, now: number, sector: string, text: string) {
   state.reports.unshift({ at: now, sector, text });
   state.reports = state.reports.slice(0, LIMITS.reports);
 }
-function pay(state: EmpireState, id: string, name: string, site: SiteId, role: 'manager' | 'service' | 'agent', amount: number) {
-  const account = (state.economy.employees[id] ??= { name, site, role, earned: 0 });
-  account.earned += amount;
-}
-function ledger(state: EmpireState, now: number, label: string, revenue: number, wages: number, upkeep: number, dividend: number, capital = 0) {
-  const e = state.economy;
-  e.revenue += revenue; e.wages += wages; e.upkeep += upkeep; e.dividends += dividend; e.ownerBalance += dividend; e.capital += capital;
-  state.funds += revenue - wages - upkeep - dividend - capital;
-  e.ledger.unshift({ at: now, minute: state.minutes, label, revenue, wages, upkeep, dividend, capital, balance: state.funds });
-  e.ledger = e.ledger.slice(0, 100);
-}
-function appoint(sector: SectorState) {
-  if (sector.id === 'home' || sector.manager) return;
-  sector.manager = { id: `manager-${sector.id}`, name: MANAGER_NAMES[sector.id], status: 'pending', attempt: 1, jobKey: `empire-manager-${sector.id}-1` };
-}
+
+/** Cloud report wording; the host keeps its own in src/server/empire.ts. */
+const CLOUD_TEXT: CityActionText = {
+  founded: n => `Founding plan confirmed: ${n} buildings. Managers are appointed; each starts earning only after a real startup job you submit finishes its turn.`,
+  floor: n => `Floor ${n} constructed.`,
+  workstation: n => `Workstation ${n} installed.`,
+  delegated: on => on ? 'Delegated oversight requested. The cloud coordinator continues rule-based monitoring; this does not start an AI supervisor.' : 'CEO resumed direct oversight.',
+  reinvested: amount => `Founder reinvested ${amount} credits into the city.`,
+  land: site => `${site.name} parcel acquired for ${site.landCost} credits.`,
+  built: site => `${site.name} constructed with a manager appointment and one service employee.`,
+  hired: (site, staff) => `${site.name}: ${staff}/${site.capacity} service employees.`,
+  upgraded: (site, level) => `${site.name} upgraded to level ${level}.`,
+};
 
 /**
- * Applies one city action (the host EmpireAction contract minus queue-bound manager retries).
- * Mutates `state`; returns a user-safe error without changing anything on failure.
+ * Applies one city action (the host EmpireAction contract minus queue-bound manager retries, which
+ * are refused as an unknown operation). Mutates `state`; returns a user-safe error without changing
+ * anything on failure.
  */
 export function applyEmpireAction(state: EmpireState, action: EmpireAction, now: number): string | undefined {
-  const beforeFunds = state.funds;
-  if (action.kind === 'found') {
-    if (state.setup.completed) return 'Founding setup is already complete';
-    if (!Array.isArray(action.sites) || action.sites.length > STARTER_SITES.length || new Set(action.sites).size !== action.sites.length
-      || action.sites.some(id => !STARTER_SITES.some(s => s.id === id))) return 'Choose valid starting buildings';
-    for (const sector of state.sectors) {
-      if (action.sites.includes(sector.id)) { sector.built = true; sector.owned = true; }
-      if (sector.built) { appoint(sector); if (!['hq', 'home'].includes(sector.id)) sector.staff = Math.max(1, sector.staff); }
-    }
-    state.setup = { completed: true, selected: [...action.sites], completedAt: now };
-    state.delegated = true;
-    state.economy.startedAt = now;
-    state.economy.lastHour = Math.floor(state.minutes / 60);
-    report(state, now, 'Chief of staff', `Founding plan confirmed: ${state.sectors.filter(s => s.built).length} buildings. Managers are appointed; each starts earning only after a real startup job you submit finishes its turn.`);
-  } else if (action.kind === 'office-floor' || action.kind === 'office-workstation') {
-    if (!state.setup.completed) return 'Complete founding setup first';
-    const office = state.office; const floor = action.kind === 'office-floor';
-    if (!floor && office.workstations >= office.floors * DESKS_PER_FLOOR) return 'Build another floor before adding workstations';
-    const cost = floor ? officeFloorCost(office) : workstationCost(office);
-    if (state.funds < cost) return 'Insufficient simulation credits';
-    state.funds -= cost;
-    if (floor) office.floors++; else office.workstations++;
-    report(state, now, 'Headquarters', floor ? `Floor ${office.floors} constructed.` : `Workstation ${office.workstations} installed.`);
-  } else if (action.kind === 'delegate') {
-    if (typeof action.enabled !== 'boolean') return 'Invalid delegation setting';
-    state.delegated = action.enabled;
-    report(state, now, 'Executive', action.enabled ? 'Delegated oversight requested. The cloud coordinator continues rule-based monitoring; this does not start an AI supervisor.' : 'CEO resumed direct oversight.');
-  } else if (action.kind === 'reinvest') {
-    if (state.economy.ownerBalance <= 0) return 'No founder earnings available';
-    state.funds += state.economy.ownerBalance;
-    report(state, now, 'Treasury', `Founder reinvested ${state.economy.ownerBalance} credits into the city.`);
-    state.economy.ownerBalance = 0;
-  } else if (action.kind === 'build' || action.kind === 'hire' || action.kind === 'buy-land' || action.kind === 'upgrade') {
-    const site = SITES.find(s => s.id === action.site); const sector = state.sectors.find(s => s.id === action.site);
-    if (!site || !sector) return 'Unknown site';
-    if (action.kind === 'buy-land') {
-      if (sector.owned) return 'Land already owned';
-      if (state.funds < site.landCost) return 'Insufficient simulation credits';
-      state.funds -= site.landCost; sector.owned = true;
-      report(state, now, 'Expansion', `${site.name} parcel acquired for ${site.landCost} credits.`);
-    } else if (action.kind === 'build') {
-      if (sector.built) return 'Already built';
-      if (!sector.owned) return 'Buy this land first';
-      if (state.funds < site.cost) return 'Insufficient simulation credits';
-      state.funds -= site.cost; sector.built = true; sector.staff = 1; appoint(sector);
-      report(state, now, site.sector, `${site.name} constructed with a manager appointment and one service employee.`);
-    } else if (action.kind === 'hire') {
-      if (sector.id === 'hq') return 'Employ AI workers at a furnished headquarters workstation';
-      if (!sector.built) return 'Build this site first';
-      if (sector.staff >= site.capacity) return 'Team is at capacity';
-      if (state.funds < 1200) return 'Hiring requires 1,200 simulation credits';
-      state.funds -= 1200; sector.staff++;
-      report(state, now, site.sector, `${site.name}: ${sector.staff}/${site.capacity} service employees.`);
-    } else {
-      if (sector.id === 'hq') return 'Expand headquarters through floors and workstations';
-      if (!sector.built) return 'Build this site first';
-      if (sector.id === 'home' || sector.level >= 3) return 'No further upgrades available';
-      const cost = upgradeCost(sector);
-      if (state.funds < cost) return 'Insufficient simulation credits';
-      state.funds -= cost; sector.level++;
-      report(state, now, site.sector, `${site.name} upgraded to level ${sector.level}.`);
-    }
-  } else return 'Unknown operation';
-  if (state.funds !== beforeFunds) {
-    const capital = beforeFunds - state.funds; state.funds = beforeFunds;
-    const site = 'site' in action ? SITES.find(s => s.id === action.site)?.name : '';
-    const label = ({ 'buy-land': 'Land purchase', build: 'Construction', hire: 'Recruitment', upgrade: 'Building upgrade', reinvest: 'Founder reinvestment', 'office-floor': 'Headquarters floor construction', 'office-workstation': 'Workstation installation' } as Record<string, string>)[action.kind] ?? action.kind;
-    ledger(state, now, `${label}${site ? ' · ' + site : ''}`, 0, 0, 0, 0, capital);
-  }
-  return undefined;
+  return applyCityAction(state, action, now, CLOUD_TEXT, (sector, text) => report(state, now, sector, text));
 }
 
 /**
@@ -159,10 +87,14 @@ export function rewardAcceptedJob(state: EmpireState, job: CloudJob, now: number
   const site = SITES.find(s => s.id === job.site) ?? SITES[0];
   const sector = state.sectors.find(s => s.id === site.id)!;
   const manager = job.site && sector.manager;
-  pay(state, manager ? manager.id : `agent-cloud-${job.id}`, manager ? manager.name : 'Cloud AI worker', site.id, manager ? 'manager' : 'agent', 50);
-  sector.revenue += 500; sector.wages += 50;
-  ledger(state, now, `Accepted AI task: ${job.title}`, 500, 50, 0, 90);
-  report(state, now, 'Chief of staff', `Accepted task credited: ${job.title}. 500 city credits earned; 50 paid to the worker and 90 to the founder.`);
+  creditTaskReward(state, now, {
+    site: site.id,
+    payeeId: manager ? manager.id : `agent-cloud-${job.id}`,
+    payeeName: manager ? manager.name : 'Cloud AI worker',
+    role: manager ? 'manager' : 'agent',
+    label: `Accepted AI task: ${job.title}`,
+  });
+  report(state, now, 'Chief of staff', `Accepted task credited: ${job.title}. ${TASK_REWARD.revenue} city credits earned; ${TASK_REWARD.wages} paid to the worker and ${TASK_REWARD.dividend} to the founder.`);
   return true;
 }
 
@@ -173,10 +105,7 @@ export function rewardAcceptedJob(state: EmpireState, job: CloudJob, now: number
 export function advanceEconomy(state: EmpireState, elapsedMs: number, now: number, capMs = settleCapMs(30)): { minutes: number; hours: number } {
   const minutes = Math.floor(Math.max(0, Math.min(elapsedMs, capMs)) / 1000);
   state.minutes += minutes;
-  for (const sector of state.sectors) {
-    const site = SITES.find(s => s.id === sector.id)!;
-    sector.service = sector.built ? Math.min(100, Math.round((sector.staff / site.capacity) * 100 * (1 + (sector.level - 1) * 0.3))) : 0;
-  }
+  for (const sector of state.sectors) sector.service = serviceCoverage(sector);
   if (!state.setup.completed) return { minutes, hours: 0 };
   const economy = state.economy;
   const targetHour = Math.floor(state.minutes / 60);
@@ -184,19 +113,9 @@ export function advanceEconomy(state: EmpireState, elapsedMs: number, now: numbe
   const paused = new Set<string>();
   while (economy.lastHour < targetHour) {
     economy.lastHour++; hours++;
-    let revenue = 0, wages = 0, upkeep = 0;
-    for (const sector of state.sectors) {
-      const rate = hourlyRates(sector);
-      if (!rate.wages) continue;
-      if (state.funds + revenue + rate.revenue - wages - upkeep < rate.wages + rate.upkeep) { paused.add(SITES.find(s => s.id === sector.id)!.name); continue; }
-      revenue += rate.revenue; wages += rate.wages; upkeep += rate.upkeep;
-      sector.revenue += rate.revenue; sector.wages += rate.wages; sector.upkeep += rate.upkeep;
-      pay(state, sector.manager!.id, sector.manager!.name, sector.id, 'manager', sector.id === 'hq' ? 60 : 40);
-      for (let i = 0; i < sector.staff; i++) pay(state, `service-${sector.id}-${i}`, `Service employee ${i + 1}`, sector.id, 'service', 18);
-    }
-    const dividend = Math.floor(Math.max(0, revenue - wages - upkeep) * 0.2);
-    if (revenue || wages || upkeep) ledger(state, now, 'Hourly sector operations', revenue, wages, upkeep, dividend);
-    totals = { revenue: totals.revenue + revenue, wages: totals.wages + wages, upkeep: totals.upkeep + upkeep, dividend: totals.dividend + dividend };
+    const hour = settleOperatingHour(state, now);
+    hour.paused.forEach(name => paused.add(name));
+    totals = { revenue: totals.revenue + hour.revenue, wages: totals.wages + hour.wages, upkeep: totals.upkeep + hour.upkeep, dividend: totals.dividend + hour.dividend };
   }
   if (paused.size) report(state, now, 'Treasury', `Paused for at least one hour because payroll could not be funded: ${[...paused].join(', ')}.`);
   if (totals.revenue || totals.wages || totals.upkeep) {

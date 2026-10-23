@@ -173,6 +173,6 @@ Re-run results:
 | `outreach-ui-check` | **62/62** |
 
 ## Open issues
-- **No independent review yet.** No real SMTP provider acceptance run was made.
+- **Reviewed:** independently reviewed and merged into `codex/empire-world` by PR #24. No real SMTP provider acceptance run was made.
 - **Not built:** unsubscribe headers (`List-Unsubscribe`), per-campaign caps, and re-sending `unknown` recipients after the CEO checks them.
 - **The in-game card links out** to the founder desk for pause and cancel. They aren't in the game itself.

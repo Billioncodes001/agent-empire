@@ -58,7 +58,7 @@ export function openAsk(opts: AskOptions) {
 
   const cancel = h('button.btn', { type: 'button' }, 'Cancel');
   const form = h(
-    'form.modal.ask',
+    'form.modal.ask.ae-dark',
     { role: 'dialog', 'aria-label': opts.title },
     h('header', {}, h('h2', {}, opts.title)),
     h(
