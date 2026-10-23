@@ -445,7 +445,7 @@ function renderProject() {
   if (!p) return;
   $('project-name').textContent = `🏢 ${p.name}`;
   $('project-meta').textContent = [p.branch && `⎇ ${p.branch}`, p.dir, `runs: ${p.agentCmd}`].filter(Boolean).join(' · ');
-  document.title = `${p.name} · Agent Office`;
+  document.title = `${p.name} · Agent Empire`;
   office.setProjectName(p.name);
 }
 
