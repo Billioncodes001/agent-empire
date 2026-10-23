@@ -63,3 +63,9 @@ npm run test:browser
 ```
 
 The browser test writes screenshots into ignored `artifacts/`. It verifies automatic doorway traversal, map waypoints without teleporting, animated vehicle entry/exit, driving, camera switching, Management, key remapping and reload persistence. It does not start paid agents or deploy services.
+
+## Download, licence and contributing
+
+Free builds for macOS, Windows and Android are on [GitHub Releases](https://github.com/Billioncodes001/agent-empire/releases); iPhone and iPad use the installable web app. First-launch steps for unsigned builds, Obtainium and Add to Home Screen are in [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md).
+
+Agent Empire is released under the [MIT licence](LICENSE); third-party assets keep their own licences ([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)). See [CONTRIBUTING.md](CONTRIBUTING.md), the [code of conduct](CODE_OF_CONDUCT.md) and the [security policy](SECURITY.md).
