@@ -15,6 +15,9 @@ import { TaskNamer, fallbackTask } from './tasks.js';
 import { bookGrowth, newTracker, restoreTracker, scanTracker, switchTranscript, trackerUsage, type Ledger, type UsageTracker } from './usage.js';
 import { writeJsonAtomic } from './persistence.js';
 import { sanitizeOutfit, type Outfit } from '../shared/outfit.js';
+import { LEGACY_ENGINE, sanitizeEngine, type WorkerEngine } from '../shared/engines.js';
+import { engineEnv, launchSpec, type ProviderKeys } from './engines.js';
+import { DEFAULT_OLLAMA_URL } from './ollama.js';
 
 type HeadlessTerminal = InstanceType<typeof headless.Terminal>;
 
@@ -55,6 +58,15 @@ export interface HookEnv {
   token: string;
 }
 
+/** FREE-01: what non-Claude engines and the credential scrub need. Older callers get no keys and the legacy default. */
+export interface EngineEnv {
+  keys: () => ProviderKeys;
+  ollamaUrl: string;
+  /** The engine of a spawn that names none (the saved default, or Claude Code with the user's own account). */
+  defaultEngine: () => WorkerEngine;
+}
+const defaultEngineEnv: EngineEnv = { keys: () => ({}), ollamaUrl: DEFAULT_OLLAMA_URL, defaultEngine: () => LEGACY_ENGINE };
+
 interface Worker {
   info: WorkerInfo;
   pty?: pty.IPty;
@@ -84,6 +96,8 @@ interface Worker {
   stopping?: boolean;
   publishing?: boolean;
   exitWaiters: Set<() => void>;
+  /** Typed (without Enter) once Claude reports it is ready: the "Sign in to Claude" helper types `/login`. */
+  typeOnReady?: string;
 }
 
 /** Injectable process boundary for deterministic tests; no provider must run in fixtures. */
@@ -113,6 +127,7 @@ export class WorkerManager {
   private workers = new Map<string, Worker>();
   private statePath: string;
   private settingsPath: string;
+  private qwenSettingsPath: string;
   private trees: Worktrees;
   private agentPath: string | null = null;
   private screenTimer: NodeJS.Timeout;
@@ -133,10 +148,12 @@ export class WorkerManager {
     private capacity: () => number = () => 16,
     private runtime: WorkerRuntime = defaultRuntime,
     private executionBlocker: () => string | undefined = () => undefined,
+    private engineEnv: EngineEnv = defaultEngineEnv,
   ) {
     this.trees = new Worktrees(dir);
     this.statePath = path.join(dataDir, 'workers.json');
     this.settingsPath = path.join(dataDir, 'claude-hooks.json');
+    this.qwenSettingsPath = path.join(dataDir, 'qwen-system-settings.json');
     this.writeHookSettings();
     this.agentPath = this.runtime.resolveCommand(agentCmd);
     const claude = !this.runtime.taskNaming ? null : /(^|\/)claude$/.test(agentCmd) ? this.agentPath : this.runtime.resolveCommand('claude');
@@ -193,7 +210,7 @@ export class WorkerManager {
    * so the worktree really starts from the predecessor's work) are `persona`'s name and colour reused; otherwise the
    * worker starts from HEAD as a new person. The name is used only when nobody else currently has it.
    */
-  spawn(deskId: string, by: string, prompt?: string, worktree = false, kind: WorkerKind = 'agent', queueOwned = false, outfit?: Outfit, persona?: { name: string; color?: string }, continues?: { branch: string; title: string }): WorkerInfo | string {
+  spawn(deskId: string, by: string, prompt?: string, worktree = false, kind: WorkerKind = 'agent', queueOwned = false, outfit?: Outfit, persona?: { name: string; color?: string }, continues?: { branch: string; title: string }, extra: { engine?: WorkerEngine; typeOnReady?: string } = {}): WorkerInfo | string {
     const executionBlocked = this.executionBlocker();
     if (executionBlocked) return executionBlocked;
     if (!fundedDesk(deskId, this.capacity())) return 'Build and furnish this workstation before employing a worker';
@@ -235,8 +252,13 @@ export class WorkerManager {
       activity: prompt ? truncate(prompt, 80) : undefined,
       outfit: sanitizeOutfit(outfit),
     };
+    if (kind === 'agent') {
+      info.engine = sanitizeEngine(extra.engine) ?? this.engineEnv.defaultEngine();
+      if (launchSpec(info.engine, undefined).hooks === 'none') info.statusKnown = false;
+    }
     const w = newWorker(info, newTracker());
     w.queueOwned = queueOwned;
+    if (info.engine?.id === 'claude-code' && extra.typeOnReady) w.typeOnReady = extra.typeOnReady;
     this.workers.set(id, w);
     // Persist an uncertain launch intent first. A crash before the PID save must never imply stopped.
     if (!this.persist()) {
@@ -488,16 +510,28 @@ export class WorkerManager {
     this.emitUpdate(w);
   }
 
-  /** Claude Code hook callback. */
-  handleHook(workerId: string, token: string, event: string, payload: any): boolean {
+  /**
+   * Hook callback from Claude Code (`/hooks/claude`) or Qwen Code (`/hooks/qwen`), whose hooks use Claude Code's event
+   * names and payload shape (https://qwenlm.github.io/qwen-code-docs/en/users/features/hooks/). A hook from another
+   * engine than the worker's is refused, so one engine's events never drive another's status.
+   */
+  handleHook(workerId: string, token: string, event: string, payload: any, source: 'claude' | 'qwen' = 'claude'): boolean {
     const w = this.workers.get(workerId);
     if (!w || !safeEq(token, w.hookToken)) return false;
+    const engine = w.info.engine ?? LEGACY_ENGINE;
+    if (launchSpec(engine, undefined).hooks !== source) return false;
     const now = Date.now();
+    if (w.info.statusKnown === false) {
+      w.info.statusKnown = undefined;
+      if (w.info.activity?.startsWith('No status reports')) w.info.activity = undefined;
+      this.emitUpdate(w);
+    }
     if (payload?.session_id && typeof payload.session_id === 'string' && payload.session_id !== w.info.sessionId) {
       w.info.sessionId = payload.session_id;
       this.persist();
     }
-    if (typeof payload?.transcript_path === 'string' && payload.transcript_path !== w.tracker.transcript) {
+    // Spend is read from Claude transcripts only; local engines have no provider spend (FREE_PLAN rule 4).
+    if (engine.id === 'claude-code' && typeof payload?.transcript_path === 'string' && payload.transcript_path !== w.tracker.transcript) {
       // Read the rest of the old transcript first, so its last messages go into `prior` too.
       if (w.tracker.transcript) {
         try {
@@ -520,6 +554,13 @@ export class WorkerManager {
           w.bootBlocked = false;
           this.setStatus(w, 'idle');
         }
+        if (w.typeOnReady && w.pty) {
+          // Typed for the user, never submitted: they press Enter and finish signing in inside Claude Code itself.
+          w.pty.write(w.typeOnReady);
+          w.typeOnReady = undefined;
+          w.info.activity = 'Press Enter in the terminal to sign in to Claude, then follow its steps';
+          this.emitUpdate(w);
+        }
         break;
       case 'UserPromptSubmit':
         w.bootBlocked = false;
@@ -531,7 +572,7 @@ export class WorkerManager {
         else this.emitUpdate(w);
         break;
       case 'PreToolUse':
-        if (payload?.tool_name === 'AskUserQuestion') this.setStatus(w, 'needs_input');
+        if (payload?.tool_name === 'AskUserQuestion' || payload?.tool_name === 'ask_user_question') this.setStatus(w, 'needs_input');
         else {
           w.info.activity = describeTool(payload);
           this.noteTool(w, w.info.activity);
@@ -557,6 +598,11 @@ export class WorkerManager {
         }
         break;
       case 'Stop':
+        this.setStatus(w, 'done');
+        break;
+      case 'StopFailure':
+        // Qwen Code: the turn ended on an error (for example the model failed). Finished; the terminal says why.
+        w.info.activity = 'The turn ended with an error — open the terminal';
         this.setStatus(w, 'done');
         break;
     }
@@ -648,15 +694,28 @@ export class WorkerManager {
 
     const shell = process.env.SHELL || '/bin/bash';
     const isShell = info.kind === 'shell';
-    const isClaude = !isShell && /(^|\/)claude$/.test(this.agentCmd);
-    const args = isShell ? ['-l'] : [...this.agentArgs];
+    const engine = info.engine ?? LEGACY_ENGINE;
+    const other = !isShell && engine.id !== 'claude-code' ? launchSpec(engine, prompt) : undefined;
+    const isClaude = !isShell && !other && /(^|\/)claude$/.test(this.agentCmd);
+    /** Qwen Code reports status through hooks like Claude; Codex cannot here, so its status is shown as unknown. */
+    const hooked = isClaude || other?.hooks === 'qwen';
+    const agentCmd = other ? other.cmd : this.agentCmd;
+    const agentPath = other ? this.runtime.resolveCommand(other.cmd) : this.agentPath;
+    const args = isShell ? ['-l'] : other ? [...other.args] : [...this.agentArgs];
     if (isClaude) {
       args.unshift('--settings', this.settingsPath);
       if (resumeSessionId) args.push('--resume', resumeSessionId);
       // `--` so a prompt like "- fix login" is never parsed as a CLI option.
       if (prompt) args.push('--', prompt);
     }
-    const env = childEnv();
+    if (other && resumeSessionId) term.write(`\x1b[2m[${info.name} starts a new ${other.cmd} session: resuming a conversation is supported for Claude Code only]\x1b[0m\r\n`);
+    let env = childEnv();
+    // FREE_PLAN rule 6: agents get no provider credentials except their own engine's. A custom `--agent` command (not
+    // `claude`) keeps the office environment as before: the Empire does not know which credentials it needs.
+    if (other || isClaude) env = engineEnv(env, engine, this.engineEnv.keys(), this.engineEnv.ollamaUrl);
+    // Qwen Code reads hooks from this file. System scope, so folder trust doesn't block them and nothing is written into
+    // the worker's git worktree: https://qwenlm.github.io/qwen-code-docs/en/users/configuration/settings/
+    if (other?.hooks === 'qwen') env.QWEN_CODE_SYSTEM_SETTINGS_PATH = this.qwenSettingsPath;
     Object.assign(env, {
       TERM: 'xterm-256color',
       COLORTERM: 'truecolor',
@@ -671,18 +730,18 @@ export class WorkerManager {
       if (!existsSync(cwd)) throw new Error(`working directory is gone: ${cwd}`);
       if (isShell) {
         proc = this.runtime.spawn(shell, args, { name: 'xterm-256color', cols: info.cols, rows: info.rows, cwd, env });
-      } else if (this.agentPath) {
-        proc = this.runtime.spawn(this.agentPath, args, { name: 'xterm-256color', cols: info.cols, rows: info.rows, cwd, env });
+      } else if (agentPath) {
+        proc = this.runtime.spawn(agentPath, args, { name: 'xterm-256color', cols: info.cols, rows: info.rows, cwd, env });
       } else {
         // Not found on PATH: let a login shell find it (nvm, asdf, ~/.local/bin ...).
-        const line = ['exec', this.agentCmd, ...args].map((a, i) => (i < 2 ? a : shq(a))).join(' ');
+        const line = ['exec', agentCmd, ...args].map((a, i) => (i < 2 ? a : shq(a))).join(' ');
         proc = this.runtime.spawn(shell, ['-l', '-i', '-c', line], { name: 'xterm-256color', cols: info.cols, rows: info.rows, cwd, env });
       }
     } catch (err) {
       info.status = 'exited';
       info.processState = 'stopped';
       info.exitCode = -1;
-      const what = isShell ? shell : this.agentCmd;
+      const what = isShell ? shell : agentCmd;
       term.write(`\r\n\x1b[31mFailed to start ${what}: ${(err as Error).message}\x1b[0m\r\n`);
       this.events.toast(`Could not start ${what}: ${(err as Error).message}`, 'error');
       this.emitUpdate(w);
@@ -691,7 +750,7 @@ export class WorkerManager {
     w.pty = proc;
     w.processPid = proc.pid;
     info.processState = 'running';
-    if (!isClaude) info.status = 'idle';
+    if (!hooked) info.status = 'idle';
 
     proc.onData((data) => {
       term.write(data);
@@ -725,6 +784,11 @@ export class WorkerManager {
         w.bootBlocked = true;
         info.activity = 'Waiting on a setup prompt (trust / login) — open the terminal';
         this.setStatus(w, 'needs_input');
+      } else if (hooked) {
+        // No SessionStart from Qwen Code: its hooks are not reaching us, so say so rather than guess.
+        info.statusKnown = false;
+        info.activity = 'No status reports from Qwen Code yet — status unknown; open the terminal';
+        this.setStatus(w, 'idle');
       } else this.setStatus(w, 'idle');
     }, 12000);
     this.persist();
@@ -742,7 +806,7 @@ export class WorkerManager {
 
   /** Picks up what the session logged since last time and books the difference. */
   private scanUsage(w: Worker) {
-    if (w.info.kind !== 'agent' || !w.tracker.transcript || this.workers.get(w.info.id) !== w) return;
+    if (w.info.kind !== 'agent' || (w.info.engine && w.info.engine.id !== 'claude-code') || !w.tracker.transcript || this.workers.get(w.info.id) !== w) return;
     try {
       if (!scanTracker(w.tracker)) return;
     } catch {
@@ -819,7 +883,7 @@ export class WorkerManager {
    * in on this machine. Flag that as needing a human, and clear it once the screen moves on.
    */
   private checkBlocked(w: Worker) {
-    if (w.info.kind !== 'agent' || !w.term) return;
+    if (w.info.kind !== 'agent' || !w.term || (w.info.engine && w.info.engine.id !== 'claude-code')) return;
     const s = w.info.status;
     if (s !== 'starting' && s !== 'idle' && !(w.bootBlocked && s === 'needs_input')) return;
     const text = screenText(w.term);
@@ -839,6 +903,13 @@ export class WorkerManager {
   }
 
   private writeHookSettings() {
+    this.writeHookFile('claude', this.settingsPath);
+    // Qwen Code accepts Claude Code's hook shape in settings.json. `security.auth.selectedType: "openai"` picks its
+    // OpenAI-compatible protocol, which the worker's environment points at Ollama (engines.ts engineEnv).
+    this.writeHookFile('qwen', this.qwenSettingsPath, { security: { auth: { selectedType: 'openai' } } });
+  }
+
+  private writeHookFile(source: 'claude' | 'qwen', file: string, extra: Record<string, unknown> = {}) {
     const events: [string, string | undefined][] = [
       ['SessionStart', undefined],
       ['UserPromptSubmit', undefined],
@@ -857,7 +928,7 @@ const [event] = process.argv.slice(2);
 let body = '';
 process.stdin.on('data', (c) => (body += c));
 process.stdin.on('end', () => {
-  const url = new URL(process.env.AGENT_OFFICE_HOOK_URL + '/hooks/claude');
+  const url = new URL(process.env.AGENT_OFFICE_HOOK_URL + '/hooks/' + (process.argv[3] === 'qwen' ? 'qwen' : 'claude'));
   url.searchParams.set('worker', process.env.AGENT_OFFICE_WORKER_ID);
   url.searchParams.set('event', event);
   const req = http.request(url, { method: 'POST', timeout: 3000, headers: { authorization: 'Bearer ' + process.env.AGENT_OFFICE_HOOK_TOKEN, 'content-type': 'application/json' } }, (res) => res.resume());
@@ -872,14 +943,14 @@ process.stdin.on('end', () => {
     for (const [event, matcher] of events) {
       const curl =
         `curl -sS -m 3 -X POST -H "Authorization: Bearer $AGENT_OFFICE_HOOK_TOKEN" -H "Content-Type: application/json" ` +
-        `--data-binary @- "$AGENT_OFFICE_HOOK_URL/hooks/claude?worker=$AGENT_OFFICE_WORKER_ID&event=${event}"`;
+        `--data-binary @- "$AGENT_OFFICE_HOOK_URL/hooks/${source}?worker=$AGENT_OFFICE_WORKER_ID&event=${event}"`;
       const command =
         `if [ -z "$AGENT_OFFICE_WORKER_ID" ] || [ -z "$AGENT_OFFICE_HOOK_URL" ]; then exit 0; fi; ` +
         `if command -v curl >/dev/null 2>&1; then ${curl} >/dev/null 2>&1; ` +
-        `else ${shq(process.execPath)} ${shq(nodeHook)} ${event} >/dev/null 2>&1; fi; true`;
+        `else ${shq(process.execPath)} ${shq(nodeHook)} ${event}${source === 'claude' ? '' : ` ${source}`} >/dev/null 2>&1; fi; true`;
       hooks[event] = [{ ...(matcher ? { matcher } : {}), hooks: [{ type: 'command', command }] }];
     }
-    writeFileSync(this.settingsPath, JSON.stringify({ hooks }, null, 2), { mode: 0o600 });
+    writeFileSync(file, JSON.stringify({ ...extra, hooks }, null, 2), { mode: 0o600 });
   }
 
   private persist() {
@@ -900,6 +971,7 @@ process.stdin.on('end', () => {
       task: info.task,
       pr: info.pr,
       outfit: info.outfit,
+      engine: info.engine,
       tracker: info.kind === 'agent' ? tracker : undefined,
       processState: info.processState,
       processPid: this.workers.get(info.id)?.processPid,
@@ -948,6 +1020,11 @@ process.stdin.on('end', () => {
           rows: 30,
           viewers: [],
         };
+        if (info.kind === 'agent') {
+          // Legacy saves predate engines: they ran Claude Code.
+          info.engine = sanitizeEngine(s.engine) ?? LEGACY_ENGINE;
+          if (launchSpec(info.engine, undefined).hooks === 'none') info.statusKnown = false;
+        }
         const w = newWorker(info, tracker);
         w.processPid = Number.isSafeInteger(s.processPid) && s.processPid! > 0 ? s.processPid : undefined;
         w.queueOwned = s.queueOwned === true || s.createdBy?.endsWith(' (queue)');
@@ -1070,7 +1147,7 @@ function screenText(term: HeadlessTerminal): string {
   return out.join('\n');
 }
 
-function resolveCommand(cmd: string): string | null {
+export function resolveCommand(cmd: string): string | null {
   if (cmd.includes('/')) {
     try {
       accessSync(cmd, constants.X_OK);

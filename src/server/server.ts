@@ -39,6 +39,10 @@ import { acquireHostLock } from './host-lock.js';
 import { ExecutionManager, ExecutionError, type ExecutionOptions } from './execution.js';
 import { ResearchDesk, ResearchError } from './research.js';
 import { readArtifact } from './artifacts.js';
+import { LinkedAccounts, envKeys, type Exec, type ProviderKeys } from './engines.js';
+import { DEFAULT_OLLAMA_URL, OllamaRuntime } from './ollama.js';
+import { sanitizeEngine } from '../shared/engines.js';
+import { resolveCommand } from './workers.js';
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -183,6 +187,11 @@ export interface ServerRuntime {
   outreach?: { config: OutreachConfig; transport?: MailTransport; now?: () => number; schedule?: (fn: () => void, ms: number) => () => void } | false;
   /** Packaged first-run desktops require an explicit execution choice before any local process. */
   requireExecutionSetup?: boolean;
+  /**
+   * FREE-01 engines. `providerKeys` is the desktop's sealed vault (default: the office environment). Tests inject a
+   * resolver over fake CLIs, a fake exec, a fake Ollama URL and a RAM size; nothing real is probed in fixtures.
+   */
+  engines?: { providerKeys?: () => ProviderKeys; resolve?: (cmd: string) => string | null; exec?: Exec; ollamaUrl?: string; totalMem?: () => number; env?: () => Record<string, string> };
 }
 export async function startServer(cfg: Config, runtime: ServerRuntime = {}) {
   const releaseHost = acquireHostLock(cfg.dataDir);
@@ -269,7 +278,8 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     } catch {
       return send(res, 400, {});
     }
-    if (req.method !== 'POST' || url.pathname !== '/hooks/claude') return send(res, 404, { ok: false });
+    const source = url.pathname === '/hooks/claude' ? 'claude' : url.pathname === '/hooks/qwen' ? 'qwen' : undefined;
+    if (req.method !== 'POST' || !source) return send(res, 404, { ok: false });
     let payload: unknown = {};
     try {
       const body = await readBody(req);
@@ -278,12 +288,22 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
       // permissive: a bad payload still counts as the event
     }
     const token = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
-    const ok = workers.handleHook(url.searchParams.get('worker') ?? '', token, url.searchParams.get('event') ?? '', payload);
+    const ok = workers.handleHook(url.searchParams.get('worker') ?? '', token, url.searchParams.get('event') ?? '', payload, source);
     send(res, ok ? 200 : 401, {});
   });
   await new Promise<void>((resolve) => hookServer.listen(0, '127.0.0.1', resolve));
   startupCleanup.push(() => hookServer.close());
   const hookPort = (hookServer.address() as { port: number }).port;
+
+  // FREE-01: linked accounts and the local model runtime. Probed only when the Settings panel asks, never at startup.
+  const providerKeys = runtime.engines?.providerKeys ?? (() => envKeys());
+  const ollamaUrl = runtime.engines?.ollamaUrl ?? DEFAULT_OLLAMA_URL;
+  const ollama = new OllamaRuntime(ollamaUrl);
+  const accounts = new LinkedAccounts({
+    dataDir: cfg.dataDir, ollama, keys: providerKeys,
+    resolve: runtime.engines?.resolve ?? (runtime.workers ? runtime.workers.resolveCommand : resolveCommand),
+    exec: runtime.engines?.exec, totalMem: runtime.engines?.totalMem, env: runtime.engines?.env,
+  });
 
   // What the workers spend, all time and today, with the optional daily budget.
   const ledger = new Ledger(
@@ -333,6 +353,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     () => empire.state.office.workstations,
     runtime.workers,
     localExecutionBlocker,
+    { keys: providerKeys, ollamaUrl, defaultEngine: () => accounts.spawnDefault() },
   );
 
   startupCleanup.push(() => workers.shutdown());
@@ -836,6 +857,30 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
           return send(res, 500, { error: 'Outreach could not complete this request.' });
         }
       }
+      if (p === '/api/engines' || p.startsWith('/api/engines/')) {
+        // FREE-01 linked accounts. GET reports names and states only: never a key, token or credential file.
+        if (req.method !== 'GET' && !trusted()) return send(res, 403, { error: 'A same-origin Origin header is required' });
+        try {
+          if (p === '/api/engines' && req.method === 'GET') return send(res, 200, await accounts.state(/[?&]refresh=1\b/.test(req.url ?? '')));
+          if (req.method !== 'POST' && req.method !== 'PUT') return send(res, 404, { error: 'Unknown engines endpoint.' });
+          let body: Record<string, unknown> = {};
+          try { const raw = await readBody(req, 4096); body = raw.trim() ? JSON.parse(raw) : {}; } catch { return send(res, 400, { error: 'Expected a JSON request.' }); }
+          if (p === '/api/engines/default') {
+            try { accounts.setDefault(body.engine); } catch (error) { return send(res, 400, { error: (error as Error).message }); }
+            return send(res, 200, await accounts.state());
+          }
+          if (p === '/api/engines/ollama/pull') {
+            const r = ollama.startPull(body.model, body.confirm);
+            if (r.error) return send(res, 400, { error: r.error });
+            void r.started?.then(() => accounts.state(true));
+            return send(res, 202, { pull: ollama.pull });
+          }
+          if (p === '/api/engines/ollama/cancel') return send(res, 200, { cancelled: ollama.cancelPull(), pull: ollama.pull });
+          return send(res, 404, { error: 'Unknown engines endpoint.' });
+        } catch {
+          return send(res, 500, { error: 'Linked accounts could not be checked.' });
+        }
+      }
       if (p.startsWith('/api/execution/')) {
         if (req.method !== 'GET' && !trusted()) return send(res, 403, {error:'A same-origin Origin header is required'});
         try {
@@ -1141,7 +1186,10 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
       }
       case 'worker.spawn': {
         const kind = msg.kind === 'shell' ? 'shell' : 'agent';
-        const r = workers.spawn(str(msg.deskId, 32), who, str(msg.prompt, 20000) || undefined, msg.worktree === true, kind, false, sanitizeOutfit(msg.outfit));
+        // "Sign in to Claude" (FREE-01): a Claude Code worker on the user's own account, with `/login` typed (not sent).
+        const login = kind === 'agent' && msg.login === true;
+        const engine = login ? { id: 'claude-code' as const, auth: 'subscription' as const } : sanitizeEngine(msg.engine);
+        const r = workers.spawn(str(msg.deskId, 32), who, login ? undefined : str(msg.prompt, 20000) || undefined, msg.worktree === true && !login, kind, false, sanitizeOutfit(msg.outfit), undefined, undefined, { engine, typeOnReady: login ? '/login' : undefined });
         if (typeof r === 'string') sendTo(c, { t: 'toast', text: r, level: 'warn' });
         else broadcast({ t: 'toast', text: kind === 'shell' ? `${who} opened a shell at a desk` : `${who} hired ${r.name}${r.prompt ? ' with a task' : ''}`, level: 'info' });
         break;
