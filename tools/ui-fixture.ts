@@ -7,6 +7,7 @@ import { randomBytes } from 'node:crypto';
 import { initialEmpire, MANAGER_NAMES, type SupervisionState } from '../src/shared/empire.js';
 import type { ServerMsg, WorkerInfo, QueueTask } from '../src/shared/protocol.js';
 import { sanitizeOutfit } from '../src/shared/outfit.js';
+import { HOSTED_FREE, KEY_NAMES, MODEL_CATALOGUE, OLLAMA_INSTALL_URL, engineOptions, pickEngine, recommendModels, sanitizeEngine, type EnginesState, type PullState, type WorkerEngine } from '../src/shared/engines.js';
 import { projectWaitingOn, withWaitingOn } from '../src/server/waiting.js';
 import { projectOrg } from '../src/server/org.js';
 import type { ConsultancyJob } from '../src/shared/consultancy.js';
@@ -202,16 +203,40 @@ function waitingJob(now: number): { workers: WorkerInfo[]; tasks: QueueTask[] } 
 // from the desk dialog seats one more with the chosen outfit. They are display-only: no process, no provider.
 const extraWorkers = new Map<string, WorkerInfo>();
 const FIXTURE_NAMES = ['Bea', 'Cyrus', 'Dana', 'Eli', 'Fatima', 'Gus', 'Hana', 'Ivo', 'Jun', 'Kai', 'Lena'];
-function seatFixtureWorker(deskId: string, outfit?: unknown): WorkerInfo {
+function seatFixtureWorker(deskId: string, outfit?: unknown, engine?: WorkerEngine): WorkerInfo {
   const n = extraWorkers.size;
   const w: WorkerInfo = { id: `fixture-staff-${n + 1}`, kind: 'agent', deskId, name: `${FIXTURE_NAMES[n % FIXTURE_NAMES.length]} · fixture`, color: '#8ecae6', status: 'working',
     processState: 'running', acked: true, createdBy: 'Fixture', createdAt: Date.now(), cols: 90, rows: 25, viewers: [], outfit: sanitizeOutfit(outfit),
-    task: { name: 'Synthetic desk', summary: 'Display-only fixture worker — nothing runs' } };
+    task: { name: 'Synthetic desk', summary: 'Display-only fixture worker — nothing runs' },
+    ...(engine ? { engine, ...(engine.id === 'codex' ? { statusKnown: false } : {}) } : {}) };
   extraWorkers.set(w.id, w);
   return w;
 }
+// FREE-01: FIXTURE_ENGINES=free|premium|none seats engine-labelled staff and serves a synthetic /api/engines.
+const FX_ENGINES = process.env.FIXTURE_ENGINES as 'free' | 'premium' | 'none' | undefined;
+const FX_STAFF_ENGINES: (WorkerEngine | undefined)[] = FX_ENGINES ? [{ id: 'qwen-code', auth: 'local', model: 'gpt-oss:20b' }, { id: 'codex', auth: 'local', model: 'gpt-oss:20b' }, { id: 'claude-code', auth: 'subscription' }] : [];
 for (let i = 0, n = Math.min(18, Number(process.env.FIXTURE_WORKERS) || 0), desk = 2; i < n && desk <= 20; desk++)
-  if (!WAITING_DESKS.includes(`desk-${desk}`) || process.env.FIXTURE_SCENARIO !== 'waiting') { seatFixtureWorker(`desk-${desk}`); i++; }
+  if (!WAITING_DESKS.includes(`desk-${desk}`) || process.env.FIXTURE_SCENARIO !== 'waiting') { seatFixtureWorker(`desk-${desk}`, undefined, FX_STAFF_ENGINES[i]); i++; }
+let fxDefault: 'auto' | WorkerEngine = 'auto';
+let fxPull: PullState | undefined;
+let fxPullTimer: NodeJS.Timeout | undefined;
+function fxEngines(): EnginesState {
+  const premium = FX_ENGINES === 'premium';
+  const none = FX_ENGINES === 'none';
+  const ram = recommendModels((none ? 16 : 32) * 2 ** 30);
+  const base = {
+    claude: none ? { installed: false, loggedIn: null, detail: 'Claude Code is not installed on this computer.' } : premium ? { installed: true, loggedIn: true, method: 'claude.ai', plan: 'max', expiresAt: new Date(Date.now() + 3 * 864e5).toISOString(), expiringSoon: true, detail: `Signed in via claude.ai (max). Expires ${new Date(Date.now() + 3 * 864e5).toISOString().slice(0, 10)}: sign in again soon.` } : { installed: true, loggedIn: false, detail: 'Not signed in on this computer.' },
+    codex: { installed: !none, loggedIn: none ? null : false, detail: none ? 'Optional: Codex CLI is not installed.' : 'Not signed in. Run `codex login` yourself in a terminal.' },
+    qwen: { installed: !none, detail: none ? 'Not installed. Free: npm install -g @qwen-code/qwen-code' : 'Qwen Code is installed.' },
+    ollama: none ? { running: false, models: [], url: 'http://127.0.0.1:11434', installUrl: OLLAMA_INSTALL_URL, detail: 'Ollama is not running on http://127.0.0.1:11434. Install it from https://ollama.com/download (not bundled), then start it.' }
+      : { running: true, version: '0.40.10', models: [{ name: 'gpt-oss:20b', sizeBytes: 14e9 }], url: 'http://127.0.0.1:11434', installUrl: OLLAMA_INSTALL_URL, detail: 'Running (v0.40.10) with 1 model.', pull: fxPull },
+    ram: { totalGb: ram.ramGb, note: ram.note, models: ram.models },
+    keys: KEY_NAMES.map((name) => ({ name, present: premium && name === 'ANTHROPIC_API_KEY' })),
+  } satisfies Partial<EnginesState>;
+  const options = engineOptions(base);
+  const picked = pickEngine(options, fxDefault);
+  return { ...base, hosted: HOSTED_FREE, defaultEngine: fxDefault, options, recommended: picked.engine, help: picked.help, checkedAt: Date.now() };
+}
 function publish(ws: WebSocket) {
   const {state, worker, tasks, jobWorkers} = snapshot();
   send(ws, { t: 'worker.update', worker });
@@ -283,6 +308,23 @@ const server = createServer(async (req, res) => {
     return json(res, 200, { ok: true });
   }
   if (url.pathname === '/__fixture/jobs') return json(res, 200, fxOffice.snapshot());
+  if (FX_ENGINES && url.pathname === '/api/engines' && req.method === 'GET') return json(res, 200, fxEngines());
+  if (FX_ENGINES && url.pathname.startsWith('/api/engines/') && req.method === 'POST') {
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    let body: Record<string, unknown> = {}; try { body = raw ? JSON.parse(raw) : {}; } catch { return json(res, 400, { error: 'Expected JSON.' }); }
+    if (url.pathname === '/api/engines/default') { const e = body.engine === 'auto' ? 'auto' : sanitizeEngine(body.engine); if (!e) return json(res, 400, { error: 'Unknown engine.' }); fxDefault = e; return json(res, 200, fxEngines()); }
+    if (url.pathname === '/api/engines/ollama/pull') {
+      // Synthetic progress only: the fixture never contacts Ollama or downloads anything.
+      if (body.confirm !== true) return json(res, 400, { error: 'A model download needs explicit confirmation of its name, size and licence.' });
+      const m = MODEL_CATALOGUE.find((x) => x.tag === body.model); if (!m) return json(res, 400, { error: 'Only the listed models can be downloaded from here.' });
+      fxPull = { model: m.tag, status: 'downloading (synthetic)', completed: 0, total: m.sizeGb * 1e9, done: false };
+      clearInterval(fxPullTimer);
+      fxPullTimer = setInterval(() => { if (!fxPull || fxPull.done) return clearInterval(fxPullTimer); fxPull.completed = Math.min(fxPull.total * 0.42, fxPull.completed + fxPull.total * 0.07); }, 400);
+      return json(res, 202, { pull: fxPull });
+    }
+    if (url.pathname === '/api/engines/ollama/cancel') { if (fxPull && !fxPull.done) Object.assign(fxPull, { done: true, cancelled: true, status: 'cancelled' }); clearInterval(fxPullTimer); return json(res, 200, { cancelled: true, pull: fxPull }); }
+    return json(res, 404, { error: 'Unknown engines endpoint.' });
+  }
   if (url.pathname === '/api/approvals' && req.method === 'GET') return json(res, 200, inbox!.state());
   if (url.pathname === '/api/research' && req.method === 'GET') return json(res, 200, research!.state());
   const reportRoute = /^\/api\/research\/reports\/([a-zA-Z0-9_-]{1,80})$/.exec(url.pathname);
@@ -342,7 +384,7 @@ sockets.on('connection', ws => {
     else if (msg.t === 'term.input' && typeof msg.data === 'string') send(ws, { t: 'term.data', workerId: 'fixture-chief', data: msg.data.replace(/\r/g, '\r\n') });
     else if (msg.t === 'ping') send(ws, { t: 'pong', at: msg.at });
     else if (msg.t === 'worker.spawn' && typeof msg.deskId === 'string' && /^desk-([2-9]|1[0-9]|20)$/.test(msg.deskId) && msg.kind !== 'shell' && ![...extraWorkers.values()].some((w) => w.deskId === msg.deskId) && !(scenario === 'waiting' && WAITING_DESKS.includes(msg.deskId))) {
-      const w = seatFixtureWorker(msg.deskId, msg.outfit);
+      const w = seatFixtureWorker(msg.deskId, msg.outfit, msg.login ? { id: 'claude-code', auth: 'subscription' } : sanitizeEngine(msg.engine));
       for (const client of sockets.clients) send(client, { t: 'worker.update', worker: w });
       send(ws, { t: 'toast', level: 'info', text: `Fixture only: ${w.name} sat down for display; no agent runs.` });
     }
