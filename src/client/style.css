@@ -1394,7 +1394,8 @@ html.ae-touch #hud .topbar .controls > #btn-inbox > span:not(.svc-count):not(.in
 /* FREE-01: engines, linked accounts and honest engine labels */
 .workers .engine, .workers-list .engine { display: block; font-size: 10px; font-weight: 700; letter-spacing: .02em; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .workers .engine[data-engine=qwen-code], .workers-list .engine[data-engine=qwen-code] { color: #2f7d5b; }
-.modal.term header .engine-tag { font-size: 12px; font-weight: 700; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 32ch; }
+.modal.term header .engine-tag { font-size: 12px; font-weight: 700; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 32ch; min-width: 0; flex: 0 100 auto; }
+@media (max-width: 720px), (max-height: 420px) { .modal.term header .engine-tag { max-width: 14ch; font-size: 11px; } }
 .pill.unknown { background: #e9ecef; color: #495057; border-style: dashed; }
 .linked-accounts .engine-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 10px; }
 .linked-accounts .engine-default, .linked-accounts .hosted-free { grid-column: 1 / -1; }
