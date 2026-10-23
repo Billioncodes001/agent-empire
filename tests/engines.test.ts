@@ -353,3 +353,20 @@ test('shared model client: Ollama $0, free tier labelled, paid estimate labelled
     assert.throws(() => provider('gemini', 'x', {}), /needs your own GEMINI_API_KEY/);
   } finally { await fake.close(); }
 });
+
+test('desktop vault seals free hosted keys and reports names only', async () => {
+  const { createRequire } = await import('node:module');
+  const { createVault, HOSTED } = createRequire(import.meta.url)('../desktop/credential-vault.cjs');
+  const fake = { isEncryptionAvailable: () => true, encryptString: (s: string) => Buffer.from(s.split('').reverse().join('')), decryptString: (b: Buffer) => b.toString().split('').reverse().join('') };
+  const dir = mkdtempSync(path.join(tmpdir(), 'empire-vault-free-'));
+  try {
+    const vault = createVault(path.join(dir, 'vault'), fake);
+    vault.save({ groqKey: 'gsk-test' });
+    assert.deepEqual(HOSTED, ['openrouterKey', 'geminiKey', 'groqKey']);
+    assert.equal(vault.names().groqKey, true);
+    assert.equal(vault.names().openaiKey, false);
+    assert.ok(!JSON.stringify(vault.names()).includes('gsk-test'));
+    assert.ok(!readFileSync(path.join(dir, 'vault'), 'utf8').includes('gsk-test'));
+    assert.deepEqual(vault.status(), { available: true, anthropic: false, github: false }, 'status shape unchanged');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
