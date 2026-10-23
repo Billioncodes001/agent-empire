@@ -47,23 +47,34 @@ function loadWorker() {
   class FakeRequest {
     constructor(public url: string, init: Record<string, unknown> = {}) { Object.assign(this, init); }
   }
+  const stored = new Map<string, unknown>();
+  const staticCache = {
+    match: async (req: any) => stored.get(req.url),
+    put: async (req: any, res: unknown) => void stored.set(req.url, res),
+    keys: async () => [...stored.keys()].map((url) => ({ url })),
+    delete: async (req: any) => stored.delete(req.url),
+  };
   const caches = {
     open: async (name: string) => {
       opened.push(name);
-      return { addAll: async (reqs: any[]) => void added.push(...reqs), put: async () => assert.fail('the worker must never store responses') };
+      if (name === 'agent-empire-static-v1') return staticCache;
+      return { addAll: async (reqs: any[]) => void added.push(...reqs), put: async () => assert.fail('the offline cache must never store responses') };
     },
-    keys: async () => ['agent-empire-offline-v0', 'agent-empire-offline-v1', 'someone-else'],
+    keys: async () => ['agent-empire-offline-v0', 'agent-empire-offline-v1', 'agent-empire-static-v1', 'agent-empire-static-v0', 'someone-else'],
     delete: async (key: string) => (deleted.push(key), true),
-    match: async (url: string, opts: { cacheName?: string }) => (url === '/assets/pwa/offline-v1.html' && opts.cacheName === 'agent-empire-offline-v1' ? cached : undefined),
+    match: async (url: string, opts: { cacheName?: string }) => (['/assets/pwa/offline-v1.html', '/assets/pwa/icon-192-v1.png'].includes(url) && opts.cacheName === 'agent-empire-offline-v1' ? cached : undefined),
   };
-  const self = { addEventListener: (type: string, fn: (e: any) => void) => (listeners[type] = fn), skipWaiting: async () => {}, clients: { claim: async () => {} } };
-  vm.runInNewContext(readFileSync(resolve(pub, 'sw.js'), 'utf8'), { self, caches, fetch: () => network(), Request: FakeRequest, Response });
+  const self = {
+    addEventListener: (type: string, fn: (e: any) => void) => (listeners[type] = fn), skipWaiting: async () => {}, clients: { claim: async () => {} },
+    location: { href: 'https://office.example/', origin: 'https://office.example' },
+  };
+  vm.runInNewContext(readFileSync(resolve(pub, 'sw.js'), 'utf8'), { self, caches, fetch: () => network(), Request: FakeRequest, Response, URL });
   const fetchEvent = (request: Record<string, string>) => {
     let responded: Promise<unknown> | undefined;
     listeners.fetch({ request, respondWith: (p: Promise<unknown>) => (responded = p) });
     return responded;
   };
-  return { listeners, added, deleted, opened, fetchEvent, setNetwork: (fn: typeof network) => (network = fn), setCached: (v: unknown) => (cached = v) };
+  return { listeners, added, deleted, opened, fetchEvent, stored, setNetwork: (fn: typeof network) => (network = fn), setCached: (v: unknown) => (cached = v) };
 }
 
 test('service worker precaches only the public offline page and icon', async () => {
@@ -75,7 +86,57 @@ test('service worker precaches only the public offline page and icon', async () 
   assert.ok(sw.added.every((r) => r.credentials === 'omit'));
   sw.listeners.activate({ waitUntil: (p: Promise<unknown>) => (wait = p) });
   await wait;
-  assert.deepEqual(sw.deleted, ['agent-empire-offline-v0']);
+  assert.deepEqual(sw.deleted, ['agent-empire-offline-v0', 'agent-empire-static-v0']);
+});
+
+const headers = (h: Record<string, string> = {}) => ({ has: (k: string) => k.toLowerCase() in h, get: (k: string) => h[k.toLowerCase()] ?? null });
+
+test('service worker caches only fingerprinted static build files, never API, models or authorised requests (FREE-03)', async () => {
+  const sw = loadWorker();
+  let calls = 0;
+  sw.setNetwork(async () => (calls++, { status: 200, type: 'basic', headers: headers({ 'cache-control': 'public, max-age=31536000, immutable' }), clone() { return { cloned: this }; } }));
+  const asset = { mode: 'no-cors', method: 'GET', url: 'https://office.example/assets/main-B_pX_qdZ.js', headers: headers() };
+  await sw.fetchEvent(asset);
+  assert.equal(calls, 1);
+  assert.ok(sw.stored.has(asset.url), 'a hashed build file is stored');
+  await sw.fetchEvent(asset);
+  assert.equal(calls, 1, 'the second load comes from the cache');
+  for (const request of [
+    { mode: 'cors', method: 'GET', url: 'https://office.example/api/continuity/status' },
+    { mode: 'cors', method: 'GET', url: 'https://office.example/api/assets/main-B_pX_qdZ.js' },
+    { mode: 'no-cors', method: 'GET', url: 'https://office.example/models/executive-sedan.glb' },
+    { mode: 'no-cors', method: 'GET', url: 'https://office.example/textures/oak-color.jpg' },
+    { mode: 'no-cors', method: 'GET', url: 'https://office.example/assets/pwa/icon-512-v1.png' },
+    { mode: 'no-cors', method: 'GET', url: 'https://office.example/assets/main-B_pX_qdZ.js?token=x' },
+    { mode: 'no-cors', method: 'GET', url: 'https://cdn.example/assets/main-B_pX_qdZ.js' },
+    { mode: 'cors', method: 'GET', url: 'https://office.example/assets/view-CXTJV7fE.css', headers: headers({ authorization: 'Bearer x' }) },
+    { mode: 'cors', method: 'POST', url: 'https://office.example/assets/main-B_pX_qdZ.js' },
+  ])
+    assert.equal(sw.fetchEvent(request), undefined, request.url);
+});
+
+test('the offline page icon falls back to its precached copy when the network fails', async () => {
+  const sw = loadWorker();
+  sw.setNetwork(async () => { throw new TypeError('offline'); });
+  sw.setCached({ icon: true });
+  const icon = sw.fetchEvent({ mode: 'no-cors', method: 'GET', url: 'https://office.example/assets/pwa/icon-192-v1.png' });
+  assert.ok(icon, 'the worker answers the precached icon');
+  assert.deepEqual(await icon, { icon: true });
+});
+
+test('service worker does not store error, opaque or no-store responses', async () => {
+  for (const res of [
+    { status: 404, type: 'basic', headers: headers() },
+    { status: 200, type: 'opaque', headers: headers() },
+    { status: 200, type: 'basic', headers: headers({ 'cache-control': 'no-store' }) },
+    { status: 200, type: 'basic', headers: headers({ 'cache-control': 'private, max-age=60' }) },
+  ]) {
+    const sw = loadWorker();
+    sw.setNetwork(async () => ({ ...res, clone: () => res }));
+    const answered = await sw.fetchEvent({ mode: 'no-cors', method: 'GET', url: 'https://office.example/assets/main-B_pX_qdZ.js', headers: headers() } as any);
+    assert.equal((answered as { status: number }).status, res.status, 'the network response is passed through');
+    assert.equal(sw.stored.size, 0, JSON.stringify(res));
+  }
 });
 
 test('service worker leaves API, assets, sockets and non-GET requests to the network', () => {
