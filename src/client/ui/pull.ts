@@ -73,7 +73,7 @@ function nameWithOwner(url: string): string {
 export function labelChip(l: { name: string; color: string }) {
   const n = parseInt(l.color.slice(1), 16);
   const lum = Number.isNaN(n) ? 1 : (0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
-  return h('span.label', { style: `background:${l.color};color:${lum < 0.55 ? '#fff' : 'var(--ink)'}` }, l.name);
+  return h('span.label', { style: `background:${l.color};color:${lum < 0.55 ? '#fff' : '#2b2d42'}` }, l.name);
 }
 
 function avatar(name: string) {
@@ -257,7 +257,7 @@ function openMerge(it: GhPull, d: GhPullDetail, net: Net, handToWorker: () => vo
     : h('button.btn', { type: 'button', title: 'A worker fixes whatever is in the way, then merges' }, '🤖 Hand to a worker');
 
   const el = h(
-    'div.modal.gh-merge',
+    'div.modal.gh-merge.ae-dark',
     { role: 'dialog', 'aria-label': `Merge PR #${it.number}` },
     h('header', {}, h('h2', {}, `🔀 Merge #${it.number}`)),
     h(
@@ -337,7 +337,7 @@ export function openPull(first: GhPull, net: Net, actions: BoardActions) {
   const filesPane = h('div.pd');
   const footBtns = h('span.gh-foot');
   const el = h(
-    'div.modal.gh-window',
+    'div.modal.gh-window.ae-dark',
     { role: 'dialog', 'aria-label': `Pull request #${it.number}`, tabindex: -1 },
     h('header', {}, pill, title, reload, close),
     meta,
@@ -812,7 +812,7 @@ export function openIssue(it: GhIssue, actions: BoardActions) {
         )
       : null;
   const el = h(
-    'div.modal.gh-window.issue',
+    'div.modal.gh-window.issue.ae-dark',
     { role: 'dialog', 'aria-label': `Issue #${it.number}` },
     h('header', {}, h('span.pill', { class: cls }, word), h('h2', { title: it.title }, `#${it.number} ${it.title}`), close),
     h(

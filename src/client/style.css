@@ -851,6 +851,15 @@ a.when:hover { text-decoration: underline; }
 .app-panel .status-card p { color: #a8bec3; }
 .app-panel .status-card .setting-note { margin-top: 8px; color: #8fa6aa; font-size: 11px; }
 .app-panel .empire-eyebrow { color: #8fa39c; font-size: 10px; letter-spacing: .14em; text-transform: uppercase; }
+.app-panel .devices-card { margin-top: 10px; }
+.device-list { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 8px; }
+.device-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid #425359; border-radius: 10px; background: #13202a; }
+.device-row > div { min-width: 0; }
+.device-row strong { display: block; color: #e7f0ef; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.device-row .device-meta { display: block; margin-top: 2px; color: #a8bec3; font-size: 12px; }
+.device-row .device-this { flex: none; padding: 4px 10px; border: 1px solid #9bd1ba88; border-radius: 999px; color: #c9eedd; font-size: 12px; font-weight: 600; }
+.device-row .btn { flex: none; }
+@media (max-width: 420px) { .device-row { flex-direction: column; align-items: stretch; } }
 .app-install { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
 .app-install .setting-note { flex: 1; margin: 0; }
 @media (max-width: 600px) { .app-panel .status-cards { grid-template-columns: 1fr; } .app-install { flex-direction: column; align-items: stretch; } #hud #conn { top: auto; bottom: 200px; } }
@@ -1098,6 +1107,70 @@ html.ae-touch .lift-status { top: calc(96px + env(safe-area-inset-top)); }
 .settings-modal.ae-dark .key-row .btn { min-height: 36px; font-size: 12px; }
 /* The dark game windows share the setup's typeface. */
 .modal.game-menu, .modal.game-help, .modal.empire-modal, .modal.exec-modal, .modal.founding-modal { font-family: Inter, 'SF Pro Text', system-ui, -apple-system, 'Segoe UI', sans-serif; }
+/* Older game windows in the dark design (consistency sweep 2026-10-23): GitHub boards and PR/issue windows, merge,
+   ask, hang/picture, workers, headquarters and the screen viewer. Layout and behaviour are unchanged; only surfaces
+   that hard-coded the light "paper" colours are restyled. Small light chips (pills, badges, labels, sticky notes) and
+   the diff pane keep their light ink so their status colours still read. */
+.modal.ae-dark .pill, .modal.ae-dark .gh-badge, .modal.ae-dark .desk-link, .modal.ae-dark .card, .modal.ae-dark .pd { --ink: #2b2d42; --muted: #5f564e; --paper: #fffaf3; --paper-2: #fff1de; color: #2b2d42; }
+.modal.ae-dark .pill.done, .modal.ae-dark .gh-badge.ok, .modal.ae-dark .pd-st.A { color: #0f2019; }
+.modal.ae-dark .pill.needs_input, .modal.ae-dark .gh-badge.bad, .modal.ae-dark .pd-st.D { color: #2a0711; }
+.modal.ae-dark .pill.merged { color: #fff; }
+.modal.ae-dark .gh-avatar { border-color: rgba(255, 255, 255, .35); }
+.modal.ae-dark a, .modal.ae-dark .md a, .modal.ae-dark.gh-window footer a.grow { color: #9ccfff; }
+/* Boards */
+.modal.board.ae-dark .body { background: #0f1c21; background-image: radial-gradient(rgba(155, 209, 186, .08) 1px, transparent 1.5px); background-size: 9px 9px; }
+.modal.ae-dark .column { background: rgba(255, 255, 255, .03); border: 1px solid var(--line); }
+.modal.ae-dark .column h4 { background: rgba(255, 255, 255, .04); border-bottom: 1px solid var(--line); font-weight: 650; }
+.modal.ae-dark .column .empty, .modal.ae-dark .column li:not(.card) { color: var(--muted); }
+.modal.ae-dark .board-error { background: #2a1a20; border: 1px solid rgba(255, 214, 224, .35); color: #ffd6e0; font-weight: 600; }
+.modal.ae-dark .detail pre { background: rgba(6, 14, 18, .6); border: 1px solid var(--line); color: var(--ink); }
+/* PR and issue windows */
+.modal.ae-dark .gh-meta { border-bottom: 1px solid var(--line); font-weight: 500; }
+.modal.ae-dark .gh-meta code { background: #15324a; color: #d6ebff; }
+.modal.ae-dark .gh-tabs { background: transparent; border-bottom: 1px solid var(--line); }
+.modal.ae-dark .gh-tab { color: var(--muted); font-weight: 650; }
+.modal.ae-dark .gh-tab:hover, .modal.ae-dark .gh-tab.on { color: var(--ink); }
+.modal.ae-dark .gh-count { background: rgba(255, 255, 255, .06); border: 1px solid var(--line-2); color: var(--ink); }
+.modal.ae-dark .gh-progress.all, .modal.ae-dark .gh-pm .add, .modal.ae-dark .pd-done { color: #7ddc9a; }
+.modal.ae-dark .gh-pm .del { color: #ff9b95; }
+.modal.ae-dark .gh-conv { background: #0f1c21; }
+.modal.ae-dark .gh-card, .modal.ae-dark .gh-mergebox { background: #16282f; border: 1px solid var(--line); box-shadow: none; }
+.modal.ae-dark .gh-card > header { background: rgba(255, 255, 255, .04); border-bottom: 1px solid var(--line); color: var(--muted); font-weight: 500; }
+.modal.ae-dark .gh-card.is-ok > header { background: #173a2c; }
+.modal.ae-dark .gh-card.is-bad > header { background: #4a1f2a; }
+.modal.ae-dark .md { color: var(--ink); font-weight: 400; }
+.modal.ae-dark .md code { background: rgba(255, 255, 255, .08); }
+.modal.ae-dark .md pre { border: 1px solid var(--line); }
+.modal.ae-dark .md blockquote { border-left-color: var(--line-2); }
+.modal.ae-dark .md th, .modal.ae-dark .md td { border-color: var(--line); }
+.modal.ae-dark .md tr:nth-child(2n) td { background: rgba(255, 255, 255, .03); }
+.modal.ae-dark .md h1, .modal.ae-dark .md h2 { border-bottom-color: var(--line); }
+.modal.ae-dark .gh-status, .modal.ae-dark .gh-merge-result { border: 1px solid var(--line-2); background: #1f2e34; color: var(--ink); font-weight: 600; }
+.modal.ae-dark .gh-status.ok { background: #173a2c; }
+.modal.ae-dark .gh-status.warn { background: #3d3416; }
+.modal.ae-dark .gh-status.bad, .modal.ae-dark .gh-merge-result.error, .modal.ae-dark .gh-error { background: #4a1f2a; border: 1px solid rgba(255, 214, 224, .35); color: #ffe3ea; }
+.modal.ae-dark .gh-checks a { color: var(--ink); }
+.modal.ae-dark .gh-merge-title { font-weight: 680; }
+/* Ask, hang and picture */
+.modal.ae-dark .ask-context pre { background: rgba(6, 14, 18, .6); border: 1px solid var(--line); color: var(--ink); }
+.modal.ae-dark .ask-context summary { font-weight: 600; }
+.modal.ae-dark .hang-status.error { color: #ffe3ea; background: #4a1f2a; border: 1px solid rgba(255, 214, 224, .35); }
+.modal.ae-dark .hang-preview img { outline: 1px solid var(--line-2); box-shadow: 0 10px 30px -12px #000a; }
+.modal.ae-dark .picture-stage { background: #0b161b; border: 1px solid var(--line); }
+.modal.ae-dark input[type=url], .modal.ae-dark input:not([type]) { min-height: 46px; font: inherit; font-size: 16px; color: var(--ink); background: rgba(6, 14, 18, .6); border: 1px solid var(--line); border-radius: 11px; padding: 10px 14px; }
+.modal.ae-dark input[type=url]:focus, .modal.ae-dark input:not([type]):focus { border-color: var(--accent); box-shadow: 0 0 0 4px rgba(155, 209, 186, .16); outline: none; }
+.modal.ae-dark input[type=checkbox] { accent-color: var(--accent); }
+.modal.ae-dark input[type=range] { accent-color: var(--accent); }
+/* Workers, headquarters, screen viewer */
+.modal.ae-dark .pill.stale { color: var(--tone-unknown); }
+.modal.tower-modal.ae-dark .tower-eyebrow { color: #a9c4b8; }
+.modal.tower-modal.ae-dark .tower-metrics > div, .modal.tower-modal.ae-dark .floor-card { background: rgba(255, 255, 255, .04); border: 1px solid var(--line); color: var(--ink); }
+.modal.tower-modal.ae-dark .floor-card small { color: var(--muted); }
+.modal.tower-modal.ae-dark .floor-card:hover:not(:disabled) { border-color: var(--line-2); background: rgba(255, 255, 255, .07); }
+.modal.tower-modal.ae-dark .tower-body h3 { color: var(--ink); }
+.modal.viewer.ae-dark { background: #0b1418; }
+.modal.viewer.ae-dark video { background: #0b1418; }
+.modal.board, .modal.gh-window, .modal.gh-merge, .modal.ask, .modal.hang, .modal.picture, .modal.workers-modal, .modal.tower-modal, .modal.viewer { font-family: Inter, 'SF Pro Text', system-ui, -apple-system, 'Segoe UI', sans-serif; }
 
 /* Touch: text fields at 16px or more, so iOS doesn't zoom the page when one is focused. */
 @media (pointer: coarse) { .modal textarea, .modal input[type=text], .modal input[type=url], .modal input:not([type]) { font-size: 16px; } }

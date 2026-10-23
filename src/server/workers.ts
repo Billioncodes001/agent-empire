@@ -1147,7 +1147,7 @@ function draftPr(info: WorkerInfo, commits: string[], by: string): { title: stri
   if (task) parts.push(`## Task\n\n${task.length > PR_TASK_MAX ? `${task.slice(0, PR_TASK_MAX)}…` : task}`);
   parts.push(`## Commits\n\n${commits.map((c) => `- \`${c.slice(0, c.indexOf(' '))}\` ${c.slice(c.indexOf(' ') + 1)}`).join('\n')}`);
   if (closes) parts.push(`Closes #${closes}`);
-  parts.push(`_Opened from Agent Office by ${by} · ${info.name} at ${DESK_BY_ID.get(info.deskId)?.label ?? info.deskId}_`);
+  parts.push(`_Opened from Agent Empire by ${by} · ${info.name} at ${DESK_BY_ID.get(info.deskId)?.label ?? info.deskId}_`);
   return { title, body: parts.join('\n\n') };
 }
 

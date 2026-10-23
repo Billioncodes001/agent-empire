@@ -108,7 +108,7 @@ export function openWorkersDialog(onOpen: (id: string) => void) {
   const paint = () => replaceKeepingFocus(list, workerRows((id) => { modal.close(); onOpen(id); }));
   const offs = (['workers', 'freshness'] as const).map((topic) => store.on(topic, paint));
   const modal = openModal(
-    h('div.modal.workers-modal', { role: 'dialog', 'aria-label': 'Workers' }, h('header', {}, h('h2', {}, 'Workers'), close), h('div.body.workers', {}, list)),
+    h('div.modal.workers-modal.ae-dark', { role: 'dialog', 'aria-label': 'Workers' }, h('header', {}, h('h2', {}, 'Workers'), close), h('div.body.workers', {}, list)),
     { onClose: () => offs.forEach((off) => off()) },
   );
   close.addEventListener('click', () => modal.close());

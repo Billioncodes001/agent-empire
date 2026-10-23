@@ -120,7 +120,7 @@ sudo test -f /home/office/.ssh/authorized_keys || sudo install -m 644 -o root -g
 tunnel_sh=$(mktemp)
 cat >"$tunnel_sh" <<'SH'
 #!/bin/sh
-echo "Agent Office tunnel is up: open http://localhost:4600 in your browser."
+echo "Agent Empire tunnel is up: open http://localhost:4600 in your browser."
 echo "Keep this window open; Ctrl-C closes it."
 exec cat >/dev/null
 SH
@@ -194,7 +194,7 @@ step "Installing the agent-office service (restarts itself if it ever crashes)"
 unit=$(mktemp)
 cat >"$unit" <<UNIT
 [Unit]
-Description=Agent Office
+Description=Agent Empire server
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=0

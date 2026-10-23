@@ -38,7 +38,7 @@ export function openHangDialog(opts: { initial?: Decoration; onDone(choice: Hang
   const cancel = h('button.btn', { type: 'button' }, 'Cancel');
   const close = h('button.btn.close', { type: 'button', 'aria-label': 'Close' }, '✕');
   const form = h(
-    'form.modal.hang',
+    'form.modal.hang.ae-dark',
     { role: 'dialog', 'aria-label': init ? 'Edit picture' : 'Hang a picture' },
     h('header', {}, h('h2', {}, init ? '🖼️ Edit picture' : '🖼️ Hang a picture'), close),
     h(
@@ -176,7 +176,7 @@ export function openPicture(d: Decoration, actions: { move(): void; edit(): void
   const edit = h('button.btn', { type: 'button' }, '✏️ Edit');
   const move = h('button.btn.primary', { type: 'button' }, '↔️ Move');
   const el = h(
-    'div.modal.picture',
+    'div.modal.picture.ae-dark',
     { role: 'dialog', 'aria-label': d.title || 'Picture' },
     h('header', {}, h('h2', {}, `🖼️ ${d.title || 'A picture'}`), close),
     h('div.body', {}, stage, h('p.picture-meta', {}, `Hung by ${d.by} · ${timeAgo(d.at)} · `, link)),
