@@ -32,6 +32,7 @@ Known protected runtime: localhost:4610, Pixel and its save. Development should 
 | ID | Slice | State | Evidence / next dependency |
 | --- | --- | --- | --- |
 | MAINT-01 | Codebase audit fixes (server crash guard, safe saves, ledger, client leaks/a11y, share/voice, Android error page) | Reviewed and accepted; merged by PR #2 | [Report](reports/audit-fixes.md). Candidate 547e42c accepted with fixes; fixes 464e8d4 and 030e5c7 accepted. 201/201 tests, desktop + 375px browser check, macOS/Windows/Android packaging evidence. Windows runtime, Android authenticated login and iOS build remain unverified |
+| FREE-00 | Free-stack research (free tier + optional premium linking) | Done (research only, no product code) | [FREE_STACK.md](FREE_STACK.md). Branch `claude/free-stack-research`. Sources checked 2026-10-23. Recommends Qwen Code + Ollama as the free worker, a GitHub Actions worker provider for cloud mode, sherpa-onnx speech, Telegram/ntfy, CC0 assets, PWA for iOS. Premium: user's own `/login` on the host and a user-created `CLAUDE_CODE_OAUTH_TOKEN` secret; no Empire-side Claude OAuth or token handling. GitHub Models retired 2026-07-30. Owner decisions listed (open-sourcing the repo, Anthropic Commercial Terms question) |
 
 ## Office life, organization and mobile game
 
