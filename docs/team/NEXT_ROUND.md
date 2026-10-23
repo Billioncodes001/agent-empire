@@ -1,3 +1,5 @@
+> **Historical (2026-10-23).** This is the handoff from the first team-setup round, kept for the record. The current workflow is in [COORDINATION.md](COORDINATION.md) and the current state in [TASKS.md](TASKS.md).
+
 # Coordinator handoff after team setup
 
 The first round produced role reports, not product changes. Claude and Grok ran through VS Code Copilot; Codex ran as the backend collaborator from the coordinating Codex chat. All use separate Git worktrees. A model appearing in a picker is not the verification: the authored reports and scoped commits are the handoffs.

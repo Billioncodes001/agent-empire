@@ -8,9 +8,9 @@ Research leading examples and motionsites.ai before visual implementation. Adapt
 
 ## Current coordination
 
-Read `docs/team/CITY_EXPANSION_PLAN.md`, `docs/team/COORDINATION.md` and the assigned row of `docs/team/TASKS.md`. Record requirements before coding. Use the dedicated coordinator and bounded specialist assignments in one VS Code Agents window. Verify the actual model routing, worktree and owned paths before editing; role labels do not prove model identity or isolation.
+Read `docs/team/COORDINATION.md`, the relevant plan under `docs/team/` and the assigned row of `docs/team/TASKS.md`. Record requirements before coding. The workflow in use: a coordinator session assigns bounded slices; each author works in its own git worktree on a `claude/<slice>` branch from the current `codex/empire-world`; a separate reviewer checks the exact candidate; the coordinator merges the accepted candidate into a `claude/<slice>-integration` branch, re-runs the checks and opens a PR into `codex/empire-world`; promotion to `main` is a separate PR. Verify your worktree, branch and owned paths before editing; role labels do not prove model identity or isolation.
 
-Independent authors need separate worktrees; shared contracts have one designated owner. Preserve other agents' changes. Only integrate a scoped, tested result after independent review of the candidate. Do not reset branches or silently force-push.
+Independent authors need separate worktrees; shared contracts have one designated owner. Preserve other agents' changes. Only integrate a scoped, tested result after independent review of the candidate. Authors do not push unless asked. Do not reset shared branches or force-push.
 
 ## Product invariants
 

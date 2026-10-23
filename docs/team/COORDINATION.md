@@ -1,24 +1,38 @@
-# One-window development coordination
+# Development coordination
 
-This extends the existing role workflow for the next city phase. The roadmap was committed as `30061f4` before feature implementation. VS Code 1.139.1 exposes its Agents window on this machine. Its Copilot model picker lists Claude Opus 5.5, Grok 4.7 and GPT-5.3-Codex. Availability in the picker is not execution evidence.
+This is the workflow actually used since the cloud-mode rounds (PRs #5 onward). It replaced the earlier VS Code Agents window with fixed lanes (`../agent-empire-team/{interface,backend,review,integration}` on `codex/team-*` branches). Those checkouts are historical and are no longer the integration path. The first planning trial is recorded in [reports/city-expansion-coordination.md](reports/city-expansion-coordination.md).
 
-Open **Chat: Open Agents Window**, choose the Agent Empire workspace and Copilot harness, and select **Empire Coordinator** from the agent/mode picker. Project-local definitions live in `.github/agents/`. The coordinator invokes the named specialists through supported native delegation, collects their returned results, and writes the task ledger. Verify the first planning-only run before treating this as an operational workflow. Exact model IDs may differ by harness/account; failures must remain visible.
+## Roles
 
-The desired UI is one session window with coordinator and delegated work visible there. Native subagent conversations may be read-only and are not the same as independently steerable editor sessions. Existing role sessions need not be destroyed. Neither session tabs nor subagents automatically provide filesystem isolation. Use the existing role worktrees for independent editing; read-only planning may share the current checkout. These instructions are coordination rules, not a security sandbox.
+| Role | Where | Owns |
+| --- | --- | --- |
+| Coordinator | A dedicated session on the main checkout | Plans, assignments, the [task ledger](TASKS.md), integration branches and PRs |
+| Author | Its own git worktree on a `claude/<slice>` branch, created from the current `origin/codex/empire-world` | Only the paths named in its assignment, its tests and its report in `reports/` |
+| Reviewer | A separate session that reads the exact candidate commit | A review verdict (ACCEPT, ACCEPT WITH FIXES, or REJECT) with findings; it does not edit the candidate |
 
-| Lane | Requested model | Existing checkout | Allowed ownership |
-| --- | --- | --- | --- |
-| Interface/world | Claude Opus 5.5 | `../agent-empire-team/interface` | Assigned client UI, world assets, animation |
-| Backend | GPT-5.3-Codex through Copilot | `../agent-empire-team/backend` | Assigned server/shared contracts and tests |
-| Independent review | Grok 4.7 | `../agent-empire-team/review` | Read-only candidate inspection; scoped report |
-| Integration | Coordinator | `../agent-empire-team/integration` | Combine reviewed commits, validate and hand off |
+Every assignment carries an ID, a baseline commit, the goal, the owned paths, the acceptance checks and the maximum scope. A completion report carries:
 
-The backend custom agent uses the Codex model listed by the Copilot picker. This does not establish native Codex-extension cross-session control. If a specialist's configured model is not honored, stop that dispatch and record the actual limitation; never label an inherited model as the requested model.
+- the commit SHA;
+- the checks that were run, with their counts;
+- screenshots where there is UI;
+- unresolved risks;
+- anything deliberately left undone.
 
-Before implementation, check each worktree's branch, status and prior work, then update from the accepted baseline by normal merge. One writer per lane; explicit ownership of shared files. Each assignment carries an ID, baseline, goal, owned paths, acceptance checks and maximum scope. Completion carries commit, executed checks, unresolved risks and next dependency. Review the exact combined commit before updating the development branch; no blind auto-merge.
+## Flow
 
-Use bounded phases and completion-driven returns to reduce coordination tokens. No timer polling, nested agent chains, repeated full transcripts, or model-status narration. Keep normal tool approval controls. This workflow needs an active VS Code/agent session and available model quota; it is not a persistent cloud scheduler. Only set up a recurring automation if the user separately requests a schedule.
+1. **Requirements first.** The coordinator records the requirements in a plan under `docs/team/` (for example [ORG_PLAN.md](ORG_PLAN.md) or [CLOUD_MODE_PLAN.md](CLOUD_MODE_PLAN.md)) and adds a row to [TASKS.md](TASKS.md).
+2. **Author.** The author works in an isolated worktree, commits on `claude/<slice>`, writes `reports/<slice>.md` and does not push unless asked.
+3. **Independent review** of the exact candidate. Fixes go back to the author, and changed commits are re-reviewed.
+4. **Integration.** The coordinator merges the accepted candidate into `claude/<slice>-integration` with a normal merge. The coordinator re-runs typecheck, `npm test`, the builds and the affected UI checks there, then opens a PR into `codex/empire-world`.
+5. **Merge.** The PR is merged into `codex/empire-world`, the development branch. TASKS.md then names the PR.
+6. **Promotion.** `codex/empire-world` reaches `main` only through a separate promotion PR.
 
-## First coordinator assignment
+Never force-push, reset a shared branch, or auto-merge without review. One writer per path; shared contracts (for example `src/shared/protocol.ts` or the native bridge) have one designated owner per round.
 
-Planning only: read the roadmap and ledger, ask Interface for phone/call and traversal contracts, ask Backend for speech/dispatch/persistence contracts, then ask Review to check their combined proposal. Specialists return compact reports without edits. Save the consolidated result to `docs/team/reports/city-expansion-coordination.md` and update the planning row in TASKS.md. No product code, commit/push, model downloads, paid product calls or live-world changes. End after reporting whether actual model-specific delegation worked.
+## Safety rules (unchanged)
+
+- The live localhost:4610 session, the Pixel worker, its `.agent-office` save and the live build are protected. Use isolated fixtures on other ports (see [UI_FIXTURE.md](UI_FIXTURE.md)) and disposable data directories.
+- Never fabricate completion or status. Make no paid product-worker or provider calls for tests, no automatic model downloads, and no cloud infrastructure changes without owner approval.
+- For UI acceptance, check desktop and phone widths (375 px and 874×402 landscape) and save screenshots. Also check console errors, keyboard and focus behaviour, reduced motion and Save-Data. Report platform build evidence separately from device execution.
+- Revert unrelated regenerated screenshots before committing.
+- Keep normal tool approvals. No timer polling or nested agent chains. Only set up a recurring automation if the owner asks for one.
