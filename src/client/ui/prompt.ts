@@ -3,6 +3,8 @@ import { autoFocus } from '../keyboard';
 import { h, openModal } from './dom';
 import type { Outfit } from '../../shared/outfit';
 import { outfitPicker } from './outfit-picker';
+import { engineChoice } from './engines';
+import type { WorkerEngine } from '../../shared/engines';
 
 export interface PromptOptions {
   title: string;
@@ -14,7 +16,9 @@ export interface PromptOptions {
   worktreeOption?: boolean;
   /** Offer the "Outfit" option: default corporate attire, or an avatar and colours (only when hiring). */
   outfitOption?: boolean;
-  onSubmit(text: string, opts: { worktree: boolean; outfit?: Outfit }): void;
+  /** FREE-01: offer the worker engine choice (only when hiring). */
+  engineOption?: boolean;
+  onSubmit(text: string, opts: { worktree: boolean; outfit?: Outfit; engine?: WorkerEngine }): void;
 }
 
 const WT_KEY = 'agent-office.worktree';
@@ -42,11 +46,12 @@ export function openPrompt(opts: PromptOptions) {
   const submit = h('button.btn.primary', { type: 'submit' }, opts.submitLabel ?? 'Send ✨');
   const cancel = h('button.btn', { type: 'button' }, 'Cancel');
   const outfit = opts.outfitOption ? outfitPicker() : null;
+  const engine = opts.engineOption ? engineChoice() : null;
   const form = h(
     'form.modal.ae-dark',
     { role: 'dialog', 'aria-label': opts.title },
     h('header', {}, h('h2', {}, opts.title)),
-    h('div.body', {}, opts.subtitle ? h('p', { style: 'margin:0 0 10px;font-weight:700;color:var(--muted)' }, opts.subtitle) : null, ta, wtRow, outfit?.element ?? null),
+    h('div.body', {}, opts.subtitle ? h('p', { style: 'margin:0 0 10px;font-weight:700;color:var(--muted)' }, opts.subtitle) : null, ta, engine?.element ?? null, wtRow, outfit?.element ?? null),
     h('footer', {}, h('span.grow', {}, 'Enter to send · Shift+Enter for a new line'), cancel, submit),
   ) as HTMLFormElement;
 
@@ -58,6 +63,13 @@ export function openPrompt(opts: PromptOptions) {
       ta.focus();
       return;
     }
+    const chosenEngine = engine?.value();
+    if (chosenEngine === null) {
+      // No usable engine: the note under the choice says what to install. Nothing is hired.
+      (engine!.element.querySelector('select') as HTMLSelectElement | null)?.focus();
+      engine!.element.classList.add('invalid');
+      return;
+    }
     modal.close();
     if (opts.worktreeOption) {
       try {
@@ -66,7 +78,7 @@ export function openPrompt(opts: PromptOptions) {
         // storage blocked
       }
     }
-    opts.onSubmit(text, { worktree: !!opts.worktreeOption && wtBox.checked, outfit: outfit?.value() });
+    opts.onSubmit(text, { worktree: !!opts.worktreeOption && wtBox.checked, outfit: outfit?.value(), ...(chosenEngine ? { engine: chosenEngine } : {}) });
   };
   form.addEventListener('submit', (e) => {
     e.preventDefault();

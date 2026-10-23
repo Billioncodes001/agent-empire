@@ -3,7 +3,8 @@ import { store } from '../state';
 import type { Voice } from '../voice';
 import { $, h, openModal, STATUS_LABEL } from './dom';
 import { fmtCost, usageTitle } from './usage';
-import { workerPill } from './status';
+import { engineStatus, workerPill } from './status';
+import { engineLabel, engineSpendLabel } from '../../shared/engines';
 
 /** Makes a list row act like a button for the keyboard too: Tab to it, Enter or Space to press it. */
 function pressable(li: HTMLElement, onPress: () => void) {
@@ -75,8 +76,11 @@ function workerRows(onOpen: (id: string) => void): HTMLElement[] {
   const fresh = store.evidence().fresh;
   const workers = [...store.workers.values()].sort((a, b) => a.createdAt - b.createdAt);
   const rows = workers.map((w) => {
+    const engine = w.kind === 'agent' ? engineLabel(w.engine) : '';
     const sub = [w.worktree && `🌿 ${w.worktree.branch}`, w.pr && `🔀 PR #${w.pr.number}`, w.activity || w.title || w.prompt].filter(Boolean).join(' · ');
-    const pill = workerPill(w.status, STATUS_LABEL[w.status] ?? w.status, fresh);
+    const shown = engineStatus(w, STATUS_LABEL);
+    const pill = workerPill(shown.status, shown.label, fresh);
+    const spend = w.kind === 'agent' ? engineSpendLabel(w.engine) : undefined;
     return h(
       'li',
       {
@@ -90,11 +94,11 @@ function workerRows(onOpen: (id: string) => void): HTMLElement[] {
         role: 'button',
         'data-worker': w.id,
         title: `Open ${w.name}'s terminal`,
-        'aria-label': `${w.name}, ${w.kind === 'shell' ? 'shell' : 'agent'}, ${pill.spoken}. Open terminal.`,
+        'aria-label': `${w.name}, ${w.kind === 'shell' ? 'shell' : engine}, ${pill.spoken}. Open terminal.`,
       },
       h('span.dot', { style: `background:${w.color}` }),
-      h('span.name', {}, w.name, sub ? h('span.sub', {}, sub) : null),
-      w.usage?.calls ? h('span.cost', { title: usageTitle(w.usage) }, fmtCost(w.usage.cost)) : null,
+      h('span.name', {}, w.name, engine ? h('span.engine', { 'data-engine': w.engine?.id ?? 'claude-code' }, engine) : null, sub ? h('span.sub', {}, sub) : null),
+      spend ? h('span.cost', { title: 'Provider spend for a local model is zero. City credits are separate.' }, 'US$0') : w.usage?.calls ? h('span.cost', { title: usageTitle(w.usage) }, fmtCost(w.usage.cost)) : null,
       h('span.pill', { class: pill.tone, title: fresh ? undefined : 'No fresh update from the server; this is the last reported status.' }, pill.text),
     );
   });
