@@ -3,6 +3,8 @@
   "productName": "Agent Empire",
   "version": "1.0.0-beta.1",
   "private": true,
+  "license": "MIT",
+  "author": "Billioncodes001 and contributors",
   "type": "module",
   "main": "main.cjs",
   "scripts": {
