@@ -39,6 +39,13 @@
     "node": ">=20"
   },
   "license": "MIT",
+  "author": "Billioncodes001 and contributors",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Billioncodes001/agent-empire.git"
+  },
+  "homepage": "https://github.com/Billioncodes001/agent-empire#readme",
+  "bugs": "https://github.com/Billioncodes001/agent-empire/issues",
   "dependencies": {
     "@lydell/node-pty": "^1.2.0-beta.15",
     "@xterm/addon-serialize": "^0.14.0",

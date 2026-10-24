@@ -51,3 +51,19 @@ The first-launch cloud setup bundles two npm packages to encrypt provider API ke
 
 - [tweetnacl](https://github.com/dchest/tweetnacl-js) 1.0.3 — public domain ([Unlicense](https://unlicense.org)).
 - [blakejs](https://github.com/dcposch/blakejs) 1.2.1 — MIT License, Copyright (c) 2022 Blakejs contributors. The full license text ships in the package (`node_modules/blakejs/LICENSE`).
+
+## Public redistribution review (FREE-03, 2026-10-23)
+
+Checked before the repository goes public under MIT (`LICENSE`):
+
+| Component | Licence | Public redistribution |
+| --- | --- | --- |
+| Agent Office (upstream code and history) | MIT, declared in upstream `package.json` | Compatible. **Flag:** the copied upstream revision has no standalone LICENSE or copyright line, so the MIT grant rests on package metadata. Attribution above stays; asking upstream to add a LICENSE file would remove the ambiguity. |
+| Microsoft Rocketbox avatars, Tidewater conversions | MIT (licence files shipped next to the assets) | Compatible |
+| Poly Haven textures and HDR | CC0 | Compatible |
+| World sounds (Kenney, Freesound, BigSoundBank, OpenGameArt) | CC0 per file (`src/client/public/audio/README.md`) | Compatible |
+| Executive sedan | Authored for this project; geometry is rebuilt by the repository's own Blender scripts | Covered by this repository's MIT licence |
+| tweetnacl, blakejs | Unlicense, MIT | Compatible |
+| npm dependencies (`package-lock.json`, 161 packages) | MIT, Apache-2.0, ISC, BSD-3-Clause, 0BSD, Unlicense; MPL-2.0 only in build-time `lightningcss` and `dompurify` (dev) | All OSI-approved; nothing copyleft is bundled into the shipped game |
+
+Nothing found prevents public redistribution. SignPath Foundation additionally requires that every shipped component be OSI-licensed; the asset licences above (MIT, CC0; CC0 is not an OSI licence) will be listed in the SignPath application, and SignPath decides whether they are acceptable (`docs/DISTRIBUTION.md`).

@@ -1,4 +1,7 @@
-/** Installation and service-worker registration. The worker only provides an offline explanation page. */
+/**
+ * Installation and service-worker registration. The worker provides an offline explanation page and keeps the
+ * fingerprinted /assets/ build files; it never caches API responses, pages or anything served after sign-in (sw.js).
+ */
 import { isAppMode } from '../endpoint';
 
 interface InstallPromptEvent extends Event {
