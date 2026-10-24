@@ -34,13 +34,16 @@ export function telegramConfig(env: NodeJS.ProcessEnv): TelegramConfig | undefin
   return { token, ownerId: Number(owner) };
 }
 
-/** Fixed official destination. Never return Telegram URLs/errors, which can contain the bot token. */
-export function telegramTransport(token: string): TelegramTransport {
+/**
+ * Fixed official destination (`base` is only ever changed by test injection, never by settings). Never return Telegram
+ * URLs/errors, which can contain the bot token.
+ */
+export function telegramTransport(token: string, base = 'https://api.telegram.org'): TelegramTransport {
   return {
     async call(method, body, signal) {
       let response: Response;
       try {
-        response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+        response = await fetch(`${base}/bot${token}/${method}`, {
           method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
           signal: AbortSignal.any([signal, AbortSignal.timeout(35_000)]), redirect: 'error',
         });
@@ -91,6 +94,8 @@ export class TelegramBridge {
     void this.loop(this.generation);
   }
   stop() { this.running = false; this.generation++; clearTimeout(this.timer); this.controller.abort(); }
+  /** Resolves once no poll is in flight (review 11: callers wait after stop() before touching the checkpoint). */
+  async idle() { while (this.busy) await new Promise((r) => setTimeout(r, 10)); }
   private async loop(generation: number) {
     await this.tick();
     if (this.running && generation === this.generation && !this.storageError) this.timer = setTimeout(() => void this.loop(generation), this.error ? 15_000 : 1_000);
