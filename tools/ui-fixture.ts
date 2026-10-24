@@ -26,6 +26,7 @@ import { routeChief, ruleBasedBriefing } from '../src/server/chief-briefing.js';
 import { ConsultancyError } from '../src/server/consultancy.js';
 import { MAX_AUDIO_BYTES } from '../src/shared/voice.js';
 import { ChiefBrain, ChiefError, chiefActions } from '../src/server/chief.js';
+import { LessonMemory } from '../src/server/memory.js';
 import { fixtureChat } from './chief-fixture.js';
 
 /**
@@ -164,7 +165,17 @@ const send = (ws: WebSocket, msg: ServerMsg) => { if (ws.readyState === WebSocke
 let chief: ChiefBrain | undefined;
 if (process.env.FIXTURE_CHIEF === '1') {
   const fxQueue = { state: () => ({ tasks: fxTasks.map((t) => ({ ...t })), maxWorkers: 0 }), retry: () => 'Fixture only: nothing is retried.' };
-  const brain = new ChiefBrain(inboxDir, { keys: () => ({}), chat: fixtureChat, office: fxOffice, queue: fxQueue.state, raise: (f) => inbox!.raiseChief(f),
+  // FREE-10: organizational memory over the same throwaway directory. One approved CEO lesson the plans can cite; the
+  // review below proposes another, which waits in the inbox.
+  const memory = new LessonMemory(inboxDir);
+  memory.setInbox({ raise: (f) => inbox!.raiseLesson(f), resolve: (id, note) => inbox!.resolveLesson(id, note), get: (id) => inbox!.get(id) });
+  inbox!.setLessons(memory.actions());
+  if (!memory.state().lessons.length) {
+    const seed = memory.addNote({ text: 'Booking work always includes a double-booking test for one slot.', scope: 'company' }, 'Fixture CEO');
+    const item = inbox!.state().items.find((i) => i.kind === 'lesson' && i.lesson?.lessonId === seed.id);
+    if (item) inbox!.approve(item.id, 'Fixture CEO');
+  }
+  const brain = new ChiefBrain(inboxDir, { keys: () => ({}), chat: fixtureChat, office: fxOffice, queue: fxQueue.state, raise: (f) => inbox!.raiseChief(f), memory,
     onChange: () => { for (const ws of sockets.clients) { send(ws, { t: 'chief', state: brain.state() }); send(ws, { t: 'approvals', state: inbox!.state() }); } } });
   chief = brain;
   inbox!.setChief(chiefActions(fxQueue), (jobId) => (brain.planFor(jobId) ? brain.label() : undefined));
