@@ -19,6 +19,8 @@ export interface QueueWorkers {
   spawn(deskId: string, by: string, prompt: string, worktree: boolean, kind?: 'agent', queueOwned?: boolean, outfit?: Outfit, persona?: Persona, continues?: { branch: string; title: string }): WorkerInfo | string;
   /** True while the worker is publishing, opening a PR or stopping: it must not be sent home. */
   workerBusy?(id: string): boolean;
+  /** FREE-01: why no worker engine may launch now (checking, nothing usable); the task stays queued with this reason. */
+  engineBlocker?(): string | undefined;
   /** Whether a local branch exists, to start a continuing worktree from it. */
   branchExists?(branch: string): boolean;
   claimQueueWorker?(id: string): void;
@@ -548,6 +550,18 @@ export class TaskQueue {
       if (this.busy() >= this.maxWorkers) { this.releaseSettledReservations(); break; }
       // A spent budget holds the queue instead of failing every task; the pump seats them once hiring resumes.
       if (this.events.hiringPaused()) { this.releaseSettledReservations(); break; }
+      // No usable engine (or the check is still running): keep the task queued with the reason, unfailed. The pump
+      // retries; the toast only fires when the reason changes, so a waiting queue never spams.
+      const engineBlocked = this.workers.engineBlocker?.();
+      if (engineBlocked) {
+        if (t.error !== engineBlocked) {
+          t.error = engineBlocked;
+          if (!/^Checking /.test(engineBlocked)) this.events.toast(`📋 ${label(t)} is waiting: ${engineBlocked}`, 'warn');
+          changed = true;
+        }
+        this.releaseSettledReservations();
+        break;
+      }
       const next = this.continuity(t);
       if (next === 'wait') continue;
       const desk = next?.desk ?? this.freeDesk(t.id) ?? this.recycleDesk(t.id);

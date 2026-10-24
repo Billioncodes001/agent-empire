@@ -297,12 +297,16 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
 
   // FREE-01: linked accounts and the local model runtime. Probed only when the Settings panel asks, never at startup.
   const providerKeys = runtime.engines?.providerKeys ?? (() => envKeys());
+  // Integration tests that inject fake worker processes without engine fakes keep the pre-FREE-01 launch path (no
+  // probe of real CLIs). Production, and tests that pass `engines`, always go through the launch gate.
+  const customAgent = !/(^|\/)claude$/.test(cfg.agentCmd) || (!!runtime.workers && !runtime.engines);
   const ollamaUrl = runtime.engines?.ollamaUrl ?? DEFAULT_OLLAMA_URL;
   const ollama = new OllamaRuntime(ollamaUrl);
   const accounts = new LinkedAccounts({
     dataDir: cfg.dataDir, ollama, keys: providerKeys,
     resolve: runtime.engines?.resolve ?? (runtime.workers ? runtime.workers.resolveCommand : resolveCommand),
     exec: runtime.engines?.exec, totalMem: runtime.engines?.totalMem, env: runtime.engines?.env,
+    cwd: cfg.dir, onProbed: () => queue?.pump(),
   });
 
   // What the workers spend, all time and today, with the optional daily budget.
@@ -353,7 +357,11 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     () => empire.state.office.workstations,
     runtime.workers,
     localExecutionBlocker,
-    { keys: providerKeys, ollamaUrl, defaultEngine: () => accounts.spawnDefault() },
+    {
+      keys: providerKeys, ollamaUrl, defaultEngine: () => accounts.spawnDefault(),
+      // A custom `--agent` command (not `claude`) is the operator's own choice for Claude-path spawns: no gate there.
+      gate: (requested) => customAgent && (!requested || requested.id === 'claude-code') ? { engine: requested ?? accounts.spawnDefault() } : accounts.gate(requested),
+    },
   );
 
   startupCleanup.push(() => workers.shutdown());
@@ -1189,9 +1197,15 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
         // "Sign in to Claude" (FREE-01): a Claude Code worker on the user's own account, with `/login` typed (not sent).
         const login = kind === 'agent' && msg.login === true;
         const engine = login ? { id: 'claude-code' as const, auth: 'subscription' as const } : sanitizeEngine(msg.engine);
-        const r = workers.spawn(str(msg.deskId, 32), who, login ? undefined : str(msg.prompt, 20000) || undefined, msg.worktree === true && !login, kind, false, sanitizeOutfit(msg.outfit), undefined, undefined, { engine, typeOnReady: login ? '/login' : undefined });
-        if (typeof r === 'string') sendTo(c, { t: 'toast', text: r, level: 'warn' });
-        else broadcast({ t: 'toast', text: kind === 'shell' ? `${who} opened a shell at a desk` : `${who} hired ${r.name}${r.prompt ? ' with a task' : ''}`, level: 'info' });
+        if (kind === 'agent' && msg.engine !== undefined && !engine) { sendTo(c, { t: 'toast', text: 'Unknown worker engine.', level: 'warn' }); break; }
+        const hire = () => workers.spawn(str(msg.deskId, 32), who, login ? undefined : str(msg.prompt, 20000) || undefined, msg.worktree === true && !login, kind, false, sanitizeOutfit(msg.outfit), undefined, undefined, { engine, typeOnReady: login ? '/login' : undefined });
+        const done = (r: ReturnType<typeof hire>) => {
+          if (typeof r === 'string') sendTo(c, { t: 'toast', text: r, level: 'warn' });
+          else broadcast({ t: 'toast', text: kind === 'shell' ? `${who} opened a shell at a desk` : `${who} hired ${r.name}${r.prompt ? ' with a task' : ''}`, level: 'info' });
+        };
+        // A stale engine check: run it (CLI output only), then hire once; never launch on an unchecked engine.
+        if (kind === 'agent' && !login && !customAgent && 'pending' in accounts.gate(engine)) void accounts.state().then(() => done(hire()), () => done(hire()));
+        else done(hire());
         break;
       }
       case 'worker.resume': {

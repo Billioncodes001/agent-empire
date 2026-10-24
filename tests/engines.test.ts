@@ -9,6 +9,7 @@ import { accessSync, chmodSync, constants, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { WorkerManager, type WorkerRuntime } from '../src/server/workers';
+import { TaskQueue } from '../src/server/queue';
 import type { Ledger } from '../src/server/usage';
 import type { WorkerInfo } from '../src/shared/protocol';
 import { LinkedAccounts, engineEnv, parseClaudeAuthStatus, parseCodexLoginStatus } from '../src/server/engines';
@@ -474,6 +475,94 @@ test('review: refresh=1 is rate-floored; an invalid saved engine keeps the worke
       assert.match(m.resume('b1')!, /saved engine is not recognised/i);
     } finally { m.shutdown(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ---- Re-review fixes (2026-10-24) ----
+
+async function gatedAccounts(claudeScript: string, opts: { qwen?: boolean; cwd?: string } = {}) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'empire-gate-test-'));
+  const ollama = await server((req, res) => {
+    if (req.url === '/api/version') return res.end('{"version":"0.40.10"}');
+    if (req.url === '/api/tags') return res.end(JSON.stringify({ models: [{ name: 'gpt-oss:20b', size: 14e9 }] }));
+    res.statusCode = 404; res.end();
+  });
+  const resolve = fakeBin(dir, { claude: claudeScript, ...(opts.qwen === false ? {} : { qwen: 'exit 0' }) });
+  let onProbed = () => {};
+  const accounts = new LinkedAccounts({ dataDir: dir, ollama: new OllamaRuntime(ollama.url), keys: () => ({}), resolve, totalMem: () => 16 * GB, env: () => ({ PATH: dir }), cwd: opts.cwd, onProbed: () => onProbed() });
+  return { dir, accounts, setOnProbed: (f: () => void) => { onProbed = f; }, close: async () => { await ollama.close(); rmSync(dir, { recursive: true, force: true }); } };
+}
+
+test('re-review 1: the server gate refuses unusable engines and resolves "auto"; queue spawns never bill the API', async () => {
+  const g = await gatedAccounts(`echo '{"loggedIn": true, "authMethod": "apiKeyHelper"}'`);
+  try {
+    assert.ok('pending' in g.accounts.gate(undefined), 'no probe yet: refuse and check, never launch unchecked');
+    await g.accounts.state();
+    assert.deepEqual(g.accounts.gate(undefined), { engine: { id: 'qwen-code', auth: 'local', model: 'gpt-oss:20b' } });
+    const sub = g.accounts.gate({ id: 'claude-code', auth: 'subscription' });
+    assert.ok('error' in sub && /not your Claude subscription/.test(sub.error), JSON.stringify(sub));
+    // A queue-style spawn (no engine) through WorkerManager uses the free engine; an explicit subscription is refused.
+    const spawned: string[] = [];
+    const runtime: WorkerRuntime = { taskNaming: false, resolveCommand: (c) => `/fixture/${c}`, processExists: () => false,
+      spawn: ((file: string) => { spawned.push(file); return { pid: 9200, onData: () => ({ dispose() {} }), onExit: () => ({ dispose() {} }), write() {}, resize() {}, kill() {} }; }) as unknown as WorkerRuntime['spawn'] };
+    const m = new WorkerManager(g.dir, g.dir, 'claude', [], { url: 'http://127.0.0.1:1', token: '' }, { update() {}, remove() {}, data() {}, screen() {}, toast() {} },
+      { get hiringPaused() { return undefined; }, add() {} } as unknown as Ledger, () => 4, runtime, () => undefined,
+      { keys: () => ({}), ollamaUrl: 'http://127.0.0.1:11434', defaultEngine: () => ({ id: 'claude-code', auth: 'subscription' }), gate: (e) => g.accounts.gate(e) });
+    try {
+      const w = m.spawn('desk-1', 'CEO (queue)', 'queued task', false, 'agent', true) as WorkerInfo;
+      assert.deepEqual(w.engine, { id: 'qwen-code', auth: 'local', model: 'gpt-oss:20b' });
+      assert.deepEqual(spawned, ['/fixture/qwen']);
+      assert.match(m.spawn('desk-2', 'CEO', 'x', false, 'agent', false, undefined, undefined, undefined, { engine: { id: 'claude-code', auth: 'subscription' } }) as string, /not ready/);
+      assert.equal(m.engineBlocker(), undefined);
+    } finally { m.shutdown(); }
+  } finally { await g.close(); }
+  // No free engine either: refused with what to install.
+  const none = await gatedAccounts(`echo '{"loggedIn": true, "authMethod": "apiKeyHelper"}'`, { qwen: false });
+  try {
+    await none.accounts.state();
+    const r = none.accounts.gate(undefined);
+    assert.ok('error' in r && /install/i.test(r.error), JSON.stringify(r));
+  } finally { await none.close(); }
+});
+
+test('re-review 1: a refused queue launch keeps the task queued with the reason, without failing or spamming', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'empire-queue-gate-'));
+  const toasts: string[] = [];
+  let spawns = 0;
+  let blocker: string | undefined = 'Claude Code · your Claude account is not ready: not your subscription';
+  let q: TaskQueue | undefined;
+  try {
+    writeFileSync(path.join(dir, 'queue.json'), JSON.stringify({ tasks: [{ id: 't1', title: 'Task', prompt: 'p', addedBy: 'CEO', addedAt: 1, status: 'queued' }], maxWorkers: 2 }));
+    q = new TaskQueue(dir, { list: () => [], deskOccupied: () => false, kill: async () => ({}), workstationCapacity: () => 4, engineBlocker: () => blocker,
+      spawn: () => { spawns++; return 'should not be called while blocked'; } } as never, false,
+      { update() {}, toast: (t: string) => toasts.push(t), hiringPaused: () => undefined, claimIssue: async () => undefined, refreshGitHub() {} } as never);
+    q.pump(); q.pump(); q.pump();
+    const t = q.state().tasks[0];
+    assert.equal(t.status, 'queued');
+    assert.equal(t.outcome, undefined);
+    assert.match(t.error ?? '', /not ready/);
+    assert.equal(spawns, 0);
+    assert.equal(toasts.length, 1, 'one toast per distinct reason');
+    blocker = undefined;
+    q.pump();
+    assert.equal(spawns, 1, 'seated once an engine is usable');
+  } finally { q?.shutdown(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('re-review 2: the sign-in probe runs in the office repo, so a project apiKeyHelper is seen', async () => {
+  const repo = mkdtempSync(path.join(tmpdir(), 'empire-repo-'));
+  const g = await gatedAccounts(`case "$(pwd -P)" in "$(cd ${JSON.stringify(repo)} && pwd -P)") echo '{"loggedIn": true, "authMethod": "apiKeyHelper"}';; *) echo '{"loggedIn": true, "authMethod": "claude.ai"}';; esac`, { cwd: repo });
+  try {
+    const s = await g.accounts.state();
+    assert.equal(s.claude.method, 'apiKeyHelper');
+    assert.equal(s.options.find((o) => o.engine.auth === 'subscription')!.usable, false);
+  } finally { await g.close(); rmSync(repo, { recursive: true, force: true }); }
+});
+
+test('re-review minor: text sign-in classification fails closed', () => {
+  assert.equal(parseClaudeAuthStatus('Logged in using apiKeyHelper', 0).method, 'API key');
+  assert.equal(parseClaudeAuthStatus('Logged in via Anthropic Console API key', 0).method, 'API key');
+  assert.equal(parseClaudeAuthStatus('Logged in with Claude subscription (API key also set)', 0).method, undefined);
+  assert.equal(parseClaudeAuthStatus('Logged in with your Claude subscription', 0).method, 'claude.ai');
 });
 
 test('desktop vault seals free hosted keys and reports names only', async () => {

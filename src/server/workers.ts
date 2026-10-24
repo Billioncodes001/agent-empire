@@ -64,6 +64,8 @@ export interface EngineEnv {
   ollamaUrl: string;
   /** The engine of a spawn that names none (the saved default, or Claude Code with the user's own account). */
   defaultEngine: () => WorkerEngine;
+  /** Launch gate (LinkedAccounts.gate): resolves "auto" and refuses unusable engines. Absent: no gate (tests, custom agents). */
+  gate?: (requested: WorkerEngine | undefined) => { engine: WorkerEngine } | { error: string; pending?: boolean };
 }
 const defaultEngineEnv: EngineEnv = { keys: () => ({}), ollamaUrl: DEFAULT_OLLAMA_URL, defaultEngine: () => LEGACY_ENGINE };
 
@@ -220,9 +222,19 @@ export class WorkerManager {
     if (!fundedDesk(deskId, this.capacity())) return 'Build and furnish this workstation before employing a worker';
     if (this.storageError) return this.storageError;
     if (this.deskOccupied(deskId)) return 'That desk is taken';
+    let gated: WorkerEngine | undefined;
     if (kind === 'agent') {
       const paused = this.ledger.hiringPaused;
       if (paused) return paused;
+      // Enforced here, not only in the hire dialog: queue spawns and stale clients pass the same gate (re-review 1).
+      const wanted = sanitizeEngine(extra.engine);
+      if (extra.engine !== undefined && !wanted) return 'Unknown worker engine.';
+      // The "Sign in to Claude" helper exists to fix a not-ready subscription, so it alone skips the usability gate.
+      if (this.engineEnv.gate && !extra.typeOnReady) {
+        const g = this.engineEnv.gate(wanted);
+        if ('error' in g) return g.error;
+        gated = g.engine;
+      }
     }
     const used = new Set([...this.workers.values()].map((w) => w.info.name.replace(/ 🐚$/, '')));
     const from = kind === 'agent' && worktree && continues && this.trees.hasBranch(continues.branch) ? continues : undefined;
@@ -257,7 +269,7 @@ export class WorkerManager {
       outfit: sanitizeOutfit(outfit),
     };
     if (kind === 'agent') {
-      info.engine = sanitizeEngine(extra.engine) ?? this.engineEnv.defaultEngine();
+      info.engine = gated ?? sanitizeEngine(extra.engine) ?? this.engineEnv.defaultEngine();
       if (launchSpec(info.engine, undefined).hooks === 'none') info.statusKnown = false;
     }
     const w = newWorker(info, newTracker());
@@ -297,6 +309,12 @@ export class WorkerManager {
     this.launch(w, undefined, w.info.sessionId);
     this.persist();
     return undefined;
+  }
+
+  /** Why a queue spawn (no explicit engine) would be refused right now, without spawning; undefined = it may go ahead. */
+  engineBlocker(): string | undefined {
+    const g = this.engineEnv.gate?.(undefined);
+    return g && 'error' in g ? g.error : undefined;
   }
 
   claimQueueWorker(id: string) {

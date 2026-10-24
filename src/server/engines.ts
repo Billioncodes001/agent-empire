@@ -10,7 +10,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { totalmem } from 'node:os';
 import path from 'node:path';
 import {
-  HOSTED_FREE, KEY_NAMES, LEGACY_ENGINE, engineOptions, pickEngine, recommendModels, sanitizeEngine,
+  HOSTED_FREE, KEY_NAMES, LEGACY_ENGINE, engineKey, engineLabel, engineOptions, pickEngine, recommendModels, sanitizeEngine,
   type CliAccount, type EnginesState, type KeyName, type WorkerEngine,
 } from '../shared/engines.js';
 import { writeJsonAtomic } from './persistence.js';
@@ -109,7 +109,10 @@ export function parseClaudeAuthStatus(stdout: string, exitCode: number, now = Da
   const atMatch = /expir\w*\s*(?:on|at)?:?\s*([0-9]{4}-[0-9]{2}-[0-9]{2}[^\s,;]*)/i.exec(text);
   const exp = expiredText ? { expired: true } : expiry(atMatch?.[1], now);
   const loggedIn = exp.expired ? false : out ? false : inn ? true : exitCode !== 0 ? false : null;
-  const method = /claude\.ai|subscription/i.test(text) ? 'claude.ai' : /api key/i.test(text) ? 'API key' : undefined;
+  // Fail closed: key/helper/console patterns are checked first; text matching both kinds gives no method (not usable).
+  const keyish = /api[\s_-]?key|apiKeyHelper|helper|console/i.test(text);
+  const subish = /claude\.ai|subscription/i.test(text);
+  const method = keyish && subish ? undefined : keyish ? 'API key' : subish ? 'claude.ai' : undefined;
   return { installed: true, loggedIn, method, ...exp, detail: describe(loggedIn, method, undefined, exp) };
 }
 
@@ -135,10 +138,10 @@ export function parseCodexLoginStatus(output: string, exitCode: number): CliAcco
 
 // ---- Linked accounts --------------------------------------------------------------------------------------------
 
-export type Exec = (cmd: string, args: string[], env: Record<string, string>) => Promise<{ stdout: string; stderr: string; code: number }>;
+export type Exec = (cmd: string, args: string[], env: Record<string, string>, cwd?: string) => Promise<{ stdout: string; stderr: string; code: number }>;
 
-const defaultExec: Exec = (cmd, args, env) => new Promise((resolve) => {
-  execFile(cmd, args, { env, timeout: 8000, maxBuffer: 256 * 1024, encoding: 'utf8' }, (err, stdout, stderr) => {
+const defaultExec: Exec = (cmd, args, env, cwd) => new Promise((resolve) => {
+  execFile(cmd, args, { env, cwd, timeout: 8000, maxBuffer: 256 * 1024, encoding: 'utf8' }, (err, stdout, stderr) => {
     const code = err ? (typeof (err as NodeJS.ErrnoException & { code?: unknown }).code === 'number' ? (err as unknown as { code: number }).code : 1) : 0;
     resolve({ stdout: String(stdout ?? ''), stderr: String(stderr ?? ''), code });
   });
@@ -154,6 +157,10 @@ export interface AccountsOptions {
   env?: () => Record<string, string>;
   totalMem?: () => number;
   now?: () => number;
+  /** The office repository: `claude auth status` runs here so project Claude settings count. */
+  cwd?: string;
+  /** Called after each probe (the queue re-pumps once a launch gate can answer). */
+  onProbed?: () => void;
 }
 
 const CACHE_MS = 15_000;
@@ -213,7 +220,9 @@ export class LinkedAccounts {
     const codexPath = this.o.resolve('codex');
     const qwenPath = this.o.resolve('qwen');
     const [claude, codex, ollama] = await Promise.all([
-      claudePath ? exec(claudePath, ['auth', 'status'], clean).then((r) => parseClaudeAuthStatus(r.stdout || r.stderr, r.code, now)) : Promise.resolve<CliAccount>({ installed: false, loggedIn: null, detail: 'Claude Code is not installed on this computer.' }),
+      // Run in the office repository, so a project `.claude/settings.json` (apiKeyHelper, env.ANTHROPIC_API_KEY) is
+      // reflected in the reported method, exactly as a worker started there would see it.
+      claudePath ? exec(claudePath, ['auth', 'status'], clean, this.o.cwd).then((r) => parseClaudeAuthStatus(r.stdout || r.stderr, r.code, now)) : Promise.resolve<CliAccount>({ installed: false, loggedIn: null, detail: 'Claude Code is not installed on this computer.' }),
       codexPath ? exec(codexPath, ['login', 'status'], clean).then((r) => parseCodexLoginStatus(`${r.stdout}\n${r.stderr}`, r.code)) : Promise.resolve<CliAccount>({ installed: false, loggedIn: null, detail: 'Optional: Codex CLI is not installed.' }),
       this.o.ollama.detect(),
     ]);
@@ -230,7 +239,27 @@ export class LinkedAccounts {
     };
     const done = this.finish(state);
     this.cache = { at: now, state: done };
+    try { this.o.onProbed?.(); } catch { /* a listener never breaks the probe */ }
     return done;
+  }
+
+  /**
+   * The launch gate (re-review item 1): every agent spawn passes here, synchronously, against a probe no older than
+   * CACHE_MS. "auto" or no engine → the recommended engine; anything not usable → refused with its reason. A missing or
+   * stale probe refuses with "checking" and starts one (the 10 s refresh floor applies); callers retry after it lands.
+   */
+  gate(requested: WorkerEngine | undefined): { engine: WorkerEngine } | { error: string; pending?: boolean } {
+    const now = (this.o.now ?? Date.now)();
+    if (!this.cache || now - this.cache.at >= CACHE_MS) {
+      void this.state(true).catch(() => {});
+      return { error: 'Checking which worker engines are ready on this computer… try again in a moment.', pending: true };
+    }
+    const s = this.cache.state;
+    const wanted = requested ?? (this.preference === 'auto' ? undefined : this.preference);
+    if (!wanted) return s.recommended ? { engine: s.recommended } : { error: s.help.join(' ') || 'No worker engine is ready.' };
+    const option = s.options.find((o) => engineKey(o.engine) === engineKey(wanted));
+    if (!option) return { error: `${engineLabel(wanted)} is not ready on this computer.` };
+    return option.usable ? { engine: option.engine } : { error: `${option.label} is not ready: ${option.reason}` };
   }
 
   private finish(s: EnginesState): EnginesState {
