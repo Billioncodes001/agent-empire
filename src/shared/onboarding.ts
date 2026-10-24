@@ -128,7 +128,7 @@ export interface SettingsView {
   budget: { source: Source; usd?: number; pause: boolean };
 }
 
-export interface OnboardingView { progress: OnboardingProgress; offer: boolean; settings: SettingsView }
+export interface OnboardingView { progress: OnboardingProgress; offer: boolean; settings: SettingsView; storageError?: string }
 
 // ---- Validation (client prechecks; the host validates again) ------------------------------------------------------
 
