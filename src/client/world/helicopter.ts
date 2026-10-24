@@ -103,6 +103,7 @@ export function buildHelicopter() {
     handle: () => leaf.localToWorld(new THREE.Vector3(-0.08, 1.3, -0.95)),
     animate(dt: number, motion: RotorState, reduced: boolean) {
       const spool = motion.spool ?? 0;
+      root.userData.rotor = reduced ? 'disc' : 'blades';
       airframe.rotation.x = reduced ? 0 : -(motion.pitch ?? 0);
       airframe.rotation.z = reduced ? 0 : motion.roll ?? 0;
       if (reduced) {
