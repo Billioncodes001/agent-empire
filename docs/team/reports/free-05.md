@@ -97,6 +97,22 @@ Re-run after the fixes:
 | phone-ui-check | 33/33 |
 | mobile-ui-check | 411/411 |
 
+## Re-review fixes (b85d16e)
+
+1. **The unpack cap now counts bytes actually produced.**
+   - `safeExtract` lists the archive and then streams every member through a single `tar -xOjf`. The office writes each file itself, splitting the stream by the listed sizes.
+   - Past `maxBytes`, or past the listed total, tar is killed at once and the output is removed. A total that differs from the listing is refused.
+   - tar no longer writes to disk itself, so it never sets ownership or paths.
+   - The listed size is now parsed from the column just before the date, so an owner name with spaces can't shift it.
+   - Tests: a real bsdtar archive whose owner is `x 0` (refused at the cap, accepted under a larger cap), and a fake tar that lists 10 bytes but streams 5 MB (stopped at the cap, nothing left behind).
+2. **No host paths reach clients.**
+   - Failures from tar, file opens and writes show a generic message with the error code. The details go to the host log only.
+   - The speech-runtime load error has paths removed.
+   - Test: real tar failing on a non-bzip2 file, and an EACCES open error. Neither error contains the data folder, the home folder or the system temp folder.
+3. **Free-space check matches the cap.** The reservation is now the archive size plus the unpack cap.
+
+Re-run: typecheck green, `npm test` 781/781, build green, phone-ui-check 33/33.
+
 ## Not done, and honest limits
 
 - **No real model was downloaded or run.** The sherpa config follows the official Node addon examples, but transcription latency and accuracy, Kokoro output and the `tar` unpack on Windows have not been measured. A host test with a real model is the next step, and needs the owner's approval for the download.
