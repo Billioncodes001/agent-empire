@@ -87,6 +87,12 @@ export const MAX_CHIEF_TEXT = 2000;
 /** A transcript waits this long for confirmation, then expires unsent. */
 export const TRANSCRIPT_TTL_MS = 5 * 60_000;
 export const SHERPA_PACKAGE = 'sherpa-onnx-node';
+/**
+ * The runtime release voice is verified with. 2.x (2026-10-23) dropped the espeak-ng `dataDir` the catalogue's Kokoro
+ * archives ship and needs a lexicon instead, so Kokoro cannot speak with it.
+ */
+export const SHERPA_VERSION = '1.13.8';
+export const SHERPA_INSTALL = `${SHERPA_PACKAGE}@${SHERPA_VERSION}`;
 
 export interface VoiceDownload {
   model: string;
