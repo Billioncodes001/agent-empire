@@ -32,6 +32,10 @@ export interface Config {
   budget?: number;
   /** Refuse new hires for the rest of the day once the budget is spent. */
   budgetPause: boolean;
+  /** FREE-08: where the budget came from; a host budget overrides the one saved in onboarding/Settings. */
+  budgetSource?: 'cli' | 'env';
+  /** Set when --budget-pause or AGENT_OFFICE_BUDGET_PAUSE decides pausing (it then beats the saved choice). */
+  budgetPauseSource?: 'cli' | 'env';
 }
 
 export interface RTCIceServerLike {
@@ -137,7 +141,9 @@ export function loadConfig(argv: string[]): Config {
   let claimToken = process.env.AGENT_OFFICE_CLAIM_TOKEN || '';
   let resetPassword = false;
   let budget = process.env.AGENT_OFFICE_BUDGET || '';
+  let budgetSource: 'cli' | 'env' | undefined = budget ? 'env' : undefined;
   let budgetPause = !!process.env.AGENT_OFFICE_BUDGET_PAUSE && process.env.AGENT_OFFICE_BUDGET_PAUSE !== '0';
+  let budgetPauseSource: 'cli' | 'env' | undefined = process.env.AGENT_OFFICE_BUDGET_PAUSE ? 'env' : undefined;
   const iceServers: RTCIceServerLike[] = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
 
   for (let i = 0; i < argv.length; i++) {
@@ -187,9 +193,11 @@ export function loadConfig(argv: string[]): Config {
         break;
       case '--budget':
         budget = takeValue(argv, i++, a);
+        budgetSource = 'cli';
         break;
       case '--budget-pause':
         budgetPause = true;
+        budgetPauseSource = 'cli';
         break;
       default:
         if (a.startsWith('-')) {
@@ -308,6 +316,8 @@ export function loadConfig(argv: string[]): Config {
     publicHost: process.env.AGENT_OFFICE_PUBLIC_HOST || undefined,
     budget: budgetUsd,
     budgetPause,
+    ...(budgetUsd !== undefined ? { budgetSource } : {}),
+    ...(budgetPauseSource ? { budgetPauseSource } : {}),
   };
 }
 
