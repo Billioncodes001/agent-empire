@@ -180,7 +180,9 @@ export interface ExtractLimits { maxBytes: number; maxFiles: number; signal?: Ab
 /** An error whose message is safe to show any client (no host paths, no tool output). */
 export class PublicError extends Error {}
 
-const TAR_ENV = { LC_ALL: 'C', PATH: '' };
+// System directories only, never the user's PATH: GNU tar runs `bzip2` for -j (bsdtar has it built in), so an empty
+// PATH broke every model install on Linux hosts.
+const TAR_ENV = { LC_ALL: 'C', PATH: process.platform === 'win32' ? '' : '/usr/bin:/bin' };
 const run = (file: string, args: string[], signal?: AbortSignal, maxBuffer = 16 * 1024 * 1024) => new Promise<string>((resolve, reject) => {
   execFile(file, args, { timeout: 15 * 60_000, maxBuffer, signal, env: TAR_ENV, windowsHide: true }, (err, stdout, stderr) => {
     if (!err) return resolve(String(stdout));
