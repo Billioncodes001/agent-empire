@@ -1,0 +1,609 @@
+{
+  "generatedBy": "tools/city/build-city-assets.ts",
+  "licence": "CC0-1.0",
+  "licenceUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+  "kits": {
+    "commercial": {
+      "pack": "City Kit (Commercial) 2.1",
+      "author": "Kenney (www.kenney.nl)",
+      "page": "https://kenney.nl/assets/city-kit-commercial",
+      "zip": "https://kenney.nl/media/pages/assets/city-kit-commercial/a742d900eb-1753115042/kenney_city-kit-commercial_2.1.zip",
+      "zipSha256": "f8b09b081c2bb88bcc126e2dec1cb40fd0dad7e7e591b6c26aaefe96fb35276b",
+      "models": {
+        "building-skyscraper-a": {
+          "min": [
+            -0.68,
+            0,
+            -0.68
+          ],
+          "max": [
+            0.68,
+            2.88,
+            0.68
+          ]
+        },
+        "building-skyscraper-b": {
+          "min": [
+            -0.68,
+            0,
+            -0.68
+          ],
+          "max": [
+            0.68,
+            4.48,
+            0.68
+          ]
+        },
+        "building-skyscraper-c": {
+          "min": [
+            -0.64,
+            0,
+            -0.694
+          ],
+          "max": [
+            0.64,
+            4.08,
+            0.694
+          ]
+        },
+        "building-skyscraper-d": {
+          "min": [
+            -0.64,
+            0,
+            -0.694
+          ],
+          "max": [
+            0.64,
+            5.47,
+            0.694
+          ]
+        },
+        "building-skyscraper-e": {
+          "min": [
+            -0.647,
+            0,
+            -0.621
+          ],
+          "max": [
+            0.648,
+            4.08,
+            0.621
+          ]
+        },
+        "building-a": {
+          "min": [
+            -0.442,
+            0,
+            -0.47
+          ],
+          "max": [
+            0.442,
+            1.293,
+            0.47
+          ]
+        },
+        "building-c": {
+          "min": [
+            -0.442,
+            0,
+            -0.545
+          ],
+          "max": [
+            0.442,
+            0.893,
+            0.545
+          ]
+        },
+        "building-e": {
+          "min": [
+            -0.82,
+            0,
+            -0.504
+          ],
+          "max": [
+            0.82,
+            0.893,
+            0.504
+          ]
+        },
+        "building-g": {
+          "min": [
+            -0.485,
+            0,
+            -0.461
+          ],
+          "max": [
+            0.485,
+            1.693,
+            0.461
+          ]
+        },
+        "building-h": {
+          "min": [
+            -0.442,
+            0,
+            -0.504
+          ],
+          "max": [
+            0.442,
+            1.293,
+            0.504
+          ]
+        },
+        "building-k": {
+          "min": [
+            -1.042,
+            0,
+            -0.471
+          ],
+          "max": [
+            1.042,
+            1.47,
+            0.471
+          ]
+        },
+        "building-m": {
+          "min": [
+            -0.62,
+            0,
+            -0.621
+          ],
+          "max": [
+            0.62,
+            3.15,
+            0.621
+          ]
+        },
+        "detail-awning-wide": {
+          "min": [
+            -0.4,
+            0,
+            0.1
+          ],
+          "max": [
+            0.4,
+            0.4,
+            0.248
+          ]
+        },
+        "detail-parasol-a": {
+          "min": [
+            -0.173,
+            0,
+            -0.2
+          ],
+          "max": [
+            0.173,
+            0.45,
+            0.2
+          ]
+        }
+      }
+    },
+    "industrial": {
+      "pack": "City Kit (Industrial) 2.0",
+      "author": "Kenney (www.kenney.nl)",
+      "page": "https://kenney.nl/assets/city-kit-industrial",
+      "zip": "https://kenney.nl/media/pages/assets/city-kit-industrial/0ec35b139d-1788171848/kenney_city-kit-industrial_2.0.zip",
+      "zipSha256": "5b381164e5760f3830a2dbee43b972deee38b2a695d091b56e238ab2910c96d2",
+      "models": {
+        "building-a": {
+          "min": [
+            -1.041,
+            0,
+            -0.621
+          ],
+          "max": [
+            1.043,
+            1.47,
+            0.621
+          ]
+        },
+        "building-c": {
+          "min": [
+            -0.842,
+            0,
+            -0.911
+          ],
+          "max": [
+            1.034,
+            1.25,
+            1.197
+          ]
+        },
+        "building-f": {
+          "min": [
+            -1.348,
+            0,
+            -0.386
+          ],
+          "max": [
+            0.442,
+            1.925,
+            0.894
+          ]
+        },
+        "building-k": {
+          "min": [
+            -0.651,
+            0,
+            -0.464
+          ],
+          "max": [
+            0.651,
+            0.773,
+            0.45
+          ]
+        },
+        "building-o": {
+          "min": [
+            -0.884,
+            0,
+            0
+          ],
+          "max": [
+            0,
+            0.918,
+            1.24
+          ]
+        },
+        "building-q": {
+          "min": [
+            -1.298,
+            0,
+            -0.874
+          ],
+          "max": [
+            0.842,
+            0.88,
+            0.896
+          ]
+        },
+        "chimney-large": {
+          "min": [
+            -0.54,
+            0,
+            -0.54
+          ],
+          "max": [
+            0.54,
+            1.7,
+            0.54
+          ]
+        },
+        "detail-tank-large": {
+          "min": [
+            -0.754,
+            0,
+            -0.894
+          ],
+          "max": [
+            0.754,
+            0.962,
+            0.754
+          ]
+        },
+        "detail-tank": {
+          "min": [
+            -0.424,
+            0,
+            -0.258
+          ],
+          "max": [
+            0.424,
+            0.415,
+            0.258
+          ]
+        },
+        "shipping-container-a": {
+          "min": [
+            -0.186,
+            0,
+            -0.411
+          ],
+          "max": [
+            0.186,
+            0.348,
+            0.411
+          ]
+        },
+        "shipping-container-b": {
+          "min": [
+            -0.186,
+            0,
+            -0.411
+          ],
+          "max": [
+            0.186,
+            0.348,
+            0.411
+          ]
+        },
+        "shipping-container-c": {
+          "min": [
+            -0.186,
+            0,
+            -0.411
+          ],
+          "max": [
+            0.186,
+            0.348,
+            0.411
+          ]
+        },
+        "water-tower": {
+          "min": [
+            -0.426,
+            0,
+            -0.416
+          ],
+          "max": [
+            0.426,
+            2.142,
+            0.416
+          ]
+        }
+      }
+    },
+    "streets": {
+      "pack": "City Kit (Roads)",
+      "author": "Kenney (www.kenney.nl)",
+      "page": "https://kenney.nl/assets/city-kit-roads",
+      "zip": "https://kenney.nl/media/pages/assets/city-kit-roads/74288c9459-1791628607/kenney_city-kit-roads.zip",
+      "zipSha256": "374a4552115cbd11b4ec5c930ee31a533562dc78a09af249a655d03f7ea3b959",
+      "models": {
+        "light-square": {
+          "min": [
+            -0.025,
+            0,
+            -0.213
+          ],
+          "max": [
+            0.025,
+            0.6,
+            0.025
+          ]
+        },
+        "light-curved-double": {
+          "min": [
+            -0.025,
+            0,
+            -0.2
+          ],
+          "max": [
+            0.025,
+            0.675,
+            0.2
+          ]
+        },
+        "traffic-light": {
+          "min": [
+            -0.073,
+            0,
+            -0.045
+          ],
+          "max": [
+            0.045,
+            0.515,
+            0.045
+          ]
+        },
+        "dumpster": {
+          "min": [
+            -0.13,
+            0,
+            -0.185
+          ],
+          "max": [
+            0.145,
+            0.209,
+            0.185
+          ]
+        },
+        "construction-cone": {
+          "min": [
+            -0.038,
+            0,
+            -0.038
+          ],
+          "max": [
+            0.038,
+            0.094,
+            0.038
+          ]
+        },
+        "construction-barrier": {
+          "min": [
+            -0.068,
+            0,
+            -0.112
+          ],
+          "max": [
+            0.068,
+            0.13,
+            0.112
+          ]
+        },
+        "road-sign-street": {
+          "min": [
+            -0.171,
+            0,
+            -0.025
+          ],
+          "max": [
+            0.025,
+            0.475,
+            0.171
+          ]
+        }
+      }
+    },
+    "vehicles": {
+      "pack": "Car Kit",
+      "author": "Kenney (www.kenney.nl)",
+      "page": "https://kenney.nl/assets/car-kit",
+      "zip": "https://kenney.nl/media/pages/assets/car-kit/1a312ec241-1775131960/kenney_car-kit.zip",
+      "zipSha256": "fac7dacac5c7874348cf19729af3ef205f3d366493edaf0a827d93f4fdf3d0c4",
+      "models": {
+        "hatchback-sports": {
+          "min": [
+            -0.65,
+            0,
+            -1.45
+          ],
+          "max": [
+            0.65,
+            1.1,
+            1.4
+          ]
+        },
+        "sedan-sports": {
+          "min": [
+            -0.65,
+            0,
+            -1.3
+          ],
+          "max": [
+            0.65,
+            1.1,
+            1.25
+          ]
+        },
+        "suv-luxury": {
+          "min": [
+            -0.75,
+            0,
+            -1.4
+          ],
+          "max": [
+            0.75,
+            1.3,
+            1.45
+          ]
+        },
+        "van": {
+          "min": [
+            -0.75,
+            0,
+            -1.4
+          ],
+          "max": [
+            0.75,
+            1.35,
+            1.35
+          ]
+        },
+        "delivery": {
+          "min": [
+            -0.75,
+            0,
+            -1.65
+          ],
+          "max": [
+            0.75,
+            1.65,
+            1.6
+          ]
+        },
+        "taxi": {
+          "min": [
+            -0.75,
+            0,
+            -1.4
+          ],
+          "max": [
+            0.75,
+            1.5,
+            1.35
+          ]
+        }
+      }
+    }
+  },
+  "files": {
+    "commercial.glb": {
+      "kit": "commercial",
+      "bytes": 856692,
+      "sha256": "23ab2f37a8fabaad00a7625ea579cfa67cf87163169d3e9f41f96d9f04313765",
+      "licence": "CC0-1.0",
+      "source": "https://kenney.nl/assets/city-kit-commercial"
+    },
+    "commercial.webp": {
+      "kit": "commercial",
+      "bytes": 2850,
+      "sha256": "81f5bc1a0a3022023fe4c202cfb1d232daa8674f3fd339c653dfe9696cb42aa7",
+      "licence": "CC0-1.0",
+      "source": "https://kenney.nl/assets/city-kit-commercial"
+    },
+    "commercial-phone.webp": {
+      "kit": "commercial",
+      "bytes": 4454,
+      "sha256": "2d2d98fd2841a349f8375447b6664309b29dd49e8d422fe3a79a20dcf6686439",
+      "licence": "CC0-1.0",
+      "source": "https://kenney.nl/assets/city-kit-commercial"
+    },
+    "industrial.glb": {
+      "kit": "industrial",
+      "bytes": 837596,
+      "sha256": "04f737d4a1392487724123b436b0b636c56a32b75a4aa776a7fd14db92034d22",
+      "licence": "CC0-1.0",
+      "source": "https://kenney.nl/assets/city-kit-industrial"
+    },
+    "industrial.webp": {
+      "kit": "industrial",
+      "bytes": 3600,
+      "sha256": "a6251b1c4253a0415696f82408324c3f4a71461aa142f989cf7db296d1a5c1d3",
+      "licence": "CC0-1.0",
+      "source": "https://kenney.nl/assets/city-kit-industrial"
+    },
+    "industrial-phone.webp": {
+      "kit": "industrial",
+      "bytes": 2076,
+      "sha256": "ddbae783ea7ebf66e01e4cf919b901bcc939603598f7e51282a0c8ba830c5576",
+      "licence": "CC0-1.0",
+      "source": "https://kenney.nl/assets/city-kit-industrial"
+    },
+    "streets.glb": {
+      "kit": "streets",
+      "bytes": 46028,
+      "sha256": "438a5846f48a2df5ea0655beadba198f2a64c54c6fff4cc4b6c5957050976cad",
+      "licence": "CC0-1.0",
+      "source": "https://kenney.nl/assets/city-kit-roads"
+    },
+    "streets.webp": {
+      "kit": "streets",
+      "bytes": 2704,
+      "sha256": "dcb6c345a0d7b427951168adc0d49e85e47f342f2d0856afcb76ce6992847136",
+      "licence": "CC0-1.0",
+      "source": "https://kenney.nl/assets/city-kit-roads"
+    },
+    "streets-phone.webp": {
+      "kit": "streets",
+      "bytes": 4612,
+      "sha256": "8d1d9832811d7c8f511abfbf3487e8168702a7909a56401726772a4afe64a6aa",
+      "licence": "CC0-1.0",
+      "source": "https://kenney.nl/assets/city-kit-roads"
+    },
+    "vehicles.glb": {
+      "kit": "vehicles",
+      "bytes": 532172,
+      "sha256": "6527b1773ae47684a71f44b0cbfb442f0af8df1313b8ba4f3886a1c9461ba890",
+      "licence": "CC0-1.0",
+      "source": "https://kenney.nl/assets/car-kit"
+    },
+    "vehicles.webp": {
+      "kit": "vehicles",
+      "bytes": 3484,
+      "sha256": "3339bcf371ce8d33b90cf380af037f383eebf6bf91b2dc10679ff62143e423c1",
+      "licence": "CC0-1.0",
+      "source": "https://kenney.nl/assets/car-kit"
+    },
+    "vehicles-phone.webp": {
+      "kit": "vehicles",
+      "bytes": 1980,
+      "sha256": "a87d65f7bafc4db6e8e5df894e26171c9145f37f60f41c01c0ee9b9f3b1b220e",
+      "licence": "CC0-1.0",
+      "source": "https://kenney.nl/assets/car-kit"
+    }
+  }
+}
