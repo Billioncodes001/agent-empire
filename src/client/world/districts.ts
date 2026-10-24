@@ -12,6 +12,7 @@ import { DISTRICTS, GARAGE, PLOTS, VEHICLE_MODELS, normalizeCity, type CityState
 import { vehicleOverlaps } from '../vehicle';
 import { SURFACE as S, boxMesh as box, solid } from './materials';
 import { textPlane } from './toon';
+import { batchStaticMeshes } from './batching';
 import { districtLayout, footprint, PLOT_PAD, plotSign, ROADS, type Box, type Kit, type Placement } from './district-layout';
 import type { Collider } from './office';
 import type { GraphicsQuality } from '../graphics';
@@ -61,6 +62,7 @@ export function buildDistricts(parent: THREE.Group) {
   colliders.push({ minX: 55, maxX: 150, minZ: 216.6, maxZ: 217.2, top: 1.2 });
   sign(group, 'MERIDIAN BUSINESS DISTRICT', 100, 4.4, 30.5, 9);
   sign(group, 'HARBOUR WORKS', 100, 4.4, 121.6, 6);
+  batchStaticMeshes(group);
 
   // Plots: paving, corner posts and a sign that follows the save.
   const plotSigns = new Map<PlotId, THREE.Mesh>();
@@ -72,6 +74,7 @@ export function buildDistricts(parent: THREE.Group) {
     box(g, PLOT_PAD.w, 0.08, PLOT_PAD.d, S.stone, p.x, 0.015, p.z);
     for (const dx of [-1, 1]) for (const dz of [-1, 1]) box(g, 0.12, 1.2, 0.12, S.frame, p.x + dx * PLOT_PAD.w / 2, 0.6, p.z + dz * PLOT_PAD.d / 2);
     box(g, 0.1, 2.2, 0.1, S.frame, p.x, 1.1, plotSign(p.id).z - 0.1);
+    batchStaticMeshes(g);
   }
   function setPlotSign(id: PlotId, owned: boolean) {
     const p = PLOTS.find((q) => q.id === id)!;
@@ -107,6 +110,7 @@ export function buildDistricts(parent: THREE.Group) {
   garage.add(rollerDoor);
   box(rollerDoor, door.width, 4.6, 0.08, solid('#9aa3a3', 0.6, 0.5), 0, 2.3, 0);
   for (let y = 0.4; y < 4.6; y += 0.4) box(rollerDoor, door.width, 0.03, 0.1, S.frame, 0, y, 0);
+  batchStaticMeshes(garage);
   const doorCollider: Collider = { ...layout.garage.door };
   colliders.push(doorCollider);
   let doorOpen = 0;

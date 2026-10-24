@@ -1,0 +1,87 @@
+[
+  {
+    "name": "district kits load (desktop 512² palettes)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "name": "walking east crosses into the business district (no teleport)",
+    "ok": true,
+    "detail": "x 40.0 → 59.6"
+  },
+  {
+    "name": "the kiosk shows its interaction hint",
+    "ok": true,
+    "detail": "E Garage: buy, bring out or store vehicles"
+  },
+  {
+    "name": "the interaction key opens the Meridian motor garage dialog",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "name": "the dialog says city credits are fictional",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "name": "buying the City hatchback spends 9,000 fictional credits and parks it in bay 1",
+    "ok": true,
+    "detail": "100000 → 91000"
+  },
+  {
+    "name": "Bring out moves it to a free kerb slot",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "name": "a full garage refuses further purchases",
+    "ok": true,
+    "detail": "Garage full"
+  },
+  {
+    "name": "Escape closes the dialog",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "name": "owned vehicles are placed in their bays and on the kerb",
+    "ok": true,
+    "detail": "Owned hatchback (vehicle-1) | Owned van (vehicle-2) | Owned coupe (vehicle-3) | Owned suv (vehicle-4)"
+  },
+  {
+    "name": "a plot can be bought at its sign",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "name": "no console errors or missing assets (desktop)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "name": "phones get the 256² palettes",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "name": "phone 874x402: the garage dialog fits without sideways overflow",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "name": "no console errors (phone)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "name": "Save-Data loads the 256² palettes",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "name": "no console errors (Save-Data, reduced motion)",
+    "ok": true,
+    "detail": ""
+  }
+]
