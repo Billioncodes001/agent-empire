@@ -58,6 +58,8 @@ function createVault(file, encryption) {
       get(k) { if (!NOTIFY.includes(k)) return undefined; try { return read()[k]; } catch { return undefined; } },
       set(k, v) { if (!NOTIFY.includes(k)) throw new Error('Invalid credential settings.'); save({ [k]: v }); },
       delete(k) { remove(k); },
+      /** A locked or unreadable vault, so the server refuses re-targeting a channel whose secret it cannot see. */
+      error() { try { read(); return undefined; } catch (e) { return e instanceof Error ? e.message : String(e); } },
     };
   }
   function status() { const v=read();return {available:available(),anthropic:!!v.anthropicKey,github:!!v.githubToken}; }

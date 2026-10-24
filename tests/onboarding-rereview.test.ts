@@ -13,6 +13,7 @@ import net from 'node:net';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import { OnboardingError, OnboardingService } from '../src/server/onboarding.js';
 import { FileSecretStore } from '../src/server/secrets.js';
 import { guardedLookup, ntfyTransport, refusedTarget, type Resolver } from '../src/server/notify.js';
@@ -113,6 +114,28 @@ test('3: while the secret store is unreadable, ntfy server and SMTP target chang
       assert.equal(status(() => s.updateSettings({ notifications: { email } })), 409, JSON.stringify(email));
     assert.equal(s.settings().notifications.ntfy.server, 'https://push.example.com');
     assert.equal(status(() => s.updateSettings({ profile: { name: 'Still editable' } })), 200, 'other settings still save');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('3 (desktop): a locked OS credential vault also refuses ntfy server and SMTP target changes', () => {
+  const dir = tmp();
+  try {
+    const { createVault } = createRequire(import.meta.url)('../desktop/credential-vault.cjs');
+    let locked = false;
+    const crypto = {
+      isEncryptionAvailable: () => true,
+      encryptString: (v: string) => Buffer.from(v.split('').reverse().join('')),
+      decryptString: (b: Buffer) => { if (locked) throw new Error('keychain locked'); return b.toString().split('').reverse().join(''); },
+    };
+    const store = createVault(path.join(dir, 'vault'), crypto).notifySecrets();
+    const s = new OnboardingService(dir, store, { legacy: false });
+    s.updateSettings({ notifications: { ntfy: { server: 'https://push.example.com', topic: 'empire-x' }, email: { host: 'smtp.example.com', port: 587, to: 'ceo@example.com' } }, secrets: { ntfyToken: 'tk_token_value_123', smtpPassword: 'pass' } });
+    assert.equal(store.error(), undefined);
+    locked = true;
+    assert.match(String(store.error()), /could not be opened|locked/);
+    assert.equal(status(() => s.updateSettings({ notifications: { ntfy: { server: 'https://attacker.example' } } })), 409);
+    assert.equal(status(() => s.updateSettings({ notifications: { email: { host: 'attacker.example' } } })), 409);
+    assert.equal(s.settings().notifications.ntfy.server, 'https://push.example.com');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
