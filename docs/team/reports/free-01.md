@@ -51,6 +51,22 @@ Branch `claude/free-01-engines` from `aba620d`. Author: Claude Opus 5.5 (FREE-01
 
 Screenshots are in `docs/team/reports/free-01/`. Unrelated regenerated screenshots were reverted. No real `claude`, `codex`, `qwen`, Ollama pull or paid call was run. Port 4610, Pixel and `.agent-office` were never touched.
 
+## Review fixes (security review 2026-10-24: accept with fixes)
+
+Each fix has failing-before tests in `tests/engines.test.ts` (7 new; 21 engine tests total) and its own commit.
+
+1. **API-key sign-in is never "your Claude account".** The subscription option is usable only when `claude auth status` reports a subscription method (claude.ai / OAuth). An API key, `apiKeyHelper` or console method makes it unusable and shows why, and "auto" falls back to free. The `--settings` env/`apiKeyHelper` override was **not** added, because its effect on an empty value isn't documented; the method check is used instead.
+2. **Qwen prompt injection.** The prompt is now a single `--prompt-interactive=<prompt>` argument (yargs takes everything after `=` as the value). Tested with `--yolo`, `--approval-mode=yolo` and `-y …`.
+3. **Sign in without SessionStart.** `/login` is also typed when Claude's own logged-out prompt is on screen. It is never typed into setup menus (login method, trust) and never followed by Enter. Both paths are tested.
+4. **Moderate fixes:**
+   - The model client caps JSON and streaming responses at 4 MB and stops reading when the cap is hit. Key-shaped text (`sk-…`, `AIza…`, `gsk_…`) is redacted from provider errors.
+   - The task namer's `claude -p` gets the same scrubbed env as a subscription worker.
+   - `CLAUDE_CODE_USE_FOUNDRY`, `ANTHROPIC_FOUNDRY_API_KEY` and `AZURE_OPENAI_API_KEY` are added to the scrub list.
+   - `GET /api/engines?refresh=1` is rate-floored to 10 s.
+   - A saved engine this version doesn't recognise keeps the worker with status unknown and the label "Unknown engine", logs a warning and refuses to resume. It is never switched to Claude.
+
+Re-run after the fixes: typecheck pass, `npm test` 736/736, build pass, engines-ui-check 24/24, mobile-ui-check 411/411.
+
 ## Deviations and limits
 
 - **Qwen hooks are not written into the worktree.** System-scope settings avoid folder-trust gating and accidental commits. The cost is that this file replaces any `/Library/Application Support/QwenCode/settings.json` for Empire workers.
