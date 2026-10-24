@@ -60,6 +60,43 @@ The phone UI check ran on isolated fixture port 4871, with Chrome's fake microph
 
 Unrelated regenerated screenshots were reverted.
 
+## Review fixes (security review: accept with fixes)
+
+Each fix has a failing-before test in `tests/voice-review.test.ts` (10 tests) or `voice-server.test.ts`. They landed in two commits: 808be49 (fixes 1–5) and d1027c6 (the lower-priority items).
+
+1. **Disk write errors.**
+   - What changed: the download now uses `stream/promises.pipeline` and opens the file with `flags: 'wx'`. ENOSPC, EACCES and similar errors mark the download failed with a clear message, and temporary files are removed. There is also a free-space check (3× the archive) before starting.
+   - Test: a write stream that fails with ENOSPC.
+2. **Cancel and restart races.**
+   - What changed: a `running` promise refuses a new download until the old one has fully stopped. The download shows "cancelling", then "cancelled". Temporary names are unique per run. The abort signal is checked after unpacking and before the rename, and it reaches `execFile`.
+   - Tests: cancel-then-restart; cancel during unpacking leaves nothing installed.
+3. **Event loop.**
+   - What changed: only one speech job runs at a time; a second gets 429 "busy". The remaining blocking is documented in `docs/VOICE.md`. **Not done:** moving speech to a worker thread (a follow-up).
+   - Test: concurrency gets 429.
+4. **Extraction.**
+   - What changed: `safeExtract` uses the system tar by absolute path, never PATH. It lists the archive first (`-tjf` and `-tvjf`) and rejects absolute paths, `..`, links and devices. It caps the file count (2,000) and the unpacked size. It unpacks with `--no-same-owner`, then re-checks the files that landed with `lstat`.
+   - Test: synthetic `.tar.bz2` archives built with the real bsdtar (one with a `../` entry, one with a symlink, one oversized) are rejected, and nothing is written outside the temporary folder.
+5. **Whisper Small (size check only).**
+   - What changed: the API needs `confirmUnverified`, and the UI asks a second question titled "No published checksum — size check only" (screenshot `02b`). The computed sha256 is recorded in `installed.json` and `voice.json`, and a reinstall with a different digest shows a warning. It gets the same extraction checks as every model.
+
+Lower-priority items:
+- A chief-call retry reuses its requestId.
+- *Delete kept recordings* control, plus pruning of recordings after 30 days.
+- The `btn-queue` attribute spacing in `index.html` is fixed.
+- The models path sent to clients is a display path only.
+- Tests for malformed WAVs: a huge chunk size, data before fmt, an odd size, an over-long data size, and a truncated file.
+- **The mobile apps keep the microphone off, and there is no toggle yet.**
+
+Re-run after the fixes:
+
+| Check | Result |
+| --- | --- |
+| typecheck | green |
+| `npm test` | 777/777 |
+| build | green |
+| phone-ui-check | 33/33 |
+| mobile-ui-check | 411/411 |
+
 ## Not done, and honest limits
 
 - **No real model was downloaded or run.** The sherpa config follows the official Node addon examples, but transcription latency and accuracy, Kokoro output and the `tar` unpack on Windows have not been measured. A host test with a real model is the next step, and needs the owner's approval for the download.

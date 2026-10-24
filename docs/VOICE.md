@@ -21,6 +21,10 @@ Agent Empire can talk to you offline. Voice is optional, and typing always works
 | Kokoro (English, int8) | Chief's voice | 103 MB | Apache-2.0 | sha256 |
 | Kokoro (English, full) | Chief's voice, full precision | 320 MB | Apache-2.0 | sha256 |
 
+Whisper Small asks a second question: **no published checksum — size check only**. Its sha256 is recorded when it is installed, and if a later reinstall gets a file with a different digest, you are warned.
+
+Before unpacking, the office lists each archive with the system `tar`. It uses `/usr/bin/tar` (or `/bin/tar`), or `%SystemRoot%\System32\tar.exe` on Windows, and never looks it up through PATH. It refuses an archive containing absolute paths, `..`, links or devices, more than 2,000 files, or more unpacked data than the cap. It unpacks with `--no-same-owner` and checks the result again. It also checks free disk space (three times the archive size) first.
+
 Downloads come only from the official sherpa-onnx GitHub releases (`asr-models`, `tts-models`). Sizes and sha256 digests were read from GitHub's release-asset API on 2026-10-24 and are pinned in `src/shared/voice.ts`. A download that doesn't match is deleted and nothing is installed. You can cancel a download at any time. Models are stored in `<data dir>/voice/models/<id>/`, and unpacking uses the system `tar`.
 
 3. **Test your microphone.** The test runs for three seconds and stays in the page.
@@ -38,6 +42,11 @@ Open it with **📱 Phone** in the top bar. On phones, it's under Menu → Offic
 - **Spoken replies** use the installed Kokoro voice when *Speak replies aloud* is on. Subtitles are always shown.
 
 The iOS and Android apps keep the microphone off, so the phone offers text there.
+
+## Limits
+
+- **One speech job at a time.** sherpa-onnx runs synchronously in the office process, so a transcription or a spoken reply pauses the office host while it runs. It takes about as long as the clip, and clips are at most 30 seconds. A second request arriving during that time gets "busy, try again" (HTTP 429). Moving speech to a worker thread is a planned follow-up.
+- **Kept recordings** (only if you opted in) are deleted after 30 days. *Delete kept recordings* removes them all at once.
 
 ## For developers
 
