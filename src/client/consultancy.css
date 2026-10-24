@@ -500,3 +500,6 @@ html[data-save-data="true"] *, html[data-save-data="true"] *::before, html[data-
 @media (max-width: 860px) { .memory-grid { grid-template-columns: 1fr; } }
 @media (max-width: 520px) { .memory-row { grid-template-columns: 1fr; } .lesson { padding: 14px 14px 12px 18px; } }
 @media (prefers-reduced-motion: no-preference) { .lesson { transition: border-color .25s var(--ease); } .lesson:hover { border-color: var(--copper); } }
+
+/* Opened-from-disk notice (see the entry HTML): this stylesheet loaded, so the page is served correctly. */
+.file-open-note { display: none !important; }

@@ -1624,3 +1624,6 @@ html.ae-touch #hud .topbar .controls > #btn-inbox > span:not(.svc-count):not(.in
   .onboarding-modal header h2 { font-size: 18px; }
   .ob-status { flex-basis: 100%; order: -1; }
 }
+
+/* Opened-from-disk notice (see the entry HTML): this stylesheet loaded, so the page is served correctly. */
+.file-open-note { display: none !important; }

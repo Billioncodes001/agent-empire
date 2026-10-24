@@ -8,6 +8,10 @@
     <link rel="stylesheet" href="./login.css" />
   </head>
   <body>
+    <!-- Shown only when this page is opened from disk: its stylesheet (which hides .file-open-note) cannot load. -->
+    <div class="file-open-note" role="alert" style="position:fixed;top:0;left:0;right:0;z-index:2147483000;margin:0;padding:14px 16px;background:#14211f;color:#f2efe6;border-bottom:1px solid #9bd1ba66;font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif">
+      <strong>Agent Empire can't run from a file.</strong> Open it through your office address instead (the address the office server prints when it starts, for example <code>http://localhost:4610</code>), or use the installed app.
+    </div>
     <main class="card">
       <div class="logo" aria-hidden="true">
         <svg viewBox="120 70 272 300" width="64" height="71"><rect x="250" y="78" width="12" height="40" rx="3" fill="#c7d6db"/><rect x="140" y="226" width="62" height="142" rx="5" fill="#7f999e"/><rect x="310" y="258" width="62" height="110" rx="5" fill="#7f999e"/><rect x="194" y="112" width="124" height="256" rx="7" fill="#c7d6db"/><g fill="#15232a"><rect x="212" y="136" width="24" height="16" rx="2"/><rect x="244" y="136" width="24" height="16" rx="2"/><rect x="276" y="136" width="24" height="16" rx="2"/><rect x="212" y="168" width="24" height="16" rx="2"/><rect x="276" y="168" width="24" height="16" rx="2"/><rect x="212" y="200" width="24" height="16" rx="2"/><rect x="244" y="200" width="24" height="16" rx="2"/><rect x="244" y="232" width="24" height="16" rx="2"/><rect x="276" y="232" width="24" height="16" rx="2"/><rect x="212" y="264" width="24" height="16" rx="2"/><rect x="276" y="264" width="24" height="16" rx="2"/><rect x="238" y="316" width="36" height="52" rx="3"/></g><g fill="#9bd1ba"><rect x="244" y="168" width="24" height="16" rx="2"/><rect x="276" y="200" width="24" height="16" rx="2"/><rect x="212" y="232" width="24" height="16" rx="2"/><rect x="244" y="264" width="24" height="16" rx="2"/></g></svg>
