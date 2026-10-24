@@ -175,6 +175,16 @@ Two passed before the fixes:
 - the server-delivery test, because the server already honoured `notify.start`; the defect was in `local-host.cjs`, whose test failed;
 - the pure helper test for review 3, which is new code; the defect was in `main.ts` and is covered by the UI checks.
 
+## Re-review fixes (round 3, at `e70d7fa`)
+
+All three are tested in `tests/onboarding-rereview.test.ts`. At `e70d7fa` that file fails: the guard API it imports did not exist.
+
+| # | Finding | Fix |
+| --- | --- | --- |
+| 1 | Overlapping saves could leave two Telegram bridges | Channel changes run one at a time (promise chain). Settings are re-read after waiting for the old bridge, and any bridge that is not the current one is stopped. Test: two overlapping saves leave only the latest token polling |
+| 2 | Private-range bypasses | `refusedTarget` now refuses numeric forms other than a plain dotted quad (`2130706433`, `0x…`, `0177.0.0.1`, `127.1`). It strips trailing dots, refuses IPv4-compatible `::a.b.c.d` and `::`, NAT64 `64:ff9b::/96`, and checks mapped IPv4. Saved targets are resolved at save time (`checkTargets`), and every answer is checked. At connect time, `guardedLookup` checks every answer again and pins the connection to the checked address: http(s) `lookup` for ntfy, net/tls `lookup` for SMTP (TLS still verifies the configured name). The desktop keeps loopback. Environment-configured channels are the operator's own and are not guarded. Tests use a fake resolver only |
+| 3 | Re-target guard skipped when the secret store is unreadable | With `secrets.error()` set, any ntfy server change or SMTP host, port or security change is refused (409). Other settings still save |
+
 ## Test evidence
 
 Run on the head of this branch after the merge.
