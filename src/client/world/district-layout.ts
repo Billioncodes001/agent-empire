@@ -4,7 +4,7 @@
  * the kit manifest written by tools/city/build-city-assets.ts.
  */
 import manifest from '../public/models/city/manifest.json';
-import { GARAGE, PLOTS, type DistrictId } from '../../shared/city';
+import { GARAGE, HELIPAD, PLOTS, type CityState, type DistrictId } from '../../shared/city';
 import { vehicleOverlaps } from '../vehicle';
 
 export type Kit = 'commercial' | 'industrial' | 'streets' | 'vehicles';
@@ -99,7 +99,11 @@ function furniture(out: Placement[]) {
   out.push({ kit: 'vehicles', model: 'delivery', x: 112, z: 171.4, yaw: -Math.PI / 2, scale: SCALE.vehicles, district: 'harbour', furniture: false });
 }
 
-export interface DistrictLayout { placements: Placement[]; colliders: Box[]; garage: { walls: Box[]; door: Box; kiosk: { x: number; z: number } } }
+export interface DistrictLayout {
+  placements: Placement[];
+  colliders: Box[];
+  garage: { walls: Box[]; door: Box; kiosk: { x: number; z: number }; stairs: Box[]; rails: Box[]; helipadKiosk: Box };
+}
 
 /** Garage shell: back and side walls, two front wall sections either side of the roller door, a roof slab. */
 function garageBoxes() {
@@ -114,7 +118,16 @@ function garageBoxes() {
     { minX: 81, maxX: 82.6, minZ: 82.4, maxZ: 83.2, top: 1.1 },
   ];
   const doorBox: Box = { minX: door.x - door.width / 2, maxX: door.x + door.width / 2, minZ: door.z - 0.15, maxZ: door.z + 0.15, top: 4.6 };
-  return { walls, door: doorBox, kiosk: { x: 81.8, z: 81.9 } };
+  // CITY-08: the roof slab (top = HELIPAD.y) is the helipad deck. A staircase on the east wall climbs north from the
+  // pavement to a landing level with the roof; rails along the roof edges keep walkers up there, with an opening at the
+  // north-east corner beside the landing. Every step rises less than the 0.3 m a walker steps up.
+  const steps = 22, rise = HELIPAD.y / steps, tread = 0.5, foot = z1 - 0.4 + steps * tread - 11; // bottom step at z ≈ 84.1
+  const stairs: Box[] = Array.from({ length: steps }, (_, i) => ({ minX: x1 + 0.25, maxX: x1 + 1.95, minZ: foot - (i + 1) * tread, maxZ: foot - i * tread, top: (i + 1) * rise }));
+  stairs.push({ minX: x1, maxX: x1 + 1.95, minZ: foot - steps * tread - 2.4, maxZ: foot - steps * tread, top: HELIPAD.y });
+  const y = HELIPAD.y, rail = (minX: number, maxX: number, minZ: number, maxZ: number): Box => ({ minX, maxX, minZ, maxZ, bottom: y, top: y + 1.05 });
+  const rails = [rail(x0, x1 - 1.8, z0, z0 + 0.25), rail(x1 - 0.25, x1, z0 + 2.2, z1), rail(x0, x1, z1 - 0.25, z1), rail(x0, x0 + 0.25, z0, z1)];
+  const helipadKiosk: Box = { minX: HELIPAD.kiosk.x - 0.6, maxX: HELIPAD.kiosk.x + 0.6, minZ: HELIPAD.kiosk.z - 0.9, maxZ: HELIPAD.kiosk.z - 0.3, bottom: y, top: y + 1.1 };
+  return { walls, door: doorBox, kiosk: { x: 81.8, z: 81.9 }, stairs, rails, helipadKiosk };
 }
 
 export function districtLayout(): DistrictLayout {
@@ -126,7 +139,7 @@ export function districtLayout(): DistrictLayout {
   // Lamp and signal posts are thin; a 0.3 m post keeps people from walking through them.
   for (const p of placements.filter((p) => p.kit === 'streets' && p.model !== 'dumpster'))
     colliders.push({ minX: p.x - 0.15, maxX: p.x + 0.15, minZ: p.z - 0.15, maxZ: p.z + 0.15, top: 3 });
-  colliders.push(...garage.walls);
+  colliders.push(...garage.walls, ...garage.stairs, ...garage.rails, garage.helipadKiosk);
   return { placements, colliders, garage };
 }
 
@@ -143,11 +156,15 @@ export const skylineColliders = (): Box[] =>
  * Whether a garage bay or kerb slot can turn solid: the live sedan and the founder must be clear of it, otherwise a
  * vehicle bought or stored while they stand there would trap them inside its collider.
  */
-export type CarPose = { position: { x: number; z: number }; rotation: { y: number } };
-export function slotClear(box: Box, car: CarPose, player: { x: number; z: number }, driving = false) {
-  // While driving, the founder is the car: its full 2.14 × 4.72 m body is tested, not a point at its centre.
+export type CarPose = { position: { x: number; z: number }; rotation: { y: number }; half?: { w: number; l: number } };
+/**
+ * `car` is the sedan, or (CITY-06) every live body: the driven ride with its own footprint and the parked sedan.
+ * While driving, the founder is the car: its full body is tested, not a point at its centre.
+ */
+export function slotClear(box: Box, car: CarPose | readonly CarPose[], player: { x: number; z: number }, driving = false) {
   const person = !driving && player.x > box.minX - 0.4 && player.x < box.maxX + 0.4 && player.z > box.minZ - 0.4 && player.z < box.maxZ + 0.4;
-  return !person && !vehicleOverlaps(car.position.x, car.position.z, car.rotation.y, box);
+  const bodies: readonly CarPose[] = Array.isArray(car) ? car : [car as CarPose];
+  return !person && !bodies.some((b) => vehicleOverlaps(b.position.x, b.position.z, b.rotation.y, box, b.half));
 }
 /** The sedan's pose this frame: while driving, the player controller has already moved it (city.car lags a frame). */
 export const liveCarPose = (driving: boolean, player: { x: number; z: number }, facing: number, car: CarPose): CarPose =>
@@ -161,6 +178,26 @@ export function settleSlots(slots: { occupied: boolean; collider: Box }[], occup
     s.occupied = occupiedNow[i];
     if (!s.occupied) s.collider.top = 0;
   });
+}
+
+/** A ride's pose on the ground plane. */
+export interface Pose { x: number; z: number; yaw: number }
+/** The world-aligned box around a rotated body (its collider), from its footprint and height. */
+export function poseBox(p: Pose, half: { w: number; l: number }, height: number, bottom = 0): Box {
+  const c = Math.abs(Math.cos(p.yaw)), s = Math.abs(Math.sin(p.yaw));
+  const hx = c * half.w + s * half.l, hz = s * half.w + c * half.l;
+  return { minX: p.x - hx, maxX: p.x + hx, minZ: p.z - hz, maxZ: p.z + hz, bottom, top: bottom + height };
+}
+/**
+ * CITY-06: where a bought vehicle stands. A pose from this session (where the founder parked it) wins; otherwise the
+ * slot its save records: its kerb slot after "Bring out", else its bay. Parked poses are not saved, so a reload
+ * returns every vehicle to its slot.
+ */
+export function garagePose(city: CityState, id: string, parked?: Pose): Pose {
+  if (parked) return parked;
+  const v = city.vehicles.find((x) => x.id === id)!;
+  if (v.apron !== undefined) return { ...GARAGE.apron[v.apron] };
+  return { x: GARAGE.bays[v.bay].x, z: GARAGE.bays[v.bay].z, yaw: 0 };
 }
 
 export const PLOT_PAD = { w: 20, d: 14 };
