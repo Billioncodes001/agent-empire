@@ -1,7 +1,9 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const {randomUUID} = require('node:crypto');
-const FIELDS = ['anthropicKey', 'githubToken'];
+const FIELDS = ['anthropicKey', 'githubToken', 'openaiKey', 'openrouterKey', 'geminiKey', 'groqKey'];
+/** FREE-01 opt-in free hosted keys: saved only after the user confirms each provider's data-use terms (main.cjs). */
+const HOSTED = ['openrouterKey', 'geminiKey', 'groqKey'];
 function createVault(file, encryption) {
   const available = () => encryption.isEncryptionAvailable() && (!encryption.getSelectedStorageBackend || encryption.getSelectedStorageBackend() !== 'basic_text');
   function read() {
@@ -31,6 +33,8 @@ function createVault(file, encryption) {
     return status();
   }
   function status() { const v=read();return {available:available(),anthropic:!!v.anthropicKey,github:!!v.githubToken}; }
-  return {read,save,status};
+  /** Names of the provider keys present, for the engines panel (never values). */
+  function names() { const v=read();return Object.fromEntries(FIELDS.map(k=>[k,!!v[k]])); }
+  return {read,save,status,names};
 }
-module.exports = {createVault};
+module.exports = {createVault, HOSTED};

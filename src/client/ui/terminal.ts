@@ -7,6 +7,8 @@ import { TERM_THEME } from '../world/laptop';
 import { h, openModal, STATUS_LABEL, type Modal } from './dom';
 import { usageLabel, usageTitle } from './usage';
 import type { ServerMsg } from '../../shared/protocol';
+import { engineSpendLabel, workerEngineLabel } from '../../shared/engines';
+import { engineStatus } from './status';
 
 let current: { workerId: string; modal: Modal } | null = null;
 const listeners = new Set<(msg: ServerMsg) => void>();
@@ -29,12 +31,13 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void)
   const dot = h('span.dot', { style: `background:${info.color}` });
   const title = h('h2', {}, info.name);
   const pill = h('span.pill', {}, '');
+  const engineTag = h('span.engine-tag', {});
   const cost = h('span.cost', {});
   const viewers = h('div.viewers', {});
   const changesBtn = h('button.btn', { type: 'button', title: 'What this worker changed: files, diff, commit, open a PR (C at the desk)' }, '🌿 Changes');
   const closeBtn = h('button.btn.close', { title: 'Leave terminal (Esc) · Ctrl+[ sends Esc to the terminal', 'aria-label': 'Close' }, '✕');
   const host = h('div.term-host');
-  const el = h('div.modal.term', { role: 'dialog', 'aria-label': `${info.name} terminal` }, h('header', {}, dot, title, pill, cost, viewers, onChanges ? changesBtn : null, closeBtn), host);
+  const el = h('div.modal.term', { role: 'dialog', 'aria-label': `${info.name} terminal` }, h('header', {}, dot, title, engineTag, pill, cost, viewers, onChanges ? changesBtn : null, closeBtn), host);
 
   const term = new Terminal({
     fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
@@ -84,9 +87,11 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void)
       return;
     }
     title.textContent = [w.name, w.title, w.worktree && `🌿 ${w.worktree.branch}`].filter(Boolean).join(' · ');
-    pill.className = `pill ${w.status}`;
-    pill.textContent = STATUS_LABEL[w.status] ?? w.status;
-    cost.textContent = w.usage?.calls ? usageLabel(w.usage) : '';
+    engineTag.textContent = w.kind === 'agent' ? workerEngineLabel(w) : '';
+    const shown = engineStatus(w, STATUS_LABEL);
+    pill.className = `pill ${shown.status}`;
+    pill.textContent = shown.label;
+    cost.textContent = w.kind === 'agent' && engineSpendLabel(w.engine) ? engineSpendLabel(w.engine)! : w.usage?.calls ? usageLabel(w.usage) : '';
     cost.title = w.usage ? usageTitle(w.usage) : '';
     viewers.textContent = w.viewers.length ? `👀 ${w.viewers.join(', ')}` : '';
     // Someone else resized the shared PTY (the latest typist wins): follow it so this view renders

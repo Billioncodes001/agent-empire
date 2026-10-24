@@ -53,6 +53,8 @@ import { Tower } from './tower';
 import { GRAPHICS, applyGraphics } from './graphics';
 import { openSettings } from './ui/settings';
 import { appPanel } from './ui/app-panel';
+import { linkedAccountsSection } from './ui/engines';
+import { ENGINE_NAME, type WorkerEngine } from '../shared/engines';
 import { startUpdates, updateSettingsSection } from './update';
 import { connectionView } from './ui/continuity';
 import { setupPwa } from './ui/pwa';
@@ -312,6 +314,8 @@ interface WorkerView {
   deskId: string;
   status: string;
   acked: boolean;
+  /** Text on its name plate (name and engine). */
+  plate: string;
 }
 const workerViews = new Map<string, WorkerView>();
 // Worker routines (LIFE-03): desk ↔ amenities from real server state only. Reduced motion places bodies without walking.
@@ -539,9 +543,12 @@ function syncWorkers() {
       noOutline(desk.group);
       desk.vacancy.visible = false;
       desk.chair.rotation.y = 0;
-      v = { model, laptop, deskId: w.deskId, status: '', acked: true };
+      v = { model, laptop, deskId: w.deskId, status: '', acked: true, plate: w.name };
       workerViews.set(w.id, v);
     }
+    // FREE-01: the name plate says which engine it runs ("Byte · Qwen Code (local)").
+    const plate = w.kind !== 'agent' ? w.name : !w.engine && w.statusKnown === false ? `${w.name} · unknown engine` : `${w.name} · ${ENGINE_NAME[w.engine?.id ?? 'claude-code']}${w.engine?.auth === 'local' ? ' (local)' : ''}`;
+    if (v.plate !== plate) { v.plate = plate; v.model.setName(plate); }
     if (v.status !== w.status || v.acked !== w.acked) {
       const becameHot = shouldBounce(w) && !(v.status === w.status && v.acked === w.acked) && v.status !== '' && (w.status !== v.status);
       if (becameHot && (w.status === 'needs_input' || w.status === 'done')) {
@@ -557,7 +564,8 @@ function syncWorkers() {
     }
     v.model.setOutfit(workerOutfit(w));
     v.model.setTask(workerTaskLine(w));
-    v.model.setLive(fresh);
+    // An engine that cannot report its turn shows "status unknown" over its head, never a guessed state.
+    v.model.setLive(fresh && !(w.kind === 'agent' && w.statusKnown === false && w.processState === 'running'));
     // Typing (and its sound) only once the body is seated at the desk; see world/worker-life.ts.
     life.sync(w.id, v.model, desk, { status: w.status, processState: w.processState, fresh, typing: typingPose(w, fresh), waitingOn: w.waitingOn });
     const again = w.kind === 'shell' ? 'restart' : 'resume';
@@ -601,9 +609,29 @@ function freeDesk(): string | null {
   return best;
 }
 
-function hire(deskId: string, prompt?: string, worktree = false, outfit?: Outfit) {
-  net.send({ t: 'worker.spawn', deskId, prompt, worktree, ...(outfit ? { outfit } : {}) });
+function hire(deskId: string, prompt?: string, worktree = false, outfit?: Outfit, engine?: WorkerEngine) {
+  net.send({ t: 'worker.spawn', deskId, prompt, worktree, ...(outfit ? { outfit } : {}), ...(engine ? { engine } : {}) });
 }
+
+/**
+ * FREE-01 "Sign in to Claude": hires a Claude Code worker on the user's own account at the nearest free desk, with
+ * `/login` typed (not sent), and opens its terminal. The user completes sign-in inside Claude Code; the Empire sees nothing.
+ */
+let pendingLoginDesk: string | null = null;
+function signInToClaude() {
+  const deskId = freeDesk();
+  if (!deskId) { toast('Every funded desk is taken. Send a worker home, then try again.', 'warn'); return; }
+  pendingLoginDesk = deskId;
+  net.send({ t: 'worker.spawn', deskId, login: true });
+  toast('Opening a Claude Code terminal with /login typed. Press Enter there and finish signing in yourself.', 'info');
+}
+store.on('workers', () => {
+  if (!pendingLoginDesk) return;
+  const w = store.workerAtDesk(pendingLoginDesk);
+  if (!w) return;
+  pendingLoginDesk = null;
+  openWorkerTerminal(w.id);
+});
 
 function openShell(deskId: string) {
   net.send({ t: 'worker.spawn', deskId, kind: 'shell' });
@@ -615,11 +643,12 @@ function promptAtDesk(deskId: string) {
   if (!w) {
     openPrompt({
       title: `✨ New task at ${desk.label}`,
-      subtitle: 'A fresh Claude Code worker will sit down and start on this right away.',
+      subtitle: 'A fresh worker will sit down and start on this right away, on the engine you choose.',
       submitLabel: 'Hire & start',
       worktreeOption: !!store.project?.branch,
       outfitOption: true,
-      onSubmit: (text, o) => hire(deskId, text, o.worktree, o.outfit),
+      engineOption: true,
+      onSubmit: (text, o) => hire(deskId, text, o.worktree, o.outfit, o.engine),
     });
   } else if (w.status === 'exited' || w.status === 'offline') {
     toast(`${w.name} is asleep — press R to resume first`, 'warn');
@@ -1251,7 +1280,7 @@ $('btn-settings').addEventListener('click', () =>
     },
     editProfile,
     () => sound.ding('done'),
-    combineSections(appPanel(net), updateSettingsSection(updateService)),
+    combineSections(appPanel(net), linkedAccountsSection({ onSignIn: () => { closeAllModals(); signInToClaude(); } }), updateSettingsSection(updateService)),
   ),
 );
 

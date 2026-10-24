@@ -1,3 +1,4 @@
+import type { WorkerEngine } from './engines.js';
 import type { EmpireAction, EmpireState } from './empire.js';
 import type { ContinuityStatus } from './continuity.js';
 // Wire protocol between browser and server. Every WebSocket frame is one JSON object.
@@ -69,6 +70,10 @@ export interface WorkerInfo {
   usage?: Usage;
   /** Attire chosen when it was hired; absent means the stable default from shared/outfit.ts (workerOutfit). */
   outfit?: Outfit;
+  /** FREE-01: which coding-agent CLI and model it runs (agents only; absent on legacy saves = Claude Code, your account). */
+  engine?: WorkerEngine;
+  /** FREE-01: false when its engine cannot report turn status, so the UI shows "status unknown" instead of guessing. */
+  statusKnown?: boolean;
   /**
    * LIFE-04, projected by the server (never persisted with the worker): this idle or finished worker's last task has
    * a dependent task that another worker's running task still blocks. `id`/`name` are the BLOCKING worker's and
@@ -448,7 +453,7 @@ export type ClientMsg =
   /** You reached out to use something; everyone else sees your character's arm do it. */
   | { t: 'act' }
   | { t: 'profile'; name: string; color: string; look: Look }
-  | { t: 'worker.spawn'; deskId: string; prompt?: string; worktree?: boolean; kind?: WorkerKind; outfit?: Outfit }
+  | { t: 'worker.spawn'; deskId: string; prompt?: string; worktree?: boolean; kind?: WorkerKind; outfit?: Outfit; engine?: WorkerEngine; /** Types `/login` (no Enter) once Claude is ready: the user completes sign-in. */ login?: boolean }
   | { t: 'worker.resume'; workerId: string }
   | { t: 'worker.kill'; workerId: string; cleanup?: WorktreeCleanup }
   /** Asks what the worker's worktree holds; answered with a `worker.worktree` message. */
