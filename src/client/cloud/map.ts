@@ -4,6 +4,7 @@
  */
 import { holdsSlot, REVIEW_STATUSES, utcDay, type CloudJob, type CloudJobStatus, type CloudState } from '../../cloud/schema';
 import { DEFAULT_WORKER_MODEL, workerModelLabel } from '../../cloud/worker-spec';
+import { billingNote, engineLabel } from '../../cloud/actions-spec';
 
 /** Owner decision 2026-10-02, shown wherever execution is described. */
 export const SANDBOX_NOTE = 'Workers run in an Anthropic cloud sandbox with full internet access: they can install packages and can also fetch untrusted content. They approve their own tool use inside the sandbox; your keys never enter it.';
@@ -47,6 +48,17 @@ export function shortAge(ms: number): string {
   return `${Math.round(h / 24)} d`;
 }
 
+/** Honest cost text for a job: a plan run never shows a US$ figure, and estimates say so. */
+export function jobCostLabel(job: CloudJob): string {
+  const c = job.cost;
+  if (c?.basis === 'free_run') return 'free run (US$0)';
+  if (c?.basis === 'claude_plan') return 'billed to your Claude plan';
+  if (c?.basis === 'engine_reported_estimate') return `about ${dollars(c.amountCents)} used (estimate reported by Claude Code)`;
+  if (c) return `${dollars(c.amountCents)} used (provider list cost)`;
+  if (job.reservation?.basis === 'run_caps') return job.provider === 'github-actions' ? 'no money reserved (time and turn caps)' : 'no money reserved';
+  if (job.reservation) return `${dollars(job.reservation.cents)} reserved`;
+  return `up to ${dollars(job.authorizedCents)} authorized`;
+}
 export const dollars = (cents: number) => `$${(cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 /** When the coordinator last committed, or (before its first run) when setup wrote the state. */
@@ -191,6 +203,11 @@ export function executionStatus(state: CloudState): ExecutionStatus {
       detail: `Your coordinator creates (or reuses) an Anthropic agent with ${workerModelLabel(p.model ?? DEFAULT_WORKER_MODEL)} and a cloud environment for ${repo} on its next run. That is not a billed item and starts no session. New jobs are refused, not charged, until it is ready.${ex ? ` When it finishes it replaces the current settings (${ex.repository.owner}/${ex.repository.name}).` : ''}`,
     };
   }
+  if (ex?.provider === 'github-actions')
+    return {
+      kind: 'ready', tone: 'idle', label: `${ex.repository.owner}/${ex.repository.name}`, canSubmit: true,
+      detail: `GitHub Actions in ${ex.repository.owner}/${ex.repository.name} (${engineLabel(ex.actions)}; ${billingNote(ex.actions.engine)}). Each job is one run of the job workflow, capped at ${ex.actions.timeoutMinutes} minutes and ${ex.actions.maxTurns} turns, starting from ${ex.repository.baseBranch}. Work arrives as a task branch${ex.actions.openPullRequest ? ' and a draft pull request' : ''}.`,
+    };
   if (ex)
     return {
       kind: 'ready', tone: 'idle', label: `${ex.repository.owner}/${ex.repository.name}`, canSubmit: true,
