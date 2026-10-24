@@ -156,9 +156,13 @@ export function cleanSettings(input: unknown, current: ChiefSettings): ChiefSett
   return next;
 }
 
+/** Review fix 6: secrets (a bare `.env`, not `.env.example`) and the verbs that move them, on lower-cased text. */
+const SECRET = String.raw`(?:\b(?:api[ _-]?keys?|passwords?|secrets?|(?:auth|access|api|bearer|session|refresh|oauth|npm|gh)[ _-]?tokens?|credentials?|ssh keys?|private keys?)\b|(?<![\w.])\.env(?![\w.]))`;
+const LEAK_VERB = String.raw`\b(?:send|post|upload|email|share|paste|exfiltrat\w*|leak|print|reveal|transmit|include|commit|cat|echo|expose|copy|log(?=\s+(?:the|it|them|all)\b))\b`;
+
 /**
- * Prompts that would make an approved worker do something consequential outside its branch. A screen, not a guarantee:
- * the CEO still reads every prompt before approving. Returns the reason, or undefined.
+ * A heuristic screen for prompts that would make an approved worker do something consequential outside its branch. It
+ * is a pattern list, not a guarantee: the CEO still reads every prompt before approving. Returns the reason, or undefined.
  */
 export function unsafeReason(text: string): string | undefined {
   const t = text.toLowerCase();
@@ -166,8 +170,8 @@ export function unsafeReason(text: string): string | undefined {
     [/\b(curl|wget|iwr|invoke-webrequest)\b[^\n]*\|\s*(sudo\s+)?(ba|z|da)?sh\b/, 'pipes a download into a shell'],
     [/\brm\s+-[a-z]*r[a-z]*f?\s+(\/|~|\$home)(\s|$)/, 'deletes a home or root directory'],
     [/\bgit\s+push\b[^\n]*(--force|-f\b|--mirror)/, 'force-pushes'],
-    [/\b(api[ _-]?keys?|passwords?|secrets?|tokens?|credentials?|\.env|ssh keys?|private keys?)\b[^\n.]{0,80}\b(send|post|upload|email|share|paste|exfiltrat|leak|print|reveal|transmit)/, 'moves credentials or secrets'],
-    [/\b(send|post|upload|email|share|paste|exfiltrat|leak|reveal|transmit)\w*\b[^\n.]{0,80}\b(api[ _-]?keys?|passwords?|secrets?|tokens?|credentials?|\.env|ssh keys?|private keys?)\b/, 'moves credentials or secrets'],
+    [new RegExp(`${LEAK_VERB}[^\\n]{0,80}${SECRET}`), 'moves credentials or secrets'],
+    [new RegExp(`${SECRET}[^\\n]{0,80}${LEAK_VERB}`), 'moves credentials or secrets'],
     [/\b(auto-?approve|approve (the|this|all|every)\b[^\n.]{0,40}\b(plan|budget|spend|payment|send))/, 'tries to approve on the CEO’s behalf'],
     [/\b(raise|increase|set)\b[^\n.]{0,30}\bbudget\b/, 'tries to change a budget'],
     [/\b(wire|transfer|pay|send)\b[^\n.]{0,30}(\$|usd|eur|£|€)\s?\d/, 'moves money'],

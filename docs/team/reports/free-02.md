@@ -11,7 +11,7 @@ Branch `claude/free-02-chief`, from `8512264`. Author: Claude Opus 5.5 (FREE-02 
 - **Planning:**
   - The brief is delimited by random markers.
   - The JSON is checked against a strict schema: unknown fields are refused; there are fixed roles, phases and bounds (8 items, 2000-character prompts); and dependencies must equal the queue's ordered/parallel semantics.
-  - An unsafe-prompt screen runs over every prompt.
+  - A heuristic unsafe-prompt screen (a pattern list, not a guarantee) runs over every prompt.
   - A valid plan becomes `Consultancy.create` (pending approval, with the ORG-02 estimate). The existing `job_plan` approval then carries `proposedBy`.
   - Everything else needs attention with the reason; nothing is created.
 - **Review:** after an item's task finishes with outcome `done`, the chief reviews it from bounded evidence (git shortstat, PR, branch; the transcript summary is reported as not available). It gives a recommendation, a summary and concerns. It doesn't change any job or ledger state. Only work that finishes after the brain is enabled is reviewed.
