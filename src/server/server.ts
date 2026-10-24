@@ -1247,9 +1247,13 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
           if (p === '/api/voice' && req.method === 'GET') return send(res, 200, await voice.state());
           if (req.method !== 'POST') return send(res, 404, { error: 'Unknown voice endpoint.' });
           if (p === '/api/voice/transcribe') {
-            if (Number(req.headers['content-length'] ?? 0) > MAX_AUDIO_BYTES) {
-              req.resume(); // discard the signed-in caller's oversized body so the 413 reaches it
-              return send(res, 413, { error: 'Recordings are limited to 30 seconds.' }, { connection: 'close' });
+            const declared = Number(req.headers['content-length'] ?? 0);
+            if (declared > MAX_AUDIO_BYTES) {
+              // Discard the signed-in caller's oversized body so the 413 reaches it. Closing while the client is still
+              // sending races it into ECONNRESET, so a body up to 4x the limit is drained on an open connection; only a
+              // far larger one is cut off.
+              req.resume();
+              return send(res, 413, { error: 'Recordings are limited to 30 seconds.' }, declared <= 4 * MAX_AUDIO_BYTES ? {} : { connection: 'close' });
             }
             let audio: Buffer;
             try { audio = await readBuffer(req, MAX_AUDIO_BYTES); } catch { return send(res, 413, { error: 'Recordings are limited to 30 seconds.' }, { connection: 'close' }); }
