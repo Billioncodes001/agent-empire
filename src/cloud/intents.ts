@@ -51,7 +51,7 @@ const jobId = (value: unknown) => {
   if (typeof value !== 'string' || !TASK_ID.test(value)) throw bad('jobId must be a UUID.');
   return value.toLowerCase();
 };
-const EMPIRE_ACTION_KINDS = ['delegate', 'found', 'build', 'hire', 'buy-land', 'upgrade', 'reinvest', 'office-floor', 'office-workstation', 'buy-plot', 'buy-vehicle', 'vehicle-spawn', 'vehicle-store'];
+const EMPIRE_ACTION_KINDS = ['delegate', 'found', 'build', 'hire', 'buy-land', 'upgrade', 'reinvest', 'office-floor', 'office-workstation', 'buy-plot', 'buy-vehicle', 'vehicle-spawn', 'vehicle-store', 'buy-helicopter'];
 
 /** Intent id from a path, used to record a rejection even when the body is unreadable. */
 export function intentIdFromPath(path: string): string | undefined {
@@ -135,6 +135,7 @@ export function parseIntent(path: string, text: string): CloudIntent {
       else if (action.kind === 'buy-vehicle') rec(action, ['kind', 'model', 'nonce']);
       else if (action.kind === 'vehicle-spawn') rec(action, ['kind', 'vehicle', 'blocked']);
       else if (action.kind === 'vehicle-store') rec(action, ['kind', 'vehicle']);
+      else if (action.kind === 'buy-helicopter') rec(action, ['kind', 'nonce']);
       else rec(action, ['kind']);
       return { ...common, kind: 'empire_action', action: JSON.parse(JSON.stringify(action)) as EmpireAction };
     }

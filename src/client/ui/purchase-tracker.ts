@@ -9,8 +9,8 @@
  */
 import { normalizeCity, type CityState } from '../../shared/city';
 
-export type PurchaseTarget = `vehicle:${string}` | `plot:${string}`;
-const signature = (city: CityState) => JSON.stringify([city.nonces ?? [], city.vehicles, city.plots]);
+export type PurchaseTarget = `vehicle:${string}` | `plot:${string}` | 'helicopter';
+const signature = (city: CityState) => JSON.stringify([city.nonces ?? [], city.vehicles, city.plots, city.helicopter ?? false]);
 
 export class PurchaseTracker {
   private nonces = new Map<PurchaseTarget, string>();

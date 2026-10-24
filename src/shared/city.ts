@@ -43,9 +43,19 @@ export const GARAGE = {
   apron: [{ x: 66, z: 88.4, yaw: Math.PI / 2 }, { x: 78, z: 88.4, yaw: Math.PI / 2 }],
 } as const;
 
+/**
+ * CITY-08: the company helicopter, bought once with fictional city credits. It stands on the helipad on the Meridian
+ * motor garage roof (deck at y = 6.3 m), reached by the staircase on the garage's east wall. `yaw` is its parked heading.
+ */
+export const HELICOPTER = { name: 'Company helicopter', cost: 45000 } as const;
+export const HELIPAD = { name: 'Meridian rooftop helipad', x: 72, z: 78, y: 6.3, size: 12, yaw: Math.PI / 2, kiosk: { x: 80.2, z: 73.6 } } as const;
+
 export interface OwnedVehicle { id: string; model: VehicleModelId; bay: number; apron?: number; purchasedAt: number }
-/** `nonces`: the most recent purchase nonces, so a repeated click or replayed cloud intent buys only once. */
-export interface CityState { schema: 1; plots: PlotId[]; vehicles: OwnedVehicle[]; nonces?: string[] }
+/**
+ * `nonces`: the most recent purchase nonces, so a repeated click or replayed cloud intent buys only once.
+ * `helicopter` (CITY-08) is present only once bought; saves written before CITY-08 have no such field.
+ */
+export interface CityState { schema: 1; plots: PlotId[]; vehicles: OwnedVehicle[]; nonces?: string[]; helicopter?: true }
 
 export const PURCHASE_NONCE = /^[A-Za-z0-9-]{8,64}$/;
 export const MAX_NONCES = 32;
@@ -62,6 +72,7 @@ export function normalizeCity(value: unknown): CityState {
   if (plots.some((p) => !PLOTS.some((d) => d.id === p))) fail('unknown plot');
   const nonces = v.nonces ?? [];
   if (!Array.isArray(nonces) || nonces.length > MAX_NONCES || nonces.some((n) => typeof n !== 'string' || !PURCHASE_NONCE.test(n))) fail('nonces');
+  if (v.helicopter !== undefined && v.helicopter !== true) fail('helicopter');
   const bays = new Set<number>(), aprons = new Set<number>(), ids = new Set<string>();
   for (const x of v.vehicles!) {
     if (!x || typeof x.id !== 'string' || !VEHICLE_ID.test(x.id) || ids.has(x.id)) fail('vehicle id');
@@ -76,6 +87,7 @@ export function normalizeCity(value: unknown): CityState {
     schema: 1, plots,
     vehicles: v.vehicles!.map((x) => ({ id: x.id, model: x.model, bay: x.bay, ...(x.apron !== undefined ? { apron: x.apron } : {}), purchasedAt: x.purchasedAt })),
     nonces: [...nonces],
+    ...(v.helicopter ? { helicopter: true as const } : {}),
   };
 }
 

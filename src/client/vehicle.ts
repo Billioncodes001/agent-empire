@@ -1,13 +1,16 @@
 import * as THREE from 'three';
 
-/** Separating axes for a 2.14 × 4.72 m car against a world-aligned solid. */
-export function vehicleOverlaps(x: number, z: number, yaw: number, box: { minX: number; maxX: number; minZ: number; maxZ: number }) {
+/**
+ * Separating axes for a car body against a world-aligned solid. `half` defaults to the executive sedan's
+ * 2.14 × 4.72 m body; CITY-06 passes each bought model's own footprint (rides.ts).
+ */
+export function vehicleOverlaps(x: number, z: number, yaw: number, box: { minX: number; maxX: number; minZ: number; maxZ: number }, half: { w: number; l: number } = { w: 1.07, l: 2.36 }) {
   const dx = (box.minX + box.maxX) / 2 - x, dz = (box.minZ + box.maxZ) / 2 - z;
   const bx = (box.maxX - box.minX) / 2, bz = (box.maxZ - box.minZ) / 2;
-  const c = Math.cos(yaw), s = Math.sin(yaw), ac = Math.abs(c), as = Math.abs(s);
-  return Math.abs(dx) < bx + 1.07 * ac + 2.36 * as && Math.abs(dz) < bz + 1.07 * as + 2.36 * ac
-    && Math.abs(dx * c - dz * s) < 1.07 + bx * ac + bz * as
-    && Math.abs(dx * s + dz * c) < 2.36 + bx * as + bz * ac;
+  const c = Math.cos(yaw), s = Math.sin(yaw), ac = Math.abs(c), as = Math.abs(s), w = half.w, l = half.l;
+  return Math.abs(dx) < bx + w * ac + l * as && Math.abs(dz) < bz + w * as + l * ac
+    && Math.abs(dx * c - dz * s) < w + bx * ac + bz * as
+    && Math.abs(dx * s + dz * c) < l + bx * as + bz * ac;
 }
 
 export interface VehicleMotion {
@@ -99,14 +102,14 @@ export class VehicleRig {
       }
     }
   }
-  update(dt: number, motion: VehicleMotion, running: boolean) {
+  update(dt: number, motion: VehicleMotion, running: boolean, reduced = false) {
     this.spin = (this.spin + motion.speed * dt / .37) % (Math.PI * 2);
     for (const w of this.wheels) {
       w.steer.rotation.y = w.front ? motion.steering : 0;
       w.spin.rotation.x = this.spin;
     }
-    this.pitch = THREE.MathUtils.damp(this.pitch, running ? THREE.MathUtils.clamp(motion.acceleration * .007, -.035, .035) : 0, 5, dt);
-    this.roll = THREE.MathUtils.damp(this.roll, running ? THREE.MathUtils.clamp(motion.speed * motion.speed * Math.tan(motion.steering) * .0007, -.035, .035) : 0, 5, dt);
+    this.pitch = THREE.MathUtils.damp(this.pitch, running && !reduced ? THREE.MathUtils.clamp(motion.acceleration * .007, -.035, .035) : 0, 5, dt);
+    this.roll = THREE.MathUtils.damp(this.roll, running && !reduced ? THREE.MathUtils.clamp(motion.speed * motion.speed * Math.tan(motion.steering) * .0007, -.035, .035) : 0, 5, dt);
     if (this.body) { this.body.rotation.x = this.pitch; this.body.rotation.z = this.roll; }
     if (this.wheel) this.wheel.rotation.z = -motion.steering * 2.4;
     for (const lamp of this.lamps) lamp.emissiveIntensity = running && motion.braking ? 3 : .35;

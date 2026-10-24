@@ -717,6 +717,13 @@ export function openCloudTasks(opts: { openSetup?: () => void; hostId?: () => st
 
 // ---- First-use offer --------------------------------------------------------------------------------
 
+/** FREE-08: onboarding includes "Where agents run", so showing it counts as the offer. */
+export function markOfferSeen() {
+  try {
+    localStorage.setItem(OFFER_KEY, '1');
+  } catch {}
+}
+
 export function offerSeen(): boolean {
   try {
     return localStorage.getItem(OFFER_KEY) === '1';

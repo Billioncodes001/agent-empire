@@ -27,6 +27,8 @@ function isTextEntry(el: Element | null): boolean {
 export interface TouchControls {
   /** Release every held action (used when the game loses input). */
   release(): void;
+  /** CITY-08: while flying, Jump becomes Up and a Down button appears; the stick then flies and turns only. */
+  setMode(mode: 'walk' | 'drive' | 'fly'): void;
 }
 
 /**
@@ -50,8 +52,10 @@ export function mountTouchControls(opts: { player: PlayerController; interact: (
   let stick: { id: number; cx: number; cy: number; radius: number } | null = null;
   let held: StickActions = NO_STICK;
 
+  let mode: 'walk' | 'drive' | 'fly' = 'walk';
   const apply = (next: StickActions) => {
-    for (const action of MOVES) if (next[action] !== held[action]) player.setAction(action, next[action]);
+    // In flight the run action means descend; only the Down button holds it.
+    for (const action of MOVES) if (next[action] !== held[action] && !(mode === 'fly' && action === 'run')) player.setAction(action, next[action]);
     held = next;
     root.dataset.stick = next.magnitude ? (next.run ? 'run' : 'walk') : 'rest';
   };
@@ -100,8 +104,13 @@ export function mountTouchControls(opts: { player: PlayerController; interact: (
   const jump = button('touch-jump', 'Jump', 'Jump', '⤒');
   const use = button('touch-use', 'Interact with what is in front of you', 'Use', 'E');
   const view = button('touch-view', 'Switch camera view', 'View', '◐');
+  const down = button('touch-down', 'Descend', 'Down', '⤓');
+  down.hidden = true;
   // Touching a control must not focus it: a focused button would swallow keyboard input for the game.
-  for (const b of [jump, use, view]) b.addEventListener('pointerdown', (e) => e.preventDefault());
+  for (const b of [jump, use, view, down]) b.addEventListener('pointerdown', (e) => e.preventDefault());
+  const downRelease = () => { down.classList.remove('down'); player.setAction('run', false); };
+  down.addEventListener('pointerdown', (e) => { down.setPointerCapture?.(e.pointerId); down.classList.add('down'); player.setAction('run', true); });
+  for (const type of ['pointerup', 'pointercancel', 'lostpointercapture'] as const) down.addEventListener(type, downRelease);
 
   let jumpDown = 0;
   let jumpTimer = 0;
@@ -131,7 +140,7 @@ export function mountTouchControls(opts: { player: PlayerController; interact: (
   use.addEventListener('click', () => opts.interact());
   view.addEventListener('click', () => opts.changeView());
 
-  const actions = h('div.touch-actions', { role: 'group', 'aria-label': 'Touch actions' }, view, use, jump);
+  const actions = h('div.touch-actions', { role: 'group', 'aria-label': 'Touch actions' }, view, use, down, jump);
   const ui = h('div.touch-ui', {}, zone, actions);
   document.getElementById('hud')!.append(ui);
 
@@ -153,6 +162,7 @@ export function mountTouchControls(opts: { player: PlayerController; interact: (
     jumpDown = 0;
     jump.classList.remove('down');
     player.setAction('jump', false);
+    downRelease();
   };
   const paintTyping = () => {
     const typing = isTextEntry(document.activeElement);
@@ -168,5 +178,15 @@ export function mountTouchControls(opts: { player: PlayerController; interact: (
   root.classList.toggle('ae-modal', modalOpen());
   window.addEventListener('blur', release);
   document.addEventListener('visibilitychange', () => document.hidden && release());
-  return { release };
+  const setMode = (next: typeof mode) => {
+    if (next === mode) return;
+    mode = next;
+    release();
+    const flying = mode === 'fly';
+    down.hidden = !flying;
+    root.classList.toggle('ae-flying', flying);
+    jump.setAttribute('aria-label', flying ? 'Climb' : 'Jump');
+    jump.querySelector('.touch-label')!.textContent = flying ? 'Up' : 'Jump';
+  };
+  return { release, setMode };
 }
