@@ -1,6 +1,7 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
+import { homedir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { writeJsonAtomic } from './persistence.js';
 import { excludeFromGit } from './config.js';
@@ -55,8 +56,13 @@ export interface ProductsOptions {
   perHour?: number;
   gh?: GhRunner;
   now?: () => number;
-  /** Live use per product (workers bound, unfinished queue tasks), for the panel and the unlink guard. */
-  usage?: (id: string) => { workers: number; openTasks: number };
+  /**
+   * Live use per product, for the panel and the unlink guard: workers bound, unfinished queue tasks, and client jobs or
+   * chief plans that could still queue work in it (pending approval, approved and unfinished, plans being drafted).
+   */
+  usage?: (id: string) => { workers: number; openTasks: number; openJobs?: number };
+  /** Folders a product may never be (or contain): tests pass a fake home. Default: os.homedir(). */
+  home?: string;
 }
 
 const defaultGh: GhRunner = (args, cwd) => new Promise((resolve, reject) => {
@@ -77,6 +83,8 @@ export class Products {
   private readonly file: string;
   private products: StoredProduct[] = [];
   private creations: number[] = [];
+  /** Ids of unlinked products. Never reused, so old jobs, plans and tasks can never land in a different repository. */
+  private retired: string[] = [];
   private storageError?: string;
   private inFlight = false;
   readonly productsDir: string;
@@ -193,7 +201,8 @@ export class Products {
       // Counted before the call: a failed attempt still used GitHub's write budget.
       this.creations.push(this.now());
       this.creations = this.creations.filter((c) => this.now() - c < HOUR_MS);
-      this.persist();
+      // A repository GitHub made that the throttle never recorded would escape the limit (and nothing would track it).
+      if (!this.persist()) throw new ProductError(500, `${this.storageError ?? 'Products could not be saved'}. Nothing was created on GitHub.`);
       try {
         await this.gh(['repo', 'create', repo, isPublic ? '--public' : '--private', '--add-readme', '--clone', '--description', `${name} (Agent Empire product)`], this.productsDir);
       } catch (e) {
@@ -231,16 +240,18 @@ export class Products {
     const i = this.products.findIndex((p) => p.id === id);
     if (i < 0) throw new ProductError(404, 'No such product');
     const use = this.opts.usage?.(id);
-    if (use && (use.workers || use.openTasks)) throw new ProductError(409, `${this.products[i].name} still has ${use.workers} worker(s) and ${use.openTasks} unfinished task(s). Send them home or clear the tasks first.`);
-    this.products.splice(i, 1);
-    this.persist();
+    if (use && (use.workers || use.openTasks || use.openJobs))
+      throw new ProductError(409, `${this.products[i].name} still has ${use.workers} worker(s), ${use.openTasks} unfinished task(s) and ${use.openJobs ?? 0} open job(s) or plan(s). Send the workers home, clear the tasks and reject or finish the jobs first.`);
+    const [gone] = this.products.splice(i, 1);
+    this.retired.push(id);
+    if (!this.persist()) { this.products.splice(i, 0, gone); this.retired.pop(); throw new ProductError(500, this.storageError ?? 'Could not save products'); }
   }
 
   private add(p: Omit<StoredProduct, 'id' | 'createdAt' | 'createdBy' | 'defaultBranch'> & { github?: string }, actor: string): ProductInfo {
     if (this.products.length >= MAX_PRODUCTS) throw new ProductError(409, `At most ${MAX_PRODUCTS} products`);
     const base = slug(p.name);
     let id = base;
-    while (id === OFFICE_PRODUCT_ID || this.products.some((x) => x.id === id)) id = `${base}-${randomBytes(2).toString('hex')}`;
+    while (id === OFFICE_PRODUCT_ID || this.products.some((x) => x.id === id) || this.retired.includes(id)) id = `${base}-${randomBytes(3).toString('hex')}`;
     excludeFromGit(p.dir);
     const stored: StoredProduct = {
       id, name: p.name, ...(p.client ? { client: p.client } : {}), dir: p.dir,
@@ -262,7 +273,19 @@ export class Products {
     try { top = real(execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 }).trim()); }
     catch { throw new ProductError(400, `${dir} is not a git repository. Run git init there (or clone the repo) first.`); }
     if (top !== dir) throw new ProductError(400, `${dir} is inside the repository ${top}; link the repository's top folder.`);
-    if (dir === this.officeDir || within(this.officeDir, dir) || within(dir, this.officeDir)) throw new ProductError(400, 'That is the office repository (or inside it): it is already the default product.');
+    // Never a home folder (a dotfiles repo at ~), the root, a system folder, or anything containing one of them.
+    const home = real(this.opts.home ?? homedir());
+    for (const danger of [home, '/', '/etc', '/usr', '/System', '/var', '/private', '/private/etc', '/private/var'].map((d) => (d === home ? d : real(d)))) {
+      if (dir === danger || within(dir, danger)) throw new ProductError(400, `${dir} is (or contains) ${danger}. Link a project repository, not a home or system folder.`);
+    }
+    // The office's data folder: never it or a folder around it. Inside it (and so inside the office repository) only
+    // repositories in the products folder, where created products are cloned by default.
+    const data = real(this.opts.dataDir);
+    const inProducts = within(real(this.productsDir), dir);
+    if (dir === this.officeDir || within(dir, this.officeDir)) throw new ProductError(400, 'That is (or contains) the office repository: it is already the default product.');
+    if (dir === data || within(dir, data)) throw new ProductError(400, 'That folder is (or contains) the office data folder.');
+    if (within(data, dir) && !inProducts) throw new ProductError(400, 'Inside the office data folder, only repositories in the products folder can be products.');
+    if (within(this.officeDir, dir) && !(inProducts && within(data, dir))) throw new ProductError(400, 'That folder is inside the office repository, which is already the default product.');
     for (const p of this.products) {
       const other = real(p.dir);
       if (other === dir) throw new ProductError(409, `Already linked as ${p.name}`);
@@ -278,7 +301,7 @@ export class Products {
   private persist(): boolean {
     try {
       mkdirSync(this.opts.dataDir, { recursive: true });
-      writeJsonAtomic(this.file, { version: 1, products: this.products, creations: this.creations });
+      writeJsonAtomic(this.file, { version: 1, products: this.products, creations: this.creations, retired: this.retired });
       return true;
     } catch (e) {
       this.storageError = `Products could not be saved: ${(e as Error).message}`;
@@ -306,6 +329,8 @@ export class Products {
         });
       }
       this.creations = Array.isArray(saved.creations) ? saved.creations.filter((c: unknown) => typeof c === 'number' && Number.isFinite(c)) : [];
+      this.retired = Array.isArray(saved.retired) ? saved.retired.filter((r: unknown): r is string => typeof r === 'string' && /^[a-z0-9-]{1,64}$/.test(r)) : [];
+      for (const p of this.products) if (this.retired.includes(p.id)) throw new Error(`product id ${p.id} is both linked and retired`);
     } catch (e) {
       this.products = [];
       this.storageError = `products.json could not be read (${(e as Error).message}). Fix or move it; until then only the office product is available and nothing can be linked or created.`;

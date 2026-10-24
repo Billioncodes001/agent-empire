@@ -339,6 +339,9 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     return {
       workers: workers ? workers.list().filter((w) => w.productId === pid).length : 0,
       openTasks: queue ? queue.state().tasks.filter((t) => t.status !== 'done' && t.productId === pid).length : 0,
+      // Jobs that could still queue work in it (pending, or approved and unfinished) and chief plans still being drafted.
+      openJobs: (consultancy ? consultancy.snapshot().jobs.filter((j) => j.productId === pid && (j.decision === 'pending_approval' || (j.decision === 'approved' && ['queued', 'running', 'needs_attention'].includes(j.status)))).length : 0)
+        + (chief ? chief.state().plans.filter((p) => p.productId === pid && (p.status === 'queued' || p.status === 'planning')).length : 0),
     };
   };
   const products = new Products({

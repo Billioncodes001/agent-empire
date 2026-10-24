@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync, accessSync, constants } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, accessSync, constants, realpathSync } from 'node:fs';
 import { execFile, execFileSync } from 'node:child_process';
 import path from 'node:path';
 import * as pty from '@lydell/node-pty';
@@ -201,12 +201,11 @@ export class WorkerManager {
 
   /** Each worker's terminal process and directory, to tell whose servers are whose. */
   owners(): ServiceOwner[] {
-    return [...this.workers.values()].map((w) => ({
-      workerId: w.info.id,
-      pid: w.pty?.pid,
-      agent: w.info.kind === 'agent',
-      cwd: this.cwdOf(w.info) ?? this.dir,
-    }));
+    // FREE-06: a worker whose product was unlinked has no folder here, so it owns nothing (never the office's servers).
+    return [...this.workers.values()].flatMap((w) => {
+      const cwd = this.cwdOf(w.info);
+      return cwd ? [{ workerId: w.info.id, pid: w.pty?.pid, agent: w.info.kind === 'agent', cwd }] : [];
+    });
   }
 
   workstationCapacity() { return this.capacity(); }
@@ -245,7 +244,8 @@ export class WorkerManager {
     const productId = extra.productId === 'office' ? undefined : extra.productId;
     const repoDir = this.productDir(productId);
     if (!repoDir) return `The product ${productId} is not linked any more. Link it again under Settings → Products.`;
-    if (!existsSync(repoDir)) return `The product's folder is missing (${repoDir}).`;
+    // The same test as at link time: the folder must still be a git repository's top level (not deleted, not replaced).
+    if (productId !== undefined && !isRepoTop(repoDir)) return `The product's folder is missing or is no longer the top of a git repository (${repoDir}). Fix it or link the product again.`;
     const trees = this.treesFor(repoDir);
     const used = new Set([...this.workers.values()].map((w) => w.info.name.replace(/ 🐚$/, '')));
     const from = kind === 'agent' && worktree && continues && trees.hasBranch(continues.branch) ? continues : undefined;
@@ -793,10 +793,12 @@ export class WorkerManager {
       AGENT_OFFICE_HOOK_TOKEN: w.hookToken,
     });
 
-    // An unlinked product's worker gets a folder that does not exist, so the launch fails below instead of running elsewhere.
-    const cwd = this.cwdOf(info) ?? path.join(this.dir, '.agent-office', 'unlinked-product');
+    // An unlinked product's worker fails to launch; it never runs anywhere else.
+    const found = this.cwdOf(info);
+    const cwd = found ?? '';
     let proc: pty.IPty;
     try {
+      if (!found) throw new Error(`its product (${info.productName ?? info.productId}) is no longer linked`);
       if (!existsSync(cwd)) throw new Error(`working directory is gone: ${cwd}`);
       if (isShell) {
         proc = this.runtime.spawn(shell, args, { name: 'xterm-256color', cols: info.cols, rows: info.rows, cwd, env });
@@ -1286,6 +1288,17 @@ function offlineBanner(info: WorkerInfo): string {
 }
 
 /** Runs a command without blocking the office; rejects with the last lines of its stderr. */
+/** True when `dir` is the top level of a git work tree (symlinks resolved), as products require at link time. */
+function isRepoTop(dir: string): boolean {
+  try {
+    if (!existsSync(dir)) return false;
+    const top = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 }).trim();
+    return realpathSync(top) === realpathSync(dir);
+  } catch {
+    return false;
+  }
+}
+
 function run(cmd: string, args: string[], cwd: string, timeout = 30_000): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(cmd, args, { cwd, encoding: 'utf8', timeout, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {

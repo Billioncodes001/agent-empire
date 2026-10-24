@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Products, ProductError, githubOf, MIN_CREATE_GAP_MS, type GhRunner } from '../src/server/products';
@@ -44,13 +44,13 @@ function fakeGh(opts: { signedIn?: boolean; fail?: boolean } = {}) {
   return { gh, calls };
 }
 
-function setup(opts: { perHour?: number; gh?: GhRunner; usage?: (id: string) => { workers: number; openTasks: number } } = {}) {
+function setup(opts: { perHour?: number; gh?: GhRunner; usage?: (id: string) => { workers: number; openTasks: number; openJobs?: number }; home?: string; defaultProductsDir?: boolean } = {}) {
   const root = tmp('reg');
   const office = repo(path.join(root, 'office'));
   const data = path.join(office, '.agent-office');
   mkdirSync(data, { recursive: true });
   let now = 1_000_000_000_000;
-  const make = () => new Products({ dataDir: data, officeDir: office, officeName: 'office', productsDir: path.join(root, 'products'), perHour: opts.perHour, gh: opts.gh, now: () => now, usage: opts.usage });
+  const make = () => new Products({ dataDir: data, officeDir: office, officeName: 'office', productsDir: opts.defaultProductsDir ? undefined : path.join(root, 'products'), perHour: opts.perHour, home: opts.home ?? path.join(root, 'fake-home'), gh: opts.gh, now: () => now, usage: opts.usage });
   return { root, office, data, make, advance(ms: number) { now += ms; }, close() { rmSync(root, { recursive: true, force: true }); } };
 }
 
@@ -192,9 +192,10 @@ function workerFixture(saved: unknown[] = []) {
     }) as unknown as WorkerRuntime['spawn'],
   };
   const known: Record<string, string> = { alpha };
+  const toasts: string[] = [];
   const ledger = { get hiringPaused() { return undefined; }, add() {} } as unknown as Ledger;
-  const workers = new WorkerManager(office, data, 'claude', [], { url: 'http://127.0.0.1:1', token: '' }, { update() {}, remove() {}, data() {}, screen() {}, toast() {} }, ledger, () => 4, runtime, () => undefined, undefined, (id) => (id === undefined ? office : known[id]));
-  return { root, office, alpha, data, workers, launches, known, close() { workers.shutdown(); rmSync(root, { recursive: true, force: true }); } };
+  const workers = new WorkerManager(office, data, 'claude', [], { url: 'http://127.0.0.1:1', token: '' }, { update() {}, remove() {}, data() {}, screen() {}, toast: (t: string) => toasts.push(t) }, ledger, () => 4, runtime, () => undefined, undefined, (id) => (id === undefined ? office : known[id]));
+  return { toasts, root, office, alpha, data, workers, launches, known, close() { workers.shutdown(); rmSync(root, { recursive: true, force: true }); } };
 }
 
 test('a product worker runs in its own repository and worktree; the office worker is unchanged', () => {
@@ -355,4 +356,119 @@ test('a client job bound to a product queues every item in that product; unknown
     // Without a products port, a product is refused (never silently dropped).
     assert.throws(() => new Consultancy(tmp('consult2'), queue).create({ requestId: 'r9', client: 'C', title: 'T', brief: 'B', productId: 'alpha' }, 'CEO'), /not available/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ---- Security review fixes (FREE-06 review 1) ----------------------------------------------------------------------
+
+test('review 1.1: a product id is never reused after unlink, across restarts', () => {
+  const s = setup();
+  try {
+    const first = repo(path.join(s.root, 'acme-one'));
+    const second = repo(path.join(s.root, 'acme-two'));
+    const p = s.make();
+    assert.equal(p.link({ name: 'Acme', path: first }, 'CEO').id, 'acme');
+    p.unlink('acme');
+    const again = s.make();
+    const relinked = again.link({ name: 'Acme', path: second }, 'CEO');
+    assert.notEqual(relinked.id, 'acme', 'the old id stays retired, so old jobs and tasks can never land in the new repo');
+    assert.match(relinked.id, /^acme-[0-9a-f]{6}$/);
+    assert.equal(s.make().problem('acme')?.startsWith('No such product'), true);
+  } finally { s.close(); }
+});
+
+test('review 1.1: unlink is refused while client jobs or chief plans for the product are open', () => {
+  let use = { workers: 0, openTasks: 0, openJobs: 1 };
+  const s = setup({ usage: () => use });
+  try {
+    const a = repo(path.join(s.root, 'alpha'));
+    const p = s.make();
+    p.link({ name: 'Alpha', path: a }, 'CEO');
+    assert.throws(() => p.unlink('alpha'), /1 open job\(s\) or plan\(s\)/);
+    use = { workers: 0, openTasks: 0, openJobs: 0 };
+    p.unlink('alpha');
+  } finally { s.close(); }
+});
+
+test('review 1.2: home, system folders, folders containing them, and the office data folder are refused', () => {
+  const s = setup();
+  try {
+    const home = repo(path.join(s.root, 'home-user'));
+    const p = new Products({ dataDir: s.data, officeDir: s.office, officeName: 'office', productsDir: path.join(s.root, 'products'), home });
+    assert.throws(() => p.link({ name: 'Dotfiles', path: home }, 'CEO'), /is \(or contains\).*home or system folder/);
+    // A repository around the (fake) home folder contains it.
+    const outer = repo(path.join(s.root, 'outer'));
+    const innerHome = path.join(outer, 'me');
+    mkdirSync(innerHome);
+    const q = new Products({ dataDir: s.data, officeDir: s.office, officeName: 'office', productsDir: path.join(s.root, 'products'), home: innerHome });
+    assert.throws(() => q.link({ name: 'Outer', path: outer }, 'CEO'), /home or system folder/);
+    // Inside the data folder only the products folder may hold products.
+    const stray = repo(path.join(s.data, 'stray'));
+    assert.throws(() => p.link({ name: 'Stray', path: stray }, 'CEO'), /only repositories in the products folder|inside the office repository/);
+  } finally { s.close(); }
+});
+
+test('review 1.2: a repository created into the default products folder (inside the office data folder) is accepted', async () => {
+  const s = setup({ gh: fakeGh().gh, defaultProductsDir: true });
+  try {
+    const made = await s.make().create({ name: 'Gamma', repo: 'gamma', confirm: 'gamma' }, 'CEO');
+    assert.equal(made.dir, path.join(s.data, 'products', 'gamma'));
+  } finally { s.close(); }
+});
+
+test('review: linking through a symlink stores the real path; a nested or overlapping repo is refused', () => {
+  const s = setup();
+  try {
+    const a = repo(path.join(s.root, 'alpha'));
+    const link = path.join(s.root, 'alpha-link');
+    symlinkSync(a, link);
+    const p = s.make();
+    assert.equal(p.link({ name: 'Alpha', path: link }, 'CEO').dir, a);
+    assert.throws(() => p.link({ name: 'Alpha again', path: a }, 'CEO'), /Already linked/);
+    const nested = repo(path.join(a, 'vendor', 'lib'));
+    assert.throws(() => p.link({ name: 'Nested', path: nested }, 'CEO'), /Overlaps the product Alpha/);
+    const parentRepo = path.join(s.root, 'parent');
+    mkdirSync(parentRepo);
+    const b = repo(path.join(parentRepo, 'beta'));
+    p.link({ name: 'Beta', path: b }, 'CEO');
+    repo(parentRepo);
+    assert.throws(() => p.link({ name: 'Parent', path: parentRepo }, 'CEO'), /Overlaps the product Beta/);
+  } finally { s.close(); }
+});
+
+test('review 3: a creation whose throttle record cannot be saved stops before gh creates anything', async () => {
+  const f = fakeGh();
+  const s = setup({ gh: f.gh });
+  try {
+    const p = s.make();
+    mkdirSync(path.join(s.data, 'products.json'));
+    await assert.rejects(p.create({ name: 'Delta', repo: 'delta', confirm: 'delta' }, 'CEO'), /Nothing was created on GitHub/);
+    assert.equal(f.calls.some((c) => c.args[1] === 'create'), false);
+  } finally { s.close(); }
+});
+
+test('review 4-6: an unlinked or broken product never runs or is attributed elsewhere', () => {
+  const f = workerFixture([{ id: 'w-gone', kind: 'agent', name: 'Ada', deskId: 'desk-1', createdBy: 'x', createdAt: 1, processState: 'stopped', productId: 'gone', productName: 'Gone' }]);
+  try {
+    assert.equal(f.workers.owners().some((o) => o.workerId === 'w-gone'), false, 'not attributed to the office folder');
+    f.workers.resume('w-gone');
+    assert.equal(f.launches.length, 0);
+    assert.ok(f.toasts.some((t) => /no longer linked/.test(t)), f.toasts.join(' | '));
+    // The folder is still there but is no longer a repository's top level.
+    rmSync(path.join(f.alpha, '.git'), { recursive: true, force: true });
+    assert.match(f.workers.spawn('desk-2', 'CEO', 'x', false, 'agent', false, undefined, undefined, undefined, { productId: 'alpha' }) as string, /no longer the top of a git repository/);
+    assert.equal(f.launches.length, 0);
+  } finally { f.close(); }
+});
+
+test('review: a task never continues a dependency from another product', () => {
+  const done: QueueTask = { id: 'dep000000001', title: 'Alpha work', prompt: 'p', addedBy: 'x', addedAt: 1, status: 'done', outcome: 'done', branch: 'office/ada-1', productId: 'alpha', productName: 'Alpha' };
+  const next: QueueTask = { id: 'nxt000000001', title: 'Beta work', prompt: 'p', addedBy: 'x', addedAt: 2, status: 'queued', dependsOn: [done.id], productId: 'beta', productName: 'Beta' };
+  const f = queueFixture({ alpha: { name: 'Alpha' }, beta: { name: 'Beta' } }, { maxWorkers: 0, tasks: [done, next] });
+  try {
+    f.q.setLimit(2);
+    f.q.pump();
+    assert.equal(f.spawns.length, 1);
+    assert.deepEqual(f.spawns[0].extra, { productId: 'beta', productName: 'Beta' });
+    assert.equal(f.q.state().tasks.find((t) => t.id === next.id)!.status, 'running');
+  } finally { f.close(); }
 });
