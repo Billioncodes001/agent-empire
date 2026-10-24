@@ -72,8 +72,9 @@ function furniture(out: Placement[]) {
     const district: DistrictId = z < 120 ? 'business' : 'harbour';
     for (let x = 60; x < 148; x += 16) {
       if (Math.abs(x - 100) < 9 || (z === 90 && x > 60 && x < 86)) continue;
-      s('light-square', x, z - 6.6, 0, district);
-      s('light-square', x + 8, z + 6.6, Math.PI, district);
+      // The lamp arm extends along the model's −z; yaw turns it over the carriageway.
+      s('light-square', x, z - 6.6, Math.PI, district);
+      s('light-square', x + 8, z + 6.6, 0, district);
     }
   }
   for (let z = 36; z < 205; z += 18) {
@@ -88,6 +89,8 @@ function furniture(out: Placement[]) {
   for (const [x, z] of [[96.5, 140], [96.5, 143], [103.5, 168]]) s('construction-cone', x, z, 0, 'harbour');
   s('construction-barrier', 103.5, 171, Math.PI / 2, 'harbour');
   s('road-sign-street', 107.6, 55.6, 0, 'business');
+  // Kerbside lamps either side of the garage's roller door.
+  for (const dx of [-5.2, 5.2]) s('light-square', GARAGE.door.x + dx, GARAGE.door.z + 0.6, Math.PI, 'business');
   // Plaza lamps on the parasol terrace.
   for (const x of [62, 90]) s('light-curved-double', x, 116.5, 0, 'business');
   // Parked kerbside vehicles: Car Kit ambience, not owned by the founder.

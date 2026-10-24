@@ -96,7 +96,23 @@ export function buildDistricts(parent: THREE.Group) {
   for (const w of layout.garage.walls.slice(0, 5)) box(garage, w.maxX - w.minX, 5.2, w.maxZ - w.minZ, S.plaster, (w.minX + w.maxX) / 2, 2.6, (w.minZ + w.maxZ) / 2);
   box(garage, gw + 0.6, 0.3, gd + 0.6, S.concrete, gx, 5.4, gz);
   box(garage, gw, 0.8, 0.05, S.glass, gx, 5.6, gz + gd / 2 + 0.25);
+  // Facade: stone plinth, cornice, pilasters, ribbed cladding panels with clerestory windows, a door surround and kerb.
+  const front = gz + gd / 2 + 0.2;
+  box(garage, gw + 0.3, 0.45, 0.12, S.stone, gx, 0.22, front + 0.06);
+  box(garage, gw + 0.5, 0.35, 0.25, S.concrete, gx, 5.15, front + 0.1);
+  for (const x of [gx - gw / 2, door.x - door.width / 2 - 0.3, door.x + door.width / 2 + 0.3, gx + gw / 2]) box(garage, 0.5, 5.2, 0.22, S.concrete, x, 2.6, front + 0.08);
+  for (const [x0, x1] of [[gx - gw / 2 + 0.25, door.x - door.width / 2 - 0.55], [door.x + door.width / 2 + 0.55, gx + gw / 2 - 0.25]]) {
+    const cx = (x0 + x1) / 2, w = x1 - x0;
+    for (let x = x0 + 0.2; x < x1; x += 0.4) box(garage, 0.06, 2.4, 0.06, solid('#8f9a9a', 0.5, 0.4), x, 1.65, front + 0.04);
+    box(garage, w - 0.6, 1.1, 0.04, S.glass, cx, 3.75, front + 0.03);
+    for (const y of [3.18, 4.32]) box(garage, w - 0.5, 0.07, 0.1, S.frame, cx, y, front + 0.06);
+    for (let i = 1; i < 3; i++) box(garage, 0.06, 1.1, 0.1, S.frame, x0 + 0.3 + ((w - 0.6) * i) / 3, 3.75, front + 0.06);
+  }
   box(garage, door.width + 0.6, 0.3, 0.4, S.frame, door.x, 4.75, door.z + 0.1);
+  for (const dx of [-1, 1]) box(garage, 0.18, 4.6, 0.3, S.frame, door.x + dx * (door.width / 2 + 0.09), 2.3, door.z + 0.1);
+  box(garage, door.width + 1, 0.16, 0.6, S.concrete, door.x, 0.05, door.z + 0.4);
+  // A warm emissive bar under the canopy lights the door at every time of day without a dynamic light.
+  box(garage, door.width - 0.4, 0.06, 0.18, new THREE.MeshStandardMaterial({ color: '#fff4dc', emissive: '#ffe6b8', emissiveIntensity: 1.6 }), door.x, 4.56, door.z + 0.32);
   const strip = new THREE.MeshStandardMaterial({ color: '#fff4dc', emissive: '#fff1d0', emissiveIntensity: 1.4 });
   for (const b of GARAGE.bays) {
     box(garage, 0.6, 0.06, 4.4, strip, b.x, 5.15, b.z);
@@ -104,7 +120,10 @@ export function buildDistricts(parent: THREE.Group) {
   }
   box(garage, 1.6, 1.05, 0.8, S.wood, 81.8, 0.53, 82.8);
   box(garage, 0.5, 0.35, 0.04, solid('#7e9697'), 81.8, 1.3, 82.6);
-  sign(garage, GARAGE.name.toUpperCase(), door.x, 5.0, door.z + 0.45, 7);
+  // The sign board is sized to its text with padding.
+  const label = sign(garage, GARAGE.name.toUpperCase(), door.x, 5.95, front + 0.36, 7.6);
+  const labelH = label.geometry.parameters.height * label.scale.y;
+  box(garage, 7.6 + 0.9, labelH + 0.4, 0.14, solid('#1d2a2e', 0.4, 0.3), door.x, 5.95, front + 0.26);
   const rollerDoor = new THREE.Group();
   rollerDoor.position.set(door.x, 0, door.z);
   garage.add(rollerDoor);

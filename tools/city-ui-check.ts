@@ -120,6 +120,23 @@ async function perf(browser: Browser, label: string) {
 const unthrottled = only === 'perf' ? ['--disable-gpu-vsync', '--disable-frame-rate-limit'] : [];
 const browser = await chromium.launch({ channel: 'chrome', headless: true, args: ['--enable-webgl', '--ignore-gpu-blocklist', '--use-angle=metal', ...unthrottled] });
 const funds = (page: Page) => page.evaluate(() => (window as unknown as { __office: { store: { empire: { funds: number } } } }).__office.store.empire.funds);
+/** Waits until CSS animations (dialog fade/pop) have finished, so screenshots show the settled UI. */
+const settled = (page: Page) => page.waitForFunction(() => document.getAnimations().every((a) => a.playState !== 'running' || !document.getElementById('modal-root')?.contains((a.effect as KeyframeEffect | null)?.target as Node ?? null)), null, { timeout: 5000 }).then(() => page.waitForTimeout(150));
+/** The dialog is the dark, opaque style and nothing (HUD, hint, minimap) covers its title or close button. */
+const dialogOnTop = (page: Page) => page.evaluate(() => {
+  const d = document.querySelector('#modal-root [role=dialog]') as HTMLElement;
+  const covered = [d.querySelector('h2')!, d.querySelector('.close')!].some((el) => {
+    const r = el.getBoundingClientRect();
+    const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return !hit || !d.contains(hit);
+  });
+  // Opacity of the painted background: the colour, or the least opaque stop of a gradient background.
+  const cs = getComputedStyle(d);
+  const alphas = (s: string) => [...s.matchAll(/rgba?\(([^)]*)\)/g)].map((m) => { const p = m[1].split(','); return p.length > 3 ? Number(p[3]) : 1; });
+  const color = alphas(cs.backgroundColor)[0] ?? 0;
+  const alpha = color > 0 ? color : Math.min(...alphas(cs.backgroundImage));
+  return { covered, dark: d.classList.contains('ae-dark'), alpha, opacity: getComputedStyle(d).opacity, text: d.textContent ?? '' };
+});
 const dialog = (page: Page) => page.locator('#modal-root [role=dialog][aria-labelledby=city-dialog-title]');
 try {
   if (only === 'perf') await perf(browser, process.env.PERF_LABEL || 'after');
@@ -148,16 +165,25 @@ try {
       // Garage: walk-in position at the kiosk, interaction key, buy, bring out, refuse when full.
       await place(s.page, { x: 81.8, z: 84.3, yaw: 0, view: 'first', look: -0.2 }, 1200);
       const hint = await s.page.locator('.traversal-hint').textContent();
+      await s.page.waitForTimeout(300);
+      check('the location label names the garage', (await s.page.locator('#hud').textContent())?.includes('Meridian motor garage') ?? false);
       check('the kiosk shows its interaction hint', /Garage: buy, bring out or store vehicles/.test(hint ?? ''), hint ?? '');
       await s.page.keyboard.press('e');
       await dialog(s.page).waitFor({ timeout: 5000 });
       check('the interaction key opens the Meridian motor garage dialog', (await dialog(s.page).locator('h2').textContent()) === 'Meridian motor garage');
       check('the dialog says city credits are fictional', /never charge your AI provider/.test((await dialog(s.page).textContent()) ?? ''));
+      await settled(s.page);
+      {
+        const d = await dialogOnTop(s.page);
+        check('desktop: the garage dialog is dark, opaque and uncovered', d.dark && d.alpha >= 0.95 && d.opacity === '1' && !d.covered, JSON.stringify({ ...d, text: undefined }));
+        check('the dialog shows no internal slice IDs and says driving bought cars comes later', !/CITY-\d|FREE-\d/.test(d.text) && /Driving them is coming in a later update; today only your executive sedan can be driven/.test(d.text));
+      }
       const before = await funds(s.page);
       await dialog(s.page).locator('[data-key=buy-hatchback]').click();
       await s.page.waitForFunction(() => document.querySelector('[data-key="out-vehicle-1"]'), null, { timeout: 5000 });
       const after = await funds(s.page);
       check('buying the City hatchback spends 9,000 fictional credits and parks it in bay 1', before - after === 9000 && /City hatchback · bay 1/.test((await dialog(s.page).textContent()) ?? ''), `${before} → ${after}`);
+      await settled(s.page);
       await s.page.screenshot({ path: resolve(out, '05-garage-purchase-1440x900.jpg'), quality: 82 });
       await dialog(s.page).locator('[data-key="out-vehicle-1"]').click();
       await s.page.waitForFunction(() => /outside, kerb slot/.test(document.querySelector('.city-dialog')?.textContent ?? ''), null, { timeout: 5000 });
@@ -196,6 +222,7 @@ try {
       await place(s.page, VIEWS.aerial, 2500);
       await s.page.screenshot({ path: resolve(out, '08-aerial-phone-874x402.jpg'), quality: 82 });
       await place(s.page, VIEWS.business, 2500);
+      check('phone: the location label names the business district, not the waterfront', ((await s.page.locator('#hud').textContent()) ?? '').includes('Meridian business district'));
       await s.page.screenshot({ path: resolve(out, '09-business-phone-874x402.jpg'), quality: 82 });
       await place(s.page, { x: 81.8, z: 84.3, yaw: 0, view: 'first', look: -0.2 }, 1200);
       await s.page.evaluate(() => window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyE', key: 'e' })));
@@ -205,6 +232,13 @@ try {
         return r.left >= 0 && r.right <= innerWidth && document.documentElement.scrollWidth <= innerWidth;
       });
       check('phone 874x402: the garage dialog fits without sideways overflow', fit);
+      await settled(s.page);
+      {
+        const d = await dialogOnTop(s.page);
+        check('phone 874x402: the garage dialog is dark, opaque and above the HUD', d.dark && d.alpha >= 0.95 && d.opacity === '1' && !d.covered, JSON.stringify({ ...d, text: undefined }));
+        const scrolls = await s.page.evaluate(() => { const b = document.querySelector('.city-dialog') as HTMLElement; const r = (document.querySelector('#modal-root [role=dialog]') as HTMLElement).getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight && getComputedStyle(b).overflowY === 'auto'; });
+        check('phone 874x402: the dialog fits the viewport and its list scrolls inside it', scrolls);
+      }
       await s.page.screenshot({ path: resolve(out, '10-garage-dialog-phone-874x402.jpg'), quality: 82 });
       check('no console errors (phone)', !s.errors.length, s.errors.slice(0, 5).join(' · '));
       await s.context.close();

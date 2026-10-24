@@ -19,7 +19,7 @@ export function openCityDialog(deps: CityDialogDeps, target: CityTarget) {
   const close = h('button.btn.close', { type: 'button', 'aria-label': 'Close' }, '✕');
   const body = h('div.body.city-dialog');
   const title = target.kind === 'garage' ? GARAGE.name : PLOTS.find((p) => p.id === target.plot)!.name;
-  const dialog = h('div.modal', { role: 'dialog', 'aria-labelledby': 'city-dialog-title' }, h('header', {}, h('h2', { id: 'city-dialog-title' }, title), close), body);
+  const dialog = h('div.modal.ae-dark.city-modal', { role: 'dialog', 'aria-labelledby': 'city-dialog-title' }, h('header', {}, h('h2', { id: 'city-dialog-title' }, title), close), body);
   const button = (key: string, label: string, onclick: () => void, disabled = false) =>
     h('button.btn', { type: 'button', 'data-key': key, onclick, disabled }, label);
 
@@ -31,7 +31,7 @@ export function openCityDialog(deps: CityDialogDeps, target: CityTarget) {
     if (target.kind === 'garage') {
       const full = freeBay(city) < 0;
       rows.push(h('h3', {}, `Your vehicles · ${city.vehicles.length}/${GARAGE.bays.length} bays`));
-      rows.push(h('p.setting-note', {}, 'The executive sedan stays your drivable car. Bought vehicles are stored here and can be brought out to the kerb; driving them arrives with authored door and seat animation (CITY-06).'));
+      rows.push(h('p.setting-note', {}, 'Bought vehicles are kept here: you can park them in a bay or bring them out to the kerb. Driving them is coming in a later update; today only your executive sedan can be driven.'));
       rows.push(city.vehicles.length
         ? h('ul.city-list', {}, ...city.vehicles.map((v) => {
             const model = VEHICLE_MODELS.find((m) => m.id === v.model)!;
@@ -50,7 +50,7 @@ export function openCityDialog(deps: CityDialogDeps, target: CityTarget) {
       const plot = PLOTS.find((p) => p.id === target.plot)!;
       const owned = city.plots.includes(plot.id as PlotId);
       rows.push(h('p', {}, owned
-        ? 'You own this parcel. Construction on district plots arrives in a later phase.'
+        ? 'You own this parcel. Building on district parcels is coming in a later update.'
         : `This ${plot.district === 'business' ? 'business district' : 'harbour'} parcel costs ${plot.cost.toLocaleString('en-US')} city credits.`));
       if (!owned) rows.push(button(`plot-${plot.id}`, `Buy parcel · ${plot.cost.toLocaleString('en-US')} cr`, () => deps.send({ kind: 'buy-plot', plot: plot.id }), state.funds < plot.cost));
     }

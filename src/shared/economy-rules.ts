@@ -171,7 +171,7 @@ function applyGarageAction(state: EmpireState, action: GarageAction, now: number
     if (city.plots.includes(plot.id)) return 'Plot already owned';
     if (state.funds < plot.cost) return 'Insufficient simulation credits';
     state.funds -= plot.cost; city.plots.push(plot.id);
-    report('Expansion', `${plot.name} acquired for ${plot.cost.toLocaleString('en-US')} city credits. Construction on district plots arrives in a later phase.`);
+    report('Expansion', `${plot.name} acquired for ${plot.cost.toLocaleString('en-US')} city credits. Building on district parcels is coming in a later update.`);
   } else if (action.kind === 'buy-vehicle') {
     if (!state.setup.completed) return 'Complete founding setup first';
     const model = VEHICLE_MODELS.find(m => m.id === action.model);

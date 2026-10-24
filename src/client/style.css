@@ -1530,3 +1530,8 @@ html.ae-touch #hud .topbar .controls > #btn-inbox > span:not(.svc-count):not(.in
 .city-dialog .city-list { list-style: none; margin: 0 0 12px; padding: 0; display: grid; gap: 8px; }
 .city-dialog .city-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; flex-wrap: wrap; }
 .city-dialog .city-list .btn { min-height: 44px; min-width: 96px; }
+/* FREE-09: the garage/plot dialog uses the dark dialog tokens; on short phones the list scrolls inside it. */
+.modal.city-modal { width: min(560px, 100%); }
+.modal.city-modal .body { overflow-y: auto; overscroll-behavior: contain; }
+.modal.city-modal h3 { font-size: 15px; font-weight: 650; margin: 14px 0 8px; color: var(--ink); }
+.modal.city-modal .city-list li { border-bottom: 1px solid rgba(155, 209, 186, .1); padding: 4px 0; }

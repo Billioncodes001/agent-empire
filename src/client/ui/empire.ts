@@ -1,4 +1,10 @@
-import { DISTRICTS, GARAGE, PLOTS, normalizeCity } from '../../shared/city';
+import { DISTRICTS, GARAGE, PLOTS, districtAt, normalizeCity } from '../../shared/city';
+/** FREE-09: the garage and the new districts name themselves; the founding district keeps its avenue label. */
+function cityPlace(x: number, z: number) {
+  if (Math.abs(x - GARAGE.x) < GARAGE.width / 2 + 1 && Math.abs(z - GARAGE.z) < GARAGE.depth / 2 + 1) return GARAGE.name;
+  const id = districtAt(x, z);
+  return id && id !== 'founding' ? DISTRICTS.find((d) => d.id === id)!.name : 'Waterfront avenue';
+}
 import { ROADS } from '../world/district-layout';
 import { keyLabel } from '../controls';
 import { FLOOR_RISE } from '../../shared/layout';
@@ -385,7 +391,7 @@ export function mountEmpire(
         ? `${waypoint.name} · ${Math.round(Math.hypot(waypoint.x - pos.x, waypoint.z - pos.z))} m`
         : player.pos.z < 30
           ? `Headquarters · Floor ${Math.floor(player.pos.y / FLOOR_RISE) + 1}`
-          : (near?.name ?? 'Waterfront avenue');
+          : (near?.name ?? cityPlace(pos.x, pos.z));
       stats.textContent = `${keyLabel(player.bindings.map)} Map · ${keyLabel(player.bindings.camera)} View`;
       draw(map, true);
       if (fullMap) draw(fullMap, false);
