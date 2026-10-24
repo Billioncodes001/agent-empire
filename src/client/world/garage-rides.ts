@@ -94,6 +94,7 @@ export function dressKenneyCar(template: THREE.Object3D, spec: RideSpec) {
       hinge.rotation.y = amount * 1.05;
     },
     handle: () => handlePoint.getWorldPosition(new THREE.Vector3()),
+    cabinView(on: boolean) { model.visible = !on; },
     animate(dt: number, motion: VehicleMotion, running: boolean, reduced: boolean) {
       spin = (spin + motion.speed * dt / (0.3 * KENNEY_SCALE)) % (Math.PI * 2);
       for (const x of wheels) { x.node.rotation.x = spin; x.node.rotation.y = x.front ? motion.steering : 0; }

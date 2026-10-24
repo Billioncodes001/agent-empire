@@ -279,6 +279,7 @@ export function buildDistricts(parent: THREE.Group) {
             enter: () => { entry.driven = true; entry.pending = false; pool[entry.bay].collider.top = 0; },
             exit: () => { entry.driven = false; entry.parked = poseOf(car.root); entry.pending = true; },
             animate: (dt, motion, running, reduced) => car.animate(dt, motion, running, reduced),
+            cabinView: (on) => car.cabinView(on),
           },
         };
         e = entry;

@@ -1373,6 +1373,7 @@ function frame(ts?: number) {
   const outside = player.pos.z >= 30;
   const activeRide = traversal.ride;
   for (const r of city.rides()) r.animate(dt, r.spec.kind === 'helicopter' ? player.flight : r === activeRide ? player.vehicle : IDLE_MOTION, player.driving && r === activeRide, reducedMotion.matches);
+  for (const r of city.rides()) r.cabinView?.(player.driving && r === activeRide && player.view === 'first' && !traversal.state.includes('car'));
   empireUI.touch.setMode(player.flying ? 'fly' : player.driving ? 'drive' : 'walk');
   sound.environment(outside);
   sound.vehicle(player.flying ? player.flight.audio() : player.vehicle, player.driving, (activeRide?.object ?? city.car).position, player.view === 'first');

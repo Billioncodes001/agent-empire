@@ -98,4 +98,6 @@ export interface Ride {
   /** The founder left it here: it becomes solid where it stands (once nobody overlaps it). */
   exit?(): void;
   animate(dt: number, motion: import('./vehicle').VehicleMotion, running: boolean, reduced: boolean): void;
+  /** First person inside a model with opaque palette windows: hide the shell so the cabin framing and the road show. */
+  cabinView?(on: boolean): void;
 }

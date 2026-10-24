@@ -22,12 +22,12 @@
   {
     "name": "exiting parks the hatchback where it was left, and it is solid there",
     "ok": true,
-    "detail": "{\"x\":66,\"z\":88.4} → {\"x\":77.35763696107648,\"z\":88.4,\"solid\":true}"
+    "detail": "{\"x\":66,\"z\":88.4} → {\"x\":77.31183530208268,\"z\":88.4,\"solid\":true}"
   },
   {
     "name": "the staircase climbs to the helipad deck",
     "ok": true,
-    "detail": "{\"state\":\"walking\",\"ride\":\"sedan\",\"x\":84.1,\"y\":6.300000000000001,\"z\":74.0071073943119,\"speed\":0,\"landed\":true,\"view\":\"third\"}"
+    "detail": "{\"state\":\"walking\",\"ride\":\"sedan\",\"x\":84.1,\"y\":6.300000000000001,\"z\":73.97959744344216,\"speed\":0,\"landed\":true,\"view\":\"third\"}"
   },
   {
     "name": "boarding the helicopter at the pilot door",
@@ -37,7 +37,7 @@
   {
     "name": "the helicopter spools up, lifts off and climbs",
     "ok": true,
-    "detail": "{\"state\":\"flying\",\"ride\":\"helicopter\",\"x\":72,\"y\":38.09680003957231,\"z\":78,\"speed\":0,\"landed\":false,\"view\":\"third\"}"
+    "detail": "{\"state\":\"flying\",\"ride\":\"helicopter\",\"x\":72,\"y\":38.0967313402833,\"z\":78,\"speed\":0,\"landed\":false,\"view\":\"third\"}"
   },
   {
     "name": "the flight hint names the climb, descend and camera keys",
@@ -67,7 +67,7 @@
   {
     "name": "phone 874x402: the joystick drives the bought car",
     "ok": true,
-    "detail": "{\"state\":\"driving\",\"ride\":\"hatchback\",\"x\":66,\"y\":0,\"z\":88.4,\"speed\":0,\"landed\":true,\"view\":\"third\"} → {\"state\":\"driving\",\"ride\":\"hatchback\",\"x\":73.88407719687726,\"y\":0,\"z\":88.4,\"speed\":6.3506894885138,\"landed\":true,\"view\":\"third\"}"
+    "detail": "{\"state\":\"driving\",\"ride\":\"hatchback\",\"x\":66,\"y\":0,\"z\":88.4,\"speed\":0,\"landed\":true,\"view\":\"third\"} → {\"state\":\"driving\",\"ride\":\"hatchback\",\"x\":73.88407659038442,\"y\":0,\"z\":88.4,\"speed\":6.350689138161645,\"landed\":true,\"view\":\"third\"}"
   },
   {
     "name": "phone 874x402: flying shows Up and Down buttons",
@@ -77,7 +77,7 @@
   {
     "name": "phone 874x402: holding Up lifts the helicopter",
     "ok": true,
-    "detail": "{\"state\":\"flying\",\"ride\":\"helicopter\",\"x\":72,\"y\":27.24859742072738,\"z\":78,\"speed\":0,\"landed\":false,\"view\":\"third\"}"
+    "detail": "{\"state\":\"flying\",\"ride\":\"helicopter\",\"x\":72,\"y\":27.248598318415862,\"z\":78,\"speed\":0,\"landed\":false,\"view\":\"third\"}"
   },
   {
     "name": "phone 874x402: every touch button is on screen in flight",
