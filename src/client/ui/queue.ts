@@ -112,6 +112,8 @@ export function openQueue(net: Net, actions: QueueActions) {
 
   const row = (t: QueueTask): HTMLElement => {
     const meta: string[] = [];
+    // FREE-06: the product (repository) the task runs in, when it is not the office's own.
+    if (t.productId) meta.push(`📦 ${t.productName ?? t.productId}`);
     const buttons: HTMLElement[] = [];
     let pos: string | null = null;
     // LIFE-04: a task waiting on another task, or held because its dependency did not finish.

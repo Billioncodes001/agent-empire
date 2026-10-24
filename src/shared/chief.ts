@@ -58,6 +58,8 @@ export interface ChiefPlan {
   title: string;
   source: PlanSource;
   status: PlanStatus;
+  /** FREE-06: the product the proposed job would run in; absent = the office's own repository. Still a proposal. */
+  productId?: string;
   /** needs_attention: why no plan was proposed. Nothing was created. */
   reason?: string;
   /** proposed: the consultancy job (pending approval) holding the plan. */

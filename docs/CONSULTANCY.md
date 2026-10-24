@@ -7,7 +7,7 @@ Open **Settings → App & connection → Open founder desk**, or `/consultancy.h
 3. Open the job, inspect every work item and choose **Approve & queue**. Provider use may be billed under the host's existing execution configuration. The current chief is a deterministic coordinator; the initial form makes one work item from the brief.
 4. Track queued, running, attention and review states. A worker finishing a turn does not prove the requested outcome is complete. Review the actual changes/PR before delivering them to a client.
 
-All jobs currently execute against this office host's repository. Different client labels organize work but do not create security boundaries or independent repositories. Approved tasks retain the existing funded-workstation, concurrency, budget and execution-mode gates. Provider-cloud mode holds this local queue; it does not silently launch another provider. Resource recommendations, automatic workstation purchases and model-authored multi-agent plans are later milestones.
+A job runs in the office host's repository unless its brief names a product (FREE-06, see [products](PRODUCTS.md)): then every item runs in that product's own repository. Products separate working directories on one host; they are not security boundaries. Approved tasks retain the existing funded-workstation, concurrency, budget and execution-mode gates. Provider-cloud mode holds this local queue; it does not silently launch another provider. Resource recommendations, automatic workstation purchases and model-authored multi-agent plans are later milestones.
 
 ## Telegram
 

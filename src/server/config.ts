@@ -109,7 +109,7 @@ function parseTurn(url: string): RTCIceServerLike {
 }
 
 /** Keep the office's own data out of git without touching the project's .gitignore. */
-function excludeFromGit(dir: string) {
+export function excludeFromGit(dir: string) {
   try {
     const gitDir = execFileSync('git', ['rev-parse', '--git-common-dir'], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
     const exclude = path.resolve(dir, gitDir, 'info', 'exclude');

@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync, accessSync, constants } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, accessSync, constants, realpathSync } from 'node:fs';
 import { execFile, execFileSync } from 'node:child_process';
 import path from 'node:path';
 import * as pty from '@lydell/node-pty';
@@ -134,6 +134,8 @@ export class WorkerManager {
   private settingsPath: string;
   private qwenSettingsPath: string;
   private trees: Worktrees;
+  /** FREE-06: one Worktrees per product repository, by absolute dir. */
+  private treesByDir = new Map<string, Worktrees>();
   private agentPath: string | null = null;
   private screenTimer: NodeJS.Timeout;
   /** The office is shutting down: workers exiting now are being stopped, not failing to resume. */
@@ -154,8 +156,11 @@ export class WorkerManager {
     private runtime: WorkerRuntime = defaultRuntime,
     private executionBlocker: () => string | undefined = () => undefined,
     private engineEnv: EngineEnv = defaultEngineEnv,
+    /** FREE-06: a product's repository dir (undefined = unknown product); absent id = the office dir. */
+    private productDir: (productId?: string) => string | undefined = (id) => (id === undefined ? dir : undefined),
   ) {
     this.trees = new Worktrees(dir);
+    this.treesByDir.set(dir, this.trees);
     this.statePath = path.join(dataDir, 'workers.json');
     this.settingsPath = path.join(dataDir, 'claude-hooks.json');
     this.qwenSettingsPath = path.join(dataDir, 'qwen-system-settings.json');
@@ -196,12 +201,11 @@ export class WorkerManager {
 
   /** Each worker's terminal process and directory, to tell whose servers are whose. */
   owners(): ServiceOwner[] {
-    return [...this.workers.values()].map((w) => ({
-      workerId: w.info.id,
-      pid: w.pty?.pid,
-      agent: w.info.kind === 'agent',
-      cwd: w.info.worktree ? path.join(this.dir, w.info.worktree.path) : this.dir,
-    }));
+    // FREE-06: a worker whose product was unlinked has no folder here, so it owns nothing (never the office's servers).
+    return [...this.workers.values()].flatMap((w) => {
+      const cwd = this.cwdOf(w.info);
+      return cwd ? [{ workerId: w.info.id, pid: w.pty?.pid, agent: w.info.kind === 'agent', cwd }] : [];
+    });
   }
 
   workstationCapacity() { return this.capacity(); }
@@ -216,7 +220,7 @@ export class WorkerManager {
    * so the worktree really starts from the predecessor's work) are `persona`'s name and colour reused; otherwise the
    * worker starts from HEAD as a new person. The name is used only when nobody else currently has it.
    */
-  spawn(deskId: string, by: string, prompt?: string, worktree = false, kind: WorkerKind = 'agent', queueOwned = false, outfit?: Outfit, persona?: { name: string; color?: string }, continues?: { branch: string; title: string }, extra: { engine?: WorkerEngine; typeOnReady?: string } = {}): WorkerInfo | string {
+  spawn(deskId: string, by: string, prompt?: string, worktree = false, kind: WorkerKind = 'agent', queueOwned = false, outfit?: Outfit, persona?: { name: string; color?: string }, continues?: { branch: string; title: string }, extra: { engine?: WorkerEngine; typeOnReady?: string; productId?: string; productName?: string } = {}): WorkerInfo | string {
     const executionBlocked = this.executionBlocker();
     if (executionBlocked) return executionBlocked;
     if (!fundedDesk(deskId, this.capacity())) return 'Build and furnish this workstation before employing a worker';
@@ -236,8 +240,15 @@ export class WorkerManager {
         gated = g.engine;
       }
     }
+    // FREE-06: the product's own repository; an unknown product is refused, never swapped for the office repository.
+    const productId = extra.productId === 'office' ? undefined : extra.productId;
+    const repoDir = this.productDir(productId);
+    if (!repoDir) return `The product ${productId} is not linked any more. Link it again under Settings → Products.`;
+    // The same test as at link time: the folder must still be a git repository's top level (not deleted, not replaced).
+    if (productId !== undefined && !isRepoTop(repoDir)) return `The product's folder is missing or is no longer the top of a git repository (${repoDir}). Fix it or link the product again.`;
+    const trees = this.treesFor(repoDir);
     const used = new Set([...this.workers.values()].map((w) => w.info.name.replace(/ 🐚$/, '')));
-    const from = kind === 'agent' && worktree && continues && this.trees.hasBranch(continues.branch) ? continues : undefined;
+    const from = kind === 'agent' && worktree && continues && trees.hasBranch(continues.branch) ? continues : undefined;
     if (!from) { persona = undefined; outfit = continues ? undefined : outfit; }
     // Only a roster name: it also names the worktree branch, so free text never reaches git.
     const wanted = persona && NAMES.includes(persona.name) ? persona.name : undefined;
@@ -245,7 +256,7 @@ export class WorkerManager {
     const id = randomBytes(6).toString('hex');
     let wt: WorkerInfo['worktree'];
     if (worktree) {
-      const made = this.trees.create(`${name.toLowerCase()}-${id.slice(0, 4)}`, from?.branch);
+      const made = trees.create(`${name.toLowerCase()}-${id.slice(0, 4)}`, from?.branch);
       if (typeof made === 'string') return made;
       wt = from ? { ...made, continues: { branch: from.branch, title: from.title.slice(0, 120) } } : made;
     }
@@ -261,6 +272,7 @@ export class WorkerManager {
       createdBy: by,
       createdAt: Date.now(),
       prompt: kind === 'shell' ? undefined : prompt?.trim() || undefined,
+      ...(productId ? { productId, productName: extra.productName?.slice(0, 80) } : {}),
       worktree: wt,
       cols: 100,
       rows: 30,
@@ -358,20 +370,25 @@ export class WorkerManager {
     if (!wt) return {};
     const name = w.info.name;
     if (!cleanup) {
-      const work = describeWork(await this.trees.inspect(wt));
+      const trees = this.treesOf(w.info);
+      if (!trees) return { note: `Kept ${name}'s worktree and branch ${wt.branch}: its product is no longer linked` };
+      const work = describeWork(await trees.inspect(wt));
       if (work) return { note: `Kept ${name}'s worktree and branch ${wt.branch} — it has ${work}` };
       cleanup = 'all';
     }
     if (cleanup === 'keep') return { note: `Kept ${name}'s worktree and branch ${wt.branch}` };
-    const error = await this.trees.remove(wt, cleanup);
+    const trees = this.treesOf(w.info);
+    if (!trees) return { note: `Kept ${name}'s worktree and branch ${wt.branch}: its product is no longer linked` };
+    const error = await trees.remove(wt, cleanup);
     if (error) return { error: `Couldn't delete ${name}'s worktree: ${error}` };
     return { note: cleanup === 'all' ? `Deleted ${name}'s worktree and branch ${wt.branch}` : `Deleted ${name}'s worktree and kept branch ${wt.branch}` };
   }
 
   /** What a worker's worktree holds, so whoever sends it home knows what deleting it would lose. */
   inspectWorktree(id: string): Promise<WorktreeState | undefined> {
-    const wt = this.workers.get(id)?.info.worktree;
-    return wt ? this.trees.inspect(wt) : Promise.resolve(undefined);
+    const info = this.workers.get(id)?.info;
+    const trees = info && this.treesOf(info);
+    return info?.worktree && trees ? trees.inspect(info.worktree) : Promise.resolve(undefined);
   }
 
   artifactPublishing(id: string): boolean { return !!this.workers.get(id)?.publishing; }
@@ -382,7 +399,34 @@ export class WorkerManager {
     return !!w && (!!w.publishing || !!w.stopping || !!w.info.prOpening);
   }
 
-  branchExists(branch: string): boolean { return this.trees.hasBranch(branch); }
+  /** FREE-06: looked up in the product's own repository (absent = the office's). */
+  branchExists(branch: string, productId?: string): boolean {
+    const dir = this.productDir(productId === 'office' ? undefined : productId);
+    return !!dir && this.treesFor(dir).hasBranch(branch);
+  }
+
+  /** The repository a worker belongs to: its product's, or the office's. Undefined when the product was unlinked. */
+  private repoOf(info: WorkerInfo): string | undefined {
+    return this.productDir(info.productId);
+  }
+
+  private treesFor(dir: string): Worktrees {
+    let t = this.treesByDir.get(dir);
+    if (!t) { t = new Worktrees(dir); this.treesByDir.set(dir, t); }
+    return t;
+  }
+
+  private treesOf(info: WorkerInfo): Worktrees | undefined {
+    const dir = this.repoOf(info);
+    return dir ? this.treesFor(dir) : undefined;
+  }
+
+  /** Where a worker runs: its worktree in its product's repository, or that repository itself. */
+  private cwdOf(info: WorkerInfo): string | undefined {
+    const repo = this.repoOf(info);
+    if (!repo) return undefined;
+    return info.worktree ? path.join(repo, info.worktree.path) : repo;
+  }
 
   /** Reserve a confirmed stopped worker until its immutable bundle has been verified. */
   async publishArtifact<T>(id: string, publish: (worker: WorkerInfo) => Promise<T>): Promise<T> {
@@ -467,7 +511,8 @@ export class WorkerManager {
     if (info.status === 'starting' || info.status === 'working' || info.status === 'needs_input') {
       return `${info.name} is still ${info.status === 'needs_input' ? 'waiting on input' : info.status} — wait until it's done`;
     }
-    const cwd = path.join(this.dir, wt.path);
+    const cwd = this.cwdOf(info);
+    if (!cwd) return `${info.name}'s product is no longer linked`;
     if (!existsSync(cwd)) return `${info.name}'s worktree is gone (${wt.path})`;
     info.prOpening = true;
     this.emitUpdate(w);
@@ -482,7 +527,8 @@ export class WorkerManager {
         return { ...open, existed: true, dirty };
       }
       await run('git', ['push', '-u', 'origin', wt.branch], cwd, 90_000);
-      const base = await this.pushedBranch([wt.from, this.trees.currentBranch()], wt.branch);
+      const repo = this.repoOf(info)!;
+      const base = await this.pushedBranch([wt.from, this.treesFor(repo).currentBranch()], wt.branch, repo);
       const { title, body } = draftPr(info, commits, by);
       const out = await gh(['pr', 'create', '--head', wt.branch, ...(base ? ['--base', base] : []), '--title', title, '--body', body], cwd, 60_000);
       const url = out.trim().split('\n').pop() ?? '';
@@ -501,11 +547,11 @@ export class WorkerManager {
   }
 
   /** The first of these branches that exists on origin, for a PR base. None: gh picks the default branch. */
-  private async pushedBranch(candidates: (string | undefined)[], not: string): Promise<string | undefined> {
+  private async pushedBranch(candidates: (string | undefined)[], not: string, repo = this.dir): Promise<string | undefined> {
     for (const c of candidates) {
       if (!c || c === not) continue;
       try {
-        await run('git', ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${c}`], this.dir);
+        await run('git', ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${c}`], repo);
         return c;
       } catch {
         // not on the remote (or never fetched)
@@ -747,9 +793,12 @@ export class WorkerManager {
       AGENT_OFFICE_HOOK_TOKEN: w.hookToken,
     });
 
-    const cwd = info.worktree ? path.join(this.dir, info.worktree.path) : this.dir;
+    // An unlinked product's worker fails to launch; it never runs anywhere else.
+    const found = this.cwdOf(info);
+    const cwd = found ?? '';
     let proc: pty.IPty;
     try {
+      if (!found) throw new Error(`its product (${info.productName ?? info.productId}) is no longer linked`);
       if (!existsSync(cwd)) throw new Error(`working directory is gone: ${cwd}`);
       if (isShell) {
         proc = this.runtime.spawn(shell, args, { name: 'xterm-256color', cols: info.cols, rows: info.rows, cwd, env });
@@ -1042,6 +1091,7 @@ process.stdin.on('end', () => {
           createdBy: s.createdBy ?? '?',
           createdAt: s.createdAt ?? Date.now(),
           prompt: s.prompt,
+          ...(typeof s.productId === 'string' && s.productId !== 'office' ? { productId: s.productId, productName: typeof s.productName === 'string' ? s.productName : undefined } : {}),
           worktree: s.worktree,
           title: s.title,
           sessionId: s.sessionId,
@@ -1238,6 +1288,17 @@ function offlineBanner(info: WorkerInfo): string {
 }
 
 /** Runs a command without blocking the office; rejects with the last lines of its stderr. */
+/** True when `dir` is the top level of a git work tree (symlinks resolved), as products require at link time. */
+function isRepoTop(dir: string): boolean {
+  try {
+    if (!existsSync(dir)) return false;
+    const top = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 }).trim();
+    return realpathSync.native(top) === realpathSync.native(dir);
+  } catch {
+    return false;
+  }
+}
+
 function run(cmd: string, args: string[], cwd: string, timeout = 30_000): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(cmd, args, { cwd, encoding: 'utf8', timeout, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
