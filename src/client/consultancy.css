@@ -432,3 +432,24 @@ html[data-save-data="true"] *, html[data-save-data="true"] *::before, html[data-
 #research-detail .research-chip { border-color: var(--paper-line); color: var(--paper-ink); }
 #research-detail .research-tool { border-color: var(--paper-line); }
 #research-detail .research-tool-decision, #research-detail .research-link { color: var(--copper-deep); }
+
+/* FREE-02: the chief's planning brain on the founder desk. */
+.chief .tag[data-monitor="model_backed"] { border-color: #9fc5e8; color: #d6e8f8; background: rgba(159, 197, 232, .1); white-space: normal; }
+.chief-brain-line { margin-top: 10px; }
+.chief-plans { display: grid; gap: 8px; margin-top: 10px; }
+.chief-plan-row { padding: 10px 12px; border: 1px solid var(--line-2); }
+.chief-plan-row small { display: block; font: 600 10.5px/1.5 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+.chief-plan-row strong { display: block; font-weight: 500; overflow-wrap: anywhere; }
+.chief-plan-row[data-status="needs_attention"] { border-color: var(--copper); background: rgba(201, 131, 79, .08); }
+.chief-plan-row .quiet { margin-top: 6px; }
+.chief-reason { color: var(--champagne); font-size: 13px; overflow-wrap: anywhere; }
+.chief-option { display: flex !important; gap: 10px; align-items: flex-start; margin-top: 12px; }
+.chief-option[hidden] { display: none !important; }
+.chief-option input { width: auto; margin-top: 4px; accent-color: var(--copper); }
+.chief-option small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+.chief-proposed { margin: 16px 0; padding: 14px 16px; border: 1px solid rgba(159, 197, 232, .35); background: rgba(159, 197, 232, .06); }
+.chief-proposed .chief-model-tag { display: inline-block; white-space: normal; }
+.chief-review { padding: 8px 0; border-top: 1px solid var(--line); }
+.chief-review[data-recommendation="accept"] strong { color: #9fd3b2; }
+.chief-review[data-recommendation="needs_changes"] strong { color: var(--champagne); }
+.chief-review small, .chief-concern { display: block; color: var(--muted); font-size: 12px; }

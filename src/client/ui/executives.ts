@@ -21,6 +21,10 @@ export const executiveTitle = (role: ExecutiveRole) => EXECUTIVES[role].title;
 
 /** Plain description of the executive's evidence, so nobody mistakes a rule for a model. */
 const RULE_NOTE = 'Rule-based: computed from the live queue, workers, client jobs, provider usage, outreach results and worker reports. No model is called.';
+const MODEL_NOTE = 'Model-backed (FREE-02): the chief’s model drafts plans, reviews finished items and suggests how to unblock stalls. Everything it writes is a proposal until you approve it; its status line is still computed from real state.';
+
+/** FREE-02: "Model-backed · <model> · proposals only" while the chief's brain is on; otherwise the honest Rule-based tag. */
+export const monitorTag = (e: Pick<Executive, 'monitor' | 'model'>) => (e.monitor === 'model_backed' && e.model ? `Model-backed · ${e.model} · proposals only` : 'Rule-based');
 
 function tone(e: Executive) {
   if (!e.active) return 'unknown';
@@ -46,10 +50,11 @@ export function executiveCard(e: Executive, opts: { openQueue?: () => void; befo
   return h(
     'article.exec-card',
     { 'data-tone': tone(e), 'data-role': e.role },
-    h('div.exec-head', {}, h('span.empire-eyebrow', {}, executiveTitle(e.role)), h('span.empire-tag', { title: RULE_NOTE }, 'Rule-based')),
+    h('div.exec-head', {}, h('span.empire-eyebrow', {}, executiveTitle(e.role)), h('span.empire-tag', { title: e.monitor === 'model_backed' ? MODEL_NOTE : RULE_NOTE, 'data-monitor': e.monitor }, monitorTag(e))),
     title,
     h('p.exec-summary', {}, h('span.status-dot', { 'aria-hidden': 'true' }), e.active ? e.summary : NOT_STAFFED),
     attention,
+    e.monitor === 'model_backed' ? h('p.exec-note.exec-model-note', {}, 'Plans, reviews and unblock ideas from this chief are proposals: nothing starts, is accepted or spends without your approval.') : null,
     e.role === 'marketing_sales' && e.active
       ? h('p.exec-note', {}, 'Coordinates email outreach; workers draft, you approve every send. ', h('a.btn.exec-link', { href: OUTREACH_DESK, target: '_blank', rel: 'noopener' }, 'Leads & campaigns ↗'))
       : null,

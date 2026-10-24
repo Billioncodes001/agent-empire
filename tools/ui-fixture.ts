@@ -25,6 +25,8 @@ import { VoiceError, VoiceRuntime } from '../src/server/voice.js';
 import { routeChief, ruleBasedBriefing } from '../src/server/chief-briefing.js';
 import { ConsultancyError } from '../src/server/consultancy.js';
 import { MAX_AUDIO_BYTES } from '../src/shared/voice.js';
+import { ChiefBrain, ChiefError, chiefActions } from '../src/server/chief.js';
+import { fixtureChat } from './chief-fixture.js';
 
 /**
  * ORG-03: a real approval inbox over a real consultancy journal in a throwaway temp directory, with a fake queue that
@@ -128,7 +130,8 @@ function fixtureOrg(state: ReturnType<typeof initialEmpire>, workers: WorkerInfo
     job('fixture-portal', { approvedBudgetUsd: 12, actualSpendUsd: 4.8 }),
     job('fixture-audit', { approvedBudgetUsd: 3, actualSpendUsd: 3.1, budgetHold: { reachedAt: 1, spentUsd: 3.1, approvedBudgetUsd: 3 }, items: [{ id: 'item-2', title: 'Second pass', prompt: 'Synthetic', jobKey: 'fixture', status: 'queued', phase: 'iteration', held: true }] }),
   ];
-  return projectOrg({ now: Date.now(), supervision: state.supervision, workers, queue: { tasks, maxWorkers: 3 }, jobs, approvals: inbox?.state().items, outreach: fxOutreach?.summary(), research: research?.state(), usage: { total: { ...zero, cost: 7.9 }, today: { ...zero, cost: 1.2 }, day: '2026-10-08', budget: 10, pauseHiring: false } });
+  const brain = chief?.status();
+  return projectOrg({ now: Date.now(), ...(brain?.ready && brain.model ? { chiefBrain: { model: brain.model } } : {}), supervision: state.supervision, workers, queue: { tasks, maxWorkers: 3 }, jobs, approvals: inbox?.state().items, outreach: fxOutreach?.summary(), research: research?.state(), usage: { total: { ...zero, cost: 7.9 }, today: { ...zero, cost: 1.2 }, day: '2026-10-08', budget: 10, pauseHiring: false } });
 }
 
 const port = Number(process.env.FIXTURE_PORT || 4613);
@@ -153,6 +156,34 @@ if (process.env.FIXTURE_DEVICES === '1') {
 const bearer = (req: import('node:http').IncomingMessage) => /^Bearer ([A-Za-z0-9_-]+)$/.exec(req.headers.authorization ?? '')?.[1];
 const json = (res: import('node:http').ServerResponse, status: number, body: unknown) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
 const send = (ws: WebSocket, msg: ServerMsg) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg)); };
+/**
+ * FREE-02 (FIXTURE_CHIEF=1): a real ChiefBrain over the fixture journal with a fake model (tools/chief-fixture.ts; no
+ * network). The free brain proposes a plan (pending approval), reviews one finished item, and raises one chief proposal
+ * for an item that failed twice. Nothing runs: the fake queue never seats anything.
+ */
+let chief: ChiefBrain | undefined;
+if (process.env.FIXTURE_CHIEF === '1') {
+  const fxQueue = { state: () => ({ tasks: fxTasks.map((t) => ({ ...t })), maxWorkers: 0 }), retry: () => 'Fixture only: nothing is retried.' };
+  const brain = new ChiefBrain(inboxDir, { keys: () => ({}), chat: fixtureChat, office: fxOffice, queue: fxQueue.state, raise: (f) => inbox!.raiseChief(f),
+    onChange: () => { for (const ws of sockets.clients) { send(ws, { t: 'chief', state: brain.state() }); send(ws, { t: 'approvals', state: inbox!.state() }); } } });
+  chief = brain;
+  inbox!.setChief(chiefActions(fxQueue), (jobId) => (brain.planFor(jobId) ? brain.label() : undefined));
+  brain.updateSettings({ mode: 'free', freeModel: 'gpt-oss:20b' });
+  brain.requestPlan({ requestId: 'fx-chief-reviewed', client: 'Harbour Dental', title: 'Online booking', brief: 'Synthetic fixture brief: patients book and cancel appointments online.' }, 'Fixture CEO', 'founder_desk');
+  await brain.idle();
+  const reviewed = brain.state().plans[0].jobId!;
+  fxOffice.approve(reviewed, 'Fixture CEO', { budgetUsd: 12 });
+  const t1 = fxTasks.find((t) => t.jobKey === `consultancy:${reviewed}:item-1`)!;
+  Object.assign(t1, { status: 'done', outcome: 'done', finishedAt: Date.now(), workerName: 'Bea', branch: 'office/bea-fx' });
+  fxOffice.reconcile();
+  fxTasks.push({ id: 'fx-q-form', jobKey: `consultancy:${reviewed}:item-x`, title: 'Build the booking form', prompt: 'Synthetic', addedBy: 'Fixture', addedAt: Date.now(), status: 'done', outcome: 'failed', attempt: 2, error: 'worker exited: missing BOOKING_API_URL', finishedAt: Date.now(), workerName: 'Cyrus' });
+  brain.reconcile();
+  await brain.idle();
+  brain.requestPlan({ requestId: 'fx-chief-plan', client: 'Northstar Studio', title: 'Customer booking portal', brief: 'Synthetic fixture brief: clients book studio sessions online with accessible forms.' }, 'Fixture CEO', 'founder_desk');
+  brain.requestPlan({ requestId: 'fx-chief-bad', client: 'Atlas Commerce', title: 'Storefront review', brief: 'MALFORMED synthetic brief.' }, 'Fixture CEO', 'telegram');
+  await brain.idle();
+  inbox!.reconcile();
+}
 function snapshot() {
   const now = Date.now();
   const phase: SupervisionState['chief']['phase'] = ['missing', 'stale', 'disconnected', 'waiting'].includes(scenario) ? 'working' : scenario as SupervisionState['chief']['phase'];
@@ -384,6 +415,11 @@ const server = createServer(async (req, res) => {
     if (url.pathname === '/api/engines/ollama/cancel') { if (fxPull && !fxPull.done) Object.assign(fxPull, { done: true, cancelled: true, status: 'cancelled' }); clearInterval(fxPullTimer); return json(res, 200, { cancelled: true, pull: fxPull }); }
     return json(res, 404, { error: 'Unknown engines endpoint.' });
   }
+  if (chief && url.pathname === '/api/chief' && req.method === 'GET') return json(res, 200, chief.state());
+  if (chief && url.pathname === '/api/chief/settings' && req.method === 'POST') {
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    try { return json(res, 200, chief.updateSettings(JSON.parse(raw || '{}'))); } catch (error) { return json(res, error instanceof ChiefError ? error.status : 400, { error: (error as Error).message }); }
+  }
   if (url.pathname === '/api/approvals' && req.method === 'GET') return json(res, 200, inbox!.state());
   if (url.pathname === '/api/research' && req.method === 'GET') return json(res, 200, research!.state());
   const reportRoute = /^\/api\/research\/reports\/([a-zA-Z0-9_-]{1,80})$/.exec(url.pathname);
@@ -435,7 +471,7 @@ sockets.on('connection', ws => {
   const zero = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, cost: 0, calls: 0 };
   send(ws, { t: 'welcome', you: 'fixture-ceo', peers: [], workers: [worker, ...jobWorkers], project: { name: 'UI fixture · synthetic data', dir: '[isolated fixture]', agentCmd: 'disabled' },
     issues: empty, pulls: empty, ice: [], chat: [], invites: false, version: 'fixture', upgrade: { available: false, phase: 'idle' },
-    services: { items: [], port }, decor: [], usage: { total: zero, today: zero, day: '2026-09-27', pauseHiring: false }, queue: { tasks, maxWorkers: jobWorkers.length ? 3 : 1 }, org: fixtureOrg(state, [worker, ...jobWorkers], tasks), approvals: inbox!.state(), research: research!.state() });
+    services: { items: [], port }, decor: [], usage: { total: zero, today: zero, day: '2026-09-27', pauseHiring: false }, queue: { tasks, maxWorkers: jobWorkers.length ? 3 : 1 }, org: fixtureOrg(state, [worker, ...jobWorkers], tasks), approvals: inbox!.state(), research: research!.state(), ...(chief ? { chief: chief.state() } : {}) });
   publish(ws);
   ws.on('message', raw => {
     let msg: any; try { msg = JSON.parse(raw.toString()); } catch { return; }
