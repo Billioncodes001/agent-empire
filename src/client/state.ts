@@ -11,8 +11,9 @@ import type { Decoration } from '../shared/decor';
 import type { OrgState } from '../shared/org';
 import type { ApprovalsState } from '../shared/approvals';
 import type { ResearchState } from '../shared/research';
+import type { ChiefState } from '../shared/chief';
 
-type Topic = 'cloud' | 'empire' | 'peers' | 'workers' | 'issues' | 'pulls' | 'chat' | 'project' | 'screens' | 'team' | 'upgrade' | 'services' | 'decor' | 'usage' | 'queue' | 'connection' | 'freshness' | 'continuity' | 'org' | 'approvals' | 'research';
+type Topic = 'cloud' | 'empire' | 'peers' | 'workers' | 'issues' | 'pulls' | 'chat' | 'project' | 'screens' | 'team' | 'upgrade' | 'services' | 'decor' | 'usage' | 'queue' | 'connection' | 'freshness' | 'continuity' | 'org' | 'approvals' | 'research' | 'chief';
 
 const zeroUsage = (): Usage => ({ input: 0, output: 0, cacheWrite: 0, cacheRead: 0, cost: 0, calls: 0 });
 
@@ -127,6 +128,8 @@ class Store {
   approvals: ApprovalsState | null = null;
   /** The research executive's reports and tool proposals (ORG-05); null until a server that has them says so. */
   research: ResearchState | null = null;
+  /** FREE-02: the chief's planning brain, plans, reviews and stall proposals; null from servers older than it. */
+  chief: ChiefState | null = null;
   /** Cloud mode only: the state-repository snapshot this game is showing, with its age. Null in server mode. */
   cloud: CloudInfo | null = null;
   private subs = new Map<Topic, Set<() => void>>();
@@ -229,7 +232,8 @@ class Store {
         this.org = msg.org ?? null;
         this.approvals = msg.approvals ?? null;
         this.research = msg.research ?? null;
-        for (const t of ['peers', 'workers', 'issues', 'pulls', 'chat', 'project', 'upgrade', 'services', 'decor', 'usage', 'queue', 'org', 'approvals', 'research'] as Topic[]) this.emit(t);
+        this.chief = msg.chief ?? null;
+        for (const t of ['peers', 'workers', 'issues', 'pulls', 'chat', 'project', 'upgrade', 'services', 'decor', 'usage', 'queue', 'org', 'approvals', 'research', 'chief'] as Topic[]) this.emit(t);
         break;
       case 'peer.join':
       case 'peer.update':
@@ -309,6 +313,10 @@ class Store {
       case 'research':
         this.research = msg.state;
         this.emit('research');
+        break;
+      case 'chief':
+        this.chief = msg.state;
+        this.emit('chief');
         break;
       case 'chat':
         this.chat.push(msg);

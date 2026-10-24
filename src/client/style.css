@@ -1494,3 +1494,33 @@ html.ae-touch #hud .topbar .controls > #btn-inbox > span:not(.svc-count):not(.in
 .engine-choice label { font-weight: 700; }
 .engine-choice.invalid select { outline: 2px solid #e07a5f; }
 @media (max-width: 720px) { .linked-accounts .engine-grid { grid-template-columns: 1fr; } }
+
+/* FREE-02: the chief's planning brain (Settings) and its proposals (inbox, executive card). */
+.chief-brain { display: grid; gap: 10px; margin-top: 10px; }
+.chief-modes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; border: 0; padding: 0; margin: 0; }
+.chief-modes legend { font-weight: 700; margin-bottom: 6px; }
+.chief-mode { display: flex; gap: 8px; align-items: flex-start; padding: 10px; border: 1px solid #ffffff26; border-radius: 8px; cursor: pointer; min-width: 0; }
+.chief-mode:has(input:checked) { border-color: #8fc9a6; background: #8fc9a614; }
+.chief-mode input { margin-top: 3px; accent-color: #8fc9a6; }
+.chief-mode strong { display: block; font-size: 13px; }
+.chief-mode small { display: block; font-size: 11px; line-height: 1.4; opacity: .8; margin-top: 3px; }
+.chief-fields { display: grid; gap: 8px; }
+.chief-brain:not([data-mode=free]) .chief-fields[data-for=free], .chief-brain:not([data-mode=premium]) .chief-fields[data-for=premium] { display: none; }
+.chief-fields label, .chief-num { display: grid; gap: 4px; font-size: 12px; font-weight: 700; }
+.chief-fields input, .chief-fields select { min-height: 38px; font: inherit; font-size: 13px; padding: 6px 8px; border-radius: 8px; min-width: 0; }
+.chief-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.chief-status[data-ready=true] { color: #8fc9a6; }
+.empire-tag[data-monitor=model_backed] { border-color: #9fc5e8; color: #cfe3f7; background: #9fc5e81a; max-width: 100%; white-space: normal; }
+.chief-plan, .chief-reviews { margin-top: 12px; padding: 10px 12px; border: 1px solid #9fc5e844; border-radius: 8px; background: #9fc5e80d; }
+.chief-plan-head { margin: 0 0 6px; }
+.chief-summary { margin: 0 0 6px; font-size: 13px; }
+.chief-items { margin: 0; padding-left: 20px; display: grid; gap: 4px; font-size: 13px; }
+.chief-items .chief-meta { display: block; font-size: 11px; opacity: .8; }
+.chief-reviews h4 { margin: 0 0 6px; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; }
+.chief-review { padding: 6px 0; border-top: 1px solid #ffffff1a; font-size: 13px; }
+.chief-review p { margin: 2px 0; }
+.chief-review[data-recommendation=accept] .chief-verdict { color: #8fc9a6; }
+.chief-review[data-recommendation=needs_changes] .chief-verdict { color: #f2c488; }
+.chief-review small { display: block; opacity: .75; font-size: 11px; }
+.exec-model-note { font-size: 12px; }
+@media (max-width: 720px), (max-height: 420px) { .chief-modes { grid-template-columns: 1fr; } .chief-row { grid-template-columns: 1fr; } }

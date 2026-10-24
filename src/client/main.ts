@@ -54,6 +54,7 @@ import { GRAPHICS, applyGraphics } from './graphics';
 import { openSettings } from './ui/settings';
 import { appPanel } from './ui/app-panel';
 import { linkedAccountsSection } from './ui/engines';
+import { chiefBrainSection } from './ui/chief';
 import { ENGINE_NAME, type WorkerEngine } from '../shared/engines';
 import { startUpdates, updateSettingsSection } from './update';
 import { connectionView } from './ui/continuity';
@@ -1280,7 +1281,7 @@ $('btn-settings').addEventListener('click', () =>
     },
     editProfile,
     () => sound.ding('done'),
-    combineSections(appPanel(net), linkedAccountsSection({ onSignIn: () => { closeAllModals(); signInToClaude(); } }), updateSettingsSection(updateService)),
+    combineSections(appPanel(net), linkedAccountsSection({ onSignIn: () => { closeAllModals(); signInToClaude(); } }), chiefBrainSection(), updateSettingsSection(updateService)),
   ),
 );
 
