@@ -65,7 +65,22 @@ Each fix has failing-before tests in `tests/engines.test.ts` (7 new; 21 engine t
    - `GET /api/engines?refresh=1` is rate-floored to 10 s.
    - A saved engine this version doesn't recognise keeps the worker with status unknown and the label "Unknown engine", logs a warning and refuses to resume. It is never switched to Claude.
 
-Re-run after the fixes: typecheck pass, `npm test` 736/736, build pass, engines-ui-check 24/24, mobile-ui-check 411/411.
+Re-run after the fixes: typecheck pass, `npm test` 736/736 (740/740 after the re-review fixes), build pass, engines-ui-check 24/24, mobile-ui-check 411/411.
+
+## Re-review fixes (2026-10-24: accept with fixes)
+
+4 new failing-before tests. They failed on the previous `src` and pass after the fix.
+
+1. **Launch gate on the server.** `LinkedAccounts.gate` is synchronous and works against a probe no older than 15 s. Rules:
+   - "Auto" or no engine resolves to the recommended engine.
+   - An unusable or unknown engine is refused with its reason.
+   - A missing or stale probe refuses with "checking" and starts a probe (the 10 s floor applies).
+   - `WorkerManager.spawn` enforces the gate for every agent spawn, including the queue and stale clients. Only the "Sign in to Claude" helper is exempt.
+   - The queue checks `engineBlocker()` before journaling a launch. A refused task stays `queued` with `error` set, gets one toast per distinct reason, and is seated on a later pump; `onProbed` re-pumps.
+   - The client hire path waits for a stale probe and then hires once.
+   - Custom `--agent` commands and fake-process integration tests without `engines` skip the gate.
+2. **Probe in the office repo.** `claude auth status` runs with `cwd` set to the office repository, so a project `.claude/settings.json` helper is seen. Tested with a fake CLI that answers differently depending on `pwd`. Limitation, documented in ENGINES.md and the panel: other branches' settings and a worktree's `settings.local.json` are not probed.
+3. **Minor.** Text classification checks the key/helper/console patterns first. When both the subscription and the API-key patterns match, it returns no method (fail closed).
 
 ## Deviations and limits
 

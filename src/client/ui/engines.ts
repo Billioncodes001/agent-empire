@@ -52,6 +52,7 @@ export function linkedAccountsSection(opts: { onSignIn: () => void }) {
     const signIn = h('button.btn.primary', { type: 'button', onclick: opts.onSignIn, disabled: !s.claude.installed }, 'Sign in to Claude…');
     const claude = card('Claude Code · premium', cliTone(s.claude), !s.claude.installed ? 'Not installed' : s.claude.loggedIn ? `Signed in${s.claude.plan ? ` · ${s.claude.plan}` : ''}` : s.claude.expired ? 'Sign-in expired' : s.claude.loggedIn === false ? 'Not signed in' : 'Unknown', s.claude.detail,
       h('p.setting-note', {}, 'The Empire never signs you in or sees your Claude credentials. “Sign in to Claude” opens a worker terminal with /login typed; you press Enter and finish inside Claude Code.'),
+      h('p.setting-note', {}, 'Checked in this office’s repository: an API key or apiKeyHelper in its Claude settings means workers would bill the API, so “your Claude account” is not offered. Settings on other branches or in a worktree’s local file are not checked.'),
       h('div.sector-actions', {}, signIn));
     const codex = card('Codex CLI · optional', cliTone(s.codex), !s.codex.installed ? 'Not installed' : s.codex.loggedIn ? 'Signed in' : s.codex.loggedIn === false ? 'Not signed in' : 'Unknown', s.codex.detail);
     const qwen = card('Qwen Code · free', s.qwen.installed ? 'ok' : 'off', s.qwen.installed ? 'Installed' : 'Not installed', s.qwen.detail);
