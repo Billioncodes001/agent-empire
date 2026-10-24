@@ -16,13 +16,13 @@ export interface QueueWorkers {
    * `continues` starts the worktree from the dependency's branch; only then does `persona` (the name and look of the
    * worker that finished it) apply, because only then does the new worker really pick up that work.
    */
-  spawn(deskId: string, by: string, prompt: string, worktree: boolean, kind?: 'agent', queueOwned?: boolean, outfit?: Outfit, persona?: Persona, continues?: { branch: string; title: string }): WorkerInfo | string;
+  spawn(deskId: string, by: string, prompt: string, worktree: boolean, kind?: 'agent', queueOwned?: boolean, outfit?: Outfit, persona?: Persona, continues?: { branch: string; title: string }, extra?: { productId?: string; productName?: string }): WorkerInfo | string;
   /** True while the worker is publishing, opening a PR or stopping: it must not be sent home. */
   workerBusy?(id: string): boolean;
   /** FREE-01: why no worker engine may launch now (checking, nothing usable); the task stays queued with this reason. */
   engineBlocker?(): string | undefined;
-  /** Whether a local branch exists, to start a continuing worktree from it. */
-  branchExists?(branch: string): boolean;
+  /** Whether a local branch exists (in the product's repository; absent = the office's), to start a continuing worktree from it. */
+  branchExists?(branch: string, productId?: string): boolean;
   claimQueueWorker?(id: string): void;
   /** Resolves with a line about what became of the worker's worktree. */
   kill(id: string): Promise<{ note?: string; error?: string }>;
@@ -43,6 +43,11 @@ export interface QueueEvents {
   taskHold?(task: QueueTask): string | undefined;
   /** Once per seating pass, before any taskHold check: refresh what holds read (e.g. per-task spend). */
   beforeSeat?(): void;
+  /**
+   * FREE-06: the product a task names. `error` when it is unknown (or was unlinked); `maxWorkers` is its optional cap.
+   * Absent: every task runs in the office's repository, as before.
+   */
+  product?(productId: string): { name?: string; error?: string; maxWorkers?: number };
 }
 
 /** Who continues a project at a desk (LIFE-04 continuity). */
@@ -122,8 +127,16 @@ export class TaskQueue {
    * Adds a task. `dependsOn` names existing queue task ids (at most 8, no cycles) that must finish with outcome
    * 'done' first; until then the task stays queued with `blockedBy`.
    */
-  add(prompt: string, by: string, title?: string, issue?: number, jobKey?: string, dependsOn?: readonly string[]): string | undefined {
+  add(prompt: string, by: string, title?: string, issue?: number, jobKey?: string, dependsOn?: readonly string[], options: { productId?: string } = {}): string | undefined {
     if (this.storageError) return this.storageError;
+    // FREE-06: a named product must exist now; the office product (or none) keeps the pre-FREE-06 behaviour.
+    const productId = options.productId === 'office' ? undefined : options.productId;
+    let productName: string | undefined;
+    if (productId !== undefined) {
+      const known = this.events.product?.(productId);
+      if (!known || known.error) return known?.error ?? 'Products are not available on this office';
+      productName = known.name;
+    }
     if (jobKey && this.tasks.some(t => t.jobKey === jobKey)) return;
     const clean = prompt.replace(/\r\n?/g, '\n').trim();
     if (!clean) return 'Empty task';
@@ -144,6 +157,7 @@ export class TaskQueue {
       status: 'queued',
       attempt: 1,
       ...(deps.ok.length ? { dependsOn: deps.ok } : {}),
+      ...(productId ? { productId, productName } : {}),
     };
     this.tasks.push(task);
     this.refreshDependencies();
@@ -352,6 +366,11 @@ export class TaskQueue {
     return this.workers.list().filter((w) => w.kind === 'agent' && BUSY.has(w.status)).length;
   }
 
+  /** FREE-06: busy agent workers in one product (absent = the office's repository). */
+  private busyIn(productId?: string): number {
+    return this.workers.list().filter((w) => w.kind === 'agent' && BUSY.has(w.status) && w.productId === productId).length;
+  }
+
   private capacity() { return this.workers.workstationCapacity?.() ?? DESKS.length; }
   /** The first free funded desk that no other task has reserved for its continuation. */
   private freeDesk(forTask?: string): string | undefined {
@@ -456,7 +475,8 @@ export class TaskQueue {
     const deps = (t.dependsOn ?? []).map((id) => this.tasks.find((x) => x.id === id)).filter((d): d is QueueTask => !!d && d.outcome === 'done');
     if (!deps.length) return undefined;
     const describe = (d: QueueTask) => `“${d.title}”${d.branch ? ` (branch ${d.branch}${d.pr ? `, PR ${d.pr.url}` : ''})` : d.pr ? ` (PR ${d.pr.url})` : ''}`;
-    const from = this.useWorktree ? deps.find((d) => d.branch && this.workers.branchExists?.(d.branch)) : undefined;
+    // The branch is looked up in this task's own product repository: another product's branch never continues here.
+    const from = this.useWorktree ? deps.find((d) => d.branch && (d.productId === t.productId) && this.workers.branchExists?.(d.branch, t.productId)) : undefined;
     if (!from) {
       const missing = this.useWorktree && deps.some((d) => d.branch) ? ' Its branch is no longer available, so your worktree starts from the project’s current HEAD.' : '';
       return { note: `\n\nThis task follows ${deps.map(describe).join(', ')}.${missing}` };
@@ -562,6 +582,25 @@ export class TaskQueue {
         this.releaseSettledReservations();
         break;
       }
+      // FREE-06: an unlinked product fails the task (never runs it in another repository); a product's own cap holds it.
+      let productName = t.productName;
+      if (t.productId !== undefined) {
+        const product = this.events.product?.(t.productId);
+        if (!product || product.error) {
+          t.status = 'done'; t.outcome = 'failed'; t.error = product?.error ?? 'Products are not available on this office'; t.finishedAt = Date.now();
+          this.reserved.delete(t.id);
+          this.events.toast(`📋 Couldn't start ${label(t)}: ${t.error}`, 'error');
+          if (!this.changed()) break;
+          continue;
+        }
+        productName = product.name ?? productName;
+        if (product.maxWorkers !== undefined && this.busyIn(t.productId) >= product.maxWorkers) {
+          const why = `Waiting: ${productName ?? 'this product'} already has ${product.maxWorkers} busy worker${product.maxWorkers === 1 ? '' : 's'} (its cap).`;
+          if (t.error !== why) { t.error = why; changed = true; }
+          this.reserved.delete(t.id);
+          continue;
+        }
+      }
       const next = this.continuity(t);
       if (next === 'wait') continue;
       const desk = next?.desk ?? this.freeDesk(t.id) ?? this.recycleDesk(t.id);
@@ -574,9 +613,12 @@ export class TaskQueue {
       t.startedAt = Date.now();
       if (!this.changed()) break;
       const prompt = t.prompt + (cont?.note ?? '') + (this.useWorktree ? WORKTREE_NOTE : '');
+      const product = t.productId !== undefined ? { productId: t.productId, productName } : undefined;
       const r = cont?.base
-        ? this.workers.spawn(desk, `${t.addedBy} (queue)`, prompt, this.useWorktree, 'agent', true, cont.outfit, cont.persona, cont.base)
-        : this.workers.spawn(desk, `${t.addedBy} (queue)`, prompt, this.useWorktree, 'agent', true);
+        ? this.workers.spawn(desk, `${t.addedBy} (queue)`, prompt, this.useWorktree, 'agent', true, cont.outfit, cont.persona, cont.base, ...(product ? [product] : []))
+        : product
+          ? this.workers.spawn(desk, `${t.addedBy} (queue)`, prompt, this.useWorktree, 'agent', true, undefined, undefined, undefined, product)
+          : this.workers.spawn(desk, `${t.addedBy} (queue)`, prompt, this.useWorktree, 'agent', true);
       changed = true;
       if (typeof r === 'string') {
         t.status = 'done';
@@ -655,6 +697,7 @@ export class TaskQueue {
           error: s.error,
           pr: s.pr,
           ...(dependsOn?.length ? { dependsOn } : {}),
+          ...(typeof s.productId === 'string' && s.productId !== 'office' ? { productId: s.productId, productName: typeof s.productName === 'string' ? s.productName : undefined } : {}),
           ...(typeof s.deskId === 'string' && /^desk-\d+$/.test(s.deskId) ? { deskId: s.deskId } : {}),
         };
         // A restart interrupts queue ownership; the old process may still exist and must be checked.

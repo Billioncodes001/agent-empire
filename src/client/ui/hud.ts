@@ -77,7 +77,7 @@ function workerRows(onOpen: (id: string) => void): HTMLElement[] {
   const workers = [...store.workers.values()].sort((a, b) => a.createdAt - b.createdAt);
   const rows = workers.map((w) => {
     const engine = w.kind === 'agent' ? workerEngineLabel(w) : '';
-    const sub = [w.worktree && `🌿 ${w.worktree.branch}`, w.pr && `🔀 PR #${w.pr.number}`, w.activity || w.title || w.prompt].filter(Boolean).join(' · ');
+    const sub = [w.productId && `📦 ${w.productName ?? w.productId}`, w.worktree && `🌿 ${w.worktree.branch}`, w.pr && `🔀 PR #${w.pr.number}`, w.activity || w.title || w.prompt].filter(Boolean).join(' · ');
     const shown = engineStatus(w, STATUS_LABEL);
     const pill = workerPill(shown.status, shown.label, fresh);
     const spend = w.kind === 'agent' ? engineSpendLabel(w.engine) : undefined;

@@ -54,6 +54,7 @@ import { GRAPHICS, applyGraphics } from './graphics';
 import { openSettings } from './ui/settings';
 import { appPanel } from './ui/app-panel';
 import { linkedAccountsSection } from './ui/engines';
+import { productsSection } from './ui/products';
 import { voiceSetupSection } from './ui/voice-setup';
 import { openPhone } from './ui/phone';
 import { chiefBrainSection } from './ui/chief';
@@ -612,8 +613,8 @@ function freeDesk(): string | null {
   return best;
 }
 
-function hire(deskId: string, prompt?: string, worktree = false, outfit?: Outfit, engine?: WorkerEngine) {
-  net.send({ t: 'worker.spawn', deskId, prompt, worktree, ...(outfit ? { outfit } : {}), ...(engine ? { engine } : {}) });
+function hire(deskId: string, prompt?: string, worktree = false, outfit?: Outfit, engine?: WorkerEngine, productId?: string) {
+  net.send({ t: 'worker.spawn', deskId, prompt, worktree, ...(outfit ? { outfit } : {}), ...(engine ? { engine } : {}), ...(productId ? { productId } : {}) });
 }
 
 /**
@@ -651,7 +652,8 @@ function promptAtDesk(deskId: string) {
       worktreeOption: !!store.project?.branch,
       outfitOption: true,
       engineOption: true,
-      onSubmit: (text, o) => hire(deskId, text, o.worktree, o.outfit, o.engine),
+      productOption: true,
+      onSubmit: (text, o) => hire(deskId, text, o.worktree, o.outfit, o.engine, o.productId),
     });
   } else if (w.status === 'exited' || w.status === 'offline') {
     toast(`${w.name} is asleep — press R to resume first`, 'warn');
@@ -1284,7 +1286,7 @@ $('btn-settings').addEventListener('click', () =>
     },
     editProfile,
     () => sound.ding('done'),
-    combineSections(appPanel(net), voiceSetupSection(), linkedAccountsSection({ onSignIn: () => { closeAllModals(); signInToClaude(); } }), chiefBrainSection(), updateSettingsSection(updateService)),
+    combineSections(appPanel(net), voiceSetupSection(), linkedAccountsSection({ onSignIn: () => { closeAllModals(); signInToClaude(); } }), productsSection(), chiefBrainSection(), updateSettingsSection(updateService)),
   ),
 );
 
