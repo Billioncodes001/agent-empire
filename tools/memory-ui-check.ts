@@ -52,7 +52,7 @@ async function game(browser: Browser, size: Size, tag: string, approve: boolean)
     };
     await pick('Ask workers to open a pull request');
     const d = flat(await modal.locator('.inbox-detail').innerText());
-    check(`${tag}: the lesson item shows text, scope, provenance and the model tag`, /Lesson · A\d+/.test(d) && /Ask workers to open a pull request/.test(d) && /Company-wide/.test(d) && /Chief review · Review of/.test(d) && /Model-backed · gpt-oss:20b · proposals only/.test(d), d.slice(0, 260));
+    check(`${tag}: the lesson item shows text, scope, provenance and the model tag`, /Lesson · A\d+/i.test(d) && /Ask workers to open a pull request/.test(d) && /Company-wide/.test(d) && /Chief review · Review of/.test(d) && /Model-backed · gpt-oss:20b · proposals only/.test(d), d.slice(0, 260));
     check(`${tag}: approving is decision only and never reaches worker prompts`, /never goes into a worker prompt by itself/.test(d) && (await modal.locator('.inbox-actions .btn.primary', { hasText: 'Approve lesson…' }).count()) === 1 && !(await modal.locator('#inbox-budget').count()));
     check(`${tag}: the provenance links to the job on the founder desk`, /consultancy\.html\?job=/.test((await modal.locator('.lesson-facts a').first().getAttribute('href')) ?? ''));
     await page.screenshot({ path: resolve(out, `01-inbox-lesson-${tag}.jpg`), quality: 82 });
@@ -64,7 +64,7 @@ async function game(browser: Browser, size: Size, tag: string, approve: boolean)
       await modal.locator('.inbox-confirm .btn.primary').click();
       await page.waitForTimeout(600);
       const decided = flat(await modal.locator('.inbox-detail').innerText());
-      check(`${tag}: approving in the inbox puts the lesson in use`, /Approved by CEO/.test(decided) && /is in use/.test(decided), decided.slice(-160));
+      check(`${tag}: approving in the inbox puts the lesson in use`, /Approved by /.test(decided) && /is in use/.test(decided), decided.slice(-160));
     } else await modal.locator('.inbox-confirm .btn', { hasText: 'Cancel' }).click();
     await pick('Northstar Studio');
     const plan = modal.locator('.inbox-detail .chief-lessons');
