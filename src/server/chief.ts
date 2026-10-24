@@ -599,6 +599,7 @@ export class ChiefBrain {
           changed = this.stall('repeated_failure', `failed:${task.id}:${task.attempt}`, job, this.failureFacts(task)) || changed;
         }
       }
+      changed = this.pruneSeen(snapshot, queue, since) || changed;
       if (changed) { this.trim(); this.save(); }
     } catch { /* reconcile retries on the next tick; storage errors surface in state() */ }
   }
@@ -720,6 +721,33 @@ export class ChiefBrain {
   }
 
   // ---- Storage ----
+
+  /** For tests and the report: how many review/stall keys are remembered. */
+  seenCount(): number { return this.seen.size; }
+
+  /**
+   * Re-review fix 3: forgets keys that can never come back, so the seen set does not grow forever. A review or stall key
+   * is kept while its job is in the snapshot and its task is still on the queue, finished since the brain was enabled
+   * (budget keys: while the job still has that hold). Skipped when the queue reports a storage problem, so a briefly
+   * empty queue can never cause a key to be forgotten and paid for again.
+   */
+  private pruneSeen(snapshot: ConsultancySnapshot, queue: QueueState, since: number): boolean {
+    if ((queue as QueueState & { storageError?: string }).storageError || snapshot.storageError) return false;
+    const jobs = new Map(snapshot.jobs.map((j) => [j.id, j]));
+    const tasks = new Map(queue.tasks.map((t) => [t.id, t]));
+    const live = (taskId: string) => { const t = tasks.get(taskId); return !!t && (t.finishedAt ?? 0) >= since; };
+    const keep = (key: string) => {
+      const [a, b, , d] = key.split(':');
+      if (a === 'held' || a === 'failed') return live(b);
+      if (a === 'budget') return String(jobs.get(b)?.budgetHold?.reachedAt) === key.split(':')[2];
+      return jobs.has(a) && live(key.split(':')[2]) && d !== undefined;
+    };
+    const next = this.data.seen.filter(keep);
+    if (next.length === this.data.seen.length) return false;
+    this.data.seen = next;
+    this.seen = new Set(next);
+    return true;
+  }
 
   private inFailureHold(): boolean {
     return !!this.lastFailure && this.now() - this.lastFailure.at < FAILURE_HOLD_MS;
