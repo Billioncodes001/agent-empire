@@ -5,7 +5,7 @@ const {randomBytes} = require('node:crypto');
 const {pathToFileURL} = require('node:url');
 
 /** Starts only the packaged runtime, on loopback, with a fresh in-memory office password. */
-async function startLocalHost({project, runtimeDir, credentials, port:preferredPort}) {
+async function startLocalHost({project, runtimeDir, credentials, secrets, port:preferredPort}) {
   fs.mkdirSync(project,{recursive:true,mode:0o700});
   const git=(...args)=>execFileSync('git',args,{cwd:project,encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
   try { git('rev-parse','--git-dir'); }
@@ -22,7 +22,9 @@ async function startLocalHost({project, runtimeDir, credentials, port:preferredP
   config.port=Number.isInteger(preferredPort) && preferredPort > 1024 && preferredPort < 65536 ? preferredPort : 0;
   const host=await startServer(config,{publicDir:path.join(runtimeDir,'public'),backgroundServices:false,requireExecutionSetup:true,execution:{apiKey:()=>credentials().anthropicKey,githubToken:()=>credentials().githubToken},
     // FREE-01: sealed keys reach only their own engine's workers (env scrub); the panel sees names, never values.
-    engines:{providerKeys:()=>{try{const c=credentials();return {ANTHROPIC_API_KEY:c.anthropicKey,OPENAI_API_KEY:c.openaiKey,OPENROUTER_API_KEY:c.openrouterKey,GEMINI_API_KEY:c.geminiKey,GROQ_API_KEY:c.groqKey};}catch{return {};}}}});
+    engines:{providerKeys:()=>{try{const c=credentials();return {ANTHROPIC_API_KEY:c.anthropicKey,OPENAI_API_KEY:c.openaiKey,OPENROUTER_API_KEY:c.openrouterKey,GEMINI_API_KEY:c.geminiKey,GROQ_API_KEY:c.groqKey};}catch{return {};}}},
+    // FREE-08: onboarding's notification secrets go to the same OS credential vault; the page only sees "present".
+    ...(secrets?{notify:{secrets}}:{})});
   const port=host.server.address().port;config.port=port;
   return {origin:`http://127.0.0.1:${port}`,password,shutdown:host.shutdown,project,port,hasLocalWorkers:()=>host.workers.list().some(w=>w.processState==='running'||w.processState==='unknown')};
 }
