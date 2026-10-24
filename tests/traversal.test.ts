@@ -174,3 +174,12 @@ test('the executive sedan can drive from the founding district into the business
   for (let i = 0; i < 60 * 30 && player.pos.x < 95; i++) player.update(1 / 60);
   assert.ok(player.pos.x >= 95, `drove east along the z = 90 street: x ${player.pos.x.toFixed(1)}`);
 });
+
+test('review 3: the founding z = 146 road stays open past the skyline into Harbour works', async () => {
+  const { skylineColliders } = await import('../src/client/world/district-layout');
+  const layout = districtLayout();
+  const { player, walk } = cityWalker([...layout.colliders, ...skylineColliders()].map((c) => ({ ...c })));
+  player.pos.set(-40, 0, 148.5); // the northern lane, next to the kerb under the towers
+  walk(-Math.PI / 2, () => player.pos.x >= 92);
+  assert.ok(player.pos.x >= 91 && Math.abs(player.pos.z - 148.5) < 0.6, `walked the z = 146 road: ${player.pos.x.toFixed(1)}, ${player.pos.z.toFixed(2)}`);
+});

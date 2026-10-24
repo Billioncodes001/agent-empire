@@ -130,8 +130,8 @@ export function parseIntent(path: string, text: string): CloudIntent {
       if (action.kind === 'found') rec(action, ['kind', 'sites']);
       else if (action.kind === 'delegate') rec(action, ['kind', 'enabled']);
       else if (['build', 'hire', 'buy-land', 'upgrade'].includes(String(action.kind))) rec(action, ['kind', 'site']);
-      else if (action.kind === 'buy-plot') rec(action, ['kind', 'plot']);
-      else if (action.kind === 'buy-vehicle') rec(action, ['kind', 'model']);
+      else if (action.kind === 'buy-plot') rec(action, ['kind', 'plot', 'nonce']);
+      else if (action.kind === 'buy-vehicle') rec(action, ['kind', 'model', 'nonce']);
       else if (action.kind === 'vehicle-spawn') rec(action, ['kind', 'vehicle', 'blocked']);
       else if (action.kind === 'vehicle-store') rec(action, ['kind', 'vehicle']);
       else rec(action, ['kind']);

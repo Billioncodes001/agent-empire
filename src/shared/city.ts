@@ -44,9 +44,13 @@ export const GARAGE = {
 } as const;
 
 export interface OwnedVehicle { id: string; model: VehicleModelId; bay: number; apron?: number; purchasedAt: number }
-export interface CityState { schema: 1; plots: PlotId[]; vehicles: OwnedVehicle[] }
+/** `nonces`: the most recent purchase nonces, so a repeated click or replayed cloud intent buys only once. */
+export interface CityState { schema: 1; plots: PlotId[]; vehicles: OwnedVehicle[]; nonces?: string[] }
 
-export const newCity = (): CityState => ({ schema: 1, plots: [], vehicles: [] });
+export const PURCHASE_NONCE = /^[A-Za-z0-9-]{8,64}$/;
+export const MAX_NONCES = 32;
+const VEHICLE_ID = /^vehicle-\d{1,3}$/;
+export const newCity = (): CityState => ({ schema: 1, plots: [], vehicles: [], nonces: [] });
 
 /** Validates a saved `city` block; a missing block is a pre-FREE-09 save. Throws on anything malformed. */
 export function normalizeCity(value: unknown): CityState {
@@ -56,16 +60,23 @@ export function normalizeCity(value: unknown): CityState {
   if (v.schema !== 1 || !Array.isArray(v.plots) || !Array.isArray(v.vehicles)) fail('schema');
   const plots = [...new Set(v.plots!)];
   if (plots.some((p) => !PLOTS.some((d) => d.id === p))) fail('unknown plot');
+  const nonces = v.nonces ?? [];
+  if (!Array.isArray(nonces) || nonces.length > MAX_NONCES || nonces.some((n) => typeof n !== 'string' || !PURCHASE_NONCE.test(n))) fail('nonces');
   const bays = new Set<number>(), aprons = new Set<number>(), ids = new Set<string>();
   for (const x of v.vehicles!) {
-    if (!x || typeof x.id !== 'string' || !x.id || ids.has(x.id)) fail('vehicle id');
+    if (!x || typeof x.id !== 'string' || !VEHICLE_ID.test(x.id) || ids.has(x.id)) fail('vehicle id');
     if (!VEHICLE_MODELS.some((m) => m.id === x.model)) fail('vehicle model');
     if (!Number.isInteger(x.bay) || x.bay < 0 || x.bay >= GARAGE.bays.length || bays.has(x.bay)) fail('vehicle bay');
     if (x.apron !== undefined && (!Number.isInteger(x.apron) || x.apron < 0 || x.apron >= GARAGE.apron.length || aprons.has(x.apron))) fail('vehicle apron');
-    if (!Number.isFinite(x.purchasedAt)) fail('vehicle purchase time');
+    if (!Number.isFinite(x.purchasedAt) || x.purchasedAt < 0) fail('vehicle purchase time');
     ids.add(x.id); bays.add(x.bay); if (x.apron !== undefined) aprons.add(x.apron);
   }
-  return { schema: 1, plots, vehicles: v.vehicles!.map((x) => ({ ...x })) };
+  // Only known fields are kept: nothing else from a save reaches the UI or the next save.
+  return {
+    schema: 1, plots,
+    vehicles: v.vehicles!.map((x) => ({ id: x.id, model: x.model, bay: x.bay, ...(x.apron !== undefined ? { apron: x.apron } : {}), purchasedAt: x.purchasedAt })),
+    nonces: [...nonces],
+  };
 }
 
 export const freeBay = (city: CityState) => GARAGE.bays.findIndex((_, i) => !city.vehicles.some((v) => v.bay === i));

@@ -9,6 +9,12 @@ import { store } from '../state';
 import { h, openModal } from './dom';
 import type { CityTarget } from '../world/districts';
 
+/** A per-click purchase nonce (shared/city.ts PURCHASE_NONCE). */
+export function purchaseNonce(): string {
+  const bytes = new Uint8Array(12);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
 export interface CityDialogDeps {
   send(action: EmpireAction): void;
   /** Apron slots the live sedan or the founder occupies right now. */
@@ -23,6 +29,16 @@ export function openCityDialog(deps: CityDialogDeps, target: CityTarget) {
   const button = (key: string, label: string, onclick: () => void, disabled = false) =>
     h('button.btn', { type: 'button', 'data-key': key, onclick, disabled }, label);
 
+  /** One purchase in flight at a time: buttons stay disabled until the city state changes or an error toast arrives. */
+  let pending = false;
+  const purchase = (action: Omit<Extract<EmpireAction, { kind: 'buy-vehicle' }>, 'nonce'> | Omit<Extract<EmpireAction, { kind: 'buy-plot' }>, 'nonce'>) => {
+    if (pending) return;
+    pending = true;
+    deps.send({ ...action, nonce: purchaseNonce() } as EmpireAction);
+    // Cloud refusals may not toast; the nonce already prevents a double purchase, so re-enable after a while.
+    setTimeout(() => { if (pending) { pending = false; render(); } }, 8000);
+    render();
+  };
   function render() {
     const focused = (document.activeElement as HTMLElement | null)?.dataset?.key;
     const state = store.empire, city = normalizeCity(state.city);
@@ -45,21 +61,28 @@ export function openCityDialog(deps: CityDialogDeps, target: CityTarget) {
       if (!state.setup.completed) rows.push(h('p.setting-note', {}, 'Complete founding setup before buying vehicles.'));
       rows.push(h('ul.city-list', {}, ...VEHICLE_MODELS.map((m) =>
         h('li', {}, h('span', {}, `${m.name} · ${m.cost.toLocaleString('en-US')} cr`),
-          button(`buy-${m.id}`, full ? 'Garage full' : 'Buy', () => deps.send({ kind: 'buy-vehicle', model: m.id }), full || !state.setup.completed || state.funds < m.cost)))));
+          button(`buy-${m.id}`, full ? 'Garage full' : pending ? 'Buying…' : 'Buy', () => purchase({ kind: 'buy-vehicle', model: m.id }), pending || full || !state.setup.completed || state.funds < m.cost)))));
     } else {
       const plot = PLOTS.find((p) => p.id === target.plot)!;
       const owned = city.plots.includes(plot.id as PlotId);
       rows.push(h('p', {}, owned
         ? 'You own this parcel. Building on district parcels is coming in a later update.'
         : `This ${plot.district === 'business' ? 'business district' : 'harbour'} parcel costs ${plot.cost.toLocaleString('en-US')} city credits.`));
-      if (!owned) rows.push(button(`plot-${plot.id}`, `Buy parcel · ${plot.cost.toLocaleString('en-US')} cr`, () => deps.send({ kind: 'buy-plot', plot: plot.id }), state.funds < plot.cost));
+      if (!owned && !state.setup.completed) rows.push(h('p.setting-note', {}, 'Complete founding setup before buying parcels.'));
+      if (!owned) rows.push(button(`plot-${plot.id}`, pending ? 'Buying…' : `Buy parcel · ${plot.cost.toLocaleString('en-US')} cr`, () => purchase({ kind: 'buy-plot', plot: plot.id }), pending || !state.setup.completed || state.funds < plot.cost));
     }
     body.replaceChildren(...rows);
-    if (focused) (body.querySelector(`[data-key="${focused}"]`) as HTMLElement | null)?.focus();
+    if (focused) (body.querySelector(`[data-key="${CSS.escape(focused)}"]`) as HTMLElement | null)?.focus();
   }
   render();
-  const off = store.on('empire', render);
-  const modal = openModal(dialog, { escCloses: true, backdropCloses: true, onClose: () => off?.() });
+  const off = store.on('empire', () => { pending = false; render(); });
+  // A refused purchase arrives as an error toast (host) and leaves the state unchanged: re-enable the buttons.
+  const toasts = document.getElementById('toasts');
+  const watch = new MutationObserver((records) => {
+    if (pending && records.some((r) => [...r.addedNodes].some((n) => n instanceof HTMLElement && n.classList.contains('error')))) { pending = false; render(); }
+  });
+  if (toasts) watch.observe(toasts, { childList: true });
+  const modal = openModal(dialog, { escCloses: true, backdropCloses: true, onClose: () => { off?.(); watch.disconnect(); } });
   close.addEventListener('click', () => modal.close());
   return modal;
 }

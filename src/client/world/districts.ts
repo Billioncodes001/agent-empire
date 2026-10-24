@@ -9,11 +9,10 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { DISTRICTS, GARAGE, PLOTS, VEHICLE_MODELS, normalizeCity, type CityState, type PlotId } from '../../shared/city';
-import { vehicleOverlaps } from '../vehicle';
 import { SURFACE as S, boxMesh as box, solid } from './materials';
 import { textPlane } from './toon';
 import { batchStaticMeshes } from './batching';
-import { districtLayout, footprint, PLOT_PAD, plotSign, ROADS, type Box, type Kit, type Placement } from './district-layout';
+import { districtLayout, slotClear, footprint, PLOT_PAD, plotSign, ROADS, type Box, type Kit, type Placement } from './district-layout';
 import type { Collider } from './office';
 import type { GraphicsQuality } from '../graphics';
 
@@ -136,8 +135,8 @@ export function buildDistricts(parent: THREE.Group) {
 
   // Bay and apron colliders are allocated once and raised only while a vehicle stands there (the colliders array
   // is copied into the player's list at start-up, so it must not grow later).
-  const baySlots = GARAGE.bays.map((b) => ({ x: b.x, z: b.z, yaw: 0, collider: { minX: b.x - 1.1, maxX: b.x + 1.1, minZ: b.z - 2.4, maxZ: b.z + 2.4, top: 0 } as Collider }));
-  const apronSlots = GARAGE.apron.map((a) => ({ x: a.x, z: a.z, yaw: a.yaw, collider: { minX: a.x - 2.4, maxX: a.x + 2.4, minZ: a.z - 1.1, maxZ: a.z + 1.1, top: 0 } as Collider }));
+  const baySlots = GARAGE.bays.map((b) => ({ x: b.x, z: b.z, yaw: 0, collider: { minX: b.x - 1.1, maxX: b.x + 1.1, minZ: b.z - 2.4, maxZ: b.z + 2.4, top: 0 } as Collider, occupied: false }));
+  const apronSlots = GARAGE.apron.map((a) => ({ x: a.x, z: a.z, yaw: a.yaw, collider: { minX: a.x - 2.4, maxX: a.x + 2.4, minZ: a.z - 1.1, maxZ: a.z + 1.1, top: 0 } as Collider, occupied: false }));
   colliders.push(...baySlots.map((s) => s.collider), ...apronSlots.map((s) => s.collider));
 
   // Instanced kit models, grouped per district for culling and LOD.
@@ -182,13 +181,14 @@ export function buildDistricts(parent: THREE.Group) {
   function placeGarageCars() {
     garageCars.traverse((o) => { if (o instanceof THREE.InstancedMesh) o.dispose(); });
     garageCars.clear();
-    for (const s of [...baySlots, ...apronSlots]) s.collider.top = 0;
+    for (const s of [...baySlots, ...apronSlots]) { s.occupied = false; s.collider.top = 0; }
     if (!ready) return;
     for (const v of city.vehicles) {
       const asset = VEHICLE_MODELS.find((m) => m.id === v.model)!.asset;
       const template = templates.get(`vehicles/${asset}`);
       const slot = v.apron !== undefined ? apronSlots[v.apron] : baySlots[v.bay];
-      slot.collider.top = 1.7;
+      // The collider turns solid in update() once the sedan and the founder are clear of the slot.
+      slot.occupied = true;
       if (!template) continue;
       const car = template.clone();
       car.name = `Owned ${v.model} (${v.id})`;
@@ -253,15 +253,12 @@ export function buildDistricts(parent: THREE.Group) {
       rollerDoor.scale.y = 1 - doorOpen * 0.85;
       doorCollider.top = doorOpen > 0.85 ? 0 : 4.6;
       void driving;
+      for (const s of [...baySlots, ...apronSlots])
+        if (s.occupied && s.collider.top === 0 && slotClear(s.collider, car, player)) s.collider.top = 1.7;
     },
     /** Apron slots the live sedan or the founder currently occupies (sent with "Bring out"; the host adds saved ones). */
     apronBlocked(player: THREE.Vector3, car: { position: THREE.Vector3; rotation: { y: number } }) {
-      return GARAGE.apron.flatMap((a, i) => {
-        const box: Box = { minX: a.x - 2.4, maxX: a.x + 2.4, minZ: a.z - 1.1, maxZ: a.z + 1.1, top: 1 };
-        const sedan = vehicleOverlaps(car.position.x, car.position.z, car.rotation.y, box);
-        const person = player.x > box.minX - 0.4 && player.x < box.maxX + 0.4 && player.z > box.minZ - 0.4 && player.z < box.maxZ + 0.4;
-        return sedan || person ? [i] : [];
-      });
+      return apronSlots.flatMap((s, i) => (slotClear(s.collider, car, player) ? [] : [i]));
     },
     /** What the interaction key does here: the garage kiosk, or a plot's sign. */
     targetAt(p: THREE.Vector3): CityTarget | null {

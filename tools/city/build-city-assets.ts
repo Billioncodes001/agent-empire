@@ -16,6 +16,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import * as THREE from 'three';
 import { GlbWriter, readAccessor, readGlb } from '../avatars/glb.ts';
+import { checkZipListing } from './zip-guard.ts';
 
 const ROOT = resolve(import.meta.dirname, '../..');
 const CACHE = join(ROOT, '.cache', 'kenney');
@@ -25,7 +26,8 @@ const sha256 = (b: Uint8Array) => createHash('sha256').update(b).digest('hex');
 type Json = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
 async function fetchKit(id: string, kit: Json): Promise<string> {
-  const zip = join(CACHE, `${id}.zip`), dir = join(CACHE, id);
+  // The extraction folder is tied to the archive hash, so a stale folder can never be rebuilt under a new hash.
+  const zip = join(CACHE, `${id}.zip`), dir = join(CACHE, `${id}-${kit.sha256.slice(0, 16)}`);
   if (!existsSync(zip)) {
     mkdirSync(CACHE, { recursive: true });
     const res = await fetch(kit.zip);
@@ -34,7 +36,10 @@ async function fetchKit(id: string, kit: Json): Promise<string> {
   }
   const got = sha256(readFileSync(zip));
   if (got !== kit.sha256) throw new Error(`${id}: zip SHA-256 ${got} does not match sources.json ${kit.sha256}`);
-  if (!existsSync(dir)) execFileSync('unzip', ['-q', '-o', zip, '-d', dir]);
+  if (!existsSync(dir)) {
+    checkZipListing(execFileSync('zipinfo', [zip], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 }));
+    execFileSync('unzip', ['-q', '-o', zip, '-d', dir]);
+  }
   const licence = readFileSync(join(dir, 'License.txt'), 'utf8');
   if (!/Creative Commons Zero, CC0/.test(licence)) throw new Error(`${id}: License.txt is not CC0`);
   return join(dir, 'Models', 'GLB format');

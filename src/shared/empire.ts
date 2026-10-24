@@ -223,8 +223,9 @@ export type EmpireAction =
     }
   | { kind: 'reinvest' }
   | { kind: 'office-floor' | 'office-workstation' }
-  | { kind: 'buy-plot'; plot: PlotId }
-  | { kind: 'buy-vehicle'; model: VehicleModelId }
+  /** `nonce`: one per click (shared/city.ts PURCHASE_NONCE); a repeat is refused so a purchase happens once. */
+  | { kind: 'buy-plot'; plot: PlotId; nonce: string }
+  | { kind: 'buy-vehicle'; model: VehicleModelId; nonce: string }
   /** `blocked`: apron slots the client sees occupied by live objects (the driven sedan, the founder). */
   | { kind: 'vehicle-spawn'; vehicle: string; blocked?: number[] }
   | { kind: 'vehicle-store'; vehicle: string };

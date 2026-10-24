@@ -5,6 +5,7 @@
  */
 import manifest from '../public/models/city/manifest.json';
 import { GARAGE, PLOTS, type DistrictId } from '../../shared/city';
+import { vehicleOverlaps } from '../vehicle';
 
 export type Kit = 'commercial' | 'industrial' | 'streets' | 'vehicles';
 export interface Placement { kit: Kit; model: string; x: number; z: number; yaw: number; scale: number; district: DistrictId; furniture: boolean }
@@ -127,6 +128,24 @@ export function districtLayout(): DistrictLayout {
     colliders.push({ minX: p.x - 0.15, maxX: p.x + 0.15, minZ: p.z - 0.15, maxZ: p.z + 0.15, top: 3 });
   colliders.push(...garage.walls);
   return { placements, colliders, garage };
+}
+
+/**
+ * The founding district's layered skyline north of the z = 146 road (rendered in city.ts). The thirteenth tower used to
+ * stand at x = 59, inside Harbour works; it is gone. Colliders start beyond the road and its kerb (z > 152.5).
+ */
+export const SKYLINE_TOWERS = Array.from({ length: 12 }, (_, i) => ({ i, x: -43 + i * 8.5, z: 152 + (i % 3) * 17, height: 12 + (i % 5) * 4.5 }));
+export const FOUNDING_KERB_146 = 152.5;
+export const skylineColliders = (): Box[] =>
+  SKYLINE_TOWERS.map((t) => ({ minX: t.x - 3.5, maxX: t.x + 3.5, minZ: Math.max(t.z - 4, FOUNDING_KERB_146 + 0.1), maxZ: t.z + 5.4, top: t.height }));
+
+/**
+ * Whether a garage bay or kerb slot can turn solid: the live sedan and the founder must be clear of it, otherwise a
+ * vehicle bought or stored while they stand there would trap them inside its collider.
+ */
+export function slotClear(box: Box, car: { position: { x: number; z: number }; rotation: { y: number } }, player: { x: number; z: number }) {
+  const person = player.x > box.minX - 0.4 && player.x < box.maxX + 0.4 && player.z > box.minZ - 0.4 && player.z < box.maxZ + 0.4;
+  return !person && !vehicleOverlaps(car.position.x, car.position.z, car.rotation.y, box);
 }
 
 export const PLOT_PAD = { w: 20, d: 14 };

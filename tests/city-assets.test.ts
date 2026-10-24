@@ -42,3 +42,14 @@ test('kit GLBs contain exactly the listed models, quantized and without embedded
     assert.deepEqual(Object.keys(manifest.kits[id].models), kit.models, `${id} bounds`);
   }
 });
+
+
+test('review 6: the asset tool refuses symlinks, escaping paths and oversized archives before extracting', async () => {
+  const { checkZipListing } = await import('../tools/city/zip-guard');
+  const head = 'Archive:  x.zip\nZip file size: 10 bytes, number of entries: 2\n';
+  const ok = `${head}-rw-a--     2.3 ntf      703 tx defN 26-Oct-10 11:35 License.txt\ndrwx---     2.3 ntf        0 bx stor 26-Oct-10 11:35 Models/\n2 files, 703 bytes uncompressed\n`;
+  assert.deepEqual(checkZipListing(ok), { entries: 2, bytes: 703 });
+  assert.throws(() => checkZipListing(`${head}lrwxrwxrwx  3.0 unx       11 bx stor 26-Oct-10 11:35 Models/link\n`), /symlink/);
+  assert.throws(() => checkZipListing(`${head}-rw-r--r--  3.0 unx       11 tx defN 26-Oct-10 11:35 ../evil.txt\n`), /escapes/);
+  assert.throws(() => checkZipListing(`${head}-rw-r--r--  3.0 unx  9999999 tx defN 26-Oct-10 11:35 big.bin\n`, 1000), /beyond/);
+});

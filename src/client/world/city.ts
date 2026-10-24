@@ -20,6 +20,7 @@ import { SURFACE as S, boxMesh as box, solid } from './materials';
 import { Vegetation } from './vegetation';
 import type { Collider } from './office';
 import { buildDistricts } from './districts';
+import { SKYLINE_TOWERS, skylineColliders } from './district-layout';
 
 function sign(parent: THREE.Object3D, text: string, x: number, y: number, z: number, width: number) {
   const m = textPlane(text, { size: 64, color: '#eee9dd' });
@@ -354,15 +355,15 @@ export function buildCity() {
     );
   }
   // Layered urban horizon: setback towers, balconies and glazing, rather than flat silhouettes.
-  for (let i = 0; i < 13; i++) {
+  // FREE-09: the walkable city now reaches z = 215, so the skyline towers are solid (district-layout.ts).
+  for (const t of SKYLINE_TOWERS) {
     const b = new THREE.Group();
-    b.position.set(-43 + i * 8.5, 0, 152 + (i % 3) * 17);
+    b.position.set(t.x, 0, t.z);
     group.add(b);
-    curtain(b, 6, 12 + (i % 5) * 4.5, 8, 4 + (i % 5));
+    curtain(b, 6, t.height, 8, 4 + (t.i % 5));
     for (let f = 1; f < 4; f++) box(b, 7, 0.15, 1.8, S.concrete, 0, f * 3, 4.5);
-    // FREE-09: the walkable city now reaches z = 215, so the skyline towers are solid.
-    colliders.push({ minX: b.position.x - 3.5, maxX: b.position.x + 3.5, minZ: b.position.z - 4, maxZ: b.position.z + 5.4, top: 12 + (i % 5) * 4.5 });
   }
+  colliders.push(...skylineColliders());
   for (const z of [-45, -15, 14, 188])
     for (const x of [-27, 27]) {
       const block = new THREE.Group();
