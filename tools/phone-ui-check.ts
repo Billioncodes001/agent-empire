@@ -74,6 +74,12 @@ async function main() {
     check('download asks first with name, size, licence and the checksum policy', /Whisper Small/.test(ask) && /636 MB/.test(ask) && /MIT/.test(ask) && /exact size is checked/.test(ask), ask.slice(0, 160));
     await shot(p, '02-voice-download-confirm-1440x900.jpg');
     await dialog.locator('button.danger').click();
+    // Security review: a size-only model asks a second, explicit question.
+    await p.waitForFunction(() => /No published checksum/.test(document.querySelector('[role=alertdialog]')?.textContent ?? ''), null, { timeout: 5000 }).catch(() => {});
+    const warn = (await p.locator('[role=alertdialog]').textContent().catch(() => '')) ?? '';
+    check('a size-only model needs a second confirmation that names the risk', /No published checksum — size check only/.test(warn) && /sha256 is recorded/.test(warn), warn.slice(0, 120));
+    await shot(p, '02b-voice-size-only-warning-1440x900.jpg');
+    await p.locator('[role=alertdialog] button.danger').click();
     await p.waitForSelector('.voice-progress progress', { timeout: 8000 });
     await p.waitForTimeout(1500);
     const prog = (await p.locator('.voice-progress').textContent()) ?? '';

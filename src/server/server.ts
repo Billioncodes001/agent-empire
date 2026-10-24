@@ -953,13 +953,14 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
             return;
           }
           if (p === '/api/voice/download') {
-            const r = voice.startDownload(body.model, body.confirm);
+            const r = voice.startDownload(body.model, body.confirm, body.confirmUnverified);
             if (r.error) return send(res, 400, { error: r.error });
             return send(res, 202, await voice.state());
           }
           if (p === '/api/voice/cancel') { voice.cancelDownload(); return send(res, 200, await voice.state()); }
           if (p === '/api/voice/select') { voice.select(body.kind, body.id); return send(res, 200, await voice.state()); }
           if (p === '/api/voice/settings') { voice.setKeepRecordings(body.keepRecordings); return send(res, 200, await voice.state()); }
+          if (p === '/api/voice/recordings/delete') { voice.deleteRecordings(); return send(res, 200, await voice.state()); }
           return send(res, 404, { error: 'Unknown voice endpoint.' });
         } catch (error) {
           if (error instanceof VoiceError || error instanceof ConsultancyError || error instanceof ApprovalError) return send(res, error.status, { error: error.message });

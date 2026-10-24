@@ -64,6 +64,12 @@ test('state lists the catalogue with sizes and licences; downloads need confirma
   assert.deepEqual(s.ready, { stt: true, tts: true });
   assert.ok(s.models.every((m: any) => m.sizeBytes > 0 && m.licence && m.url));
   assert.equal((await f.call('/api/voice/download', { model: 'moonshine-base-en' })).status, 400);
+  const unverified = await f.call('/api/voice/download', { model: 'whisper-small-en', confirm: true });
+  assert.equal(unverified.status, 400, 'a size-only model needs the extra confirmation');
+  assert.match((await unverified.json()).error, /no published checksum/);
+  assert.ok(!String(s.modelsDir).startsWith('/'), 'no absolute data path reaches clients');
+  assert.equal((await f.call('/api/voice/recordings/delete', {}, { cookie: f.cookie })).status, 403);
+  assert.equal((await (await f.call('/api/voice/recordings/delete', {})).json()).keptRecordings, 0);
   assert.deepEqual(f.fetches, [], 'nothing fetched without confirmation');
 });
 

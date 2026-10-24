@@ -283,10 +283,11 @@ async function fxVoiceRoute(req: import('node:http').IncomingMessage, res: impor
     const tr = /^\/api\/voice\/transcripts\/(T[\w-]{6,40})\/(send|cancel)$/.exec(p);
     if (tr) { if (tr[2] === 'cancel') return json(res, 200, fxVoice.cancelTranscript(tr[1])); const t = fxVoice.takeTranscript(tr[1]); return json(res, 200, { ...(await callChief(t.text, `voice-${t.id}`)), transcript: t }); }
     if (p === '/api/voice/speak') { const wav = await fxVoice.speak(body.text); res.writeHead(200, { 'content-type': 'audio/wav' }); return res.end(wav); }
-    if (p === '/api/voice/download') { const r = fxVoice.startDownload(body.model, body.confirm); return r.error ? json(res, 400, { error: r.error }) : json(res, 202, await fxVoice.state()); }
+    if (p === '/api/voice/download') { const r = fxVoice.startDownload(body.model, body.confirm, body.confirmUnverified); return r.error ? json(res, 400, { error: r.error }) : json(res, 202, await fxVoice.state()); }
     if (p === '/api/voice/cancel') { fxVoice.cancelDownload(); return json(res, 200, await fxVoice.state()); }
     if (p === '/api/voice/select') { fxVoice.select(body.kind, body.id); return json(res, 200, await fxVoice.state()); }
     if (p === '/api/voice/settings') { fxVoice.setKeepRecordings(body.keepRecordings); return json(res, 200, await fxVoice.state()); }
+    if (p === '/api/voice/recordings/delete') { fxVoice.deleteRecordings(); return json(res, 200, await fxVoice.state()); }
     return json(res, 404, { error: 'Unknown voice endpoint.' });
   } catch (e) { return json(res, e instanceof VoiceError || e instanceof ConsultancyError ? e.status : 500, { error: (e as Error).message }); }
 }

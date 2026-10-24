@@ -57,6 +57,7 @@
 .voice-note a { color: var(--accent-2); }
 .voice-badge { margin-left: 8px; font-size: 11px; font-weight: 700; color: #0f2019; background: #9bd1ba; border-radius: 6px; padding: 1px 6px; }
 .voice-progress { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.voice-warning { flex-basis: 100%; color: #ffd98a; font-weight: 600; }
 .voice-progress progress { flex: 1; min-width: 120px; }
 @media (max-height: 520px) {
   .modal.phone-modal { height: calc(var(--vh) - 16px); }

@@ -43,6 +43,7 @@ export function openPhone() {
   let pending: Transcript | null = null;
   let active: Contact | null = null;
   let seq = 0;
+  let failed: { text: string; rid: string } | null = null;
 
   const list = h('ul.phone-contacts', { 'aria-label': 'Contacts' });
   const screen = h('div.phone-screen', { 'aria-live': 'polite' });
@@ -89,7 +90,10 @@ export function openPhone() {
   const ask = async (text: string) => {
     const t = text.trim();
     if (t) addLine('you', t);
-    try { await reply(await voiceApi.chief(t, `${Date.now().toString(36)}-${++seq}`)); } catch (e) { addLine('system', `The chief could not answer: ${(e as Error).message}`); }
+    // A retry of the same text after a failure reuses its requestId, so a "new job" that did reach the host is not saved twice.
+    const rid = failed?.text === t ? failed.rid : `${Date.now().toString(36)}-${++seq}`;
+    try { await reply(await voiceApi.chief(t, rid)); failed = null; }
+    catch (e) { failed = { text: t, rid }; addLine('system', `The chief could not answer: ${(e as Error).message} Send the same text again to retry safely.`); }
   };
 
   const hangUp = () => { cancelRecording(); stopAudio(); if (pending) void voiceApi.discard(pending.id).catch(() => {}); pending = null; active = null; subtitles.replaceChildren(); paintList(); paintIdle(); };

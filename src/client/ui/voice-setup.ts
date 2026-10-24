@@ -21,7 +21,8 @@ async function call<T>(path: string, body?: unknown, raw?: Blob): Promise<T> {
 
 export const voiceApi = {
   state: () => call<VoiceState>('/api/voice'),
-  download: (model: string) => call<VoiceState>('/api/voice/download', { model, confirm: true }),
+  download: (model: string, confirmUnverified = false) => call<VoiceState>('/api/voice/download', { model, confirm: true, ...(confirmUnverified ? { confirmUnverified: true } : {}) }),
+  deleteRecordings: () => call<VoiceState>('/api/voice/recordings/delete', {}),
   cancel: () => call<VoiceState>('/api/voice/cancel', {}),
   select: (kind: VoiceKind, id: string) => call<VoiceState>('/api/voice/select', { kind, id }),
   keepRecordings: (on: boolean) => call<VoiceState>('/api/voice/settings', { keepRecordings: on }),
@@ -48,7 +49,14 @@ function modelRow(m: VoiceModelState, s: VoiceState, onChange: (s: VoiceState) =
     : h('button.btn', { type: 'button', disabled: busy, 'aria-label': `Download ${m.name}, ${fmtBytes(m.sizeBytes)}`,
       onclick: () => confirmDialog(`Download ${m.name}?`,
         `${fmtBytes(m.sizeBytes)} from the official sherpa-onnx release (${new URL(m.url).hostname}). Licence ${m.licence}. Stored on the office host and used offline. ${m.sha256 ? 'The file is checked against its published sha256.' : 'No checksum is published for this file; its exact size is checked.'}`,
-        `Download (${fmtBytes(m.sizeBytes)})`, () => voiceApi.download(m.id).then(onChange, (e) => toast(e.message, 'error'))) }, `Download (${fmtBytes(m.sizeBytes)})`);
+        `Download (${fmtBytes(m.sizeBytes)})`, () => {
+          const go = (unverified: boolean) => voiceApi.download(m.id, unverified).then(onChange, (e) => toast(e.message, 'error'));
+          if (m.sha256) return void go(false);
+          // Size-only verification: a second, explicit warning (security review). Its sha256 is recorded on install.
+          setTimeout(() => confirmDialog('No published checksum — size check only',
+            `${m.name} has no sha256 from its publisher, so the office can only check its exact size (${m.sizeBytes.toLocaleString()} bytes) and refuse unsafe archive contents. Its sha256 is recorded on install, and a later reinstall warns if it differs. Download anyway?`,
+            'Download with size check only', () => void go(true)), 0);
+        }) }, `Download (${fmtBytes(m.sizeBytes)})`);
   return h('li.voice-model', { 'data-model': m.id, 'data-installed': String(m.installed) },
     h('div.voice-model-text', {}, h('strong', {}, m.name, m.installed ? h('span.voice-badge', {}, 'Installed') : null), meta, h('span.voice-note', {}, m.note, ' ', h('a', { href: m.source, target: '_blank', rel: 'noopener' }, 'Source'), ' · ', h('a', { href: m.licenceUrl, target: '_blank', rel: 'noopener' }, 'Licence'))),
     action);
@@ -83,9 +91,10 @@ export function voiceSetupSection() {
     const dl = s.download;
     const progress = dl ? h('div.voice-progress', {},
       h('span', {}, `${dl.model}: ${dl.error ? `failed — ${dl.error}` : dl.status}`),
+      dl.warning ? h('strong.voice-warning', { role: 'alert' }, dl.warning) : null,
       !dl.done ? h('progress', { max: String(dl.total || 1), value: String(dl.completed), 'aria-label': 'Download progress' }) : null,
       !dl.done ? h('span.voice-meta', {}, `${fmtBytes(dl.completed)} of ${fmtBytes(dl.total)}`) : null,
-      !dl.done ? h('button.btn.danger', { type: 'button', onclick: () => voiceApi.cancel().then(paint, (e) => toast(e.message, 'error')) }, 'Cancel download') : null) : null;
+      !dl.done && !dl.cancelled ? h('button.btn.danger', { type: 'button', onclick: () => voiceApi.cancel().then(paint, (e) => toast(e.message, 'error')) }, 'Cancel download') : null) : null;
     const group = (kind: VoiceKind) => h('div.voice-group', {}, h('span.empire-eyebrow', {}, KIND_LABEL[kind]),
       h('ul.voice-models', { role: 'radiogroup', 'aria-label': KIND_LABEL[kind] }, ...s.models.filter((m) => m.kind === kind).map((m) => modelRow(m, s, paint))));
     const keep = h('input', { type: 'checkbox', id: 'voice-keep' }) as HTMLInputElement;
@@ -98,7 +107,8 @@ export function voiceSetupSection() {
         h('p', {}, s.runtime.detail),
         h('p.setting-note', {}, `Push-to-talk: ${s.ready.stt ? 'ready' : 'off'} · Spoken replies: ${s.ready.tts ? 'ready' : 'off'}. No cloud speech service is used; once models are installed, voice works offline.`)),
       progress ?? '', group('stt'), group('tts'),
-      h('label.voice-check', { for: 'voice-keep' }, keep, ' Keep my push-to-talk recordings on the office host (off by default; otherwise audio is dropped after transcription)'),
+      h('label.voice-check', { for: 'voice-keep' }, keep, ' Keep my push-to-talk recordings on the office host (off by default; otherwise audio is dropped after transcription; kept ones are deleted after 30 days)'),
+      s.keptRecordings ? h('div.sector-actions', {}, h('button.btn', { type: 'button', onclick: () => voiceApi.deleteRecordings().then(paint, (e) => toast(e.message, 'error')) }, `Delete kept recordings (${s.keptRecordings})`)) : '',
       micTest(),
     );
     window.clearTimeout(timer);
