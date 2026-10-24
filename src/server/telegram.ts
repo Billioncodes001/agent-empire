@@ -34,13 +34,16 @@ export function telegramConfig(env: NodeJS.ProcessEnv): TelegramConfig | undefin
   return { token, ownerId: Number(owner) };
 }
 
-/** Fixed official destination. Never return Telegram URLs/errors, which can contain the bot token. */
-export function telegramTransport(token: string): TelegramTransport {
+/**
+ * Fixed official destination (`base` is only ever changed by test injection, never by settings). Never return Telegram
+ * URLs/errors, which can contain the bot token.
+ */
+export function telegramTransport(token: string, base = 'https://api.telegram.org'): TelegramTransport {
   return {
     async call(method, body, signal) {
       let response: Response;
       try {
-        response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+        response = await fetch(`${base}/bot${token}/${method}`, {
           method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
           signal: AbortSignal.any([signal, AbortSignal.timeout(35_000)]), redirect: 'error',
         });
