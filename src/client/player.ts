@@ -1,4 +1,6 @@
 import { Drivetrain, vehicleOverlaps } from './vehicle';
+import { SEDAN, type RideSpec } from './rides';
+import { Rotorcraft, airframeFloor, airframeTop } from './flight';
 import { DEFAULT_KEYS, type KeyBindings, type Action } from './controls';
 import { CITY } from '../shared/empire';
 import * as THREE from 'three';
@@ -54,8 +56,12 @@ export class PlayerController {
   private everLocked = false;
   enabled = true;
   bindings: KeyBindings = { ...DEFAULT_KEYS };
+  /** In any vehicle: the sedan, a bought garage car or the helicopter (`ride` says which). */
   driving = false;
+  /** The footprint, height and camera offsets of what you drive (CITY-06/08); the sedan's when on foot. */
+  ride: RideSpec = SEDAN;
   readonly vehicle = new Drivetrain();
+  readonly flight = new Rotorcraft();
   private walkVelocity = new THREE.Vector2();
   // Hold the input basis through automatic camera recentering. Otherwise a held
   // sideways arrow continuously steers itself into a circle as the camera turns.
@@ -190,7 +196,10 @@ export class PlayerController {
     else this.keys.delete(this.bindings[action]);
   }
 
-  get drivingSpeed() { return this.vehicle.speed; }
+  get flying() { return this.driving && this.ride.kind === 'helicopter'; }
+  /** The default chase-camera distance: the ride's own (CITY-06/08), or the walking shoulder camera. */
+  resetChase() { this.camDist = this.driving ? this.ride.chase : 4.6; }
+  get drivingSpeed() { return this.flying ? this.flight.speed : this.vehicle.speed; }
 
   clearKeys() {
     this.keys.clear();
@@ -255,6 +264,16 @@ export class PlayerController {
       if (k.has(this.bindings.right)) ix += 1;
     }
     this.moving = ix !== 0 || iz !== 0;
+    if (this.flying) {
+      this.vehicle.stop();
+      this.fly(dt, ix, iz);
+      this.speed = Math.hypot(this.pos.x - before.x, this.pos.z - before.z) / Math.max(dt, 0.001);
+      this.moving = this.speed > 0.04 || !this.flight.landed;
+      this.updateCamera(false, dt);
+      return;
+    }
+    // The rotor spins down once the pilot has stepped out.
+    if (this.flight.spool > 0) this.flight.update(dt, 0, 0, 0, false, 0);
     if (this.driving) {
       const turn = this.vehicle.update(dt, -iz, ix, k.has(this.bindings.run), this.enabled);
       this.facing += turn;
@@ -350,6 +369,35 @@ export class PlayerController {
     this.updateCamera(false, dt);
   }
 
+  /** CITY-08: the helicopter. Horizontal collision as for cars; vertical between the floor beneath and the ceiling. */
+  private fly(dt: number, ix: number, iz: number) {
+    const k = this.keys, f = this.flight, half = this.ride.half;
+    const lift = this.enabled ? (k.has(this.bindings.jump) ? 1 : 0) - (k.has(this.bindings.run) ? 1 : 0) : 0;
+    const below = airframeFloor(this.colliders, this.pos.x, this.pos.z, this.facing, half, this.pos.y);
+    const turn = f.update(dt, -iz, ix, lift, true, this.pos.y - below);
+    if (turn) {
+      this.facing += turn;
+      if (this.blocker(this.pos.x, this.pos.z, this.pos.y)) this.facing -= turn;
+      else if (this.view === 'first') this.camYaw += turn;
+    }
+    const oldX = this.pos.x, oldZ = this.pos.z;
+    this.tryMove(oldX + Math.sin(this.facing) * f.speed * dt, oldZ);
+    this.tryMove(this.pos.x, oldZ + Math.cos(this.facing) * f.speed * dt);
+    const distance = Math.hypot(this.pos.x - oldX, this.pos.z - oldZ);
+    f.speed = distance < 1e-6 ? 0 : Math.sign(f.speed) * Math.min(Math.abs(f.speed), distance / Math.max(dt, 0.001));
+    const floor = airframeFloor(this.colliders, this.pos.x, this.pos.z, this.facing, half, this.pos.y);
+    const top = airframeTop(this.colliders, this.pos.x, this.pos.z, this.facing, half, this.pos.y, this.ride.height);
+    let y = this.pos.y + f.vy * dt;
+    // Touchdown: within 5 cm of what is beneath and not climbing, the skids rest on it.
+    if (y <= floor || (y - floor < 0.05 && f.vy <= 0)) { y = floor; f.vy = Math.max(0, f.vy); }
+    if (y >= top) { y = top; f.vy = Math.min(0, f.vy); }
+    this.pos.y = y;
+    this.vy = 0;
+    this.grounded = y - floor < 0.05;
+    this.stepOffset = 0;
+    if (this.view === 'third' && !this.drag && this.orbitGrace === 0) this.followHeading(this.facing - Math.PI, dt);
+  }
+
   private followHeading(yaw: number, dt: number) {
     const delta = Math.atan2(Math.sin(yaw - this.camYaw), Math.cos(yaw - this.camYaw));
     this.camYaw += delta * (1 - Math.exp(-dt * 3));
@@ -358,18 +406,25 @@ export class PlayerController {
 
   updateCamera(snap = false, dt = 1 / 60) {
     if (this.view === 'first') {
-      const eye=this.driving?new THREE.Vector3(-.43,1.24,.05).applyAxisAngle(new THREE.Vector3(0,1,0),this.facing):new THREE.Vector3(0,EYE_HEIGHT+this.bob+this.stepOffset,0);
+      const e=this.ride.eye;
+      const eye=this.driving?new THREE.Vector3(e[0],e[1],e[2]).applyAxisAngle(new THREE.Vector3(0,1,0),this.facing):new THREE.Vector3(0,EYE_HEIGHT+this.bob+this.stepOffset,0);
       this.camera.position.copy(this.pos).add(eye);
       this.camera.rotation.set(this.lookPitch, this.camYaw, 0);
       return;
     }
     const target = new THREE.Vector3(this.pos.x, this.pos.y + this.stepOffset + 1.3, this.pos.z);
-    const pitch = Math.max(this.camPitch, THREE.MathUtils.smoothstep(this.camDist,14,60)*.88);
+    // CITY-08: the chase camera pulls back and tilts down with altitude, bringing the skyline and city into view.
+    const flying = this.flying;
+    const altitude = flying ? this.pos.y - groundAt(this.colliders, this.pos.x, this.pos.z, this.pos.y) : 0;
+    const dist = flying ? Math.min(125, this.camDist + altitude * 0.6) : this.camDist;
+    const pitch = flying
+      ? Math.max(this.camPitch, 0.16 + THREE.MathUtils.smoothstep(altitude, 4, 80) * 0.62)
+      : Math.max(this.camPitch, THREE.MathUtils.smoothstep(this.camDist,14,60)*.88);
     const off = new THREE.Vector3(
       Math.sin(this.camYaw) * Math.cos(pitch),
       Math.sin(pitch),
       Math.cos(this.camYaw) * Math.cos(pitch),
-    ).multiplyScalar(this.camDist);
+    ).multiplyScalar(dist);
     const cam = target.clone().add(off);
     // Keep the camera inside the room so walls never block the view, and under the loft or its roof.
     const m = 0.4;
@@ -378,13 +433,14 @@ export class PlayerController {
     cam.z = THREE.MathUtils.clamp(cam.z, bounds.minZ + m - (bounds === CITY ? 35 : 0), bounds.maxZ - m + (bounds === CITY ? 35 : 0));
     const floorY = groundAt(this.colliders, this.pos.x, this.pos.z, this.pos.y);
     const roof = ceilingAt(this.colliders, cam.x, cam.z, floorY) - 0.3;
-    cam.y = THREE.MathUtils.clamp(cam.y, floorY + 0.6, Math.max(floorY + 0.6, Math.min(floorY + (this.pos.z >= CITY.minZ ? 110 : 3.5), roof)));
+    const above = flying ? Math.max(110, this.pos.y + 80) : this.pos.z >= CITY.minZ ? 110 : 3.5;
+    cam.y = THREE.MathUtils.clamp(cam.y, floorY + 0.6, Math.max(floorY + 0.6, Math.min(floorY + above, roof)));
     // Ease first, then resolve occlusion on the actual rendered position. Easing
     // an already-clipped target can otherwise leave the camera behind a wall.
     if (!snap) cam.lerpVectors(this.camera.position, cam, 1 - Math.exp(-dt * 17.26));
     // Pull the shoulder camera forward before it crosses any solid building/furniture face.
     // An explicit district overview (>20m) is intentionally free of street-level occlusion.
-    if (this.camDist < 20) {
+    if (dist < 20) {
       const direction = cam.clone().sub(target).normalize();
       const ray = new THREE.Ray(target, direction);
       let distance = cam.distanceTo(target);
@@ -409,10 +465,12 @@ export class PlayerController {
   /** What stands in your way at (x, z) with your feet at `y`, or null. */
   private blocker(x: number, z: number, y: number): Collider | null {
     let hit: Collider | null = null;
+    // A vehicle is at least as tall as a person (the sedan keeps the original 1.7 m clearance).
+    const tall = this.driving ? Math.max(HEIGHT, this.ride.height) : HEIGHT;
     for (const c of this.colliders) {
       // Stood on top of it, or passing beneath it.
-      if (y >= c.top - 0.05 || y + HEIGHT <= (c.bottom ?? 0)) continue;
-      if (!(this.driving ? vehicleOverlaps(x, z, this.facing, c) : touches(c, x, z, RADIUS))) continue;
+      if (y >= c.top - 0.05 || y + tall <= (c.bottom ?? 0)) continue;
+      if (!(this.driving ? vehicleOverlaps(x, z, this.facing, c, this.ride.half) : touches(c, x, z, RADIUS))) continue;
       if (!hit || c.top > hit.top) hit = c;
     }
     return hit;
@@ -420,8 +478,9 @@ export class PlayerController {
 
   private tryMove(x: number, z: number) {
     const bounds = this.pos.z >= CITY.minZ ? CITY : FLOOR;
-    const halfX = this.driving ? Math.abs(Math.cos(this.facing)) * 1.07 + Math.abs(Math.sin(this.facing)) * 2.36 : RADIUS;
-    const halfZ = this.driving ? Math.abs(Math.sin(this.facing)) * 1.07 + Math.abs(Math.cos(this.facing)) * 2.36 : RADIUS;
+    const { w, l } = this.ride.half;
+    const halfX = this.driving ? Math.abs(Math.cos(this.facing)) * w + Math.abs(Math.sin(this.facing)) * l : RADIUS;
+    const halfZ = this.driving ? Math.abs(Math.sin(this.facing)) * w + Math.abs(Math.cos(this.facing)) * l : RADIUS;
     x = THREE.MathUtils.clamp(x, bounds.minX + halfX, bounds.maxX - halfX);
     z = THREE.MathUtils.clamp(z, bounds.minZ + halfZ, bounds.maxZ - halfZ);
     const hit = this.blocker(x, z, this.pos.y);

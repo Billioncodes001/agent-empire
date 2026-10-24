@@ -228,7 +228,8 @@ export type EmpireAction =
   | { kind: 'buy-vehicle'; model: VehicleModelId; nonce: string }
   /** `blocked`: apron slots the client sees occupied by live objects (the driven sedan, the founder). */
   | { kind: 'vehicle-spawn'; vehicle: string; blocked?: number[] }
-  | { kind: 'vehicle-store'; vehicle: string };
+  | { kind: 'vehicle-store'; vehicle: string }
+  | { kind: 'buy-helicopter'; nonce: string };
 export function newSector(id: SiteId): SectorState {
   const site = SITES.find((s) => s.id === id)!;
   return {

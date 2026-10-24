@@ -1015,6 +1015,10 @@ html.ae-touch.ae-modal #hud > .touch-ui, html.ae-touch.ae-typing #hud > .touch-u
 .touch-use .touch-icon { font-size: 18px; font-weight: 700; }
 .touch-view { right: 14px; bottom: 86px; width: 46px; height: 46px; }
 .touch-view .touch-label { display: none; }
+/* CITY-08: in flight Jump reads Up and a Down button sits above it; View moves aside. */
+.touch-btn[hidden] { display: none; }
+.touch-down { right: 8px; bottom: 84px; width: 58px; height: 58px; }
+.ae-flying .touch-view { right: 76px; bottom: 92px; }
 .touch-btn:active, .touch-btn.down { transform: scale(.93); background: rgba(155, 209, 186, .38); }
 .touch-btn:focus-visible { outline: 2px solid #c3e7d7; outline-offset: 3px; }
 

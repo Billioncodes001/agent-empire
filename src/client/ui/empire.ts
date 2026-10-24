@@ -51,7 +51,7 @@ export function mountEmpire(
   document.querySelector('.topbar .controls')?.append(management);
   document.getElementById('hud')!.append(panel);
   // Landscape touch controls (joystick, Jump / Use / View) and the game menu, which also lists tools a phone layout hides.
-  mountTouchControls({ player, interact: () => (onInteract ? onInteract() : interact()), changeView: () => changeView?.() });
+  const touch = mountTouchControls({ player, interact: () => (onInteract ? onInteract() : interact()), changeView: () => changeView?.() });
   mountGameMenu({ player, openMap: () => openMap(), openOperations: () => openOperations() });
   let waypoint: { x: number; z: number; name: string } | null = null;
   let fullMap: HTMLCanvasElement | null = null;
@@ -165,7 +165,7 @@ export function mountEmpire(
       c.fillRect(a.x, a.y, b.x - a.x, b.y - a.y);
     };
     rect(-55, 0, 145, 190, '#263131');
-    // FREE-09: Meridian business district and Harbour works, their streets, the garage (G) and district plots.
+    // FREE-09: Meridian business district and Harbour works, their streets, the garage (G, helipad H on its roof) and plots.
     rect(55, 30, 95, 187, '#263131');
     for (const r of ROADS) rect(r.x - r.w / 2, r.z - r.d / 2, r.w, r.d, '#788484');
     rect(GARAGE.x - GARAGE.width / 2, GARAGE.z - GARAGE.depth / 2, GARAGE.width, GARAGE.depth, '#a9b6ac');
@@ -174,7 +174,8 @@ export function mountEmpire(
     {
       const g = to(GARAGE.x, GARAGE.z);
       c.fillStyle = '#e3f4de'; c.font = mini ? 'bold 16px system-ui' : 'bold 19px system-ui'; c.textAlign = 'center'; c.textBaseline = 'middle';
-      c.fillText('G', g.x, g.y);
+      // CITY-08: the helipad is on the garage roof.
+      c.fillText(mini ? 'G' : 'G · H', g.x, g.y);
       if (!mini) for (const d of DISTRICTS.slice(1)) { const q = to((d.minX + d.maxX) / 2, d.minZ + 6); c.font = '14px system-ui'; c.fillStyle = '#d5ddd6'; c.fillText(d.name, q.x, q.y); }
     }
     rect(-53, 22, 7, 120, '#546260');
@@ -376,6 +377,8 @@ export function mountEmpire(
   }
   let elapsed = 0;
   return {
+    /** CITY-06/08: touch controls switch to Up/Down while flying. */
+    touch,
     openOperations,
     openMap,
     interact,

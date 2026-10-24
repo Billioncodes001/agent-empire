@@ -1,0 +1,113 @@
+{
+  "label": "before",
+  "base": "http://localhost:5022/",
+  "note": "Headless Chrome, ANGLE/Metal, vsync and frame cap disabled; Medium preset (default). Same viewpoints in every run.",
+  "desktop-1440x900": {
+    "founding": {
+      "frames": {
+        "mean": 3.0050262565641415,
+        "p95": 5.5,
+        "frames": 1333
+      },
+      "renderer": {
+        "triangles": 1376655,
+        "calls": 362,
+        "geometries": 805,
+        "textures": 168
+      }
+    },
+    "business": {
+      "frames": {
+        "mean": 2.601364522417154,
+        "p95": 5.100000000002183,
+        "frames": 1539
+      },
+      "renderer": {
+        "triangles": 1338442,
+        "calls": 160,
+        "geometries": 805,
+        "textures": 168
+      }
+    },
+    "aerial": {
+      "frames": {
+        "mean": 3.079093005380475,
+        "p95": 4.700000000000728,
+        "frames": 1301
+      },
+      "renderer": {
+        "triangles": 1383093,
+        "calls": 299,
+        "geometries": 881,
+        "textures": 170
+      }
+    },
+    "helipad": {
+      "frames": {
+        "mean": 3.4028887000849593,
+        "p95": 4.200000000000728,
+        "frames": 1177
+      },
+      "renderer": {
+        "triangles": 1385382,
+        "calls": 431,
+        "geometries": 960,
+        "textures": 172
+      }
+    }
+  },
+  "phone-874x402": {
+    "founding": {
+      "frames": {
+        "mean": 2.645736946463979,
+        "p95": 4.899999999999636,
+        "frames": 1513
+      },
+      "renderer": {
+        "triangles": 1378593,
+        "calls": 417,
+        "geometries": 852,
+        "textures": 175
+      }
+    },
+    "business": {
+      "frames": {
+        "mean": 2.080415584415584,
+        "p95": 4,
+        "frames": 1925
+      },
+      "renderer": {
+        "triangles": 1342776,
+        "calls": 169,
+        "geometries": 852,
+        "textures": 175
+      }
+    },
+    "aerial": {
+      "frames": {
+        "mean": 2.7028340080971676,
+        "p95": 3.400000000001455,
+        "frames": 1482
+      },
+      "renderer": {
+        "triangles": 1387077,
+        "calls": 362,
+        "geometries": 952,
+        "textures": 175
+      }
+    },
+    "helipad": {
+      "frames": {
+        "mean": 3.1171206225680907,
+        "p95": 3.7000000000007276,
+        "frames": 1285
+      },
+      "renderer": {
+        "triangles": 1390174,
+        "calls": 487,
+        "geometries": 993,
+        "textures": 178
+      }
+    }
+  }
+}

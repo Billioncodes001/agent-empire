@@ -508,7 +508,7 @@ sockets.on('connection', ws => {
     if (msg.t === 'worker.attach') send(ws, { t: 'term.snapshot', workerId: 'fixture-chief', cols: 90, rows: 25, data: 'SYNTHETIC TERMINAL — no commands execute.\r\nType to test keyboard routing: ' });
     else if (msg.t === 'term.input' && typeof msg.data === 'string') send(ws, { t: 'term.data', workerId: 'fixture-chief', data: msg.data.replace(/\r/g, '\r\n') });
     else if (msg.t === 'ping') send(ws, { t: 'pong', at: msg.at });
-    else if (msg.t === 'empire.action' && ['buy-plot', 'buy-vehicle', 'vehicle-spawn', 'vehicle-store'].includes(msg.action?.kind)) {
+    else if (msg.t === 'empire.action' && ['buy-plot', 'buy-vehicle', 'vehicle-spawn', 'vehicle-store', 'buy-helicopter'].includes(msg.action?.kind)) {
       const error = fixtureCityAction(msg.action);
       if (error) send(ws, { t: 'toast', text: error, level: 'error' });
       else for (const client of sockets.clients) publish(client);
