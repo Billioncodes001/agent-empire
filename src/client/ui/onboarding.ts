@@ -100,7 +100,7 @@ export function openOnboarding(hooks: OnboardingHooks, initial?: OnboardingView)
   const body = h('div.body.exec-body.ob-body', { 'aria-live': 'off' });
   const status = h('p.ob-status', { role: 'status', 'aria-live': 'polite' });
   const skip = h('button.btn', { type: 'button' }, 'Skip this step') as HTMLButtonElement;
-  const later = h('button.btn', { type: 'button' }, 'Finish later') as HTMLButtonElement;
+  const later = h('button.btn.ob-later', { type: 'button' }, 'Finish later') as HTMLButtonElement;
   const next = h('button.btn.primary', { type: 'button' }, 'Save and continue') as HTMLButtonElement;
   const dismissBtn = h('button.btn.ob-link', { type: 'button' }, 'Don’t show again') as HTMLButtonElement;
   const close = h('button.btn.close', { type: 'button', 'aria-label': 'Close setup' }, '✕');
@@ -304,8 +304,11 @@ export function openOnboarding(hooks: OnboardingHooks, initial?: OnboardingView)
       const secrets: Partial<Record<SecretName, string | null>> = {};
       for (const sec of [tgToken, ntToken, pass]) { const v = sec.value(); if (v !== undefined) secrets[sec.name] = v; }
       view = await onboardingApi.save({ notifications, ...(Object.keys(secrets).length ? { secrets } : {}) });
-      for (const sec of [tgToken, ntToken, pass]) sec.input.value = '';
       dirty = false;
+      // Repaint so channel states and "saved" badges come from the host; secret fields come back empty.
+      const top = body.scrollTop;
+      render();
+      body.scrollTop = top;
     };
     return { nodes, collect: save };
   }

@@ -1559,7 +1559,9 @@ html.ae-touch #hud .topbar .controls > #btn-inbox > span:not(.svc-count):not(.in
 .onboarding-modal header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .onboarding-modal .btn.close { flex: none; width: 44px; min-height: 44px; padding: 0; justify-content: center; }
 .onboarding-modal .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-.ob-rail { display: flex; gap: 6px; margin: 0; padding: 10px 22px; list-style: none; border-bottom: 1px solid var(--hud-line); overflow-x: auto; }
+.onboarding-modal header, .onboarding-modal footer { flex: none; }
+.ob-status:empty { display: none; }
+.ob-rail { flex: none; display: flex; gap: 6px; margin: 0; padding: 10px 22px; list-style: none; border-bottom: 1px solid var(--hud-line); overflow-x: auto; }
 .ob-rail li { flex: 1 1 0; min-width: 0; }
 .ob-step { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 44px; padding: 6px 10px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--hud-muted); font: inherit; font-size: 13px; cursor: pointer; text-align: left; }
 .ob-step:hover { background: #ffffff0d; color: var(--hud-text); }
@@ -1623,6 +1625,8 @@ html.ae-touch #hud .topbar .controls > #btn-inbox > span:not(.svc-count):not(.in
   .onboarding-modal header { padding-top: 10px; padding-bottom: 8px; }
   .onboarding-modal header h2 { font-size: 18px; }
   .ob-status { flex-basis: 100%; order: -1; }
+  .onboarding-modal .ob-later { display: none; }
+  .onboarding-modal footer { padding-top: 8px; padding-bottom: 8px; }
 }
 
 /* Opened-from-disk notice (see the entry HTML): this stylesheet loaded, so the page is served correctly. */
