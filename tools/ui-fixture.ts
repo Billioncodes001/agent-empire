@@ -21,6 +21,10 @@ import { estimateJob } from '../src/server/estimate.js';
 import { ResearchDesk, ResearchError } from '../src/server/research.js';
 import { parseArtifact } from '../src/server/artifacts.js';
 import { SYNTHETIC_REPORT, UNSOURCED_REPORT } from './research-fixture.js';
+import { VoiceError, VoiceRuntime } from '../src/server/voice.js';
+import { routeChief, ruleBasedBriefing } from '../src/server/chief-briefing.js';
+import { ConsultancyError } from '../src/server/consultancy.js';
+import { MAX_AUDIO_BYTES } from '../src/shared/voice.js';
 
 /**
  * ORG-03: a real approval inbox over a real consultancy journal in a throwaway temp directory, with a fake queue that
@@ -242,6 +246,51 @@ function fxEngines(): EnginesState {
   const picked = pickEngine(options, fxDefault);
   return { ...base, hosted: HOSTED_FREE, defaultEngine: fxDefault, options, recommended: picked.engine, help: picked.help, checkedAt: Date.now() };
 }
+/**
+ * FREE-05 (FIXTURE_VOICE=1): the real VoiceRuntime and chief routing over a throwaway directory, with fake speech
+ * engines (fixed transcript, a synthetic tone for speech) and a fake release server that streams zeros slowly and
+ * never completes. Moonshine Tiny and Kokoro int8 are marked installed (marker files only; no model exists).
+ */
+const FX_VOICE = process.env.FIXTURE_VOICE === '1';
+const fxVoiceDir = mkdtempSync(resolve(tmpdir(), 'empire-fixture-voice-'));
+for (const id of ['moonshine-tiny-en', 'kokoro-en-int8']) { mkdirSync(resolve(fxVoiceDir, 'voice', 'models', id), { recursive: true }); writeFileSync(resolve(fxVoiceDir, 'voice', 'models', id, 'installed.json'), '{"fixture":true}'); }
+const fxVoice = new VoiceRuntime({
+  dataDir: fxVoiceDir,
+  engines: {
+    detect: async () => ({ available: true, detail: 'Fixture: fake speech engines (no sherpa-onnx, no models).' }),
+    stt: async () => ({ transcribe: async () => process.env.FIXTURE_VOICE_HEARD || 'How much did we spend today?' }),
+    tts: async () => ({ synthesize: async () => { const s = new Float32Array(4800); for (let i = 0; i < s.length; i++) s[i] = Math.sin(i / 6) * 0.05; return { samples: s, sampleRate: 24000 }; } }),
+  },
+  fetch: (async (_u: string, init?: RequestInit) => new Response(new ReadableStream({
+    async pull(c) { await new Promise((r) => setTimeout(r, 120)); if (init?.signal?.aborted) return c.close(); c.enqueue(new Uint8Array(4_000_000)); },
+  }))) as unknown as typeof fetch,
+  extract: async () => { throw new Error('Fixture never unpacks'); },
+});
+async function fxVoiceRoute(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse, p: string) {
+  try {
+    if (p === '/api/voice' && req.method === 'GET') return json(res, 200, await fxVoice.state());
+    if (req.method !== 'POST') return json(res, 404, { error: 'Unknown voice endpoint.' });
+    const chunks: Buffer[] = []; let size = 0;
+    for await (const c of req) { size += (c as Buffer).length; if (size > MAX_AUDIO_BYTES) return json(res, 413, { error: 'Recordings are limited to 30 seconds.' }); chunks.push(c as Buffer); }
+    const raw = Buffer.concat(chunks);
+    if (p === '/api/voice/transcribe') return json(res, 200, await fxVoice.transcribe(raw));
+    const body = raw.length ? JSON.parse(raw.toString('utf8')) : {};
+    const callChief = (text: unknown, rid: string) => routeChief(text, {
+      briefing: (q) => { const { state, worker, tasks, jobWorkers } = snapshot(); return ruleBasedBriefing({ now: Date.now(), org: fixtureOrg(state, [worker, ...jobWorkers], tasks), approvals: inbox!.state().items, capacity: 'Fixture: 4 funded workstations · synthetic workers only' }, q); },
+      createJob: (title, brief, requestId) => { const job = fxOffice.create({ requestId, client: 'Your company', title, brief }, 'Fixture CEO by phone'); inbox!.reconcile(); for (const ws of sockets.clients) send(ws, { t: 'approvals', state: inbox!.state() }); return { jobId: job.id, approvalId: inbox!.state().items.find((i) => i.jobId === job.id)?.id }; },
+    }, rid);
+    if (p === '/api/phone/chief') return json(res, 200, await callChief(body.text, `phone-${String(body.requestId ?? Date.now()).slice(0, 60)}`));
+    const tr = /^\/api\/voice\/transcripts\/(T[\w-]{6,40})\/(send|cancel)$/.exec(p);
+    if (tr) { if (tr[2] === 'cancel') return json(res, 200, fxVoice.cancelTranscript(tr[1])); const t = fxVoice.takeTranscript(tr[1]); return json(res, 200, { ...(await callChief(t.text, `voice-${t.id}`)), transcript: t }); }
+    if (p === '/api/voice/speak') { const wav = await fxVoice.speak(body.text); res.writeHead(200, { 'content-type': 'audio/wav' }); return res.end(wav); }
+    if (p === '/api/voice/download') { const r = fxVoice.startDownload(body.model, body.confirm, body.confirmUnverified); return r.error ? json(res, 400, { error: r.error }) : json(res, 202, await fxVoice.state()); }
+    if (p === '/api/voice/cancel') { fxVoice.cancelDownload(); return json(res, 200, await fxVoice.state()); }
+    if (p === '/api/voice/select') { fxVoice.select(body.kind, body.id); return json(res, 200, await fxVoice.state()); }
+    if (p === '/api/voice/settings') { fxVoice.setKeepRecordings(body.keepRecordings); return json(res, 200, await fxVoice.state()); }
+    if (p === '/api/voice/recordings/delete') { fxVoice.deleteRecordings(); return json(res, 200, await fxVoice.state()); }
+    return json(res, 404, { error: 'Unknown voice endpoint.' });
+  } catch (e) { return json(res, e instanceof VoiceError || e instanceof ConsultancyError ? e.status : 500, { error: (e as Error).message }); }
+}
 function publish(ws: WebSocket) {
   const {state, worker, tasks, jobWorkers} = snapshot();
   send(ws, { t: 'worker.update', worker });
@@ -317,6 +366,7 @@ const server = createServer(async (req, res) => {
     return json(res, 200, { ok: true });
   }
   if (url.pathname === '/__fixture/jobs') return json(res, 200, fxOffice.snapshot());
+  if (FX_VOICE && (url.pathname === '/api/voice' || url.pathname.startsWith('/api/voice/') || url.pathname === '/api/phone/chief')) return fxVoiceRoute(req, res, url.pathname);
   if (FX_ENGINES && url.pathname === '/api/engines' && req.method === 'GET') return json(res, 200, fxEngines());
   if (FX_ENGINES && url.pathname.startsWith('/api/engines/') && req.method === 'POST') {
     let raw = ''; for await (const chunk of req) raw += chunk;
