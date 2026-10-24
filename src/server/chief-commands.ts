@@ -4,6 +4,8 @@ import { ApprovalError, approvalLine, approvalText, type ApprovalInbox } from '.
 import { APPROVAL_ID_RE } from '../shared/approvals.js';
 import { TELEGRAM_HELP, type TelegramCommands } from './telegram.js';
 import { ResearchError, type ResearchDesk } from './research.js';
+import { ChiefError, type ChiefBrain } from './chief.js';
+import { ROLE_LABEL, REVIEW_NOTE } from '../shared/chief.js';
 import type { ConsultancyJob } from '../shared/consultancy.js';
 import { ACTUAL_SPEND_LABEL, PHASE_LABEL, basisLabel, fmtDurationRange, fmtUsdRange } from '../shared/org.js';
 
@@ -20,7 +22,7 @@ export function estimateText(job: ConsultancyJob): string {
 }
 
 /** A deterministic command surface shared with the same consultancy service as the CEO console. */
-export function chiefCommands(office: Consultancy, resourceReport: () => string, inbox?: ApprovalInbox, afterDecision?: () => void, research?: ResearchDesk, outreach?: { optOutCommand(email: string, actor: string): string }): TelegramCommands {
+export function chiefCommands(office: Consultancy, resourceReport: () => string, inbox?: ApprovalInbox, afterDecision?: () => void, research?: ResearchDesk, outreach?: { optOutCommand(email: string, actor: string): string }, brain?: ChiefBrain): TelegramCommands {
   const ACTOR = 'CEO via Telegram';
   /** Inbox ids the owner already heard about in a command reply (/new); announced silently. */
   const announced = new Set<string>();
@@ -53,7 +55,7 @@ export function chiefCommands(office: Consultancy, resourceReport: () => string,
         if (!match) return `Use a command to keep decisions explicit.\n${TELEGRAM_HELP}`;
         const [, cmd, raw = ''] = match;
         if (cmd === 'jobs') return jobsText();
-        if (cmd === 'status') return `Chief report · rule-based\n${resourceReport()}\n\n${jobsText()}`;
+        if (cmd === 'status') return `Chief report · rule-based${brain ? ` · planning brain: ${brain.status().label}` : ''}\n${resourceReport()}\n\n${jobsText()}`;
         if (cmd === 'new') {
           const parts = raw.split('|');
           if (parts.length < 3) return 'Use /new Client | Job title | Brief';
@@ -63,6 +65,17 @@ export function chiefCommands(office: Consultancy, resourceReport: () => string,
           const item = inbox?.state().items.find((i) => i.kind === 'job_plan' && i.jobId === job.id);
           if (item) announced.add(item.id);
           return `Job ${job.id} saved for ${job.client}. Nothing starts before approval.\nReview the brief and work items with /job ${job.id}${item ? `\nIt is approval ${item.id} in your inbox: /approve ${item.id} [budget]` : ''}`;
+        }
+        if (cmd === 'plan') {
+          // FREE-02: the chief's model drafts a PROPOSED plan; it arrives as an approval (/approve A…) when ready.
+          if (!brain) return 'The chief’s planning brain is not available on this host. Use /new for a one-item plan.';
+          const parts = raw.split('|');
+          if (parts.length < 3) return 'Use /plan Client | Job title | Brief';
+          const [client, title, ...rest] = parts;
+          const plan = brain.requestPlan({ requestId, client: client.trim(), title: title.trim(), brief: rest.join('|').trim() }, ACTOR, 'telegram');
+          if (plan.status === 'needs_attention') return `The chief could not start: ${plan.reason}`;
+          if (plan.status === 'proposed' && plan.jobId) return `Plan ${plan.id} is already proposed as job ${plan.jobId}. /job ${plan.jobId}`;
+          return `The chief (${brain.label()}) is drafting a proposed plan for ${plan.client} (${plan.id}). I’ll send it here as an approval when it’s ready. Nothing starts before you approve.`;
         }
         if (cmd === 'research') {
           if (!research) return 'The research executive is not available on this host.';
@@ -80,7 +93,10 @@ export function chiefCommands(office: Consultancy, resourceReport: () => string,
           const job = office.snapshot().jobs.find(j => j.id === raw.trim());
           if (!job) return 'Job not found. Use /jobs for its ID.';
           // Explicit plan review can reveal the requested brief to the configured CEO, never in unsolicited updates.
-          return `${job.id} · ${job.client} · ${job.title}\n${job.status.replaceAll('_', ' ')}\n\n${job.brief}${estimateText(job)}\n\nReview the complete work-item plan in the CEO console before approval. Approval submits it to this host’s local worker queue under existing budget and desk limits. /approve ${job.id} (or /approve ${job.id} 25 to set a $25 budget)`;
+          const proposed = brain?.planFor(job.id);
+          const meta = proposed?.items ? `\n\nProposed by the chief (${proposed.model ?? 'model'} · proposal only):\n${proposed.items.map((it, i) => `${i + 1}. ${it.title} · ${ROLE_LABEL[it.role]}${it.dependsOn.length ? ` · after ${it.dependsOn.join(', ')}` : ''}${it.parallel ? ' · parallel' : ''}`).join('\n')}` : '';
+          const reviews = brain?.state().reviews.filter((r) => r.jobId === job.id && r.status === 'reviewed').map((r) => `Review of “${r.itemTitle}”: ${r.recommendation === 'accept' ? 'recommend accept' : 'needs changes'} — ${r.summary}`) ?? [];
+          return `${job.id} · ${job.client} · ${job.title}\n${job.status.replaceAll('_', ' ')}\n\n${job.brief}${meta}${estimateText(job)}${reviews.length ? `\n\n${reviews.join('\n')}\n${REVIEW_NOTE}` : ''}\n\nReview the complete work-item plan in the CEO console before approval. Approval submits it to this host’s local worker queue under existing budget and desk limits. /approve ${job.id} (or /approve ${job.id} 25 to set a $25 budget)`;
         }
         if (cmd === 'optout') {
           if (!outreach) return 'Email outreach is not available on this host.';
@@ -104,7 +120,7 @@ export function chiefCommands(office: Consultancy, resourceReport: () => string,
         }
         return TELEGRAM_HELP;
       } catch (error) {
-        if ((error instanceof ConsultancyError || error instanceof ApprovalError || error instanceof ResearchError) && error.status < 500) return error.message;
+        if ((error instanceof ConsultancyError || error instanceof ApprovalError || error instanceof ResearchError || error instanceof ChiefError) && error.status < 500) return error.message;
         // Storage/transient failure leaves Telegram offset unchanged for safe replay.
         throw error;
       }
@@ -120,9 +136,14 @@ export function chiefCommands(office: Consultancy, resourceReport: () => string,
       };
     },
     notifications() {
-      if (!inbox) return [];
+      // FREE-02: a plan the chief could not propose, and each finished review (a recommendation only).
+      const chiefNotes = !brain ? [] : [
+        ...brain.state().plans.filter((p) => p.status === 'needs_attention' && p.source === 'telegram').map((p) => ({ key: `chief-plan:${p.id}`, text: `The chief could not propose a plan for ${p.client} · ${p.title} (${p.id}): ${p.reason}\nUse /new ${p.client} | ${p.title} | … for a one-item plan.` })),
+        ...brain.state().reviews.filter((r) => r.status === 'reviewed').map((r) => ({ key: `chief-review:${r.key}`, text: `Chief review · ${r.itemTitle}\n${r.recommendation === 'accept' ? 'Recommends accepting' : 'Recommends changes'} (${r.model ?? 'model'} · proposal only): ${r.summary}${r.concerns?.length ? `\nConcerns: ${r.concerns.join('; ')}` : ''}\n${REVIEW_NOTE}`, silent: true })),
+      ];
+      if (!inbox) return chiefNotes;
       if (inbox.recoveryError) throw new Error('Approval inbox storage unavailable');
-      return inbox.pending().map((item) => ({ key: item.id, text: `${approvalText(item)}\n/reject ${item.id} to decline.`, ...(announced.has(item.id) ? { silent: true } : {}) }));
+      return [...inbox.pending().map((item) => ({ key: item.id, text: `${approvalText(item)}\n/reject ${item.id} to decline.`, ...(announced.has(item.id) ? { silent: true } : {}) })), ...chiefNotes];
     },
   };
 }

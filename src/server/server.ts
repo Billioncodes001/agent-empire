@@ -38,6 +38,7 @@ import { SyncArtifacts } from './sync-artifacts.js';
 import { acquireHostLock } from './host-lock.js';
 import { ExecutionManager, ExecutionError, type ExecutionOptions } from './execution.js';
 import { ResearchDesk, ResearchError } from './research.js';
+import { ChiefBrain, ChiefError, chiefActions, defaultEvidence, gitDiffStat, type ChatFn } from './chief.js';
 import { readArtifact } from './artifacts.js';
 import { LinkedAccounts, envKeys, type Exec, type ProviderKeys } from './engines.js';
 import { DEFAULT_OLLAMA_URL, OllamaRuntime } from './ollama.js';
@@ -192,6 +193,8 @@ export interface ServerRuntime {
    * resolver over fake CLIs, a fake exec, a fake Ollama URL and a RAM size; nothing real is probed in fixtures.
    */
   engines?: { providerKeys?: () => ProviderKeys; resolve?: (cmd: string) => string | null; exec?: Exec; ollamaUrl?: string; totalMem?: () => number; env?: () => Record<string, string> };
+  /** FREE-02: the chief's model client. Tests and previews inject a fake; nothing real is called in them. */
+  chief?: { chat?: ChatFn; timeoutMs?: number };
 }
 export async function startServer(cfg: Config, runtime: ServerRuntime = {}) {
   const releaseHost = acquireHostLock(cfg.dataDir);
@@ -257,6 +260,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   let consultancy: Consultancy | undefined;
   let inbox: ApprovalInbox | undefined;
   let outreach: Outreach | undefined;
+  let chief: ChiefBrain | undefined;
   let research: ResearchDesk | undefined;
   let observing = false;
   const storageError = () => [workers?.recoveryError, queue?.recoveryError, consultancy?.recoveryError].filter(Boolean).join(' ') || undefined;
@@ -375,7 +379,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   );
   // The 📋 task queue seats workers by itself: it watches the workers and links PRs from GitHub.
   queue = new TaskQueue(cfg.dataDir, workers, !!project.branch, {
-    update: (state) => { broadcast({ t: 'queue', state }); syncWaiting(); empire.tick(workers.list(), state, 0); research?.reconcile(); },
+    update: (state) => { broadcast({ t: 'queue', state }); syncWaiting(); empire.tick(workers.list(), state, 0); research?.reconcile(); chief?.reconcile(); },
     toast: (text, level) => broadcast({ t: 'toast', text, level }),
     claimIssue: (issue) => github.claim(issue),
     refreshGitHub: () => void github.refresh(),
@@ -401,7 +405,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     state: () => ({ ...queue.state(), storageError: queue.recoveryError }),
     // dependsOn carries LIFE-04's item order into the queue.
     add: (prompt, by, title, issue, jobKey, dependsOn) => queue.add(prompt, by, title, issue, jobKey, dependsOn),
-  }, () => { inbox?.reconcile(); research?.reconcile(); outreach?.reconcile(); publishOrg(); }, {
+  }, () => { inbox?.reconcile(); research?.reconcile(); outreach?.reconcile(); chief?.reconcile(); publishOrg(); }, {
     estimate: (items) => estimateJob(items, historyFromTaskCosts(ledger.taskCosts(), phaseOfJobKey), { maxWorkers: queue.limit }),
     taskCost: (taskId) => ledger.taskCost(taskId),
     // Round 2 internal jobs: a research report (ORG-05) or campaign draft (ORG-04a) that was not accepted needs
@@ -474,6 +478,28 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   }, publishResearch);
   research.reconcile();
   researchSent = JSON.stringify(research.state());
+  // FREE-02: the chief's optional planning brain. Off by default; when off, the chief stays rule-based.
+  let chiefSent = '';
+  const publishChief = () => {
+    if (!chief) return;
+    const state = chief.state();
+    const sig = JSON.stringify(state);
+    if (sig === chiefSent) return;
+    chiefSent = sig;
+    broadcast({ t: 'chief', state });
+    publishApprovals();
+    publishOrg();
+  };
+  chief = new ChiefBrain(cfg.dataDir, {
+    keys: providerKeys, ollamaUrl, chat: runtime.chief?.chat, timeoutMs: runtime.chief?.timeoutMs,
+    office, queue: () => queue.state(),
+    evidence: (task, item) => defaultEvidence(task, item, project.branch && task.branch ? gitDiffStat(cfg.dir, project.branch, task.branch) : undefined),
+    raise: (fields) => desk.raiseChief(fields),
+    onChange: () => publishChief(),
+  });
+  const brain = chief;
+  inbox.setChief(chiefActions(queue), (jobId) => (brain.planFor(jobId) ? brain.label() : undefined));
+  chiefSent = JSON.stringify(chief.state());
   // ORG-01: the executive roster is a pure projection, re-sent only when a summary or attention count changes.
   let orgSent = '';
   const currentOrg = () => projectOrg({
@@ -482,6 +508,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     approvals: inbox?.state().items,
     outreach: outreach?.summary(),
     research: research?.state(),
+    ...(() => { const b = chief?.status(); return b?.ready && b.model ? { chiefBrain: { model: b.model } } : {}; })(),
   });
   publishOrg = () => {
     if (!queue || !consultancy) return;
@@ -501,16 +528,16 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     blocker: storageError() || localExecutionBlocker() || (!localQueueApproved || queue.limit === 0 ? 'The local task queue is paused. Set concurrency in the game’s Queue panel to start approved work.' : undefined) || ledger.hiringPaused,
     mode: execution.setup().config.mode,
   });
-  const chief = chiefCommands(office, () => {
+  const chiefTelegram = chiefCommands(office, () => {
     const r = capacityReport();
     return `${r.workstations} funded workstations · ${r.workers} running workers · concurrency ${r.concurrency} · ${r.queued === null ? 'queue count unavailable' : `${r.queued} tasks queued`} · ${r.attention} workers need input.${r.blocker ? ` Waiting: ${r.blocker}` : ''} This coordinator requires the execution host to remain running.`;
-  }, inbox, () => { queue.pump(); publishApprovals(); }, research, outreachService);
+  }, inbox, () => { queue.pump(); publishApprovals(); }, research, outreachService, brain);
   let telegram: TelegramBridge | undefined;
   let telegramError: string | undefined;
   try {
     const config = runtime.telegram === false || runtime.backgroundServices === false && !runtime.telegram
       ? undefined : runtime.telegram?.config ?? telegramConfig(process.env);
-    if (config) telegram = new TelegramBridge(cfg.dataDir, config, chief, runtime.telegram ? runtime.telegram.transport : undefined);
+    if (config) telegram = new TelegramBridge(cfg.dataDir, config, chiefTelegram, runtime.telegram ? runtime.telegram.transport : undefined);
   } catch (error) { telegramError = (error as Error).message; }
   startupCleanup.push(() => telegram?.stop());
 
@@ -781,6 +808,21 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
         } catch (error) {
           if (error instanceof ConsultancyError) return send(res, error.status, { error: error.message });
           return send(res, 500, { error: 'Consultancy service could not complete this request.' });
+        }
+      }
+      if (p === '/api/chief' || p.startsWith('/api/chief/')) {
+        if (req.method !== 'GET' && !trusted()) return send(res, 403, { error: 'A same-origin Origin header is required' });
+        try {
+          if (p === '/api/chief' && req.method === 'GET') return send(res, 200, brain.state());
+          if (req.method !== 'POST') return send(res, 404, { error: 'Unknown chief endpoint.' });
+          let body: unknown;
+          try { body = JSON.parse(await readBody(req, 16_000)); } catch { return send(res, 400, { error: 'Expected a JSON request.' }); }
+          if (p === '/api/chief/settings') { const state = brain.updateSettings(body); publishChief(); return send(res, 200, state); }
+          if (p === '/api/chief/plans') { const plan = brain.requestPlan(body, 'CEO', 'founder_desk'); publishChief(); return send(res, 202, plan); }
+          return send(res, 404, { error: 'Unknown chief endpoint.' });
+        } catch (error) {
+          if (error instanceof ChiefError) return send(res, error.status, { error: error.message });
+          return send(res, 500, { error: 'The chief could not complete this request.' });
         }
       }
       if (p === '/api/research' || p.startsWith('/api/research/')) {
@@ -1095,6 +1137,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
       org: currentOrg(),
       approvals: inbox?.state(),
       research: research?.state(),
+      chief: chief?.state(),
       queue: queue.state(),
     });
     sendTo(client, { t: 'empire', state: empire.state });
@@ -1419,7 +1462,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
 
   // Drop dead connections so ghosts don't linger in the office.
   empire.dispatchManagers(queue, 'Chief of staff');
-  const empireTimer = setInterval(() => { empire.tick(workers.list(), queue.state()); try { office.reconcile(); inbox?.reconcile(); research?.reconcile(); outreach?.reconcile(); } catch { /* Durable service exposes recovery errors through its snapshot. */ } }, 5000);
+  const empireTimer = setInterval(() => { empire.tick(workers.list(), queue.state()); try { office.reconcile(); inbox?.reconcile(); research?.reconcile(); outreach?.reconcile(); chief?.reconcile(); } catch { /* Durable service exposes recovery errors through its snapshot. */ } }, 5000);
   const heartbeat = setInterval(() => {
     for (const c of clients.values()) {
       if ((c.ws as any).isAlive === false) {
