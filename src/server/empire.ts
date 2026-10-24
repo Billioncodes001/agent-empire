@@ -17,6 +17,7 @@ import type { WorkerInfo, QueueState, QueueTask } from '../shared/protocol.js';
 import type { TaskQueue } from './queue.js';
 import { DESKS_PER_FLOOR, fundedDesk } from '../shared/layout.js';
 import { randomBytes } from 'node:crypto';
+import { normalizeCity } from '../shared/city.js';
 import { chiefLinksConflict, projectSupervision } from './supervision.js';
 
 /** Host report wording. The rules and amounts are shared with cloud mode (src/shared/economy-rules.ts). */
@@ -118,6 +119,8 @@ export class Empire {
       }
     }
     delete this.state.supervision;
+    // FREE-09: a save without plots/garage vehicles keeps the original district (shared/city.ts). Malformed blocks throw.
+    this.state.city = normalizeCity(this.state.city);
     if (!this.state.office) {
       // Existing desks and workers survive an upgrade. New cities start with four funded seats.
       if (!existsSync(this.file + '.v2-office-backup')) writeFileSync(this.file + '.v2-office-backup', readFileSync(this.file), { mode: 0o600 });

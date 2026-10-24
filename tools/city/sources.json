@@ -1,0 +1,39 @@
+{
+  "note": "FREE-09 (CITY-05/07) build inputs. Official Kenney downloads, CC0 checked on each page and in each archive's License.txt on 2026-10-24. Only the listed models are shipped. Rebuild: npx tsx tools/city/build-city-assets.ts",
+  "licence": "CC0-1.0",
+  "licenceUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+  "kits": {
+    "commercial": {
+      "pack": "City Kit (Commercial) 2.1",
+      "author": "Kenney (www.kenney.nl)",
+      "page": "https://kenney.nl/assets/city-kit-commercial",
+      "zip": "https://kenney.nl/media/pages/assets/city-kit-commercial/a742d900eb-1753115042/kenney_city-kit-commercial_2.1.zip",
+      "sha256": "f8b09b081c2bb88bcc126e2dec1cb40fd0dad7e7e591b6c26aaefe96fb35276b",
+      "models": ["building-skyscraper-a", "building-skyscraper-b", "building-skyscraper-c", "building-skyscraper-d", "building-skyscraper-e", "building-a", "building-e", "building-g", "building-h", "building-m", "detail-awning-wide", "detail-parasol-a"]
+    },
+    "industrial": {
+      "pack": "City Kit (Industrial) 2.0",
+      "author": "Kenney (www.kenney.nl)",
+      "page": "https://kenney.nl/assets/city-kit-industrial",
+      "zip": "https://kenney.nl/media/pages/assets/city-kit-industrial/0ec35b139d-1788171848/kenney_city-kit-industrial_2.0.zip",
+      "sha256": "5b381164e5760f3830a2dbee43b972deee38b2a695d091b56e238ab2910c96d2",
+      "models": ["building-a", "building-c", "building-f", "building-k", "building-o", "building-q", "chimney-large", "detail-tank-large", "detail-tank", "shipping-container-a", "shipping-container-b", "shipping-container-c", "water-tower"]
+    },
+    "streets": {
+      "pack": "City Kit (Roads)",
+      "author": "Kenney (www.kenney.nl)",
+      "page": "https://kenney.nl/assets/city-kit-roads",
+      "zip": "https://kenney.nl/media/pages/assets/city-kit-roads/74288c9459-1791628607/kenney_city-kit-roads.zip",
+      "sha256": "374a4552115cbd11b4ec5c930ee31a533562dc78a09af249a655d03f7ea3b959",
+      "models": ["light-square", "light-curved-double", "traffic-light", "dumpster", "construction-cone", "construction-barrier", "road-sign-street"]
+    },
+    "vehicles": {
+      "pack": "Car Kit",
+      "author": "Kenney (www.kenney.nl)",
+      "page": "https://kenney.nl/assets/car-kit",
+      "zip": "https://kenney.nl/media/pages/assets/car-kit/1a312ec241-1775131960/kenney_car-kit.zip",
+      "sha256": "fac7dacac5c7874348cf19729af3ef205f3d366493edaf0a827d93f4fdf3d0c4",
+      "models": ["hatchback-sports", "sedan-sports", "suv-luxury", "van", "delivery", "taxi"]
+    }
+  }
+}

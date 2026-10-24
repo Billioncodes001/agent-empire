@@ -315,7 +315,7 @@ try {
       await s.page.waitForTimeout(6000);
       const w = await wearing(s.page);
       check('phone: CEO style 3 wears the pinstripe suit, textured', w.me === 'business-f04' && w.ready, `${w.me} ready=${w.ready}`);
-      const textures = [...s.bytes.keys()].filter((p) => p.endsWith('.webp') && !p.includes('/mask-'));
+      const textures = [...s.bytes.keys()].filter((p) => p.includes('/avatars/') && p.endsWith('.webp') && !p.includes('/mask-'));
       check('phone loads only the 512² texture set', textures.length > 0 && textures.every((p) => p.endsWith('-512.webp')), textures.slice(0, 3).join(' '));
       await s.page.evaluate(() => { const o = (window as unknown as { __office: { player: { view: string; camYaw: number; camDist: number } } }).__office; o.player.view = 'third'; o.player.camYaw = Math.PI * 0.85; o.player.camDist = 3.2; });
       await s.page.waitForTimeout(1500);
@@ -328,7 +328,7 @@ try {
       const s = await open(browser, { width: 1280, height: 800, touch: false, style: 0, saveData: true });
       await enterGame(s.page);
       await s.page.waitForTimeout(3000);
-      const textures = [...s.bytes.keys()].filter((p) => p.endsWith('.webp') && !p.includes('/mask-'));
+      const textures = [...s.bytes.keys()].filter((p) => p.includes('/avatars/') && p.endsWith('.webp') && !p.includes('/mask-'));
       check('Save-Data loads only the 512² texture set', textures.length > 0 && textures.every((p) => p.endsWith('-512.webp')), `${textures.length} textures`);
       await s.context.close();
     }

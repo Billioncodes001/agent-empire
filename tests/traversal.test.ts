@@ -115,3 +115,71 @@ test('door transitions cannot be triggered while jumping or standing still', () 
   f.traversal.update(0.02);
   assert.equal(f.player.scripted, false);
 });
+
+// ---------------------------------------------------------------- FREE-09 (CITY-05/07): districts and garage
+import { districtLayout } from '../src/client/world/district-layout';
+import { GARAGE } from '../src/shared/city';
+import type { Collider } from '../src/client/world/office';
+
+function cityWalker(colliders: Collider[]) {
+  setup(); // installs the minimal DOM the controller expects
+  const player = new PlayerController(new THREE.PerspectiveCamera(64, 1, 0.08, 1500), new Element() as unknown as HTMLElement, colliders);
+  player.view = 'third';
+  const walk = (yaw: number, until: () => boolean, seconds = 90) => {
+    player.camYaw = yaw;
+    player.setAction('forward', true);
+    for (let i = 0; i < seconds * 60 && !until(); i++) player.update(1 / 60);
+    player.setAction('forward', false);
+    for (let i = 0; i < 30; i++) player.update(1 / 60);
+  };
+  return { player, walk };
+}
+
+test('the founder walks from the founding district along new streets into the business district and Harbour works', () => {
+  const layout = districtLayout();
+  const { player, walk } = cityWalker(layout.colliders.map((c) => ({ ...c })));
+  player.pos.set(40, 0, 90);
+  walk(-Math.PI / 2, () => player.pos.x >= 100);
+  assert.ok(player.pos.x >= 99.5 && Math.abs(player.pos.z - 90) < 1, `reached the avenue: ${player.pos.x.toFixed(1)}, ${player.pos.z.toFixed(1)}`);
+  walk(Math.PI, () => player.pos.z >= 175);
+  assert.ok(player.pos.z >= 174, `walked down the avenue to the harbour road: z ${player.pos.z.toFixed(1)}`);
+  walk(-Math.PI / 2, () => player.pos.x >= 140);
+  assert.ok(player.pos.x >= 139, `crossed Harbour works: x ${player.pos.x.toFixed(1)}`);
+  assert.ok(player.pos.x <= 150, 'stays within the city bounds');
+});
+
+test('the garage is entered physically through its roller door; the closed door and walls block entry', () => {
+  const layout = districtLayout();
+  const door = { ...layout.garage.door };
+  const { player, walk } = cityWalker([...layout.colliders.map((c) => ({ ...c })), door]);
+  player.pos.set(GARAGE.door.x, 0, 91);
+  walk(0, () => player.pos.z < 80, 8);
+  assert.ok(player.pos.z > GARAGE.door.z, `held outside by the closed door: z ${player.pos.z.toFixed(2)}`);
+  door.top = 0;
+  player.pos.set(64, 0, 91);
+  walk(0, () => player.pos.z < 80, 8);
+  assert.ok(player.pos.z > GARAGE.door.z, 'the front wall is solid');
+  player.pos.set(GARAGE.door.x, 0, 91);
+  walk(0, () => player.pos.z < 80, 12);
+  assert.ok(player.pos.z < 80, `inside the garage: z ${player.pos.z.toFixed(2)}`);
+});
+
+test('the executive sedan can drive from the founding district into the business district', () => {
+  const layout = districtLayout();
+  const { player } = cityWalker(layout.colliders.map((c) => ({ ...c })));
+  player.pos.set(40, 0, 88);
+  player.driving = true;
+  player.facing = Math.PI / 2;
+  player.setAction('forward', true);
+  for (let i = 0; i < 60 * 30 && player.pos.x < 95; i++) player.update(1 / 60);
+  assert.ok(player.pos.x >= 95, `drove east along the z = 90 street: x ${player.pos.x.toFixed(1)}`);
+});
+
+test('review 3: the founding z = 146 road stays open past the skyline into Harbour works', async () => {
+  const { skylineColliders } = await import('../src/client/world/district-layout');
+  const layout = districtLayout();
+  const { player, walk } = cityWalker([...layout.colliders, ...skylineColliders()].map((c) => ({ ...c })));
+  player.pos.set(-40, 0, 148.5); // the northern lane, next to the kerb under the towers
+  walk(-Math.PI / 2, () => player.pos.x >= 92);
+  assert.ok(player.pos.x >= 91 && Math.abs(player.pos.z - 148.5) < 0.6, `walked the z = 146 road: ${player.pos.x.toFixed(1)}, ${player.pos.z.toFixed(2)}`);
+});
