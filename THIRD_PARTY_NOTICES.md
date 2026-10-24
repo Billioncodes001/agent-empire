@@ -51,3 +51,30 @@ The first-launch cloud setup bundles two npm packages to encrypt provider API ke
 
 - [tweetnacl](https://github.com/dchest/tweetnacl-js) 1.0.3 — public domain ([Unlicense](https://unlicense.org)).
 - [blakejs](https://github.com/dcposch/blakejs) 1.2.1 — MIT License, Copyright (c) 2022 Blakejs contributors. The full license text ships in the package (`node_modules/blakejs/LICENSE`).
+
+## Public redistribution review (FREE-03, 2026-10-23)
+
+Checked before the repository goes public under MIT (`LICENSE`):
+
+| Component | Licence | Public redistribution |
+| --- | --- | --- |
+| Agent Office (upstream code and history) | MIT, declared in upstream `package.json` | Compatible. **Flag:** the copied upstream revision has no standalone LICENSE or copyright line, so the MIT grant rests on package metadata. Attribution above stays; asking upstream to add a LICENSE file would remove the ambiguity. |
+| Microsoft Rocketbox avatars, Tidewater conversions | MIT (licence files shipped next to the assets) | Compatible |
+| Poly Haven textures and HDR | CC0 | Compatible |
+| World sounds (Kenney, Freesound, BigSoundBank, OpenGameArt) | CC0 per file (`src/client/public/audio/README.md`) | Compatible |
+| Executive sedan | Authored for this project; geometry is rebuilt by the repository's own Blender scripts | Covered by this repository's MIT licence |
+| tweetnacl, blakejs | Unlicense, MIT | Compatible |
+| npm dependencies (`package-lock.json`, 161 packages) | MIT, Apache-2.0, ISC, BSD-3-Clause, 0BSD, Unlicense; MPL-2.0 only in build-time `lightningcss` and `dompurify` (dev) | All OSI-approved; nothing copyleft is bundled into the shipped game |
+
+Nothing found prevents public redistribution. SignPath Foundation additionally requires that every shipped component be OSI-licensed; the asset licences above (MIT, CC0; CC0 is not an OSI licence) will be listed in the SignPath application, and SignPath decides whether they are acceptable (`docs/DISTRIBUTION.md`).
+
+## Kenney city and vehicle kits (CC0)
+
+`src/client/public/models/city/` holds district buildings, street furniture and garage vehicles built by `tools/city/build-city-assets.ts` from four official Kenney packs. Each pack is released under [Creative Commons Zero (CC0 1.0)](https://creativecommons.org/publicdomain/zero/1.0/). The licence was checked on each pack page and in each archive's `License.txt` on 2026-10-24. Attribution is optional; we credit Kenney (www.kenney.nl) gladly. Only the listed models are shipped. Each is a quantized GLB with the palette as external WebP at 512² and 256². The archives are build inputs in the git-ignored `.cache/kenney/` and are not committed. Per-file checksums are in `src/client/public/models/city/manifest.json`, and `LICENSE-Kenney.md` ships next to the files.
+
+| Pack | Page | Archive SHA-256 | Models used |
+| --- | --- | --- | --- |
+| City Kit (Commercial) 2.1 | https://kenney.nl/assets/city-kit-commercial | `f8b09b081c2bb88bcc126e2dec1cb40fd0dad7e7e591b6c26aaefe96fb35276b` | building-skyscraper-a to e; building-a, e, g, h, m; detail-awning-wide; detail-parasol-a |
+| City Kit (Industrial) 2.0 | https://kenney.nl/assets/city-kit-industrial | `5b381164e5760f3830a2dbee43b972deee38b2a695d091b56e238ab2910c96d2` | building-a, c, f, k, o, q; chimney-large; detail-tank-large; detail-tank; shipping-container-a to c; water-tower |
+| City Kit (Roads) | https://kenney.nl/assets/city-kit-roads | `374a4552115cbd11b4ec5c930ee31a533562dc78a09af249a655d03f7ea3b959` | light-square; light-curved-double; traffic-light; dumpster; construction-cone; construction-barrier; road-sign-street |
+| Car Kit | https://kenney.nl/assets/car-kit | `fac7dacac5c7874348cf19729af3ef205f3d366493edaf0a827d93f4fdf3d0c4` | hatchback-sports; sedan-sports; suv-luxury; van; delivery; taxi |

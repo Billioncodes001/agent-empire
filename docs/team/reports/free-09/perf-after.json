@@ -1,0 +1,87 @@
+{
+  "label": "after",
+  "base": "http://localhost:4937/",
+  "note": "Headless Chrome, ANGLE/Metal, vsync and frame cap disabled; Medium preset (default). Same viewpoints in every run.",
+  "desktop-1440x900": {
+    "founding": {
+      "frames": {
+        "mean": 4.4097909790979095,
+        "p95": 5.899999999999636,
+        "frames": 909
+      },
+      "renderer": {
+        "triangles": 1384999,
+        "calls": 383,
+        "geometries": 832,
+        "textures": 168
+      }
+    },
+    "business": {
+      "frames": {
+        "mean": 3.6506836827711937,
+        "p95": 4.700000000000728,
+        "frames": 1097
+      },
+      "renderer": {
+        "triangles": 1347544,
+        "calls": 182,
+        "geometries": 832,
+        "textures": 168
+      }
+    },
+    "aerial": {
+      "frames": {
+        "mean": 4.843115942028988,
+        "p95": 5.700000000000728,
+        "frames": 828
+      },
+      "renderer": {
+        "triangles": 1391437,
+        "calls": 320,
+        "geometries": 908,
+        "textures": 170
+      }
+    }
+  },
+  "phone-874x402": {
+    "founding": {
+      "frames": {
+        "mean": 3.8191611058150614,
+        "p95": 4.699999999998909,
+        "frames": 1049
+      },
+      "renderer": {
+        "triangles": 1386937,
+        "calls": 438,
+        "geometries": 873,
+        "textures": 174
+      }
+    },
+    "business": {
+      "frames": {
+        "mean": 2.9853094705443692,
+        "p95": 3.7999999999992724,
+        "frames": 1341
+      },
+      "renderer": {
+        "triangles": 1352874,
+        "calls": 194,
+        "geometries": 873,
+        "textures": 174
+      }
+    },
+    "aerial": {
+      "frames": {
+        "mean": 4.576914285714285,
+        "p95": 5.400000000001455,
+        "frames": 875
+      },
+      "renderer": {
+        "triangles": 1395421,
+        "calls": 383,
+        "geometries": 973,
+        "textures": 174
+      }
+    }
+  }
+}

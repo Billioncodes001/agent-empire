@@ -250,3 +250,14 @@ test('protocol handler serves the active bundle with the same rules, and the bui
   assert.equal((await get('/game-version.json')).status, 200);
   rmSync(builtinRoot, { recursive: true, force: true });
 });
+
+test('macOS self-update needs a Developer ID signature; ad-hoc and unsigned builds fall back to the download prompt (FREE-03)', () => {
+  const adhoc = 'Executable=/Applications/Agent Empire.app/Contents/MacOS/Agent Empire\nIdentifier=com.agentempire.desktop\nCodeDirectory v=20400 size=500 flags=0x2(adhoc) hashes=5+7 location=embedded\nSignature=adhoc\nTeamIdentifier=not set\n';
+  const devId = 'Executable=/Applications/Agent Empire.app/Contents/MacOS/Agent Empire\nAuthority=Developer ID Application: Example Corp (ABCDE12345)\nAuthority=Developer ID Certification Authority\nAuthority=Apple Root CA\nTeamIdentifier=ABCDE12345\n';
+  assert.equal(updates.macDeveloperIdSigned(adhoc), false, 'ad-hoc');
+  assert.equal(updates.macDeveloperIdSigned('/Applications/Agent Empire.app: code object is not signed at all\n'), false, 'unsigned');
+  assert.equal(updates.macDeveloperIdSigned(''), false, 'no output');
+  assert.equal(updates.macDeveloperIdSigned(undefined), false, 'codesign missing');
+  assert.equal(updates.macDeveloperIdSigned('Authority=Apple Development: someone (XYZ)\n'), false, 'development certificate');
+  assert.equal(updates.macDeveloperIdSigned(devId), true, 'Developer ID');
+});

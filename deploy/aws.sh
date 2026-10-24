@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy your own Agent Office to AWS with one command, using only the AWS CLI.
+# Deploy your own Agent Empire server to AWS with one command, using only the AWS CLI.
 #
 #   deploy/aws.sh up        create the machine, install and start the office, open it
 #   deploy/aws.sh open      tunnel to the office and open it in your browser
@@ -34,7 +34,7 @@ LOCAL_PORT_SET=0
 
 usage() {
   cat <<'EOF'
-Agent Office on AWS — one command up, one command down.
+Agent Empire on AWS — one command up, one command down.
 
 Usage: deploy/aws.sh <command> [options]
 
@@ -432,7 +432,7 @@ cmd_up() {
   local a
   for a in "${EXTRA_ALLOW[@]+"${EXTRA_ALLOW[@]}"}"; do cidrs+=("$(to_cidr "$a")"); done
 
-  say "Agent Office \"$NAME\" in $AWS_REGION (account $ACCOUNT)"
+  say "Agent Empire \"$NAME\" in $AWS_REGION (account $ACCOUNT)"
   echo "   machine:  $INSTANCE_TYPE, ${DISK_GB} GiB disk, Ubuntu 24.04"
   echo "   app:      $APP_REPO @ $APP_REF"
   echo "   project:  ${project_repo:-(empty project)}"

@@ -7,7 +7,7 @@ Open **Settings → App & connection → Open founder desk**, or `/consultancy.h
 3. Open the job, inspect every work item and choose **Approve & queue**. Provider use may be billed under the host's existing execution configuration. The current chief is a deterministic coordinator; the initial form makes one work item from the brief.
 4. Track queued, running, attention and review states. A worker finishing a turn does not prove the requested outcome is complete. Review the actual changes/PR before delivering them to a client.
 
-All jobs currently execute against this office host's repository. Different client labels organize work but do not create security boundaries or independent repositories. Approved tasks retain the existing funded-workstation, concurrency, budget and execution-mode gates. Provider-cloud mode holds this local queue; it does not silently launch another provider. Resource recommendations, automatic workstation purchases and model-authored multi-agent plans are later milestones.
+A job runs in the office host's repository unless its brief names a product (FREE-06, see [products](PRODUCTS.md)): then every item runs in that product's own repository. Products separate working directories on one host; they are not security boundaries. Approved tasks retain the existing funded-workstation, concurrency, budget and execution-mode gates. Provider-cloud mode holds this local queue; it does not silently launch another provider. Resource recommendations, automatic workstation purchases and model-authored multi-agent plans are later milestones.
 
 ## Telegram
 
@@ -49,3 +49,7 @@ Closing the founder desk or 3D browser view does not stop a running host. Quitti
 Automated tests use fake workers and Telegram transport: no customer messages, provider charges or live city changes. A real configured bot, speech conversations, automatic expansion and cross-device deployments require their own acceptance checks. See `docs/team/CONSULTANCY_PLAN.md` for the next phases.
 
 Protocol reference: [Telegram Bot API](https://core.telegram.org/bots/api).
+
+## Server mode only
+
+The founder desk, client jobs, estimates, the approval inbox, Telegram, email outreach and the research executive run on an office server (server mode). Cloud mode — the Empire in your own GitHub state repository — has cloud jobs you submit from the game with explicit paid confirmation, and in-app shut down and start, but no founder desk, consultancy journal, Telegram bridge or outreach. Its city economy follows the same rules (see [economy](ECONOMY.md#server-mode-and-cloud-mode)).

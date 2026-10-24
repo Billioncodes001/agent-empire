@@ -43,6 +43,7 @@ export const PROJECT_TOKEN_GUIDANCE = [
   'Use a fine-grained personal access token (github_pat_…), not a classic token.',
   'Repository access: only the project repositories you selected, never "All repositories".',
   'Permissions: Contents read/write and Pull requests read/write; nothing else. It is sent to Anthropic to mount the repository in the agent sandbox.',
+  'For the free or Claude-subscription engine (GitHub Actions), it also needs Actions read/write so the coordinator can start and cancel job runs; it never leaves GitHub.',
   'Protect the default branch of each project repository (require a pull request before merging) so agent work can only arrive as reviewable branches.',
   'Set an expiry; re-run setup to replace it.',
 ] as const;

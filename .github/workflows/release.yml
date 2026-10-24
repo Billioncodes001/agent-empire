@@ -223,7 +223,7 @@ jobs:
       - name: Package unsigned
         if: env.HAS_APPLE_SIGNING != 'true'
         run: |
-          echo "::warning::no Apple signing (dry run, or secrets not set): building an UNSIGNED macOS app"
+          echo "::warning::no Apple signing (dry run, or secrets not set): building an ad-hoc signed macOS app (no Developer ID; users choose Open Anyway; updates by download)"
           node tools/release/package-macos.mjs --out release/assets
       - name: The packaged app trusts only the release key
         run: |

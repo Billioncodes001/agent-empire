@@ -6,6 +6,7 @@ import { installState, onInstallChange, promptInstall } from './pwa';
 import type { StatusView } from './status';
 import { executionApi, openCloudTasks, openExecutionSetup, setupView } from './execution';
 import type { ExecutionSetup } from '../../shared/execution';
+import { devicesSection } from './devices';
 
 const INSTALL_TEXT = {
   installed: 'Installed. Agent Empire opens in its own window from your home screen, dock or app list.',
@@ -53,6 +54,11 @@ export function appPanel(net: Net) {
   const tasksBtn = h('button.btn', { type: 'button', onclick: openTasks }, 'Cloud tasks…');
   execution.el.append(h('div.sector-actions', {}, setupBtn, tasksBtn));
   executionApi.setup().then(setExecution, () => setExecution(null));
+  // Signed-in devices belong to an office host (GET /api/devices). Cloud mode has none, so it says so instead of
+  // showing a connection error.
+  const devices = store.cloud
+    ? { el: h('article.status-card.devices-card', {}, h('strong', {}, 'Signed-in devices'), h('p', {}, 'Not available in cloud mode: devices sign in to an office host.')), dispose: () => {} }
+    : devicesSection();
 
   const el = h(
     'section.app-panel',
@@ -60,6 +66,7 @@ export function appPanel(net: Net) {
     h('label', { id: 'app-panel-title', style: 'margin-top:18px' }, 'App & connection'),
     h('a.btn', { href: '/consultancy.html' }, 'Open founder desk · client jobs & approvals'),
     h('div.status-cards', {}, connection.el, host.el, execution.el),
+    devices.el,
     h(
       'p.setting-note',
       {},
@@ -90,6 +97,7 @@ export function appPanel(net: Net) {
     dispose() {
       offs.forEach((off) => off());
       clearInterval(timer);
+      devices.dispose();
     },
   };
 }

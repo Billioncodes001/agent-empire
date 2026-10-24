@@ -11,9 +11,11 @@
  */
 import { initialEmpire, newSector, SITES, type EmpireState, type SectorState, type SiteId } from '../shared/empire.js';
 import { DESKS_PER_FLOOR } from '../shared/layout.js';
+import { normalizeCity } from '../shared/city.js';
 import type { ExecutionConfig, ExecutionTask } from '../shared/execution.js';
 import { COMMIT, PROVIDER_ID, TASK_ID, validateConfig } from '../server/execution-validation.js';
 import { DEFAULT_WORKER_MODEL, isWorkerModel, WORKER_ENVIRONMENT, type WorkerModel } from './worker-spec.js';
+import { ActionsSettingsError, isCloudEngine, RUN_CAPS, validateActionsSettings, type ActionsSettings, type CloudEngine } from './actions-spec.js';
 
 export const CLOUD_SCHEMA_VERSION = 1;
 export const STATE_FILES = {
@@ -52,11 +54,31 @@ export const LIMITS = {
 /** Same ranges as the host execution ledger (execution-validation.ts). */
 export type CloudLimits = ExecutionConfig['limits'];
 /** Provider references only. Credentials live in encrypted Actions secrets, never in state. */
-export interface CloudExecution {
+export type CloudExecution = AnthropicExecution | ActionsExecution;
+export interface AnthropicExecution {
   provider: 'anthropic';
   repository: ExecutionConfig['repository'];
   anthropic: ExecutionConfig['anthropic'];
 }
+/** FREE-04: jobs run as workflow_dispatch runs of the job workflow in the project repository. No credentials here. */
+export interface ActionsExecution {
+  provider: 'github-actions';
+  repository: ExecutionConfig['repository'];
+  actions: ActionsSettings;
+}
+export type ProviderId = CloudExecution['provider'];
+export const PROVIDER_IDS: readonly ProviderId[] = ['anthropic', 'github-actions'];
+/** GitHub Actions run references in the job cursor: ids, caps and the engine only. */
+export interface ActionsCursor { owner: string; name: string; runId: number; jobId: string; engine: CloudEngine; budgetCents: number; maxTurns: number }
+/**
+ * How a job's cost was established. `free_run` and `claude_plan` always carry 0 cents: a free run costs nothing and a
+ * Claude-subscription run is billed to the user's plan, never as a US$ figure. `engine_reported_estimate` is Claude
+ * Code's own total for an API-key run in GitHub Actions, kept apart from provider-reported list costs.
+ */
+export type CostBasis = 'provider_reported_list_cost' | 'engine_reported_estimate' | 'free_run' | 'claude_plan';
+export const COST_BASES: readonly CostBasis[] = ['provider_reported_list_cost', 'engine_reported_estimate', 'free_run', 'claude_plan'];
+/** Money reservation (per-job allowance) or, for free and subscription runs, a zero-money reservation of run caps. */
+export type ReservationBasis = 'per_job_allowance_estimate' | 'run_caps';
 
 /**
  * A request for the coordinator to find or create the Anthropic agent and environment for `repository`
@@ -143,7 +165,7 @@ export const sessionLive = (job: CloudJob) => !!job.sessionId && job.providerSta
  */
 export const holdsSlot = (job: CloudJob) => SLOT_STATUSES.includes(job.status) || (REVIEW_STATUSES.includes(job.status) && sessionLive(job));
 
-export interface EventCursorState { after?: string; page?: string; newest?: string; lastEventId?: string; stopReason?: ExecutionTask['stopReason'] }
+export interface EventCursorState { after?: string; page?: string; newest?: string; lastEventId?: string; stopReason?: ExecutionTask['stopReason']; actions?: ActionsCursor }
 export interface CloudJob {
   id: string;
   title: string;
@@ -164,7 +186,7 @@ export interface CloudJob {
   authorizedCents: number;
   status: CloudJobStatus;
   message: string;
-  provider: 'anthropic';
+  provider: ProviderId;
   repository: ExecutionConfig['repository'];
   branch: string;
   sourceCommit?: string;
@@ -175,8 +197,8 @@ export interface CloudJob {
   /** Task branch head observed with the project token: evidence of a push, not verification. */
   branchHead?: { sha: string; observedAt: number };
   /** Admission-control estimate: the full per-job budget, not an observed charge. */
-  reservation?: { cents: number; day: string; basis: 'per_job_allowance_estimate' };
-  cost?: { amountCents: number; currency: 'USD'; observedAt: number; basis: 'provider_reported_list_cost' };
+  reservation?: { cents: number; day: string; basis: ReservationBasis };
+  cost?: { amountCents: number; currency: 'USD'; observedAt: number; basis: CostBasis };
   dispatch?: { runId: string; preparedAt: number; attempts: number };
   stopRequested?: { at: number; reason: StopReason };
   review?: { decision: 'accepted' | 'rejected'; at: number; intentId: string; note?: string };
@@ -191,16 +213,17 @@ export interface CloudJobs { schemaVersion: 1; jobs: CloudJob[] }
 export interface SpendEntry {
   at: number;
   jobId: string;
-  kind: 'reserved' | 'released' | 'cost_observed';
+  /** `cost_estimated`: an engine-reported estimate (API-key Actions runs), never added into observed costs. */
+  kind: 'reserved' | 'released' | 'cost_observed' | 'cost_estimated';
   cents: number;
   day: string;
-  basis: 'per_job_allowance_estimate' | 'provider_reported_list_cost';
+  basis: 'per_job_allowance_estimate' | CostBasis;
 }
 export interface CloudLedger {
   schemaVersion: 1;
   currency: 'USD';
   entries: SpendEntry[];
-  days: Record<string, { reservedCents: number; observedCostCents: number }>;
+  days: Record<string, { reservedCents: number; observedCostCents: number; estimatedCostCents?: number }>;
 }
 
 export type JournalKind = 'intent_applied' | 'intent_rejected' | 'job' | 'dispatch' | 'lifecycle' | 'limits' | 'economy' | 'warning';
@@ -278,6 +301,9 @@ function str(file: string, value: unknown, max: number, pattern?: RegExp): strin
 }
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const RUN_ID = /^[A-Za-z0-9._-]{1,80}$/;
+export const ACTIONS_RUN = /^ghrun_[1-9][0-9]{0,19}$/;
+const GH_OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+const GH_REPO = /^[A-Za-z0-9._-]{1,100}$/;
 
 /** Reuses the host ranges: 1–10 concurrent, per-task 1–100,000 cents, daily ≥ per-task and ≤ 10,000,000. */
 export function validateLimits(value: unknown): CloudLimits {
@@ -285,6 +311,12 @@ export function validateLimits(value: unknown): CloudLimits {
 }
 /** Reuses the host repository/provider-reference validation for a completed Anthropic cloud config. */
 export function validateExecution(value: unknown): CloudExecution {
+  if ((value as Rec | null)?.provider === 'github-actions') {
+    const input = rec('execution', value, ['provider', 'repository', 'actions']);
+    const repository = validateProvisionRepository(input.repository);
+    try { return { provider: 'github-actions', repository, actions: validateActionsSettings(input.actions) }; }
+    catch (error) { throw new SchemaError('execution', error instanceof ActionsSettingsError ? error.message : 'invalid GitHub Actions settings'); }
+  }
   const input = rec('execution', value, ['provider', 'repository', 'anthropic']);
   if (input.provider !== 'anthropic') throw new SchemaError('execution', 'only the anthropic provider is implemented');
   const config = validateConfig({ schemaVersion: 1, completed: true, mode: 'anthropic_cloud', repository: input.repository, anthropic: input.anthropic, githubAuth: 'host_token', limits: DEFAULT_LIMITS });
@@ -387,16 +419,27 @@ export function validateJobs(value: unknown): CloudJobs {
     if (j.promptArchive !== undefined) str(f, j.promptArchive, 120, /^archive\/prompts\/[a-f0-9-]{36}\.txt$/);
     if (j.site !== undefined && !SITES.some(s => s.id === j.site)) throw new SchemaError(f, 'invalid site');
     time(f, j.createdAt); time(f, j.updatedAt); int(f, j.configRevision); int(f, j.authorizedCents, 1, 100_000);
-    if (j.provider !== 'anthropic' || j.outputs !== 'unverified') throw new SchemaError(f, 'invalid provider/outputs');
+    if (!PROVIDER_IDS.includes(j.provider as ProviderId) || j.outputs !== 'unverified') throw new SchemaError(f, 'invalid provider/outputs');
+    const actions = j.provider === 'github-actions';
     REPO(f, j.repository);
     if (j.branch !== `agent-empire/task-${id}`) throw new SchemaError(f, 'invalid branch');
     if (j.sourceCommit !== undefined) str(f, j.sourceCommit, 64, COMMIT);
-    if (j.sessionId !== undefined) str(f, j.sessionId, 120, PROVIDER_ID.session);
+    if (j.sessionId !== undefined) str(f, j.sessionId, 120, actions ? ACTIONS_RUN : PROVIDER_ID.session);
     if (j.providerStatus !== undefined && !['running', 'rescheduling', 'idle', 'terminated', 'archived'].includes(String(j.providerStatus))) throw new SchemaError(f, 'invalid providerStatus');
     const stops = ['end_turn', 'requires_action', 'budget_reached', 'error', 'unknown'];
     if (j.stopReason !== undefined && !stops.includes(String(j.stopReason))) throw new SchemaError(f, 'invalid stopReason');
     if (j.cursor !== undefined) {
-      const c = rec(f, j.cursor, ['after', 'page', 'newest', 'lastEventId', 'stopReason']);
+      const c = rec(f, j.cursor, ['after', 'page', 'newest', 'lastEventId', 'stopReason', 'actions']);
+      if (c.actions !== undefined) {
+        if (!actions) throw new SchemaError(f, 'invalid cursor');
+        const a = rec(f, c.actions, ['owner', 'name', 'runId', 'jobId', 'engine', 'budgetCents', 'maxTurns']);
+        const repo = j.repository as { owner?: unknown; name?: unknown };
+        if (a.owner !== repo.owner || a.name !== repo.name) throw new SchemaError(f, 'cursor names another repository');
+        str(f, a.owner, 39, GH_OWNER); str(f, a.name, 100, GH_REPO);
+        int(f, a.runId, 1); int(f, a.budgetCents, 0, 100_000); int(f, a.maxTurns, RUN_CAPS.turns.min, RUN_CAPS.turns.max);
+        if (a.jobId !== id || !isCloudEngine(a.engine)) throw new SchemaError(f, 'invalid cursor');
+        if (j.sessionId !== undefined && j.sessionId !== `ghrun_${a.runId}`) throw new SchemaError(f, 'cursor does not match the run');
+      }
       for (const key of ['after', 'newest']) if (c[key] !== undefined && !Number.isFinite(Date.parse(str(f, c[key], 64)))) throw new SchemaError(f, 'invalid cursor');
       if (c.page !== undefined) str(f, c.page, 2048);
       if (c.lastEventId !== undefined) str(f, c.lastEventId, 120, PROVIDER_ID.event);
@@ -405,13 +448,17 @@ export function validateJobs(value: unknown): CloudJobs {
     if (j.branchHead !== undefined) { const b = rec(f, j.branchHead, ['sha', 'observedAt']); str(f, b.sha, 64, COMMIT); time(f, b.observedAt); }
     if (j.reservation !== undefined) {
       const r = rec(f, j.reservation, ['cents', 'day', 'basis']);
-      int(f, r.cents, 1, 100_000); str(f, r.day, 10, DAY);
-      if (r.basis !== 'per_job_allowance_estimate') throw new SchemaError(f, 'invalid reservation basis');
+      str(f, r.day, 10, DAY);
+      if (r.basis === 'run_caps') { if (!actions) throw new SchemaError(f, 'invalid reservation basis'); int(f, r.cents, 0, 0); }
+      else if (r.basis === 'per_job_allowance_estimate') int(f, r.cents, 1, 100_000);
+      else throw new SchemaError(f, 'invalid reservation basis');
     }
     if (j.cost !== undefined) {
       const c = rec(f, j.cost, ['amountCents', 'currency', 'observedAt', 'basis']);
       int(f, c.amountCents); time(f, c.observedAt);
-      if (c.currency !== 'USD' || c.basis !== 'provider_reported_list_cost') throw new SchemaError(f, 'invalid cost');
+      if (c.currency !== 'USD' || !COST_BASES.includes(c.basis as CostBasis)) throw new SchemaError(f, 'invalid cost');
+      if (c.basis !== 'provider_reported_list_cost' && !actions) throw new SchemaError(f, 'invalid cost');
+      if ((c.basis === 'free_run' || c.basis === 'claude_plan') && c.amountCents !== 0) throw new SchemaError(f, 'invalid cost');
     }
     if (j.dispatch !== undefined) { const d = rec(f, j.dispatch, ['runId', 'preparedAt', 'attempts']); str(f, d.runId, 80, RUN_ID); time(f, d.preparedAt); int(f, d.attempts, 0, 100); }
     if (j.stopRequested !== undefined) { const s = rec(f, j.stopRequested, ['at', 'reason']); time(f, s.at); if (!['cancel', 'shutdown', 'turn_ended', 'review'].includes(String(s.reason))) throw new SchemaError(f, 'invalid stop reason'); }
@@ -429,14 +476,15 @@ export function validateLedger(value: unknown): CloudLedger {
   for (const item of data.entries) {
     const e = rec(f, item, ['at', 'jobId', 'kind', 'cents', 'day', 'basis']);
     time(f, e.at); str(f, e.jobId, 36, TASK_ID); int(f, e.cents); str(f, e.day, 10, DAY);
-    if (!['reserved', 'released', 'cost_observed'].includes(String(e.kind)) || !['per_job_allowance_estimate', 'provider_reported_list_cost'].includes(String(e.basis))) throw new SchemaError(f, 'invalid spend entry');
+    if (!['reserved', 'released', 'cost_observed', 'cost_estimated'].includes(String(e.kind)) || !['per_job_allowance_estimate', ...COST_BASES].includes(String(e.basis))) throw new SchemaError(f, 'invalid spend entry');
   }
   const days = rec(f, data.days);
   if (Object.keys(days).length > LIMITS.spendDays) throw new SchemaError(f, 'too many ledger days');
   for (const [day, totals] of Object.entries(days)) {
     str(f, day, 10, DAY);
-    const t = rec(f, totals, ['reservedCents', 'observedCostCents']);
+    const t = rec(f, totals, ['reservedCents', 'observedCostCents', 'estimatedCostCents']);
     int(f, t.reservedCents); int(f, t.observedCostCents);
+    if (t.estimatedCostCents !== undefined) int(f, t.estimatedCostCents);
   }
   return clone(data) as unknown as CloudLedger;
 }
@@ -472,6 +520,8 @@ export function validateEmpire(value: unknown): EmpireState {
   if (!office || !Number.isSafeInteger(office.floors) || office.floors < 1 || !Number.isSafeInteger(office.workstations) || office.workstations < 1 || office.workstations > office.floors * DESKS_PER_FLOOR) throw new SchemaError(f, 'invalid headquarters capacity');
   const state = clone(saved) as EmpireState;
   delete state.supervision;
+  // FREE-09: plots and garage vehicles; an older snapshot without them keeps the original district.
+  try { state.city = normalizeCity(saved.city); } catch (e) { throw new SchemaError(f, (e as Error).message); }
   return state;
 }
 

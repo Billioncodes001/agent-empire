@@ -7,7 +7,7 @@
  * real provider money.
  */
 import { SITES, type SiteId } from '../../shared/empire';
-import { CANCELLABLE, cloudStatus, dollars, executionStatus, JOB_LABEL, JOB_TONE, jobCounts, SANDBOX_NOTE, shortAge, snapshotTime, todaySpend } from './map';
+import { CANCELLABLE, cloudStatus, dollars, executionStatus, jobCostLabel, JOB_LABEL, JOB_TONE, jobCounts, SANDBOX_NOTE, shortAge, snapshotTime, todaySpend } from './map';
 import { DEFAULT_WORKER_MODEL, WORKER_MODELS, type WorkerModel } from '../../cloud/worker-spec';
 import { repoLabel } from './repo';
 import type { CloudNet, NewJobRequest } from './net';
@@ -238,7 +238,7 @@ function jobRow(net: CloudNet, job: CloudJob): HTMLElement {
           void net.submit({ kind: 'cancel', jobId: job.id }, `Cancel “${job.title.slice(0, 40)}”`),
         ), { disabled: busy || sent }),
     );
-  const cost = job.cost ? `${dollars(job.cost.amountCents)} used (provider list cost)` : job.reservation ? `${dollars(job.reservation.cents)} reserved` : `up to ${dollars(job.authorizedCents)} authorized`;
+  const cost = jobCostLabel(job);
   return h(
     'li.cloud-job',
     { 'data-tone': tone, 'data-job': job.id },
@@ -393,8 +393,9 @@ function limitsTab(net: CloudNet, state: CloudState): HTMLElement[] {
   const owner = h('input', { type: 'text', value: ex?.repository.owner ?? '', placeholder: 'owner', 'aria-label': 'Project owner' }) as HTMLInputElement;
   const name = h('input', { type: 'text', value: ex?.repository.name ?? '', placeholder: 'repository', 'aria-label': 'Project repository' }) as HTMLInputElement;
   const base = h('input', { type: 'text', value: ex?.repository.baseBranch ?? 'main', 'aria-label': 'Base branch' }) as HTMLInputElement;
-  const agent = h('input', { type: 'text', value: ex?.anthropic.agentId ?? '', placeholder: 'agent_…', 'aria-label': 'Anthropic agent ID' }) as HTMLInputElement;
-  const env = h('input', { type: 'text', value: ex?.anthropic.environmentId ?? '', placeholder: 'env_…', 'aria-label': 'Anthropic environment ID' }) as HTMLInputElement;
+  const anthropicEx = ex?.provider === 'anthropic' ? ex : undefined;
+  const agent = h('input', { type: 'text', value: anthropicEx?.anthropic.agentId ?? '', placeholder: 'agent_…', 'aria-label': 'Anthropic agent ID' }) as HTMLInputElement;
+  const env = h('input', { type: 'text', value: anthropicEx?.anthropic.environmentId ?? '', placeholder: 'env_…', 'aria-label': 'Anthropic environment ID' }) as HTMLInputElement;
   const exErr = h('p.setting-note.cloud-error', { role: 'alert' });
   const execForm = h(
     'form.cloud-form',

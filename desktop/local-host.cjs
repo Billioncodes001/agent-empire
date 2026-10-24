@@ -20,7 +20,9 @@ async function startLocalHost({project, runtimeDir, credentials, port:preferredP
   const {startServer}=await import(pathToFileURL(path.join(runtimeDir,'server/server/server.js')).href);
   const config=loadConfig([project,'--host','127.0.0.1','--port','4600','--password',password]);
   config.port=Number.isInteger(preferredPort) && preferredPort > 1024 && preferredPort < 65536 ? preferredPort : 0;
-  const host=await startServer(config,{publicDir:path.join(runtimeDir,'public'),backgroundServices:false,requireExecutionSetup:true,execution:{apiKey:()=>credentials().anthropicKey,githubToken:()=>credentials().githubToken}});
+  const host=await startServer(config,{publicDir:path.join(runtimeDir,'public'),backgroundServices:false,requireExecutionSetup:true,execution:{apiKey:()=>credentials().anthropicKey,githubToken:()=>credentials().githubToken},
+    // FREE-01: sealed keys reach only their own engine's workers (env scrub); the panel sees names, never values.
+    engines:{providerKeys:()=>{try{const c=credentials();return {ANTHROPIC_API_KEY:c.anthropicKey,OPENAI_API_KEY:c.openaiKey,OPENROUTER_API_KEY:c.openrouterKey,GEMINI_API_KEY:c.geminiKey,GROQ_API_KEY:c.groqKey};}catch{return {};}}}});
   const port=host.server.address().port;config.port=port;
   return {origin:`http://127.0.0.1:${port}`,password,shutdown:host.shutdown,project,port,hasLocalWorkers:()=>host.workers.list().some(w=>w.processState==='running'||w.processState==='unknown')};
 }

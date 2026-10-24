@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync, accessSync, constants } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, accessSync, constants, realpathSync } from 'node:fs';
 import { execFile, execFileSync } from 'node:child_process';
 import path from 'node:path';
 import * as pty from '@lydell/node-pty';
@@ -15,6 +15,9 @@ import { TaskNamer, fallbackTask } from './tasks.js';
 import { bookGrowth, newTracker, restoreTracker, scanTracker, switchTranscript, trackerUsage, type Ledger, type UsageTracker } from './usage.js';
 import { writeJsonAtomic } from './persistence.js';
 import { sanitizeOutfit, type Outfit } from '../shared/outfit.js';
+import { LEGACY_ENGINE, sanitizeEngine, type WorkerEngine } from '../shared/engines.js';
+import { engineEnv, engineEnv as scrubProviderEnv, launchSpec, type ProviderKeys } from './engines.js';
+import { DEFAULT_OLLAMA_URL } from './ollama.js';
 
 type HeadlessTerminal = InstanceType<typeof headless.Terminal>;
 
@@ -55,6 +58,17 @@ export interface HookEnv {
   token: string;
 }
 
+/** FREE-01: what non-Claude engines and the credential scrub need. Older callers get no keys and the legacy default. */
+export interface EngineEnv {
+  keys: () => ProviderKeys;
+  ollamaUrl: string;
+  /** The engine of a spawn that names none (the saved default, or Claude Code with the user's own account). */
+  defaultEngine: () => WorkerEngine;
+  /** Launch gate (LinkedAccounts.gate): resolves "auto" and refuses unusable engines. Absent: no gate (tests, custom agents). */
+  gate?: (requested: WorkerEngine | undefined) => { engine: WorkerEngine } | { error: string; pending?: boolean };
+}
+const defaultEngineEnv: EngineEnv = { keys: () => ({}), ollamaUrl: DEFAULT_OLLAMA_URL, defaultEngine: () => LEGACY_ENGINE };
+
 interface Worker {
   info: WorkerInfo;
   pty?: pty.IPty;
@@ -84,7 +98,12 @@ interface Worker {
   stopping?: boolean;
   publishing?: boolean;
   exitWaiters: Set<() => void>;
+  /** Typed (without Enter) once Claude reports it is ready: the "Sign in to Claude" helper types `/login`. */
+  typeOnReady?: string;
+  /** Restored with an engine this version does not recognise: never relaunched under another engine. */
+  invalidEngine?: boolean;
 }
+const INVALID_ENGINE = 'Its saved engine is not recognised by this version. Status unknown; send it home and hire again with a listed engine.';
 
 /** Injectable process boundary for deterministic tests; no provider must run in fixtures. */
 export interface WorkerRuntime {
@@ -113,7 +132,10 @@ export class WorkerManager {
   private workers = new Map<string, Worker>();
   private statePath: string;
   private settingsPath: string;
+  private qwenSettingsPath: string;
   private trees: Worktrees;
+  /** FREE-06: one Worktrees per product repository, by absolute dir. */
+  private treesByDir = new Map<string, Worktrees>();
   private agentPath: string | null = null;
   private screenTimer: NodeJS.Timeout;
   /** The office is shutting down: workers exiting now are being stopped, not failing to resume. */
@@ -133,14 +155,20 @@ export class WorkerManager {
     private capacity: () => number = () => 16,
     private runtime: WorkerRuntime = defaultRuntime,
     private executionBlocker: () => string | undefined = () => undefined,
+    private engineEnv: EngineEnv = defaultEngineEnv,
+    /** FREE-06: a product's repository dir (undefined = unknown product); absent id = the office dir. */
+    private productDir: (productId?: string) => string | undefined = (id) => (id === undefined ? dir : undefined),
   ) {
     this.trees = new Worktrees(dir);
+    this.treesByDir.set(dir, this.trees);
     this.statePath = path.join(dataDir, 'workers.json');
     this.settingsPath = path.join(dataDir, 'claude-hooks.json');
+    this.qwenSettingsPath = path.join(dataDir, 'qwen-system-settings.json');
     this.writeHookSettings();
     this.agentPath = this.runtime.resolveCommand(agentCmd);
     const claude = !this.runtime.taskNaming ? null : /(^|\/)claude$/.test(agentCmd) ? this.agentPath : this.runtime.resolveCommand('claude');
-    this.namer = new TaskNamer(claude, childEnv(), (id, task, ctx) => {
+    // The namer runs `claude -p` on the user's own account: same scrub as a subscription worker (rule 6).
+    this.namer = new TaskNamer(claude, scrubProviderEnv(childEnv(), LEGACY_ENGINE, {}, this.engineEnv.ollamaUrl), (id, task, ctx) => {
       const w = this.workers.get(id);
       if (!w || w.taskEpoch !== ctx.epoch) return;
       w.info.task = task;
@@ -173,12 +201,11 @@ export class WorkerManager {
 
   /** Each worker's terminal process and directory, to tell whose servers are whose. */
   owners(): ServiceOwner[] {
-    return [...this.workers.values()].map((w) => ({
-      workerId: w.info.id,
-      pid: w.pty?.pid,
-      agent: w.info.kind === 'agent',
-      cwd: w.info.worktree ? path.join(this.dir, w.info.worktree.path) : this.dir,
-    }));
+    // FREE-06: a worker whose product was unlinked has no folder here, so it owns nothing (never the office's servers).
+    return [...this.workers.values()].flatMap((w) => {
+      const cwd = this.cwdOf(w.info);
+      return cwd ? [{ workerId: w.info.id, pid: w.pty?.pid, agent: w.info.kind === 'agent', cwd }] : [];
+    });
   }
 
   workstationCapacity() { return this.capacity(); }
@@ -193,18 +220,35 @@ export class WorkerManager {
    * so the worktree really starts from the predecessor's work) are `persona`'s name and colour reused; otherwise the
    * worker starts from HEAD as a new person. The name is used only when nobody else currently has it.
    */
-  spawn(deskId: string, by: string, prompt?: string, worktree = false, kind: WorkerKind = 'agent', queueOwned = false, outfit?: Outfit, persona?: { name: string; color?: string }, continues?: { branch: string; title: string }): WorkerInfo | string {
+  spawn(deskId: string, by: string, prompt?: string, worktree = false, kind: WorkerKind = 'agent', queueOwned = false, outfit?: Outfit, persona?: { name: string; color?: string }, continues?: { branch: string; title: string }, extra: { engine?: WorkerEngine; typeOnReady?: string; productId?: string; productName?: string } = {}): WorkerInfo | string {
     const executionBlocked = this.executionBlocker();
     if (executionBlocked) return executionBlocked;
     if (!fundedDesk(deskId, this.capacity())) return 'Build and furnish this workstation before employing a worker';
     if (this.storageError) return this.storageError;
     if (this.deskOccupied(deskId)) return 'That desk is taken';
+    let gated: WorkerEngine | undefined;
     if (kind === 'agent') {
       const paused = this.ledger.hiringPaused;
       if (paused) return paused;
+      // Enforced here, not only in the hire dialog: queue spawns and stale clients pass the same gate (re-review 1).
+      const wanted = sanitizeEngine(extra.engine);
+      if (extra.engine !== undefined && !wanted) return 'Unknown worker engine.';
+      // The "Sign in to Claude" helper exists to fix a not-ready subscription, so it alone skips the usability gate.
+      if (this.engineEnv.gate && !extra.typeOnReady) {
+        const g = this.engineEnv.gate(wanted);
+        if ('error' in g) return g.error;
+        gated = g.engine;
+      }
     }
+    // FREE-06: the product's own repository; an unknown product is refused, never swapped for the office repository.
+    const productId = extra.productId === 'office' ? undefined : extra.productId;
+    const repoDir = this.productDir(productId);
+    if (!repoDir) return `The product ${productId} is not linked any more. Link it again under Settings → Products.`;
+    // The same test as at link time: the folder must still be a git repository's top level (not deleted, not replaced).
+    if (productId !== undefined && !isRepoTop(repoDir)) return `The product's folder is missing or is no longer the top of a git repository (${repoDir}). Fix it or link the product again.`;
+    const trees = this.treesFor(repoDir);
     const used = new Set([...this.workers.values()].map((w) => w.info.name.replace(/ 🐚$/, '')));
-    const from = kind === 'agent' && worktree && continues && this.trees.hasBranch(continues.branch) ? continues : undefined;
+    const from = kind === 'agent' && worktree && continues && trees.hasBranch(continues.branch) ? continues : undefined;
     if (!from) { persona = undefined; outfit = continues ? undefined : outfit; }
     // Only a roster name: it also names the worktree branch, so free text never reaches git.
     const wanted = persona && NAMES.includes(persona.name) ? persona.name : undefined;
@@ -212,7 +256,7 @@ export class WorkerManager {
     const id = randomBytes(6).toString('hex');
     let wt: WorkerInfo['worktree'];
     if (worktree) {
-      const made = this.trees.create(`${name.toLowerCase()}-${id.slice(0, 4)}`, from?.branch);
+      const made = trees.create(`${name.toLowerCase()}-${id.slice(0, 4)}`, from?.branch);
       if (typeof made === 'string') return made;
       wt = from ? { ...made, continues: { branch: from.branch, title: from.title.slice(0, 120) } } : made;
     }
@@ -228,6 +272,7 @@ export class WorkerManager {
       createdBy: by,
       createdAt: Date.now(),
       prompt: kind === 'shell' ? undefined : prompt?.trim() || undefined,
+      ...(productId ? { productId, productName: extra.productName?.slice(0, 80) } : {}),
       worktree: wt,
       cols: 100,
       rows: 30,
@@ -235,8 +280,13 @@ export class WorkerManager {
       activity: prompt ? truncate(prompt, 80) : undefined,
       outfit: sanitizeOutfit(outfit),
     };
+    if (kind === 'agent') {
+      info.engine = gated ?? sanitizeEngine(extra.engine) ?? this.engineEnv.defaultEngine();
+      if (launchSpec(info.engine, undefined).hooks === 'none') info.statusKnown = false;
+    }
     const w = newWorker(info, newTracker());
     w.queueOwned = queueOwned;
+    if (info.engine?.id === 'claude-code' && extra.typeOnReady) w.typeOnReady = extra.typeOnReady;
     this.workers.set(id, w);
     // Persist an uncertain launch intent first. A crash before the PID save must never imply stopped.
     if (!this.persist()) {
@@ -256,6 +306,7 @@ export class WorkerManager {
     if (this.storageError) return this.storageError;
     if (this.closing || w.stopping) return 'The worker is stopping; wait for confirmed exit';
     if (w.pty) return 'Worker is already running';
+    if (w.invalidEngine) return INVALID_ENGINE;
     this.refreshProcessEvidence(w);
     if (w.info.processState !== 'stopped') return this.unknownProcessReason(w);
     if (w.queueOwned) return 'This worker belongs to the task queue. Retry its task from the queue after reviewing the interruption.';
@@ -270,6 +321,12 @@ export class WorkerManager {
     this.launch(w, undefined, w.info.sessionId);
     this.persist();
     return undefined;
+  }
+
+  /** Why a queue spawn (no explicit engine) would be refused right now, without spawning; undefined = it may go ahead. */
+  engineBlocker(): string | undefined {
+    const g = this.engineEnv.gate?.(undefined);
+    return g && 'error' in g ? g.error : undefined;
   }
 
   claimQueueWorker(id: string) {
@@ -313,20 +370,25 @@ export class WorkerManager {
     if (!wt) return {};
     const name = w.info.name;
     if (!cleanup) {
-      const work = describeWork(await this.trees.inspect(wt));
+      const trees = this.treesOf(w.info);
+      if (!trees) return { note: `Kept ${name}'s worktree and branch ${wt.branch}: its product is no longer linked` };
+      const work = describeWork(await trees.inspect(wt));
       if (work) return { note: `Kept ${name}'s worktree and branch ${wt.branch} — it has ${work}` };
       cleanup = 'all';
     }
     if (cleanup === 'keep') return { note: `Kept ${name}'s worktree and branch ${wt.branch}` };
-    const error = await this.trees.remove(wt, cleanup);
+    const trees = this.treesOf(w.info);
+    if (!trees) return { note: `Kept ${name}'s worktree and branch ${wt.branch}: its product is no longer linked` };
+    const error = await trees.remove(wt, cleanup);
     if (error) return { error: `Couldn't delete ${name}'s worktree: ${error}` };
     return { note: cleanup === 'all' ? `Deleted ${name}'s worktree and branch ${wt.branch}` : `Deleted ${name}'s worktree and kept branch ${wt.branch}` };
   }
 
   /** What a worker's worktree holds, so whoever sends it home knows what deleting it would lose. */
   inspectWorktree(id: string): Promise<WorktreeState | undefined> {
-    const wt = this.workers.get(id)?.info.worktree;
-    return wt ? this.trees.inspect(wt) : Promise.resolve(undefined);
+    const info = this.workers.get(id)?.info;
+    const trees = info && this.treesOf(info);
+    return info?.worktree && trees ? trees.inspect(info.worktree) : Promise.resolve(undefined);
   }
 
   artifactPublishing(id: string): boolean { return !!this.workers.get(id)?.publishing; }
@@ -337,7 +399,34 @@ export class WorkerManager {
     return !!w && (!!w.publishing || !!w.stopping || !!w.info.prOpening);
   }
 
-  branchExists(branch: string): boolean { return this.trees.hasBranch(branch); }
+  /** FREE-06: looked up in the product's own repository (absent = the office's). */
+  branchExists(branch: string, productId?: string): boolean {
+    const dir = this.productDir(productId === 'office' ? undefined : productId);
+    return !!dir && this.treesFor(dir).hasBranch(branch);
+  }
+
+  /** The repository a worker belongs to: its product's, or the office's. Undefined when the product was unlinked. */
+  private repoOf(info: WorkerInfo): string | undefined {
+    return this.productDir(info.productId);
+  }
+
+  private treesFor(dir: string): Worktrees {
+    let t = this.treesByDir.get(dir);
+    if (!t) { t = new Worktrees(dir); this.treesByDir.set(dir, t); }
+    return t;
+  }
+
+  private treesOf(info: WorkerInfo): Worktrees | undefined {
+    const dir = this.repoOf(info);
+    return dir ? this.treesFor(dir) : undefined;
+  }
+
+  /** Where a worker runs: its worktree in its product's repository, or that repository itself. */
+  private cwdOf(info: WorkerInfo): string | undefined {
+    const repo = this.repoOf(info);
+    if (!repo) return undefined;
+    return info.worktree ? path.join(repo, info.worktree.path) : repo;
+  }
 
   /** Reserve a confirmed stopped worker until its immutable bundle has been verified. */
   async publishArtifact<T>(id: string, publish: (worker: WorkerInfo) => Promise<T>): Promise<T> {
@@ -422,7 +511,8 @@ export class WorkerManager {
     if (info.status === 'starting' || info.status === 'working' || info.status === 'needs_input') {
       return `${info.name} is still ${info.status === 'needs_input' ? 'waiting on input' : info.status} — wait until it's done`;
     }
-    const cwd = path.join(this.dir, wt.path);
+    const cwd = this.cwdOf(info);
+    if (!cwd) return `${info.name}'s product is no longer linked`;
     if (!existsSync(cwd)) return `${info.name}'s worktree is gone (${wt.path})`;
     info.prOpening = true;
     this.emitUpdate(w);
@@ -437,7 +527,8 @@ export class WorkerManager {
         return { ...open, existed: true, dirty };
       }
       await run('git', ['push', '-u', 'origin', wt.branch], cwd, 90_000);
-      const base = await this.pushedBranch([wt.from, this.trees.currentBranch()], wt.branch);
+      const repo = this.repoOf(info)!;
+      const base = await this.pushedBranch([wt.from, this.treesFor(repo).currentBranch()], wt.branch, repo);
       const { title, body } = draftPr(info, commits, by);
       const out = await gh(['pr', 'create', '--head', wt.branch, ...(base ? ['--base', base] : []), '--title', title, '--body', body], cwd, 60_000);
       const url = out.trim().split('\n').pop() ?? '';
@@ -456,11 +547,11 @@ export class WorkerManager {
   }
 
   /** The first of these branches that exists on origin, for a PR base. None: gh picks the default branch. */
-  private async pushedBranch(candidates: (string | undefined)[], not: string): Promise<string | undefined> {
+  private async pushedBranch(candidates: (string | undefined)[], not: string, repo = this.dir): Promise<string | undefined> {
     for (const c of candidates) {
       if (!c || c === not) continue;
       try {
-        await run('git', ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${c}`], this.dir);
+        await run('git', ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${c}`], repo);
         return c;
       } catch {
         // not on the remote (or never fetched)
@@ -488,16 +579,28 @@ export class WorkerManager {
     this.emitUpdate(w);
   }
 
-  /** Claude Code hook callback. */
-  handleHook(workerId: string, token: string, event: string, payload: any): boolean {
+  /**
+   * Hook callback from Claude Code (`/hooks/claude`) or Qwen Code (`/hooks/qwen`), whose hooks use Claude Code's event
+   * names and payload shape (https://qwenlm.github.io/qwen-code-docs/en/users/features/hooks/). A hook from another
+   * engine than the worker's is refused, so one engine's events never drive another's status.
+   */
+  handleHook(workerId: string, token: string, event: string, payload: any, source: 'claude' | 'qwen' = 'claude'): boolean {
     const w = this.workers.get(workerId);
     if (!w || !safeEq(token, w.hookToken)) return false;
+    const engine = w.info.engine ?? LEGACY_ENGINE;
+    if (launchSpec(engine, undefined).hooks !== source) return false;
     const now = Date.now();
+    if (w.info.statusKnown === false) {
+      w.info.statusKnown = undefined;
+      if (w.info.activity?.startsWith('No status reports')) w.info.activity = undefined;
+      this.emitUpdate(w);
+    }
     if (payload?.session_id && typeof payload.session_id === 'string' && payload.session_id !== w.info.sessionId) {
       w.info.sessionId = payload.session_id;
       this.persist();
     }
-    if (typeof payload?.transcript_path === 'string' && payload.transcript_path !== w.tracker.transcript) {
+    // Spend is read from Claude transcripts only; local engines have no provider spend (FREE_PLAN rule 4).
+    if (engine.id === 'claude-code' && typeof payload?.transcript_path === 'string' && payload.transcript_path !== w.tracker.transcript) {
       // Read the rest of the old transcript first, so its last messages go into `prior` too.
       if (w.tracker.transcript) {
         try {
@@ -520,6 +623,13 @@ export class WorkerManager {
           w.bootBlocked = false;
           this.setStatus(w, 'idle');
         }
+        if (w.typeOnReady && w.pty) {
+          // Typed for the user, never submitted: they press Enter and finish signing in inside Claude Code itself.
+          w.pty.write(w.typeOnReady);
+          w.typeOnReady = undefined;
+          w.info.activity = 'Press Enter in the terminal to sign in to Claude, then follow its steps';
+          this.emitUpdate(w);
+        }
         break;
       case 'UserPromptSubmit':
         w.bootBlocked = false;
@@ -531,7 +641,7 @@ export class WorkerManager {
         else this.emitUpdate(w);
         break;
       case 'PreToolUse':
-        if (payload?.tool_name === 'AskUserQuestion') this.setStatus(w, 'needs_input');
+        if (payload?.tool_name === 'AskUserQuestion' || payload?.tool_name === 'ask_user_question') this.setStatus(w, 'needs_input');
         else {
           w.info.activity = describeTool(payload);
           this.noteTool(w, w.info.activity);
@@ -557,6 +667,11 @@ export class WorkerManager {
         }
         break;
       case 'Stop':
+        this.setStatus(w, 'done');
+        break;
+      case 'StopFailure':
+        // Qwen Code: the turn ended on an error (for example the model failed). Finished; the terminal says why.
+        w.info.activity = 'The turn ended with an error — open the terminal';
         this.setStatus(w, 'done');
         break;
     }
@@ -648,15 +763,28 @@ export class WorkerManager {
 
     const shell = process.env.SHELL || '/bin/bash';
     const isShell = info.kind === 'shell';
-    const isClaude = !isShell && /(^|\/)claude$/.test(this.agentCmd);
-    const args = isShell ? ['-l'] : [...this.agentArgs];
+    const engine = info.engine ?? LEGACY_ENGINE;
+    const other = !isShell && engine.id !== 'claude-code' ? launchSpec(engine, prompt) : undefined;
+    const isClaude = !isShell && !other && /(^|\/)claude$/.test(this.agentCmd);
+    /** Qwen Code reports status through hooks like Claude; Codex cannot here, so its status is shown as unknown. */
+    const hooked = isClaude || other?.hooks === 'qwen';
+    const agentCmd = other ? other.cmd : this.agentCmd;
+    const agentPath = other ? this.runtime.resolveCommand(other.cmd) : this.agentPath;
+    const args = isShell ? ['-l'] : other ? [...other.args] : [...this.agentArgs];
     if (isClaude) {
       args.unshift('--settings', this.settingsPath);
       if (resumeSessionId) args.push('--resume', resumeSessionId);
       // `--` so a prompt like "- fix login" is never parsed as a CLI option.
       if (prompt) args.push('--', prompt);
     }
-    const env = childEnv();
+    if (other && resumeSessionId) term.write(`\x1b[2m[${info.name} starts a new ${other.cmd} session: resuming a conversation is supported for Claude Code only]\x1b[0m\r\n`);
+    let env = childEnv();
+    // FREE_PLAN rule 6: agents get no provider credentials except their own engine's. A custom `--agent` command (not
+    // `claude`) keeps the office environment as before: the Empire does not know which credentials it needs.
+    if (other || isClaude) env = engineEnv(env, engine, this.engineEnv.keys(), this.engineEnv.ollamaUrl);
+    // Qwen Code reads hooks from this file. System scope, so folder trust doesn't block them and nothing is written into
+    // the worker's git worktree: https://qwenlm.github.io/qwen-code-docs/en/users/configuration/settings/
+    if (other?.hooks === 'qwen') env.QWEN_CODE_SYSTEM_SETTINGS_PATH = this.qwenSettingsPath;
     Object.assign(env, {
       TERM: 'xterm-256color',
       COLORTERM: 'truecolor',
@@ -665,24 +793,27 @@ export class WorkerManager {
       AGENT_OFFICE_HOOK_TOKEN: w.hookToken,
     });
 
-    const cwd = info.worktree ? path.join(this.dir, info.worktree.path) : this.dir;
+    // An unlinked product's worker fails to launch; it never runs anywhere else.
+    const found = this.cwdOf(info);
+    const cwd = found ?? '';
     let proc: pty.IPty;
     try {
+      if (!found) throw new Error(`its product (${info.productName ?? info.productId}) is no longer linked`);
       if (!existsSync(cwd)) throw new Error(`working directory is gone: ${cwd}`);
       if (isShell) {
         proc = this.runtime.spawn(shell, args, { name: 'xterm-256color', cols: info.cols, rows: info.rows, cwd, env });
-      } else if (this.agentPath) {
-        proc = this.runtime.spawn(this.agentPath, args, { name: 'xterm-256color', cols: info.cols, rows: info.rows, cwd, env });
+      } else if (agentPath) {
+        proc = this.runtime.spawn(agentPath, args, { name: 'xterm-256color', cols: info.cols, rows: info.rows, cwd, env });
       } else {
         // Not found on PATH: let a login shell find it (nvm, asdf, ~/.local/bin ...).
-        const line = ['exec', this.agentCmd, ...args].map((a, i) => (i < 2 ? a : shq(a))).join(' ');
+        const line = ['exec', agentCmd, ...args].map((a, i) => (i < 2 ? a : shq(a))).join(' ');
         proc = this.runtime.spawn(shell, ['-l', '-i', '-c', line], { name: 'xterm-256color', cols: info.cols, rows: info.rows, cwd, env });
       }
     } catch (err) {
       info.status = 'exited';
       info.processState = 'stopped';
       info.exitCode = -1;
-      const what = isShell ? shell : this.agentCmd;
+      const what = isShell ? shell : agentCmd;
       term.write(`\r\n\x1b[31mFailed to start ${what}: ${(err as Error).message}\x1b[0m\r\n`);
       this.events.toast(`Could not start ${what}: ${(err as Error).message}`, 'error');
       this.emitUpdate(w);
@@ -691,7 +822,7 @@ export class WorkerManager {
     w.pty = proc;
     w.processPid = proc.pid;
     info.processState = 'running';
-    if (!isClaude) info.status = 'idle';
+    if (!hooked) info.status = 'idle';
 
     proc.onData((data) => {
       term.write(data);
@@ -725,6 +856,11 @@ export class WorkerManager {
         w.bootBlocked = true;
         info.activity = 'Waiting on a setup prompt (trust / login) — open the terminal';
         this.setStatus(w, 'needs_input');
+      } else if (hooked) {
+        // No SessionStart from Qwen Code: its hooks are not reaching us, so say so rather than guess.
+        info.statusKnown = false;
+        info.activity = 'No status reports from Qwen Code yet — status unknown; open the terminal';
+        this.setStatus(w, 'idle');
       } else this.setStatus(w, 'idle');
     }, 12000);
     this.persist();
@@ -742,7 +878,7 @@ export class WorkerManager {
 
   /** Picks up what the session logged since last time and books the difference. */
   private scanUsage(w: Worker) {
-    if (w.info.kind !== 'agent' || !w.tracker.transcript || this.workers.get(w.info.id) !== w) return;
+    if (w.info.kind !== 'agent' || (w.info.engine && w.info.engine.id !== 'claude-code') || !w.tracker.transcript || this.workers.get(w.info.id) !== w) return;
     try {
       if (!scanTracker(w.tracker)) return;
     } catch {
@@ -819,12 +955,23 @@ export class WorkerManager {
    * in on this machine. Flag that as needing a human, and clear it once the screen moves on.
    */
   private checkBlocked(w: Worker) {
-    if (w.info.kind !== 'agent' || !w.term) return;
+    if (w.info.kind !== 'agent' || !w.term || (w.info.engine && w.info.engine.id !== 'claude-code')) return;
     const s = w.info.status;
     if (s !== 'starting' && s !== 'idle' && !(w.bootBlocked && s === 'needs_input')) return;
     const text = screenText(w.term);
     const loggedOut = NOT_LOGGED_IN.test(text);
     const blocked = loggedOut || (SETUP_PROMPT.test(text) && (s === 'starting' || w.bootBlocked));
+    // "Sign in to Claude": Claude sends no SessionStart while logged out, so type `/login` once its own logged-out
+    // prompt is on screen. Never into a setup menu (login method, trust, onboarding), and never with Enter.
+    if (loggedOut && !SETUP_PROMPT.test(text) && w.typeOnReady && w.pty && !w.stopping) {
+      w.pty.write(w.typeOnReady);
+      w.typeOnReady = undefined;
+      w.bootBlocked = true;
+      w.info.activity = 'Press Enter in the terminal to sign in to Claude, then follow its steps';
+      if (s !== 'needs_input') this.setStatus(w, 'needs_input');
+      else this.emitUpdate(w);
+      return;
+    }
     if (blocked && s !== 'needs_input') {
       w.bootBlocked = true;
       w.info.activity = loggedOut
@@ -839,6 +986,13 @@ export class WorkerManager {
   }
 
   private writeHookSettings() {
+    this.writeHookFile('claude', this.settingsPath);
+    // Qwen Code accepts Claude Code's hook shape in settings.json. `security.auth.selectedType: "openai"` picks its
+    // OpenAI-compatible protocol, which the worker's environment points at Ollama (engines.ts engineEnv).
+    this.writeHookFile('qwen', this.qwenSettingsPath, { security: { auth: { selectedType: 'openai' } } });
+  }
+
+  private writeHookFile(source: 'claude' | 'qwen', file: string, extra: Record<string, unknown> = {}) {
     const events: [string, string | undefined][] = [
       ['SessionStart', undefined],
       ['UserPromptSubmit', undefined],
@@ -857,7 +1011,7 @@ const [event] = process.argv.slice(2);
 let body = '';
 process.stdin.on('data', (c) => (body += c));
 process.stdin.on('end', () => {
-  const url = new URL(process.env.AGENT_OFFICE_HOOK_URL + '/hooks/claude');
+  const url = new URL(process.env.AGENT_OFFICE_HOOK_URL + '/hooks/' + (process.argv[3] === 'qwen' ? 'qwen' : 'claude'));
   url.searchParams.set('worker', process.env.AGENT_OFFICE_WORKER_ID);
   url.searchParams.set('event', event);
   const req = http.request(url, { method: 'POST', timeout: 3000, headers: { authorization: 'Bearer ' + process.env.AGENT_OFFICE_HOOK_TOKEN, 'content-type': 'application/json' } }, (res) => res.resume());
@@ -872,14 +1026,14 @@ process.stdin.on('end', () => {
     for (const [event, matcher] of events) {
       const curl =
         `curl -sS -m 3 -X POST -H "Authorization: Bearer $AGENT_OFFICE_HOOK_TOKEN" -H "Content-Type: application/json" ` +
-        `--data-binary @- "$AGENT_OFFICE_HOOK_URL/hooks/claude?worker=$AGENT_OFFICE_WORKER_ID&event=${event}"`;
+        `--data-binary @- "$AGENT_OFFICE_HOOK_URL/hooks/${source}?worker=$AGENT_OFFICE_WORKER_ID&event=${event}"`;
       const command =
         `if [ -z "$AGENT_OFFICE_WORKER_ID" ] || [ -z "$AGENT_OFFICE_HOOK_URL" ]; then exit 0; fi; ` +
         `if command -v curl >/dev/null 2>&1; then ${curl} >/dev/null 2>&1; ` +
-        `else ${shq(process.execPath)} ${shq(nodeHook)} ${event} >/dev/null 2>&1; fi; true`;
+        `else ${shq(process.execPath)} ${shq(nodeHook)} ${event}${source === 'claude' ? '' : ` ${source}`} >/dev/null 2>&1; fi; true`;
       hooks[event] = [{ ...(matcher ? { matcher } : {}), hooks: [{ type: 'command', command }] }];
     }
-    writeFileSync(this.settingsPath, JSON.stringify({ hooks }, null, 2), { mode: 0o600 });
+    writeFileSync(file, JSON.stringify({ ...extra, hooks }, null, 2), { mode: 0o600 });
   }
 
   private persist() {
@@ -900,6 +1054,7 @@ process.stdin.on('end', () => {
       task: info.task,
       pr: info.pr,
       outfit: info.outfit,
+      engine: info.engine,
       tracker: info.kind === 'agent' ? tracker : undefined,
       processState: info.processState,
       processPid: this.workers.get(info.id)?.processPid,
@@ -936,6 +1091,7 @@ process.stdin.on('end', () => {
           createdBy: s.createdBy ?? '?',
           createdAt: s.createdAt ?? Date.now(),
           prompt: s.prompt,
+          ...(typeof s.productId === 'string' && s.productId !== 'office' ? { productId: s.productId, productName: typeof s.productName === 'string' ? s.productName : undefined } : {}),
           worktree: s.worktree,
           title: s.title,
           sessionId: s.sessionId,
@@ -948,7 +1104,23 @@ process.stdin.on('end', () => {
           rows: 30,
           viewers: [],
         };
+        let badEngine = false;
+        if (info.kind === 'agent') {
+          // Legacy saves (no engine) predate engines: they ran Claude Code. An engine that is present but unrecognised
+          // is kept unknown, never silently switched to Claude.
+          const engine = s.engine === undefined ? LEGACY_ENGINE : sanitizeEngine(s.engine);
+          if (engine) {
+            info.engine = engine;
+            if (launchSpec(engine, undefined).hooks === 'none') info.statusKnown = false;
+          } else {
+            badEngine = true;
+            info.statusKnown = false;
+            info.activity = INVALID_ENGINE;
+            console.warn(`[workers] ${info.name} (${info.id}): saved engine is not recognised; kept with status unknown`);
+          }
+        }
         const w = newWorker(info, tracker);
+        w.invalidEngine = badEngine;
         w.processPid = Number.isSafeInteger(s.processPid) && s.processPid! > 0 ? s.processPid : undefined;
         w.queueOwned = s.queueOwned === true || s.createdBy?.endsWith(' (queue)');
         this.refreshProcessEvidence(w);
@@ -1070,7 +1242,7 @@ function screenText(term: HeadlessTerminal): string {
   return out.join('\n');
 }
 
-function resolveCommand(cmd: string): string | null {
+export function resolveCommand(cmd: string): string | null {
   if (cmd.includes('/')) {
     try {
       accessSync(cmd, constants.X_OK);
@@ -1116,6 +1288,17 @@ function offlineBanner(info: WorkerInfo): string {
 }
 
 /** Runs a command without blocking the office; rejects with the last lines of its stderr. */
+/** True when `dir` is the top level of a git work tree (symlinks resolved), as products require at link time. */
+function isRepoTop(dir: string): boolean {
+  try {
+    if (!existsSync(dir)) return false;
+    const top = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 }).trim();
+    return realpathSync.native(top) === realpathSync.native(dir);
+  } catch {
+    return false;
+  }
+}
+
 function run(cmd: string, args: string[], cwd: string, timeout = 30_000): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(cmd, args, { cwd, encoding: 'utf8', timeout, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
@@ -1147,7 +1330,7 @@ function draftPr(info: WorkerInfo, commits: string[], by: string): { title: stri
   if (task) parts.push(`## Task\n\n${task.length > PR_TASK_MAX ? `${task.slice(0, PR_TASK_MAX)}…` : task}`);
   parts.push(`## Commits\n\n${commits.map((c) => `- \`${c.slice(0, c.indexOf(' '))}\` ${c.slice(c.indexOf(' ') + 1)}`).join('\n')}`);
   if (closes) parts.push(`Closes #${closes}`);
-  parts.push(`_Opened from Agent Office by ${by} · ${info.name} at ${DESK_BY_ID.get(info.deskId)?.label ?? info.deskId}_`);
+  parts.push(`_Opened from Agent Empire by ${by} · ${info.name} at ${DESK_BY_ID.get(info.deskId)?.label ?? info.deskId}_`);
   return { title, body: parts.join('\n\n') };
 }
 

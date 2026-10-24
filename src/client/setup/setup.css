@@ -342,3 +342,25 @@ html.ae-kb .su-panel { height: 100%; }
 
 /* The centered shells (cloud unlock) have no rail at any size. */
 .su-shell.su-shell-center { grid-template-columns: minmax(0, 1fr); }
+
+/* FREE-04: cloud engine choice */
+.su-engines { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.su-engine { position: relative; display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); background: rgba(18, 24, 30, .55); cursor: pointer; transition: border-color .2s, background .2s, transform .2s; }
+.su-engine:hover { border-color: var(--line-2); transform: translateY(-1px); }
+.su-engine input { position: absolute; opacity: 0; pointer-events: none; }
+.su-engine:has(input:checked) { border-color: rgba(155, 209, 186, .7); background: rgba(155, 209, 186, .1); box-shadow: 0 0 0 1px rgba(155, 209, 186, .35) inset; }
+.su-engine:has(input:focus-visible) { outline: 2px solid rgba(155, 209, 186, .9); outline-offset: 2px; }
+.su-engine-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: space-between; }
+.su-engine-needs { font-size: 13px; line-height: 1.4; opacity: .85; }
+.su-engine-panel, .su-engine-actions, .su-engine-api { display: flex; flex-direction: column; gap: 12px; }
+[hidden].su-engine-panel, [hidden].su-engine-actions, [hidden].su-engine-api, .su-secret[hidden] { display: none; }
+.su-source { border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px 12px; margin: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.su-source legend { padding: 0 6px; font-weight: 600; }
+.su-row.su-wrap { flex-wrap: wrap; }
+.su-row.su-wrap > .su-field { flex: 1 1 200px; min-width: 0; }
+.su-cmd { display: flex; gap: 8px; align-items: center; margin-top: 4px; min-width: 0; }
+.su-cmd code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; padding: 6px 10px; border-radius: 8px; background: rgba(0, 0, 0, .35); border: 1px solid var(--line); font-size: 13px; }
+.su-checklist li { margin-bottom: 8px; }
+.su-secret-status.is-ok { color: #9bd1ba; }
+@media (max-width: 720px) { .su-engines { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: reduce) { .su-engine { transition: none; } .su-engine:hover { transform: none; } }

@@ -50,3 +50,18 @@ A new city includes one operational floor and four furnished workstations. Saves
 An additional floor costs **25,000 × current operational floors** credits and provides sixteen empty desk positions. A workstation costs **1,500 + 250 × floor index** credits, where the first floor has index 0. Installations fill floors in order; buying a floor never grants free computers. Construction and furnishing are booked in the capital ledger. A departed worker leaves the workstation available for reuse. Purchases do not change the existing hourly sector rates.
 
 Every direct hire and queue allocation checks purchased capacity on the server. Worker addresses continue as `desk-17`, `desk-33`, etc.; there is no fixed sixteen-agent limit. The queue's “workers at once” setting cannot exceed furnished capacity. This is a capacity ceiling, not a guarantee of unlimited simultaneous compute: provider budgets and the host's resources still apply. The existing queue retains its separate bounded task history/backlog policy.
+
+## Server mode and cloud mode
+
+The rules above apply in both modes and live in one place, `src/shared/economy-rules.ts`, used by the host (`src/server/empire.ts`) and the cloud coordinator (`src/cloud/economy.ts`). `tests/economy-parity.test.ts` drives both with the same inputs and requires identical balances, buildings, staff and ledgers. What differs is where the inputs come from:
+
+| | Server mode | Cloud mode |
+| --- | --- | --- |
+| City time | Advances while the server runs (5-second ticks; one hour settles per crossing) | Advances by the coordinator's uptime between scheduled runs, capped at max(90 minutes, 3 schedule intervals) per run; several hours can settle in one run. Shut down earns nothing |
+| AI task reward | A queue task ends with outcome `done` ("Completed AI task") | You accept a finished cloud job's turn ("Accepted AI task"); idle or awaiting review is not enough |
+| Manager ready | Its startup task finished with outcome `done` | Its linked cloud job reached awaiting review or accepted |
+| Manager retry | **Retry** in Management requeues the same task | Not available; submit a new startup job |
+| Non-manager payee | The worker that ran the task | "Cloud AI worker" |
+| Save | `.agent-office/empire.json` | `empire.json` in your state repository |
+
+Report wording differs slightly between the modes; amounts never do.

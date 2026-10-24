@@ -1,0 +1,20 @@
+# Template (docs/DISTRIBUTION.md#winget).
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+PackageIdentifier: Billioncodes001.AgentEmpire
+PackageVersion: <VERSION>
+PackageLocale: en-US
+Publisher: Billioncodes001
+PublisherUrl: https://github.com/Billioncodes001
+PublisherSupportUrl: https://github.com/Billioncodes001/agent-empire/issues
+PackageName: Agent Empire
+PackageUrl: https://github.com/Billioncodes001/agent-empire
+License: MIT
+LicenseUrl: https://github.com/Billioncodes001/agent-empire/blob/main/LICENSE
+ShortDescription: A 3D office and city that shows your coding agents' real work.
+Tags:
+  - agents
+  - game
+  - developer-tools
+ReleaseNotesUrl: https://github.com/Billioncodes001/agent-empire/releases/tag/v<VERSION>
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

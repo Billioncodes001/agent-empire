@@ -51,7 +51,7 @@ const jobId = (value: unknown) => {
   if (typeof value !== 'string' || !TASK_ID.test(value)) throw bad('jobId must be a UUID.');
   return value.toLowerCase();
 };
-const EMPIRE_ACTION_KINDS = ['delegate', 'found', 'build', 'hire', 'buy-land', 'upgrade', 'reinvest', 'office-floor', 'office-workstation'];
+const EMPIRE_ACTION_KINDS = ['delegate', 'found', 'build', 'hire', 'buy-land', 'upgrade', 'reinvest', 'office-floor', 'office-workstation', 'buy-plot', 'buy-vehicle', 'vehicle-spawn', 'vehicle-store'];
 
 /** Intent id from a path, used to record a rejection even when the body is unreadable. */
 export function intentIdFromPath(path: string): string | undefined {
@@ -97,7 +97,8 @@ export function parseIntent(path: string, text: string): CloudIntent {
       allow(['jobId', 'resolution', 'sessionId']);
       if (base.resolution === 'not_dispatched') { if (base.sessionId !== undefined) throw bad('not_dispatched takes no sessionId.'); return { ...common, kind: 'resolve_uncertain', jobId: jobId(base.jobId), resolution: 'not_dispatched' }; }
       if (base.resolution === 'attach_session') {
-        if (typeof base.sessionId !== 'string' || !/^sesn_[A-Za-z0-9]{8,100}$/.test(base.sessionId)) throw bad('attach_session needs a provider session ID.');
+        // Anthropic session (sesn_…) or GitHub Actions run (ghrun_<run id>); the coordinator checks it matches the job's provider.
+        if (typeof base.sessionId !== 'string' || !/^(sesn_[A-Za-z0-9]{8,100}|ghrun_[1-9][0-9]{0,19})$/.test(base.sessionId)) throw bad('attach_session needs a provider session ID or a GitHub Actions run ID (ghrun_<id>).');
         return { ...common, kind: 'resolve_uncertain', jobId: jobId(base.jobId), resolution: 'attach_session', sessionId: base.sessionId };
       }
       throw bad('resolution must be not_dispatched or attach_session.');
@@ -130,6 +131,10 @@ export function parseIntent(path: string, text: string): CloudIntent {
       if (action.kind === 'found') rec(action, ['kind', 'sites']);
       else if (action.kind === 'delegate') rec(action, ['kind', 'enabled']);
       else if (['build', 'hire', 'buy-land', 'upgrade'].includes(String(action.kind))) rec(action, ['kind', 'site']);
+      else if (action.kind === 'buy-plot') rec(action, ['kind', 'plot', 'nonce']);
+      else if (action.kind === 'buy-vehicle') rec(action, ['kind', 'model', 'nonce']);
+      else if (action.kind === 'vehicle-spawn') rec(action, ['kind', 'vehicle', 'blocked']);
+      else if (action.kind === 'vehicle-store') rec(action, ['kind', 'vehicle']);
       else rec(action, ['kind']);
       return { ...common, kind: 'empire_action', action: JSON.parse(JSON.stringify(action)) as EmpireAction };
     }

@@ -17,7 +17,7 @@ const policy = require('./bridge-policy.cjs');
 const { createHandler } = require('./app-protocol.cjs');
 const { createSecureStore } = require('./secure-store.cjs');
 const { runDeviceFlow } = require('./device-flow.cjs');
-const { createVault } = require('./credential-vault.cjs');
+const { createVault, HOSTED } = require('./credential-vault.cjs');
 const { startLocalHost, localDeviceSession } = require('./local-host.cjs');
 const updates = require('./update-store.cjs');
 
@@ -278,7 +278,7 @@ function canAutoUpdate() {
   if (process.platform !== 'darwin') return Promise.resolve((autoUpdateCapable = false));
   const bundle = path.resolve(process.execPath, '..', '..', '..');
   return new Promise((resolve) =>
-    execFile('codesign', ['-dv', '--verbose=2', bundle], { timeout: 10_000 }, (_error, _out, err) => resolve((autoUpdateCapable = /Authority=Developer ID Application/.test(String(err))))),
+    execFile('codesign', ['-dv', '--verbose=2', bundle], { timeout: 10_000 }, (_error, _out, err) => resolve((autoUpdateCapable = updates.macDeveloperIdSigned(err)))),
   );
 }
 
@@ -739,7 +739,7 @@ if (!ownsInstance) {
     ipcMain.handle('keys:state', (event) => {
       if (!fromCredentials(event)) return { error: 'Request denied.' };
       try {
-        return vault.status();
+        return { ...vault.status(), keys: vault.names() };
       } catch (error) {
         return { error: error.message };
       }
@@ -747,7 +747,11 @@ if (!ownsInstance) {
     ipcMain.handle('keys:save', (event, value) => {
       if (!fromCredentials(event) || !localSession) return { error: 'Provider keys are used only by the Empire on this computer.' };
       try {
-        vault.save(value);
+        // FREE-01: a free hosted key is saved only with the data-use terms confirmed on this page (FREE_PLAN decision).
+        const { acceptedHostedTerms, ...keys } = value && typeof value === 'object' ? value : {};
+        if (HOSTED.some((k) => typeof keys[k] === 'string' && keys[k].trim()) && acceptedHostedTerms !== true)
+          return { error: 'Read and confirm the free hosted providers’ data-use terms before saving their keys.' };
+        vault.save(keys);
         return { message: 'Saved securely on this computer. No task was started.' };
       } catch (error) {
         return { error: error.message };

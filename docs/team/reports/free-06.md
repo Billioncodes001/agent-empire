@@ -1,0 +1,99 @@
+# FREE-06 report: one repository per product
+
+Branch `claude/free-06-products` from `origin/codex/empire-world` at `e822739`. Author: Claude (Opus, Engineer role) in an isolated worktree. Status: design recorded first (this section), then implemented; see "Implementation" and "Evidence" below.
+
+## The gap
+
+Before FREE-06 every worker, worktree, queue task and client job ran in the office host's own repository (`cfg.dir`). Client labels in the consultancy were names only ([CONSULTANCY.md](../../CONSULTANCY.md)). The promise is "the limit is credits, not a fixed cap", so the company must be able to run several products side by side, each in its own repository.
+
+## Design (recorded before coding)
+
+### Products registry
+
+- `src/server/products.ts`, persisted in `<dataDir>/products.json` (`{ version: 1, products: [...], creations: [timestamps] }`), atomic writes like the other journals.
+- A product: `id`, `name`, `client?`, `dir` (absolute local path of the repo), `github?` (`owner/name`, read from the `origin` remote or from creation), `defaultBranch?`, `origin` (`linked` or `created`), `createdAt`, `createdBy`, optional `maxWorkers` (per-product concurrency cap).
+- **The office repository is the built-in default product `office`.** It is never written to `products.json`. Anything saved without a `productId` (workers, queue tasks, consultancy jobs, chief plans) means `office`, so existing saves, the queue and existing worktrees are untouched and load unchanged.
+- A missing `products.json` means "only the office product". A corrupt one is a recovery error: products cannot be linked or created until it is fixed, and the office product keeps working.
+
+### Link or create (explicit CEO actions)
+
+- **Link** an existing local repo or clone: an absolute path that is a git work tree top level, not the office repo, not inside or containing another product, not already linked. The office adds `.agent-office/` to that repo's `.git/info/exclude` (as for the office repo), because its worktrees live under `<repo>/.agent-office/worktrees`.
+- **Create** a new GitHub repo in the user's account (or an organisation the user names as `owner/name`) through the GitHub CLI the office already uses (`gh`: the boards and the PR flow). No new credential is asked for or stored; `gh auth status` output is read only to say whether gh is signed in. `gh repo create <name> --private --add-readme --clone` runs in the products folder (`<dataDir>/products`, or `AGENT_EMPIRE_PRODUCTS_DIR`). Private by default; public only if the CEO ticks it.
+- **Confirmation:** the API refuses a create unless the body repeats the exact repository name (`confirm`), and the UI shows a confirmation dialog saying it creates a repository on GitHub. Only the signed-in CEO's same-origin HTTP request can create; no model, chief, Telegram command or queue path calls it.
+- **Throttle** (GitHub secondary limits, FREE_STACK §8: about 80 content-creating requests a minute, 500 an hour): at most `AGENT_EMPIRE_REPO_CREATES_PER_HOUR` creations per rolling hour (default 3, max 20), at least 60 s apart, one at a time. Attempts are recorded before `gh` runs and persisted, so a restart does not reset the window. A refusal says when the next one is allowed.
+- **Unlink** removes the registry entry only; it never deletes the folder or the GitHub repo. It is refused while a worker or an unfinished queue task uses the product.
+
+### Jobs, queue and workers
+
+- `ConsultancyCreateInput.productId?`, stored on the job (in the fingerprint only when set, so old fingerprints still match), validated against the registry, passed to the queue for every item.
+- `QueueTask.productId?` / `productName?`; `TaskQueue.add(..., { productId })`. Seating passes the product to `WorkerManager.spawn`. An unlinked product fails the task with a clear message instead of falling back to the office repo.
+- `WorkerInfo.productId?` / `productName?`. The worker's cwd and worktree come from the product's repo: `WorkerManager` keeps one `Worktrees` per repo. Worktree paths stay relative to that repo, so inspect, remove, the PR flow and prune work per product.
+- Continuity (LIFE-04): a continuing task looks up its predecessor's branch in its own product's repo; a dependency from another product therefore starts from HEAD with the existing factual note.
+- Dependencies and budgets (ORG-02) are per job, so they are already per product. Per-product concurrency: an optional `maxWorkers` on a product, checked by the queue next to the global limit.
+- The chief's plan request can carry `productId`; the resulting plan is still a pending proposal the CEO approves.
+
+### Isolation (what it is and is not)
+
+A worker for product A runs with its cwd in A's repo (or A's worktree) and gets A's branch; it is never handed B's path, and B's worktrees live in B's repo. This is **working-directory separation, not a sandbox**: the worker process runs as the same OS user and could read other folders it is told about. Real isolation needs separate OS users or containers (a later milestone).
+
+### UI
+
+- Settings → **Products** panel: list (the default office product first, then linked/created ones, GitHub name, branch, folder present or missing, workers and unfinished tasks per product), link a local repo, create a GitHub repo (confirmation dialog, throttle message), unlink (confirmation), optional per-product worker cap.
+- A product chooser on the hire dialog and the founder desk brief (shown only when more than one product exists).
+- The product name on worker cards and queue rows when it is not the office product.
+
+### Cloud mode
+
+Cloud execution still uses only the first selected project (cloud-exec-setup.md). FREE-06 does not change cloud mode; multi-product cloud execution is recorded as part of FREE-07.
+
+### Tests (fakes only; no network, no real repos on GitHub)
+
+Registry persistence and old-save compatibility; job → product → worktree binding; isolation (cwd per product); creation throttle, confirmation and a fake `gh`; the default product unchanged. UI check `tools/products-ui-check.ts` (refuses 4610), screenshots under `docs/team/reports/free-06/` at 1440x900 and 874x402.
+
+## Implementation
+
+- `src/server/products.ts` (registry, link, create via injected `gh` runner, throttle, unlink guard), `src/shared/products.ts` (types, repo-name validation).
+- `workers.ts`: optional product resolver; one `Worktrees` per repository; cwd, worktree create/inspect/remove, PR push and base lookup, continuity branch lookup and restore all go through the worker's product. An unknown product is refused; an unlinked product's worker cannot launch elsewhere.
+- `queue.ts`: `add(..., { productId })`, `productId/productName` on tasks (restored), per-product cap, unlinked product fails the task, continuation only within the same product.
+- `consultancy.ts`: `productId` on create/journal/projection, validated through a port, fingerprint unchanged for jobs without a product; every item dispatched with the product. `chief.ts`: plan requests may carry `productId` (checked against the registry before any model call).
+- `server.ts`: `/api/products` (GET; POST link/create; PUT cap; DELETE unlink; same-origin only), `worker.spawn` and `queue.add` accept `productId`. Toasts announce links and creations.
+- Client: `ui/products.ts` (Settings panel, typed create confirmation, hire-dialog chooser), founder desk chooser and review line, `📦` on worker cards and queue rows.
+- Tools: `tools/products-preview.ts` (real server over temp repos, fake gh, no worker process, paused queue, ports 4910+) and `tools/products-ui-check.ts` (refuses 4610).
+
+## Evidence
+
+- typecheck: green. build: green.
+- `npm test`: 824/824 (12 new in `tests/products.test.ts`). One earlier full run under heavy load (four fixtures running) reported 823/824; it did not reproduce in two later runs and was not a products test.
+- products-ui-check: 35/35 against the preview at 1440x900 and 874x402 (reduced motion, no console errors, no overflow): panel, create confirmation with fake gh and throttle count, worker card and queue row product labels, founder desk chooser creating a pending job bound to the product. **Not verified visually:** the hire dialog's product chooser. Headless desk targeting in the real-server preview never settled on an empty desk, so the check prints SKIP rather than passing; the chooser is typechecked and wired like the engine choice.
+- life04-ui-check 20/20 (waiting fixture), inbox-ui-check 47/47, mobile-ui-check 411/411. Regenerated screenshots of other reports were reverted.
+- The preview's founding dialog was confirmed with HQ only so the checks could proceed; the queue was paused and spawning throws, so nothing ran.
+- No real GitHub write, no network, no paid call, no new dependency, no push; 4610, Pixel and `.agent-office` of the live session untouched. Only processes started for this work were stopped.
+
+## Gaps and follow-ups
+
+- Isolation is cwd separation, not a sandbox (same OS user).
+- Cloud mode still uses the first selected project (FREE-07).
+- GitHub App creation (higher limits, FREE_STACK §8 recommendation) is not implemented; the existing gh sign-in is used.
+- No HTTP-level test of `/api/products` (covered by the UI check through the real server, not by `npm test`).
+- The queue add form has no product chooser yet (the hire dialog and founder desk do; `queue.add` accepts `productId`).
+
+## Security review 1 (accept with fixes): fixes
+
+1. Product ids are never reused. Unlinked ids are kept in `products.json` (`retired`), and a new product with the same name gets a random suffix. Unlink is also refused while client jobs for the product are pending, or approved and unfinished, and while chief plans for it are queued or planning.
+2. `checkRepo` refuses a folder that is or contains the home folder, `/`, `/etc`, `/usr`, `/System`, `/var`, `/private` or the office data folder. Inside the data folder only repositories in the products folder are allowed. This also fixes a bug found while testing: with the default products folder (`<office>/.agent-office/products`), a created repository was refused as "inside the office repository" after GitHub had already made it.
+3. `create` stops before calling `gh repo create` when the throttle record cannot be saved.
+4. A worker of an unlinked product fails to launch with "its product is no longer linked"; there is no fallback folder.
+5. Spawning checks that the product folder is still a git top level (the link-time test), not only that it exists.
+6. A worker of an unlinked product is not attributed to the office folder for services; it owns nothing.
+
+Tests: 8 new in `tests/products.test.ts` and 2 HTTP tests in `tests/products-server.test.ts` (same-origin 403, error mapping, create through the server with a fake gh, throttle 429, unlink guard with an open job, chief plan with a product). Run against the pre-fix code (0950188), 7 fail: every fix test, plus the HTTP test (open-job guard). The symlink, nested/overlapping, cross-product continuity and chief-plan tests also pass there, because they cover behaviour that already existed.
+
+Merged `origin/codex/empire-world` (e792dee). The only conflict was `src/client/consultancy.css` (FREE-06 and FREE-10 both appended); both sides kept. `workers.ts`, `queue.ts`, `chief.ts` and `server.ts` merged without conflicts. After the merge: typecheck and build pass, npm test 850/850, products-ui-check 35/35 (the hire-dialog chooser is still SKIP, not visually verified), inbox-ui-check 47/47, mobile-ui-check 411/411.
+
+## Re-review (accept) follow-ups
+
+1. At startup the server retires every product id that saved workers, queue tasks, consultancy jobs or chief plans name but the registry lacks (`Products.retireMissing`). So moving `products.json` away no longer frees an old id for a different repository.
+2. `real()` uses `realpathSync.native`, so paths are compared in their on-disk case on macOS. The office dir, data dir, products dir and home dir all go through it before comparison, and the spawn-time git top-level check uses it too. Before this, linking `/…/CASEY` for a repo at `/…/casey` was refused as "inside the repository /…/casey".
+3. products-ui-check now really opens the hire dialog at both sizes. Desks are solid, so the check stands beside a free desk instead of inside it. It asserts the chooser is shown (the office is the default), is the next Tab stop after the prompt, and that choosing a product works. Screenshots: `06-hire-dialog-product-1440x900.jpg` and `06-hire-dialog-product-874x402.jpg`. No more SKIP.
+
+Tests: 3 new (startup retirement through the server, `retireMissing`, true-case comparison). All 3 fail on 1541177 and pass now. Results: typecheck passes, npm test 853/853, products-ui-check 43/43.

@@ -1,3 +1,4 @@
+import type { WorkerEngine } from './engines.js';
 import type { EmpireAction, EmpireState } from './empire.js';
 import type { ContinuityStatus } from './continuity.js';
 // Wire protocol between browser and server. Every WebSocket frame is one JSON object.
@@ -8,6 +9,7 @@ import type { DecorPlacement, Decoration } from './decor.js';
 import type { OrgState } from './org.js';
 import type { ApprovalsState } from './approvals.js';
 import type { ResearchState } from './research.js';
+import type { ChiefState } from './chief.js';
 
 export type WorkerStatus =
   | 'starting' // PTY launched, agent booting
@@ -41,8 +43,11 @@ export interface WorkerInfo {
   createdBy: string;
   createdAt: number;
   prompt?: string;
+  /** FREE-06: the product whose repository this worker runs in; absent = the office's own repository (product `office`). */
+  productId?: string;
+  productName?: string;
   /**
-   * Set when the worker runs in its own git worktree (path relative to the office dir). `from` is
+   * Set when the worker runs in its own git worktree (path relative to its product's repository, the office dir by default). `from` is
    * the branch the office was on when the worktree was cut, which its pull request targets.
    */
   worktree?: {
@@ -69,6 +74,10 @@ export interface WorkerInfo {
   usage?: Usage;
   /** Attire chosen when it was hired; absent means the stable default from shared/outfit.ts (workerOutfit). */
   outfit?: Outfit;
+  /** FREE-01: which coding-agent CLI and model it runs (agents only; absent on legacy saves = Claude Code, your account). */
+  engine?: WorkerEngine;
+  /** FREE-01: false when its engine cannot report turn status, so the UI shows "status unknown" instead of guessing. */
+  statusKnown?: boolean;
   /**
    * LIFE-04, projected by the server (never persisted with the worker): this idle or finished worker's last task has
    * a dependent task that another worker's running task still blocks. `id`/`name` are the BLOCKING worker's and
@@ -227,6 +236,9 @@ export interface QueueTask {
   blockedBy?: string[];
   /** The desk the task was seated at, so a task continuing it can prefer the same desk. */
   deskId?: string;
+  /** FREE-06: the product (repository) the task runs in; absent = the office's own repository. */
+  productId?: string;
+  productName?: string;
 }
 
 export interface QueueState {
@@ -448,7 +460,7 @@ export type ClientMsg =
   /** You reached out to use something; everyone else sees your character's arm do it. */
   | { t: 'act' }
   | { t: 'profile'; name: string; color: string; look: Look }
-  | { t: 'worker.spawn'; deskId: string; prompt?: string; worktree?: boolean; kind?: WorkerKind; outfit?: Outfit }
+  | { t: 'worker.spawn'; deskId: string; prompt?: string; worktree?: boolean; kind?: WorkerKind; outfit?: Outfit; engine?: WorkerEngine; /** FREE-06: run in this product's repository (default: the office's). */ productId?: string; /** Types `/login` (no Enter) once Claude is ready: the user completes sign-in. */ login?: boolean }
   | { t: 'worker.resume'; workerId: string }
   | { t: 'worker.kill'; workerId: string; cleanup?: WorktreeCleanup }
   /** Asks what the worker's worktree holds; answered with a `worker.worktree` message. */
@@ -463,7 +475,7 @@ export type ClientMsg =
   | { t: 'gh.refresh' }
   /** Merge a pull request; the answer comes back as gh.merged. */
   | { t: 'gh.merge'; number: number; method: GhMergeMethod; deleteBranch: boolean; auto?: boolean }
-  | { t: 'queue.add'; prompt: string; title?: string; issue?: number }
+  | { t: 'queue.add'; prompt: string; title?: string; issue?: number; /** FREE-06 */ productId?: string }
   | { t: 'queue.remove'; taskId: string }
   /** Move a queued task up (-1) or down (+1) the queue. */
   | { t: 'queue.move'; taskId: string; delta: number }
@@ -526,6 +538,8 @@ export type ServerMsg =
       approvals?: ApprovalsState;
       /** The research executive's reports and tool proposals (ORG-05); absent from servers older than it. */
       research?: ResearchState;
+      /** FREE-02: the chief's planning brain, plans, reviews and stall proposals; absent from servers older than it. */
+      chief?: ChiefState;
     }
   | { t: 'peer.join'; peer: PeerInfo }
   | { t: 'peer.update'; peer: PeerInfo }
@@ -557,6 +571,7 @@ export type ServerMsg =
   | { t: 'approvals'; state: ApprovalsState }
   /** Research reports or tool-proposal decisions changed (ORG-05); sent on change only. */
   | { t: 'research'; state: ResearchState }
+  | { t: 'chief'; state: ChiefState }
   /** Sent to whoever watches that worker's changes, whenever they change. */
   | { t: 'changes'; state: ChangesState }
   | { t: 'changes.diff'; workerId: string; path: string; diff: string; truncated: boolean; error?: string }

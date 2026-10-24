@@ -4,9 +4,9 @@ import type { Vegetation } from './vegetation';
 
 /** Finite coastal ground, beach banks, civic gardens and perimeter streets. */
 export function buildTerrain(group: THREE.Group, foliage: Vegetation) {
-  const geo = new THREE.PlaneGeometry(210, 330, 105, 165);
+  const geo = new THREE.PlaneGeometry(290, 330, 145, 165);
   geo.rotateX(-Math.PI / 2);
-  geo.translate(40, 0, 70);
+  geo.translate(80, 0, 70);
   const p = geo.attributes.position,
     colors = [];
   const grass = new THREE.Color('#798165'),
@@ -14,9 +14,10 @@ export function buildTerrain(group: THREE.Group, foliage: Vegetation) {
   for (let i = 0; i < p.count; i++) {
     const x = p.getX(i),
       z = p.getZ(i);
-    const edge = Math.min(x + 61, 145 - x, z + 95, 235 - z);
+    // FREE-09: land reaches x = 225 for the new districts; the harbour shore (x > 55) meets the sea just past the quay.
+    const edge = Math.min(x + 61, 225 - x, z + 95, (x > 55 ? 229 : 235) - z);
     const bank = THREE.MathUtils.smoothstep(edge, 0, 12);
-    const relief = x > 75 ? Math.sin((x - 75) * 0.037) * Math.sin((z + 40) * 0.018) * 5 : 0;
+    const relief = x > 158 ? Math.sin((x - 158) * 0.037) * Math.sin((z + 40) * 0.018) * 5 : 0;
     p.setY(i, -1.3 + bank * 1.27 + Math.max(0, relief));
     const noise = (Math.sin(x * 1.71 + z * 0.83) * Math.cos(z * 2.43 - x * 0.38) + 1) * 0.035;
     const c = sand
@@ -46,7 +47,7 @@ export function buildTerrain(group: THREE.Group, foliage: Vegetation) {
   }
   // Planting beds break up the space between blocks; paths remain continuous.
   for (const z of [39, 75, 105, 135, 196])
-    for (const x of [-39, 38, 60]) {
+    for (const x of [-39, 38]) {
       if (Math.abs(x) < 40 && z > 45 && z < 118) continue;
       box(group, 8, 0.18, 12, S.stone, x, -0.08, z);
       box(group, 7.5, 0.1, 11.5, solid('#4d5645'), x, 0.03, z);
@@ -54,11 +55,11 @@ export function buildTerrain(group: THREE.Group, foliage: Vegetation) {
     }
   // Greenbelt has physical depth, footpaths and tree canopy instead of a flat green backdrop.
   for (let z = -65; z < 224; z += 13) {
-    foliage.tree(70 + 6 * Math.sin(z), z, 7 + ((z % 4) + 4));
-    foliage.tree(89 + 9 * Math.cos(z * 0.4), z + 5, 9);
+    foliage.tree(160 + 6 * Math.sin(z), z, 7 + ((z % 4) + 4));
+    foliage.tree(178 + 9 * Math.cos(z * 0.4), z + 5, 9);
     if (z < 20 || z > 148) foliage.tree(-47, z, 7);
   }
-  const path = box(group, 3, 0.07, 280, S.stone, 61, -0.04, 75);
+  const path = box(group, 3, 0.07, 280, S.stone, 154, -0.04, 75);
   path.name = 'Greenbelt walking path';
   for (let z = 35; z < 124; z += 14) {
     // Curbside parking stalls on the east side of the avenue.

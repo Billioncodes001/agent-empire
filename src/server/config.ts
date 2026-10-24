@@ -40,11 +40,11 @@ export interface RTCIceServerLike {
   credential?: string;
 }
 
-const HELP = `agent-office — a 3D office for your team and its Claude Code workers
+const HELP = `agent-empire — Agent Empire: a 3D office and city for your team and its Claude Code workers
 
 Usage:
-  agent-office [dir] [options]
-  agent-office prune [dir] [--dry-run] [--force]
+  agent-empire [dir] [options]      (agent-office is the legacy alias)
+  agent-empire prune [dir] [--dry-run] [--force]
 
 Runs the office for the project in [dir] (default: current directory).
 Every worker, terminal and GitHub board is scoped to that directory.
@@ -87,7 +87,7 @@ Voice and screen sharing need a secure context: use https (a reverse proxy,
 function takeValue(args: string[], i: number, flag: string): string {
   const v = args[i + 1];
   if (v === undefined || v.startsWith('--')) {
-    console.error(`agent-office: ${flag} needs a value`);
+    console.error(`agent-empire: ${flag} needs a value`);
     process.exit(2);
   }
   return v;
@@ -109,7 +109,7 @@ function parseTurn(url: string): RTCIceServerLike {
 }
 
 /** Keep the office's own data out of git without touching the project's .gitignore. */
-function excludeFromGit(dir: string) {
+export function excludeFromGit(dir: string) {
   try {
     const gitDir = execFileSync('git', ['rev-parse', '--git-common-dir'], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
     const exclude = path.resolve(dir, gitDir, 'info', 'exclude');
@@ -193,7 +193,7 @@ export function loadConfig(argv: string[]): Config {
         break;
       default:
         if (a.startsWith('-')) {
-          console.error(`agent-office: unknown option ${a}\n`);
+          console.error(`agent-empire: unknown option ${a}\n`);
           process.stderr.write(HELP);
           process.exit(2);
         }
@@ -202,16 +202,16 @@ export function loadConfig(argv: string[]): Config {
   }
 
   if (!existsSync(dir)) {
-    console.error(`agent-office: directory not found: ${dir}`);
+    console.error(`agent-empire: directory not found: ${dir}`);
     process.exit(2);
   }
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
-    console.error('agent-office: invalid --port');
+    console.error('agent-empire: invalid --port');
     process.exit(2);
   }
   const budgetUsd = budget ? Number(budget.replace(/^\$/, '')) : undefined;
   if (budgetUsd !== undefined && !(budgetUsd > 0)) {
-    console.error('agent-office: --budget needs an amount in dollars, e.g. --budget 20');
+    console.error('agent-empire: --budget needs an amount in dollars, e.g. --budget 20');
     process.exit(2);
   }
 
@@ -230,7 +230,7 @@ export function loadConfig(argv: string[]): Config {
       stored = parsed as typeof stored;
     } catch (err) {
       throw new Error(
-        `agent-office: ${cfgPath} is unreadable or not valid JSON (${(err as Error).message}). ` +
+        `agent-empire: ${cfgPath} is unreadable or not valid JSON (${(err as Error).message}). ` +
           'Fix or delete it (deleting resets the password and signs everyone out).',
       );
     }
@@ -246,7 +246,7 @@ export function loadConfig(argv: string[]): Config {
     delete stored.verifier;
     delete stored.claimedAt;
     save();
-    console.log('agent-office: password forgotten — a new one is generated on the next start');
+    console.log('agent-empire: password forgotten — a new one is generated on the next start');
     process.exit(0);
   }
 
@@ -273,7 +273,7 @@ export function loadConfig(argv: string[]): Config {
   let tls: Config['tls'];
   if (tlsCert || tlsKey) {
     if (!tlsCert || !tlsKey) {
-      console.error('agent-office: --tls-cert and --tls-key go together');
+      console.error('agent-empire: --tls-cert and --tls-key go together');
       process.exit(2);
     }
     tls = { cert: readFileSync(tlsCert, 'utf8'), key: readFileSync(tlsKey, 'utf8') };

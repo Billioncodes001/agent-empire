@@ -135,7 +135,16 @@ export function workerPill(status: string, label: string, fresh: boolean) {
 
 /** Only a fresh, running agent in an active turn may be drawn typing. */
 export function typingPose(worker: WorkerInfo | undefined, fresh: boolean): boolean {
-  return fresh && worker?.kind === 'agent' && worker.status === 'working' && worker.processState === 'running';
+  return fresh && worker?.kind === 'agent' && worker.statusKnown !== false && worker.status === 'working' && worker.processState === 'running';
+}
+
+/**
+ * FREE-01: a running worker whose engine cannot report turn status (Codex here, or Qwen Code before its hooks arrive)
+ * shows "status unknown", never a guessed state. Stopped and asleep are process facts and still show as such.
+ */
+export function engineStatus(worker: WorkerInfo, labels: Record<string, string>): { status: string; label: string } {
+  if (worker.kind === 'agent' && worker.statusKnown === false && worker.processState === 'running') return { status: 'unknown', label: 'status unknown' };
+  return { status: worker.status, label: labels[worker.status] ?? worker.status };
 }
 
 export function managerTyping(sector: SectorState, tasks: QueueTask[], workers: Map<string, WorkerInfo>, ev: Evidence): boolean {

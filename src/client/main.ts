@@ -3,6 +3,7 @@ import './ui/loading';
 import { Traversal } from './traversal';
 import { openFounding } from './ui/founding';
 import { buildCity } from './world/city';
+import { openCityDialog } from './ui/city';
 import { mountEmpire } from './ui/empire';
 import { officeCode, DEFAULT_KEYS, keyLabel, type Action } from './controls';
 import './style.css';
@@ -53,6 +54,12 @@ import { Tower } from './tower';
 import { GRAPHICS, applyGraphics } from './graphics';
 import { openSettings } from './ui/settings';
 import { appPanel } from './ui/app-panel';
+import { linkedAccountsSection } from './ui/engines';
+import { productsSection } from './ui/products';
+import { voiceSetupSection } from './ui/voice-setup';
+import { openPhone } from './ui/phone';
+import { chiefBrainSection } from './ui/chief';
+import { ENGINE_NAME, type WorkerEngine } from '../shared/engines';
 import { startUpdates, updateSettingsSection } from './update';
 import { connectionView } from './ui/continuity';
 import { setupPwa } from './ui/pwa';
@@ -243,7 +250,15 @@ player.view = settings.view;
 player.bindings = settings.keys;
 const sound = new OfficeSound();
 sound.setVolume(settings.volume, settings.muted);
-const empireUI = mountEmpire(net,player,()=>showQueue(),()=>{if(!traversal.interactCar()&&!empireUI.interact())use(target,'E');},()=>changeView(),(id)=>openWorkerTerminal(id));
+// FREE-09: the garage kiosk and district plot signs (world/districts.ts, ui/city.ts).
+const cityInteract = () => {
+  if (player.driving || player.pos.z < 30 || modalOpen()) return false;
+  const t = city.districts.targetAt(player.pos);
+  if (!t) return false;
+  openCityDialog({ send: (action) => net.send({ t: 'empire.action', action }), blocked: () => city.districts.apronBlocked(player.pos, city.car) }, t);
+  return true;
+};
+const empireUI = mountEmpire(net,player,()=>showQueue(),()=>{if(!traversal.interactCar()&&!cityInteract()&&!empireUI.interact())use(target,'E');},()=>changeView(),(id)=>openWorkerTerminal(id));
 if (cloudNet) {
   mountCloudStrip($('status-strip'), cloudNet, (tab) => openCloudPanel(cloudNet, tab));
   installCloudChrome(cloudNet, {
@@ -312,6 +327,8 @@ interface WorkerView {
   deskId: string;
   status: string;
   acked: boolean;
+  /** Text on its name plate (name and engine). */
+  plate: string;
 }
 const workerViews = new Map<string, WorkerView>();
 // Worker routines (LIFE-03): desk ↔ amenities from real server state only. Reduced motion places bodies without walking.
@@ -445,7 +462,7 @@ function renderProject() {
   if (!p) return;
   $('project-name').textContent = `🏢 ${p.name}`;
   $('project-meta').textContent = [p.branch && `⎇ ${p.branch}`, p.dir, `runs: ${p.agentCmd}`].filter(Boolean).join(' · ');
-  document.title = `${p.name} · Agent Office`;
+  document.title = `${p.name} · Agent Empire`;
   office.setProjectName(p.name);
 }
 
@@ -539,9 +556,12 @@ function syncWorkers() {
       noOutline(desk.group);
       desk.vacancy.visible = false;
       desk.chair.rotation.y = 0;
-      v = { model, laptop, deskId: w.deskId, status: '', acked: true };
+      v = { model, laptop, deskId: w.deskId, status: '', acked: true, plate: w.name };
       workerViews.set(w.id, v);
     }
+    // FREE-01: the name plate says which engine it runs ("Byte · Qwen Code (local)").
+    const plate = w.kind !== 'agent' ? w.name : !w.engine && w.statusKnown === false ? `${w.name} · unknown engine` : `${w.name} · ${ENGINE_NAME[w.engine?.id ?? 'claude-code']}${w.engine?.auth === 'local' ? ' (local)' : ''}`;
+    if (v.plate !== plate) { v.plate = plate; v.model.setName(plate); }
     if (v.status !== w.status || v.acked !== w.acked) {
       const becameHot = shouldBounce(w) && !(v.status === w.status && v.acked === w.acked) && v.status !== '' && (w.status !== v.status);
       if (becameHot && (w.status === 'needs_input' || w.status === 'done')) {
@@ -557,7 +577,8 @@ function syncWorkers() {
     }
     v.model.setOutfit(workerOutfit(w));
     v.model.setTask(workerTaskLine(w));
-    v.model.setLive(fresh);
+    // An engine that cannot report its turn shows "status unknown" over its head, never a guessed state.
+    v.model.setLive(fresh && !(w.kind === 'agent' && w.statusKnown === false && w.processState === 'running'));
     // Typing (and its sound) only once the body is seated at the desk; see world/worker-life.ts.
     life.sync(w.id, v.model, desk, { status: w.status, processState: w.processState, fresh, typing: typingPose(w, fresh), waitingOn: w.waitingOn });
     const again = w.kind === 'shell' ? 'restart' : 'resume';
@@ -601,9 +622,29 @@ function freeDesk(): string | null {
   return best;
 }
 
-function hire(deskId: string, prompt?: string, worktree = false, outfit?: Outfit) {
-  net.send({ t: 'worker.spawn', deskId, prompt, worktree, ...(outfit ? { outfit } : {}) });
+function hire(deskId: string, prompt?: string, worktree = false, outfit?: Outfit, engine?: WorkerEngine, productId?: string) {
+  net.send({ t: 'worker.spawn', deskId, prompt, worktree, ...(outfit ? { outfit } : {}), ...(engine ? { engine } : {}), ...(productId ? { productId } : {}) });
 }
+
+/**
+ * FREE-01 "Sign in to Claude": hires a Claude Code worker on the user's own account at the nearest free desk, with
+ * `/login` typed (not sent), and opens its terminal. The user completes sign-in inside Claude Code; the Empire sees nothing.
+ */
+let pendingLoginDesk: string | null = null;
+function signInToClaude() {
+  const deskId = freeDesk();
+  if (!deskId) { toast('Every funded desk is taken. Send a worker home, then try again.', 'warn'); return; }
+  pendingLoginDesk = deskId;
+  net.send({ t: 'worker.spawn', deskId, login: true });
+  toast('Opening a Claude Code terminal with /login typed. Press Enter there and finish signing in yourself.', 'info');
+}
+store.on('workers', () => {
+  if (!pendingLoginDesk) return;
+  const w = store.workerAtDesk(pendingLoginDesk);
+  if (!w) return;
+  pendingLoginDesk = null;
+  openWorkerTerminal(w.id);
+});
 
 function openShell(deskId: string) {
   net.send({ t: 'worker.spawn', deskId, kind: 'shell' });
@@ -615,11 +656,13 @@ function promptAtDesk(deskId: string) {
   if (!w) {
     openPrompt({
       title: `✨ New task at ${desk.label}`,
-      subtitle: 'A fresh Claude Code worker will sit down and start on this right away.',
+      subtitle: 'A fresh worker will sit down and start on this right away, on the engine you choose.',
       submitLabel: 'Hire & start',
       worktreeOption: !!store.project?.branch,
       outfitOption: true,
-      onSubmit: (text, o) => hire(deskId, text, o.worktree, o.outfit),
+      engineOption: true,
+      productOption: true,
+      onSubmit: (text, o) => hire(deskId, text, o.worktree, o.outfit, o.engine, o.productId),
     });
   } else if (w.status === 'exited' || w.status === 'offline') {
     toast(`${w.name} is asleep — press R to resume first`, 'warn');
@@ -760,7 +803,7 @@ function watchShare(share?: [string, MediaStream]) {
   const [who, stream] = pick;
   video.srcObject = stream;
   const close = h('button.btn.close', { 'aria-label': 'Close' }, '✕');
-  const el = h('div.modal.viewer', { role: 'dialog', 'aria-label': 'Screen share' }, h('header', {}, h('h2', {}, `🖥️ ${who}'s screen`), close), video);
+  const el = h('div.modal.viewer.ae-dark', { role: 'dialog', 'aria-label': 'Screen share' }, h('header', {}, h('h2', {}, `🖥️ ${who}'s screen`), close), video);
   // Close once that share stops: its track ends, or its sharer stops or leaves.
   const gone = () => {
     if (!currentShares().some(([, s]) => s === stream)) modal.close();
@@ -974,7 +1017,7 @@ window.addEventListener('keydown', (e) => {
   if ((e.code === 'Enter' || e.code === 'Space') && (e.target as HTMLElement).closest?.('button, a, [role=button]')) return;
   switch (officeCode(e.code, settings.keys)) {
     case 'KeyE':
-      if (traversal.interactCar() || empireUI.interact()) break;
+      if (traversal.interactCar() || cityInteract() || empireUI.interact()) break;
       use(target, 'E');
       break;
     case 'KeyP':
@@ -1233,6 +1276,7 @@ mountInboxButton($('btn-inbox'));
 $('btn-team').addEventListener('click', () => openTeam(net));
 $('btn-upgrade').addEventListener('click', () => openUpgrade(net));
 $('btn-help').addEventListener('click', () => openHelp(settings.keys));
+$('btn-phone').addEventListener('click', () => openPhone());
 $('btn-decor').addEventListener('click', () => office.floor > 0 ? toast('Wall pictures are managed on the ground floor.') : (hanger.active ? hanger.cancel() : hanger.start()));
 $('btn-settings').addEventListener('click', () =>
   openSettings(
@@ -1251,7 +1295,7 @@ $('btn-settings').addEventListener('click', () =>
     },
     editProfile,
     () => sound.ding('done'),
-    combineSections(appPanel(net), updateSettingsSection(updateService)),
+    combineSections(appPanel(net), voiceSetupSection(), linkedAccountsSection({ onSignIn: () => { closeAllModals(); signInToClaude(); } }), productsSection(), chiefBrainSection(), updateSettingsSection(updateService)),
   ),
 );
 
@@ -1303,7 +1347,7 @@ function frame(ts?: number) {
   player.update(dt);
   if (!tower.active) traversal.update(dt);
   tower.update(dt);
-  city.update(t, dt,player.pos,player.driving);
+  city.update(t, dt,player.pos,player.driving,player.facing);
   empireUI.update(dt);
   canvas.dataset.position = `${player.pos.x.toFixed(1)}, ${player.pos.y.toFixed(1)}, ${player.pos.z.toFixed(1)}`;
   canvas.dataset.view = player.view;
@@ -1311,7 +1355,7 @@ function frame(ts?: number) {
   canvas.dataset.floor = String(office.floor + 1);
   canvas.dataset.motion = me.motion ?? 'loading';
   // The splash hands over only when the player is textured and the sky lighting is in (ui/loading.ts).
-  const pending = [!me.materialsReady && 'character', !scene.environment && 'sky lighting', !city.car.userData.ready && 'car'].filter(Boolean).join(', ');
+  const pending = [!me.materialsReady && 'character', !scene.environment && 'sky lighting', !city.car.userData.ready && 'car', !city.districts.ready && 'city districts'].filter(Boolean).join(', ');
   canvas.dataset.assets = pending ? 'loading' : 'ready';
   canvas.dataset.pending = pending;
   canvas.dataset.fps = String(Math.round(1 / Math.max(dt,.001)));
