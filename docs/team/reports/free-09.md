@@ -103,6 +103,40 @@ The phone regresses by at most +0.26 ms, within the +1.5 ms budget. This was mea
 
 Unrelated screenshots were reverted.
 
+## Review round (screenshots and independent review)
+
+**Visual and copy fixes** (`f71cebc`):
+
+- The garage dialog now uses the app's dark dialog style (`.ae-dark`): opaque, above the HUD, and on 874x402 its list scrolls inside it.
+- The garage sign board is sized to its text.
+- The facade now has a plinth, cornice, pilasters, ribbed panels with clerestory windows, a door surround, a kerb and a lit canopy bar, plus two Kenney kerb lamps.
+- The dialog copy no longer mentions slice IDs. It now says: "Driving them is coming in a later update; today only your executive sedan can be driven".
+- The location label names the garage, Meridian business district or Harbour works.
+- Lamp arms now reach over the road.
+- city-ui-check waits for dialog animations to finish before screenshots. It now checks that the dialog is opaque and nothing covers it, that no internal IDs appear, and that the labels are right.
+
+**Review fixes** (`8fac01c`). Each has a test that fails without the change:
+
+1. Plots need founding, and the plot button stays disabled until founding is complete.
+2. Purchases carry a per-click nonce. The last 32 are kept in `city.nonces`, and a repeat is refused in the shared rules (host, cloud intents, fixture). Buttons stay disabled while a purchase is pending, until the state changes, an error toast arrives, or 8 s pass.
+3. The skyline tower colliders now start beyond the z = 146 kerb, and the tower inside Harbour works is removed. Covered by a layout test and a walk along the z = 146 road.
+4. A bay or kerb collider turns solid only once the sedan and the founder are clear of it (`slotClear`).
+5. `normalizeCity` keeps only known fields, accepts only `vehicle-N` ids, and requires purchase times ≥ 0.
+6. The asset tool checks the `zipinfo` listing before extracting: symlinks are refused, as are escaping paths and archives over 256 MiB. Each cache folder is named after its archive hash. A rebuild is byte-identical.
+7. (Optional item) Ledger labels ignore stray action fields.
+
+**Checks after both rounds:**
+
+- typecheck: pass
+- `npm test`: 834/834
+- build: pass
+- city-ui-check: 23/23 on two fresh fixtures. A first run timed out once and was not reproduced.
+- mobile-ui-check: 411/411
+- outfit-ui-check: 29/29
+- life04-ui-check (waiting): 20/20
+
+The perf numbers above were measured before the facade work. The facade is batched into the garage shell, and the two lamps join the existing instanced lamp mesh.
+
 ## Deferred
 
 - CITY-06: door and seat entry for the Kenney cars. They are parked, not drivable.
