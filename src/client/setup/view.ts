@@ -595,7 +595,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
       const search = el('input', { class: 'su-input', type: 'search', placeholder: 'Filter repositories', 'aria-label': 'Filter repositories', autocomplete: 'off', oninput: () => draw() });
       const more = el('button', { type: 'button', class: 'su-btn su-ghost su-small', hidden: true, onclick: () => void load() }, 'Load more');
       const count = el('span', { class: 'su-chip', 'aria-live': 'polite' });
-      const next = primary('Add AI keys', () => dispatch({ type: 'next' }));
+      const next = primary('Choose engine', () => dispatch({ type: 'next' }));
       if (repoCache.login !== state.github.login) Object.assign(repoCache, { login: state.github.login, repos: [], page: 0, more: true, error: undefined });
 
       function draw() {
@@ -693,7 +693,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
       const ptErr = el('p', { class: 'su-field-error', id: 'su-project-token-e', 'aria-live': 'polite' });
       pt.setAttribute('aria-describedby', ptErr.id);
       const projectRow = el('div', { class: 'su-provider' },
-        el('div', { class: 'su-provider-head' }, icon(ICONS.github, 'su-inline-ico'), el('label', { for: pt.id, text: 'Project access token (optional now)' }), external('Create one', GITHUB_TOKEN_URL)),
+        el('div', { class: 'su-provider-head' }, icon(ICONS.github, 'su-inline-ico'), el('label', { for: pt.id, text: 'Project access token (required for GitHub Actions engines)' }), external('Create one', GITHUB_TOKEN_URL)),
         el('div', { class: 'su-row' }, pt),
         ptErr,
         el('details', { class: 'su-details' }, el('summary', { text: 'What this token is for and how to scope it' }),

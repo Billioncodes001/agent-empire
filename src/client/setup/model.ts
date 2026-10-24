@@ -306,7 +306,7 @@ export function reduce(s: SetupState, a: Action): SetupState {
 /** Plain progress for the rail: which steps of the chosen path are done, current or ahead. */
 export function progress(s: SetupState): { step: Step; label: string; state: 'done' | 'current' | 'ahead' }[] {
   const labels: Partial<Record<Step, string>> = {
-    github: 'GitHub', repos: 'Projects', providers: 'AI keys', limits: 'Limits', review: 'Review', create: 'Create', server: 'Sign in',
+    github: 'GitHub', repos: 'Projects', providers: 'Engine', limits: 'Limits', review: 'Review', create: 'Create', server: 'Sign in',
   };
   const path: Step[] = s.mode === 'server' ? ['mode', 'server'] : s.mode === 'cloud' ? ['mode', ...CLOUD_STEPS] : ['mode'];
   const at = s.step === 'welcome' ? -1 : path.indexOf(s.step);
