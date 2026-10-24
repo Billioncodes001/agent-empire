@@ -97,3 +97,23 @@ The failing-before tests are in `tests/chief-review-fixes.test.ts`: 6 tests, all
 | chief-ui-check | **38/38**. Adds the inbox showing all 4 full prompts, and screenshot `04b-inbox-plan-prompts-*` |
 | inbox-ui-check / org-ui-check | 47/47, 30/30 |
 | mobile-ui-check | **410/411**. The failure is "667x375 full deflection runs" (touch-stick timing). All my other fixtures were stopped, but the host wasn't idle: other sessions held the load average at 40–43, so this still isn't an idle-host result |
+
+## Re-review fixes (2026-10-24: accept with fixes)
+
+The failing-before tests are in `tests/chief-rereview.test.ts`: 4 tests, all failing on the previous code. Each fix has its own commit.
+
+1. **Failure hold applies to queued calls.** A queued background review or stall checks for a failed call at the moment it would run. During a hold it is skipped: its record is removed and its key unmarked, so it retries after the hold without being spent. Tested with a provider that is down: 1 call, not 12, and the other 11 items are reviewed after recovery.
+2. **Telegram refusal no longer depends on the chief's record.** `/approve <jobId>` is also refused when the inbox's `job_plan` item has `proposedBy`. A proposed plan whose job still awaits approval is never trimmed, and nothing is trimmed if the snapshot can't be read. Tested with 61 newer plans, including a command surface with no brain.
+3. **The seen set shrinks.** Each reconcile pass drops keys whose job left the snapshot, or whose task left the queue or finished before the brain was enabled. A budget key is dropped once its hold changes. Pruning is skipped while the queue or consultancy reports a storage error. Tested: 16 keys become 8, with no re-reviews.
+4. **The prompts shown are the queued ones.** After `office.create`, each plan item's prompt is copied from the saved job item, for example with `{{jobId}}` resolved. Tested.
+
+**Re-run:**
+
+| Check | Result |
+| --- | --- |
+| typecheck, build | pass |
+| `npm test` | 781/781 |
+| chief-ui-check | 38/38 |
+| inbox-ui-check | 47/47 |
+
+Only my own fixture ports (4870–4872) were used and stopped. Unrelated regenerated screenshots were reverted.
