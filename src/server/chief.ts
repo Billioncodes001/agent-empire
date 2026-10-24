@@ -85,7 +85,12 @@ interface StoredFile {
 
 // ---- Validation -----------------------------------------------------------------------------------------------------
 
-const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
+/**
+ * Review fix 1: text a worker reads but the CEO cannot see. Format characters (zero-width, bidi overrides and isolates,
+ * soft hyphen, Unicode tags U+E0000–E007F), line/paragraph separators, unassigned or private-use code points, and every
+ * control character except newline and tab are refused in model-written titles, prompts and summaries.
+ */
+const CONTROL = /[\p{Cf}\p{Zl}\p{Zp}\p{Co}\p{Cn}\u{E0000}-\u{E007F}]|[^\P{Cc}\n\t]/u;
 
 function str(value: unknown, label: string, max: number): string {
   if (typeof value !== 'string') throw new ChiefError(400, `${label} must be a string`);
@@ -174,7 +179,7 @@ function field(value: unknown, label: string, max: number): string | { error: st
   if (typeof value !== 'string' || !value.trim()) return { error: `${label} is missing` };
   const v = value.trim();
   if (v.length > max) return { error: `${label} is longer than ${max} characters` };
-  if (CONTROL.test(v)) return { error: `${label} contains control characters` };
+  if (CONTROL.test(v)) return { error: `${label} contains invisible or control characters` };
   return v;
 }
 
