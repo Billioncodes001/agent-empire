@@ -99,14 +99,16 @@ const norm = (s: string) => s.trim().toLowerCase().normalize('NFKC').replace(/\s
 export function relevantLessons(lessons: readonly Lesson[], brief: { client: string; title: string; brief: string }): Lesson[] {
   const text = `${brief.title}\n${brief.brief}`;
   const words = keywords(text);
-  const lower = norm(text);
+  // Review note: product names match whole words only ("app" never matches "happy").
+  const phrase = (s: string) => ` ${s.toLowerCase().normalize('NFKC').split(/[^\p{L}\p{N}]+/u).filter(Boolean).join(' ')} `;
+  const lower = phrase(text);
   const scored: { l: Lesson; score: number; n: number }[] = [];
   for (const l of lessons) {
     if (l.status !== 'approved') continue;
     const overlap = [...keywords(l.text)].filter((w) => words.has(w)).length;
     let score = -1;
     if (l.scope === 'client') score = l.scopeValue && norm(l.scopeValue) === norm(brief.client) ? 100 + overlap : -1;
-    else if (l.scope === 'product') score = l.scopeValue && lower.includes(norm(l.scopeValue)) ? 50 + overlap : -1;
+    else if (l.scope === 'product') score = l.scopeValue && phrase(l.scopeValue).trim() && lower.includes(phrase(l.scopeValue)) ? 50 + overlap : -1;
     else if (l.scope === 'role') {
       const roleWords = l.scopeValue && (CHIEF_ROLES as readonly string[]).includes(l.scopeValue) ? keywords(ROLE_LABEL[l.scopeValue as ChiefRole]) : new Set<string>();
       const named = [...roleWords].some((w) => words.has(w));
