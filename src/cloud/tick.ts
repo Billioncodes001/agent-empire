@@ -456,6 +456,7 @@ function observeInto(state: CloudState, ctx: TickContext, job: CloudJob, observa
     if (job.stopReason === 'requires_action') { status = 'waiting_for_approval'; message = 'Provider is waiting for tool approval or a tool result. Resolve it in provider controls; the coordinator never approves automatically.'; }
     else if (job.stopReason === 'budget_reached') { status = 'budget_paused'; message = 'Provider paused at the session budget. The coordinator will not raise the budget or resume paid work.'; }
     else if (reason) { status = 'idle'; message = 'Stop requested; archival is not yet confirmed and will be retried next run. The slot and reservation stay held.'; }
+    else if (job.provider === 'github-actions') { status = 'idle'; message = `${observation.message} Its slot stays held until you accept, reject or cancel.`; }
     else { status = 'idle'; message = `Provider session is idle (stop reason ${job.stopReason}). Review it in provider controls; its slot stays held.`; }
   } else if (observation.status === 'running') status = 'running';
   else status = 'unknown';
