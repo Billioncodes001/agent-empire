@@ -61,7 +61,7 @@ function linkForm(onDone: (s: ProductsState) => void): HTMLElement {
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     productsApi.link({ name: name.value.trim(), path: dir.value.trim(), ...(client.value.trim() ? { client: client.value.trim() } : {}) })
-      .then((r) => { form.reset(); onDone(r.state); toast(`Linked ${r.product.name}`, 'info'); }, (err) => toast(err.message, 'warn'));
+      .then((r) => { form.reset(); onDone(r.state); }, (err) => toast(err.message, 'warn'));
   });
   return form;
 }
@@ -85,7 +85,7 @@ function createForm(state: ProductsState, onDone: (s: ProductsState) => void): H
     confirmCreate(r, pub.checked, () => {
       submit.setAttribute('disabled', '');
       productsApi.create({ name: name.value.trim(), repo: r, confirm: r, public: pub.checked, ...(client.value.trim() ? { client: client.value.trim() } : {}) })
-        .then((res) => { form.reset(); onDone(res.state); toast(`Created ${res.product.github ?? r}`, 'info'); }, (err) => { submit.removeAttribute('disabled'); toast(err.message, 'warn'); });
+        .then((res) => { form.reset(); onDone(res.state); }, (err) => { submit.removeAttribute('disabled'); toast(err.message, 'warn'); });
     });
   });
   return form;

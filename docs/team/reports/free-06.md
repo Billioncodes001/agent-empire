@@ -49,3 +49,30 @@ Cloud execution still uses only the first selected project (cloud-exec-setup.md)
 ### Tests (fakes only; no network, no real repos on GitHub)
 
 Registry persistence and old-save compatibility; job → product → worktree binding; isolation (cwd per product); creation throttle, confirmation and a fake `gh`; the default product unchanged. UI check `tools/products-ui-check.ts` (refuses 4610), screenshots under `docs/team/reports/free-06/` at 1440x900 and 874x402.
+
+## Implementation
+
+- `src/server/products.ts` (registry, link, create via injected `gh` runner, throttle, unlink guard), `src/shared/products.ts` (types, repo-name validation).
+- `workers.ts`: optional product resolver; one `Worktrees` per repository; cwd, worktree create/inspect/remove, PR push and base lookup, continuity branch lookup and restore all go through the worker's product. An unknown product is refused; an unlinked product's worker cannot launch elsewhere.
+- `queue.ts`: `add(..., { productId })`, `productId/productName` on tasks (restored), per-product cap, unlinked product fails the task, continuation only within the same product.
+- `consultancy.ts`: `productId` on create/journal/projection, validated through a port, fingerprint unchanged for jobs without a product; every item dispatched with the product. `chief.ts`: plan requests may carry `productId` (checked against the registry before any model call).
+- `server.ts`: `/api/products` (GET; POST link/create; PUT cap; DELETE unlink; same-origin only), `worker.spawn` and `queue.add` accept `productId`. Toasts announce links and creations.
+- Client: `ui/products.ts` (Settings panel, typed create confirmation, hire-dialog chooser), founder desk chooser and review line, `📦` on worker cards and queue rows.
+- Tools: `tools/products-preview.ts` (real server over temp repos, fake gh, no worker process, paused queue, ports 4910+) and `tools/products-ui-check.ts` (refuses 4610).
+
+## Evidence
+
+- typecheck: green. build: green.
+- `npm test`: 824/824 (12 new in `tests/products.test.ts`). One earlier full run under heavy load (four fixtures running) reported 823/824; it did not reproduce in two later runs and was not a products test.
+- products-ui-check: 35/35 against the preview at 1440x900 and 874x402 (reduced motion, no console errors, no overflow): panel, create confirmation with fake gh and throttle count, worker card and queue row product labels, founder desk chooser creating a pending job bound to the product. **Not verified visually:** the hire dialog's product chooser. Headless desk targeting in the real-server preview never settled on an empty desk, so the check prints SKIP rather than passing; the chooser is typechecked and wired like the engine choice.
+- life04-ui-check 20/20 (waiting fixture), inbox-ui-check 47/47, mobile-ui-check 411/411. Regenerated screenshots of other reports were reverted.
+- The preview's founding dialog was confirmed with HQ only so the checks could proceed; the queue was paused and spawning throws, so nothing ran.
+- No real GitHub write, no network, no paid call, no new dependency, no push; 4610, Pixel and `.agent-office` of the live session untouched. Only processes started for this work were stopped.
+
+## Gaps and follow-ups
+
+- Isolation is cwd separation, not a sandbox (same OS user).
+- Cloud mode still uses the first selected project (FREE-07).
+- GitHub App creation (higher limits, FREE_STACK §8 recommendation) is not implemented; the existing gh sign-in is used.
+- No HTTP-level test of `/api/products` (covered by the UI check through the real server, not by `npm test`).
+- The queue add form has no product chooser yet (the hire dialog and founder desk do; `queue.add` accepts `productId`).
