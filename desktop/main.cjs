@@ -278,7 +278,7 @@ function canAutoUpdate() {
   if (process.platform !== 'darwin') return Promise.resolve((autoUpdateCapable = false));
   const bundle = path.resolve(process.execPath, '..', '..', '..');
   return new Promise((resolve) =>
-    execFile('codesign', ['-dv', '--verbose=2', bundle], { timeout: 10_000 }, (_error, _out, err) => resolve((autoUpdateCapable = /Authority=Developer ID Application/.test(String(err))))),
+    execFile('codesign', ['-dv', '--verbose=2', bundle], { timeout: 10_000 }, (_error, _out, err) => resolve((autoUpdateCapable = updates.macDeveloperIdSigned(err)))),
   );
 }
 

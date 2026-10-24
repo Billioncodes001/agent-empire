@@ -1,0 +1,40 @@
+name: Bug report
+description: Something in the office, city, apps or release builds does not work.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Remove passwords, tokens, API keys, office addresses and private repository names from logs and screenshots before posting.
+        Security problems go to a [private advisory](https://github.com/Billioncodes001/agent-empire/security/advisories/new), not here.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Shown in Settings, or the release tag you installed.
+      placeholder: 1.0.0-beta.1
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options: [Web browser, Installed web app (PWA), macOS app, Windows app, Linux, Android app, iOS app, Server / CLI]
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: "1. Open …\n2. Click …"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Console output or logs (redacted)
+      render: text

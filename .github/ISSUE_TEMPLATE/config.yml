@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability (private)
+    url: https://github.com/Billioncodes001/agent-empire/security/advisories/new
+    about: Never open a public issue for a vulnerability. Use a private advisory instead.

@@ -382,6 +382,11 @@ function createBundleStore({ root, builtinRoot, now = Date.now }) {
 
 /** Squirrel.Windows' Update.exe for an app installed with electron-winstaller: <install>/Update.exe, next to app-<v>/. */
 const squirrelUpdateExe = (execPath) => path.resolve(path.dirname(execPath), '..', 'Update.exe');
+/**
+ * Whether `codesign -dv --verbose=2 <app>` output (its stderr) shows a Developer ID Application signature. Squirrel.Mac
+ * refuses to update an ad-hoc (`codesign -s -`) or unsigned app, so those builds open the release page instead (FREE-03).
+ */
+const macDeveloperIdSigned = (codesignOutput) => /^Authority=Developer ID Application: /m.test(String(codesignOutput ?? ''));
 
 /** The --squirrel-* event Squirrel.Windows started the app for, or null. */
 function squirrelEvent(argv) {
@@ -472,4 +477,4 @@ function windowsPackage(release, version) {
 /** A one-line Squirrel RELEASES index for a package we verified ourselves. */
 const squirrelReleases = (bytes, name) => `${crypto.createHash('sha1').update(bytes).digest('hex').toUpperCase()} ${name} ${bytes.length}\r\n`;
 
-module.exports = { verifyEd25519, verifyTrusted, readDevTrust, DEV_KEY_SHA512, TRUSTED_KEYS, DEV_KEY_TRUSTED, releaseChannelUrl, signedRelease, checkGameAgainstRelease, nugetVersion, windowsPackage, squirrelReleases, squirrelUpdateExe, squirrelEvent, autoUpdateFeed, RELEASE_PUBLIC_KEY, DEV_RELEASE_PUBLIC_KEY, BOOT_TIMEOUT_MS, MAX_TEXT_BYTES, safeEntryName, zipEntries, extractZip, download, fixtureMapper, createBundleStore, bundleVersion };
+module.exports = { verifyEd25519, verifyTrusted, readDevTrust, DEV_KEY_SHA512, TRUSTED_KEYS, DEV_KEY_TRUSTED, releaseChannelUrl, signedRelease, checkGameAgainstRelease, nugetVersion, windowsPackage, squirrelReleases, squirrelUpdateExe, macDeveloperIdSigned, squirrelEvent, autoUpdateFeed, RELEASE_PUBLIC_KEY, DEV_RELEASE_PUBLIC_KEY, BOOT_TIMEOUT_MS, MAX_TEXT_BYTES, safeEntryName, zipEntries, extractZip, download, fixtureMapper, createBundleStore, bundleVersion };

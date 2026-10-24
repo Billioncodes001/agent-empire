@@ -56,6 +56,13 @@ if (signed) {
   run('codesign', ['--verify', '--deep', '--strict', '--verbose=2', app]);
   run('xcrun', ['stapler', 'validate', app]);
   run('spctl', ['--assess', '--type', 'execute', '--verbose=2', app]);
+} else {
+  // Free path (FREE-03): ad-hoc sign the whole bundle. Packaging edits Electron's bundle, which breaks its original
+  // signature, and Apple Silicon refuses to launch code with a broken or missing signature ("app is damaged").
+  // Ad-hoc is not Developer ID: Gatekeeper still asks once (System Settings → Privacy & Security → Open Anyway), and
+  // the app updates by download (update-store.cjs macDeveloperIdSigned), never in place.
+  run('codesign', ['--force', '--deep', '--sign', '-', app]);
+  run('codesign', ['--verify', '--deep', '--strict', '--verbose=2', app]);
 }
 
 mkdirSync(outDir, { recursive: true });
