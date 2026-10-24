@@ -28,6 +28,8 @@ export interface VoiceModel {
   /** Where the model and its licence are described. */
   source: string;
   note: string;
+  /** Cap on the unpacked size (default 4x the archive). */
+  maxUnpackedBytes?: number;
 }
 
 const ASR = 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/';
@@ -56,7 +58,7 @@ export const VOICE_MODELS: readonly VoiceModel[] = [
     licence: 'MIT', licenceUrl: 'https://github.com/openai/whisper/blob/main/LICENSE',
     url: `${ASR}sherpa-onnx-whisper-small.en.tar.bz2`,
     source: 'https://k2-fsa.github.io/sherpa/onnx/pretrained_models/whisper/index.html',
-    note: 'Most accurate, slowest and largest. No published checksum: the exact size is verified instead.',
+    note: 'Most accurate, slowest and largest. No published checksum: only the exact size is verified (an extra confirmation is asked).',
   },
   {
     id: 'kokoro-en-int8', kind: 'tts', family: 'kokoro', name: 'Kokoro (English, int8)',
@@ -94,6 +96,8 @@ export interface VoiceDownload {
   done: boolean;
   cancelled?: boolean;
   error?: string;
+  /** E.g. a size-only model whose digest differs from an earlier install. */
+  warning?: string;
 }
 
 export interface VoiceModelState extends VoiceModel { installed: boolean }
@@ -104,6 +108,8 @@ export interface VoiceState {
   selected: { stt?: string; tts?: string };
   ready: { stt: boolean; tts: boolean };
   keepRecordings: boolean;
+  /** How many push-to-talk recordings are kept (only when the user opted in; pruned after 30 days). */
+  keptRecordings: number;
   download?: VoiceDownload;
   modelsDir: string;
 }

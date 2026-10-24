@@ -11,7 +11,9 @@
  * - No cloud speech service is used. Downloads go only to the catalogue's official sherpa-onnx release URLs.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { createWriteStream, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, statfsSync, writeFileSync } from 'node:fs';
+import { Readable, Transform, type Writable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -37,8 +39,10 @@ export interface VoiceOptions {
   dataDir: string;
   engines?: VoiceEngines;
   fetch?: typeof fetch;
-  /** Unpacks a .tar.bz2 archive into `dest`. Default: the system `tar` (macOS, Linux, Windows 10+ bsdtar). */
-  extract?: (archive: string, dest: string) => Promise<void>;
+  /** Unpacks a .tar.bz2 into `dest` within the limits. Default: `safeExtract` with the system tar (absolute path). */
+  extract?: (archive: string, dest: string, signal: AbortSignal, limits: { maxBytes: number; maxFiles: number }) => Promise<void>;
+  /** Opens the download file. Tests inject a failing stream; default `createWriteStream(path, { flags: 'wx' })`. */
+  openWrite?: (file: string) => Writable;
   catalogue?: readonly VoiceModel[];
   now?: () => number;
   onChange?: () => void;
@@ -151,14 +155,64 @@ export function sherpaEngines(load: () => any = () => createRequire(import.meta.
   };
 }
 
-const systemExtract = (archive: string, dest: string) => new Promise<void>((resolve, reject) => {
-  mkdirSync(dest, { recursive: true });
-  execFile('tar', ['-xjf', archive, '-C', dest], { timeout: 15 * 60_000 }, (err) => (err ? reject(new Error(`Could not unpack the archive: ${err.message.split('\n')[0]}`)) : resolve()));
+// ---- safe extraction ---------------------------------------------------------------------------------------------
+
+/** The system tar by absolute path (never PATH or the working directory): bsdtar on macOS/Windows, GNU or bsdtar on Linux. */
+export function systemTar(): string | undefined {
+  if (process.platform === 'win32') return path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
+  return ['/usr/bin/tar', '/bin/tar'].find((p) => existsSync(p));
+}
+
+export interface ExtractLimits { maxBytes: number; maxFiles: number; signal?: AbortSignal }
+
+const run = (file: string, args: string[], signal?: AbortSignal, maxBuffer = 16 * 1024 * 1024) => new Promise<string>((resolve, reject) => {
+  execFile(file, args, { timeout: 15 * 60_000, maxBuffer, signal, env: { LC_ALL: 'C', PATH: '' }, windowsHide: true }, (err, stdout) => (err ? reject(err) : resolve(String(stdout))));
 });
+
+const unsafeName = (name: string) => !name || path.isAbsolute(name) || /^[A-Za-z]:/.test(name) || name.startsWith('\\') || name.split(/[\\/]+/).includes('..');
+
+/**
+ * Lists the archive first and refuses absolute or `..` paths, links, devices, more than `maxFiles` entries and more
+ * than `maxBytes` in total; then unpacks with `--no-same-owner` and re-checks what landed (no links, same caps).
+ */
+export async function safeExtract(archive: string, dest: string, limits: ExtractLimits): Promise<void> {
+  const tar = systemTar();
+  if (!tar || !existsSync(tar)) throw new Error('No system tar was found to unpack the model.');
+  const names = (await run(tar, ['-tjf', archive], limits.signal)).split('\n').filter((l) => l.length);
+  const long = (await run(tar, ['-tvjf', archive], limits.signal)).split('\n').filter((l) => l.length);
+  if (names.length !== long.length) throw new Error('The archive listing is inconsistent; refusing to unpack.');
+  if (names.length > limits.maxFiles) throw new Error(`The archive has too many files (${names.length}); refusing to unpack.`);
+  let total = 0;
+  names.forEach((name, i) => {
+    if (unsafeName(name)) throw new Error(`The archive contains an unsafe path (${name.slice(0, 80)}); refusing to unpack.`);
+    const line = long[i];
+    const type = line[0];
+    if (type !== '-' && type !== 'd') throw new Error(`The archive contains a link or special file (${name.slice(0, 80)}), not a regular file; refusing to unpack.`);
+    const f = line.trim().split(/\s+/);
+    const size = Number(f[1]?.includes('/') ? f[2] : f[4]); // GNU: mode owner/group size …; bsdtar: mode links owner group size …
+    if (!Number.isFinite(size) || size < 0) throw new Error('The archive listing could not be read; refusing to unpack.');
+    total += size;
+  });
+  if (total > limits.maxBytes) throw new Error(`The archive is too large when unpacked (${total} bytes); refusing to unpack.`);
+  mkdirSync(dest, { recursive: true });
+  await run(tar, ['-xjf', archive, '-C', dest, '--no-same-owner'], limits.signal);
+  // Defence in depth: what actually landed.
+  let files = 0; let bytes = 0;
+  const walk = (d: string) => {
+    for (const e of readdirSync(d)) {
+      const p = path.join(d, e); const st = lstatSync(p);
+      if (st.isSymbolicLink() || (!st.isFile() && !st.isDirectory())) throw new Error('The unpacked model contains a link or special file; removed.');
+      if (st.isDirectory()) walk(p); else { files++; bytes += st.size; }
+    }
+  };
+  walk(dest);
+  if (files > limits.maxFiles || bytes > limits.maxBytes) throw new Error('The unpacked model is larger than allowed; removed.');
+}
 
 // ---- runtime -----------------------------------------------------------------------------------------------------
 
-interface Saved { stt?: string; tts?: string; keepRecordings?: boolean }
+interface Saved { stt?: string; tts?: string; keepRecordings?: boolean; digests?: Record<string, string> }
+const RECORDING_DAYS = 30;
 
 export class VoiceRuntime {
   readonly root: string;
@@ -166,12 +220,17 @@ export class VoiceRuntime {
   private readonly catalogue: readonly VoiceModel[];
   private readonly engines: VoiceEngines;
   private readonly fetcher: typeof fetch;
-  private readonly extract: (archive: string, dest: string) => Promise<void>;
+  private readonly extract: NonNullable<VoiceOptions['extract']>;
+  private readonly openWrite: NonNullable<VoiceOptions['openWrite']>;
   private readonly now: () => number;
   private readonly onChange: () => void;
   private saved: Saved = {};
   private dl?: VoiceDownload;
   private abort?: AbortController;
+  /** The download in flight, until it has fully stopped (cancel included). */
+  private running?: Promise<void>;
+  /** One speech job (transcription or synthesis) at a time: sherpa-onnx runs synchronously on this thread. */
+  private speechBusy = false;
   private transcripts = new Map<string, Transcript>();
 
   constructor(opts: VoiceOptions) {
@@ -180,10 +239,12 @@ export class VoiceRuntime {
     this.catalogue = opts.catalogue ?? VOICE_MODELS;
     this.engines = opts.engines ?? sherpaEngines();
     this.fetcher = opts.fetch ?? fetch;
-    this.extract = opts.extract ?? systemExtract;
+    this.extract = opts.extract ?? ((archive, dest, signal, limits) => safeExtract(archive, dest, { ...limits, signal }));
+    this.openWrite = opts.openWrite ?? ((file) => createWriteStream(file, { flags: 'wx' }));
     this.now = opts.now ?? Date.now;
     this.onChange = opts.onChange ?? (() => {});
     try { this.saved = JSON.parse(readFileSync(path.join(this.root, 'voice.json'), 'utf8')) ?? {}; } catch { this.saved = {}; }
+    this.pruneRecordings();
   }
 
   private persist() {
@@ -201,6 +262,22 @@ export class VoiceRuntime {
     return chosen ?? this.catalogue.find((m) => m.kind === kind && this.installed(m.id));
   }
 
+  private get recordingsDir() { return path.join(this.root, 'recordings'); }
+  private recordings(): string[] { try { return readdirSync(this.recordingsDir).filter((f) => f.endsWith('.wav')); } catch { return []; } }
+
+  /** Kept recordings older than 30 days are deleted. */
+  pruneRecordings() {
+    const cutoff = this.now() - RECORDING_DAYS * 864e5;
+    for (const f of this.recordings()) { const p = path.join(this.recordingsDir, f); try { if (statSync(p).mtimeMs < cutoff) rmSync(p, { force: true }); } catch { /* gone */ } }
+  }
+
+  deleteRecordings(): number {
+    const list = this.recordings();
+    for (const f of list) rmSync(path.join(this.recordingsDir, f), { force: true });
+    this.onChange();
+    return list.length;
+  }
+
   async state(): Promise<VoiceState> {
     const runtime = await this.engines.detect().catch(() => ({ available: false, detail: 'The speech runtime could not be checked.' }));
     const stt = this.selectedModel('stt'); const tts = this.selectedModel('tts');
@@ -210,8 +287,10 @@ export class VoiceRuntime {
       selected: { stt: stt?.id, tts: tts?.id },
       ready: { stt: runtime.available && !!stt, tts: runtime.available && !!tts },
       keepRecordings: !!this.saved.keepRecordings,
+      keptRecordings: this.recordings().length,
       download: this.dl ? { ...this.dl } : undefined,
-      modelsDir: this.modelsDir,
+      // A display path only: the absolute data directory is not sent to clients.
+      modelsDir: 'voice/models (in the office data folder)',
     };
   }
 
@@ -225,6 +304,15 @@ export class VoiceRuntime {
     this.onChange();
   }
 
+  /** Removes an installed model (its recorded digest is kept, to flag a different file on reinstall). */
+  remove(id: unknown) {
+    const m = this.catalogue.find((x) => x.id === id);
+    if (!m) throw new VoiceError(400, 'Unknown voice model.');
+    if (this.running) throw new VoiceError(409, 'Wait for the current download to finish.');
+    rmSync(path.join(this.modelsDir, m.id), { recursive: true, force: true });
+    this.onChange();
+  }
+
   setKeepRecordings(on: unknown) {
     if (typeof on !== 'boolean') throw new VoiceError(400, 'keepRecordings must be true or false.');
     this.saved = { ...this.saved, keepRecordings: on };
@@ -232,98 +320,121 @@ export class VoiceRuntime {
     this.onChange();
   }
 
-  /** Starts a download of a catalogue model, only with `confirm === true`. Progress is in `state().download`. */
-  startDownload(id: unknown, confirm: unknown): { error?: string; started?: Promise<void> } {
+  /**
+   * Starts a download of a catalogue model, only with `confirm === true`; a model without a published checksum also
+   * needs `confirmUnverified === true`. One download at a time, including one that is still stopping after a cancel.
+   */
+  startDownload(id: unknown, confirm: unknown, confirmUnverified?: unknown): { error?: string; started?: Promise<void> } {
     if (confirm !== true) return { error: 'A voice model download needs explicit confirmation of its name, size and licence.' };
     const m = this.catalogue.find((x) => x.id === id);
     if (!m) return { error: 'Only the listed voice models can be downloaded from here.' };
-    if (this.dl && !this.dl.done) return { error: `${this.dl.model} is still downloading.` };
+    if (!m.sha256 && confirmUnverified !== true) return { error: `${m.name} has no published checksum: only its size can be checked. Confirm that warning to download it.` };
+    if (this.running) return { error: this.dl?.cancelled ? `${this.dl.model} is still stopping; try again in a moment.` : `${this.dl?.model ?? 'A model'} is still downloading.` };
     if (this.installed(m.id)) return { error: `${m.name} is already installed.` };
-    this.abort = new AbortController();
+    const free = freeBytes(this.root);
+    if (free !== undefined && free < m.sizeBytes * 3) return { error: `Not enough free disk space for ${m.name}: about ${Math.ceil((m.sizeBytes * 3) / 1e6)} MB is needed for the download and unpacking.` };
+    const abort = new AbortController();
+    this.abort = abort;
     this.dl = { model: m.id, status: 'starting', completed: 0, total: m.sizeBytes, done: false };
     this.onChange();
-    return { started: this.run(m, this.abort.signal) };
+    const started = this.runDownload(m, abort.signal, this.dl).finally(() => { this.running = undefined; this.onChange(); });
+    this.running = started;
+    return { started };
   }
 
+  /** Asks the download to stop; it reports `done` once it has really stopped and cleaned up. */
   cancelDownload(): boolean {
-    if (!this.dl || this.dl.done) return false;
+    if (!this.dl || this.dl.done || this.dl.cancelled) return false;
+    Object.assign(this.dl, { cancelled: true, status: 'cancelling' });
     this.abort?.abort();
-    Object.assign(this.dl, { done: true, cancelled: true, status: 'cancelled' });
     this.onChange();
     return true;
   }
 
-  private async run(m: VoiceModel, signal: AbortSignal) {
-    const dl = this.dl!;
+  private async runDownload(m: VoiceModel, signal: AbortSignal, dl: VoiceDownload) {
     mkdirSync(this.root, { recursive: true });
-    const part = path.join(this.root, `${m.id}.part`);
-    const tmp = path.join(this.modelsDir, `${m.id}.tmp`);
-    const fail = (error: string) => { if (!dl.cancelled) Object.assign(dl, { done: true, error, status: 'failed' }); };
+    mkdirSync(this.modelsDir, { recursive: true });
+    const runId = randomBytes(6).toString('hex');
+    const part = path.join(this.root, `${m.id}.${runId}.part`);
+    const tmp = path.join(this.modelsDir, `${m.id}.${runId}.tmp`);
+    const hash = createHash('sha256');
     try {
       const res = await this.fetcher(m.url, { signal, redirect: 'follow' });
       if (!res.ok || !res.body) throw new Error(`The release server answered HTTP ${res.status}.`);
       dl.status = 'downloading';
-      const hash = createHash('sha256');
-      const out = createWriteStream(part);
-      const reader = res.body.getReader();
-      // Cancel ends a pending read even if the transport ignores the abort signal.
-      signal.addEventListener('abort', () => { reader.cancel().catch(() => {}); }, { once: true });
+      const meter = new Transform({
+        transform(chunk: Buffer, _enc, cb) {
+          dl.completed += chunk.length;
+          if (dl.completed > m.sizeBytes) return cb(new Error(`The download is larger than the pinned size (${m.sizeBytes} bytes); stopped.`));
+          hash.update(chunk); cb(null, chunk);
+        },
+      });
       try {
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (signal.aborted) throw new Error('cancelled');
-          dl.completed += value.length;
-          if (dl.completed > m.sizeBytes) throw new Error(`The download is larger than the pinned size (${m.sizeBytes} bytes); stopped.`);
-          hash.update(value);
-          if (!out.write(value)) await new Promise((r) => out.once('drain', r));
-        }
-      } finally { await new Promise<void>((r) => out.end(() => r())); }
-      if (signal.aborted) throw new Error('cancelled');
+        await pipeline(Readable.fromWeb(res.body as import('node:stream/web').ReadableStream), meter, this.openWrite(part), { signal });
+      } catch (e) {
+        if (signal.aborted) throw new Error('cancelled');
+        const code = (e as NodeJS.ErrnoException).code;
+        if (code === 'ENOSPC' || code === 'EACCES' || code === 'EPERM' || code === 'EROFS' || code === 'EEXIST' || /no space/i.test((e as Error).message)) throw new Error(`The download could not be saved on the office host (${code ?? 'write error'}: ${(e as Error).message}). Nothing was installed.`);
+        throw e;
+      }
       if (dl.completed !== m.sizeBytes) throw new Error(`Size mismatch: got ${dl.completed} bytes, expected ${m.sizeBytes}. Nothing was installed.`);
       const digest = hash.digest('hex');
       if (m.sha256 && digest !== m.sha256) throw new Error('Checksum mismatch: the file is not the published release. Nothing was installed.');
+      if (signal.aborted) throw new Error('cancelled');
       dl.status = 'unpacking';
       this.onChange();
-      rmSync(tmp, { recursive: true, force: true });
-      await this.extract(part, tmp);
+      await this.extract(part, tmp, signal, { maxBytes: m.maxUnpackedBytes ?? Math.max(m.sizeBytes * 4, 64e6), maxFiles: 2000 });
+      if (signal.aborted) throw new Error('cancelled');
+      const earlier = this.saved.digests?.[m.id];
+      if (!m.sha256 && earlier && earlier !== digest) dl.warning = `This download’s sha256 (${digest.slice(0, 12)}…) differs from the earlier install (${earlier.slice(0, 12)}…). The release file changed; check the source before using it.`;
       writeFileSync(path.join(tmp, 'installed.json'), JSON.stringify({ id: m.id, url: m.url, sizeBytes: m.sizeBytes, sha256: digest, verified: m.sha256 ? 'sha256' : 'size', installedAt: this.now() }, null, 2));
+      if (signal.aborted) throw new Error('cancelled');
       rmSync(path.join(this.modelsDir, m.id), { recursive: true, force: true });
       renameSync(tmp, path.join(this.modelsDir, m.id));
-      if (!this.saved[m.kind] || !this.installed(this.saved[m.kind]!)) { this.saved = { ...this.saved, [m.kind]: m.id }; this.persist(); }
+      this.saved = { ...this.saved, digests: { ...this.saved.digests, [m.id]: earlier ?? digest } };
+      if (!this.saved[m.kind] || !this.installed(this.saved[m.kind]!)) this.saved = { ...this.saved, [m.kind]: m.id };
+      this.persist();
       Object.assign(dl, { done: true, status: 'installed' });
     } catch (e) {
-      fail((e as Error).name === 'AbortError' || (e as Error).message === 'cancelled' ? 'cancelled' : (e as Error).message);
-      rmSync(tmp, { recursive: true, force: true });
+      const cancelled = signal.aborted || (e as Error).name === 'AbortError' || (e as Error).message === 'cancelled';
+      Object.assign(dl, cancelled ? { done: true, cancelled: true, status: 'cancelled' } : { done: true, error: (e as Error).message, status: 'failed' });
     } finally {
+      rmSync(tmp, { recursive: true, force: true });
       rmSync(part, { force: true });
-      this.onChange();
     }
   }
 
   private sweep() { const cutoff = this.now() - TRANSCRIPT_TTL_MS; for (const [id, t] of this.transcripts) if (t.createdAt < cutoff) this.transcripts.delete(id); }
 
+  private async exclusive<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.speechBusy) throw new VoiceError(429, 'The office host is busy with another speech request; try again in a moment.');
+    this.speechBusy = true;
+    try { return await fn(); } finally { this.speechBusy = false; }
+  }
+
   /** Transcribes one push-to-talk recording on this host. The audio is dropped afterwards unless the user opted in. */
   async transcribe(wav: Buffer): Promise<Transcript> {
-    const runtime = await this.engines.detect();
     const model = this.selectedModel('stt');
     if (!model) throw new VoiceError(409, 'No speech-to-text model is installed. Choose one in Settings → Voice, or type instead.');
-    if (!runtime.available) throw new VoiceError(409, runtime.detail);
     const { samples, sampleRate } = decodeWav(wav);
     const durationSec = samples.length / sampleRate;
     if (durationSec > MAX_AUDIO_SECONDS) throw new VoiceError(413, `Recordings are limited to ${MAX_AUDIO_SECONDS} seconds.`);
     if (durationSec < 0.2) throw new VoiceError(400, 'The recording is too short. Hold the button while you speak.');
-    const engine = await this.engines.stt(model, path.join(this.modelsDir, model.id));
-    const text = (await engine.transcribe(samples, sampleRate)).replace(/\s+/g, ' ').trim().slice(0, 2000);
-    this.sweep();
-    const t: Transcript = { id: `T${randomBytes(9).toString('base64url')}`, text, createdAt: this.now(), status: 'pending', durationSec: Math.round(durationSec * 10) / 10 };
-    this.transcripts.set(t.id, t);
-    if (this.saved.keepRecordings) {
-      const dir = path.join(this.root, 'recordings');
-      mkdirSync(dir, { recursive: true });
-      writeFileSync(path.join(dir, `${t.id}.wav`), wav);
-    }
-    return { ...t };
+    return this.exclusive(async () => {
+      const runtime = await this.engines.detect();
+      if (!runtime.available) throw new VoiceError(409, runtime.detail);
+      const engine = await this.engines.stt(model, path.join(this.modelsDir, model.id));
+      const text = (await engine.transcribe(samples, sampleRate)).replace(/\s+/g, ' ').trim().slice(0, 2000);
+      this.sweep();
+      const t: Transcript = { id: `T${randomBytes(9).toString('base64url')}`, text, createdAt: this.now(), status: 'pending', durationSec: Math.round(durationSec * 10) / 10 };
+      this.transcripts.set(t.id, t);
+      if (this.saved.keepRecordings) {
+        mkdirSync(this.recordingsDir, { recursive: true });
+        writeFileSync(path.join(this.recordingsDir, `${t.id}.wav`), wav);
+        this.pruneRecordings();
+      }
+      return { ...t };
+    });
   }
 
   /** Marks a pending transcript sent and returns it. A transcript is sent once: a second call is a 409. */
@@ -349,11 +460,16 @@ export class VoiceRuntime {
     if (!clean) throw new VoiceError(400, 'Nothing to say.');
     const model = this.selectedModel('tts');
     if (!model) throw new VoiceError(409, 'No voice is installed. Subtitles only; choose a voice in Settings → Voice.');
-    const runtime = await this.engines.detect();
-    if (!runtime.available) throw new VoiceError(409, runtime.detail);
-    const engine = await this.engines.tts(model, path.join(this.modelsDir, model.id));
-    const { samples, sampleRate } = await engine.synthesize(clean);
-    return encodeWav(samples, sampleRate);
+    return this.exclusive(async () => {
+      const runtime = await this.engines.detect();
+      if (!runtime.available) throw new VoiceError(409, runtime.detail);
+      const engine = await this.engines.tts(model, path.join(this.modelsDir, model.id));
+      const { samples, sampleRate } = await engine.synthesize(clean);
+      return encodeWav(samples, sampleRate);
+    });
   }
+}
 
+function freeBytes(dir: string): number | undefined {
+  try { mkdirSync(dir, { recursive: true }); const s = statfsSync(dir); return Number(s.bavail) * Number(s.bsize); } catch { return undefined; }
 }

@@ -94,7 +94,7 @@ test('a checksum mismatch is rejected and nothing is installed', () => withTemp(
 
 test('without a published checksum the exact size is verified; a wrong size is rejected', () => withTemp(async (dir) => {
   const v = new VoiceRuntime({ dataDir: dir, catalogue: [model({ sha256: undefined, sizeBytes: payload.length + 5 })], engines: fakeEngines(), fetch: fakeFetch(payload), extract: fakeExtract });
-  await v.startDownload('fake-stt', true).started;
+  await v.startDownload('fake-stt', true, true).started;
   const s = await v.state();
   assert.match(s.download?.error ?? '', /size/i);
   assert.equal(s.models[0].installed, false);
