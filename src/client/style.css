@@ -1553,3 +1553,6 @@ html.ae-touch #hud .topbar .controls > #btn-inbox > span:not(.svc-count):not(.in
 .modal.city-modal .body { overflow-y: auto; overscroll-behavior: contain; }
 .modal.city-modal h3 { font-size: 15px; font-weight: 650; margin: 14px 0 8px; color: var(--ink); }
 .modal.city-modal .city-list li { border-bottom: 1px solid rgba(155, 209, 186, .1); padding: 4px 0; }
+
+/* Opened-from-disk notice (see the entry HTML): this stylesheet loaded, so the page is served correctly. */
+.file-open-note { display: none !important; }

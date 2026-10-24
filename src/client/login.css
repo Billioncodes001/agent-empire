@@ -56,3 +56,6 @@ a { color: var(--accent); font-weight: 600; }
   button { margin-top: 12px; }
 }
 @media (prefers-reduced-motion: reduce) { button { transition: none; } }
+
+/* Opened-from-disk notice (see the entry HTML): this stylesheet loaded, so the page is served correctly. */
+.file-open-note { display: none !important; }
