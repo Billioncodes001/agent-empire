@@ -85,11 +85,11 @@ Headless Chrome on ANGLE/Metal, vsync off, Medium preset, same viewpoints. Befor
 
 | View | Desktop 1440x900 | Phone 874x402 |
 | --- | --- | --- |
-| Founding street | 2.86 → 3.32 (266 → 367) | 2.28 → 2.50 (318 → 422) |
-| Business street | 2.05 → 2.43 (66 → 150) | 1.68 → 1.94 (66 → 159) |
-| Aerial | 3.36 → 3.16 (418 → 310) | 2.63 → 2.58 (418 → 373) |
+| Founding street | 4.01 → 4.41 (266 → 383) | 3.18 → 3.82 (318 → 438) |
+| Business street | 2.81 → 3.65 (66 → 182) | 2.21 → 2.99 (66 → 194) |
+| Aerial | 5.37 → 4.84 (418 → 320) | 5.07 → 4.58 (418 → 383) |
 
-The phone regresses by at most +0.26 ms, within the +1.5 ms budget. This was measured headless, not on a device.
+Re-measured at `7fa17e7`, after the facade and review fixes. Before and after were run back to back in one session; the machine was busier than during the first measurement, which raised both absolute baselines. The phone regresses by at most **+0.78 ms** (business street), within the +1.5 ms budget. The first measurement, before the facade, showed at most +0.26 ms. This was measured headless, not on a device.
 
 ## Checks
 
@@ -135,7 +135,23 @@ Unrelated screenshots were reverted.
 - outfit-ui-check: 29/29
 - life04-ui-check (waiting): 20/20
 
-The perf numbers above were measured before the facade work. The facade is batched into the garage shell, and the two lamps join the existing instanced lamp mesh.
+The perf table above was re-measured after the facade work (see Performance).
+
+## Re-review (`7fa17e7`)
+
+Each fix has a test that fails without the change.
+
+1. **Double click in cloud mode.** Each purchase target (a vehicle model or a plot) keeps one nonce until that nonce appears in `city.nonces` or the host refuses it (`src/client/ui/purchase-tracker.ts`). The tracker outlives the dialog, so reopening the dialog cannot mint a second nonce. `pending` clears only when the city's nonces, vehicles or plots change, on a refusal toast, or after 8 s. Re-enabling Buy after 8 s is safe because the next click resends the same nonce. `tests/purchase-tracker.test.ts` sends two clicks before the coordinator applies them and asserts that one vehicle is bought.
+2. **Stale sedan pose.** The garage slots now use the live controller pose while driving (`liveCarPose`) and test the sedan's full body instead of a point at its centre. A change to the saved vehicles no longer opens slots that are already solid (`settleSlots`).
+3. **Zip guard fails closed.** The parsed entry count must match zipinfo's "number of entries" header (or its "N files" footer). The four pinned archives pass: 228, 210, 496 and 268 entries.
+
+**Checks at `7fa17e7`:**
+
+- typecheck: pass
+- `npm test`: 837/837
+- build: pass
+- city-ui-check: 23/23
+- mobile-ui-check: 411/411
 
 ## Deferred
 

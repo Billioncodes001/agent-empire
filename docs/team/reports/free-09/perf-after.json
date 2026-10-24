@@ -5,40 +5,40 @@
   "desktop-1440x900": {
     "founding": {
       "frames": {
-        "mean": 3.319386909693455,
-        "p95": 6,
-        "frames": 1207
+        "mean": 4.4097909790979095,
+        "p95": 5.899999999999636,
+        "frames": 909
       },
       "renderer": {
-        "triangles": 1376583,
-        "calls": 367,
-        "geometries": 814,
+        "triangles": 1384999,
+        "calls": 383,
+        "geometries": 832,
         "textures": 168
       }
     },
     "business": {
       "frames": {
-        "mean": 2.4256969696969706,
-        "p95": 3.8000000000029104,
-        "frames": 1650
+        "mean": 3.6506836827711937,
+        "p95": 4.700000000000728,
+        "frames": 1097
       },
       "renderer": {
-        "triangles": 1336954,
-        "calls": 150,
-        "geometries": 814,
+        "triangles": 1347544,
+        "calls": 182,
+        "geometries": 832,
         "textures": 168
       }
     },
     "aerial": {
       "frames": {
-        "mean": 3.15982636148382,
-        "p95": 4,
-        "frames": 1267
+        "mean": 4.843115942028988,
+        "p95": 5.700000000000728,
+        "frames": 828
       },
       "renderer": {
-        "triangles": 1383705,
-        "calls": 310,
-        "geometries": 890,
+        "triangles": 1391437,
+        "calls": 320,
+        "geometries": 908,
         "textures": 170
       }
     }
@@ -46,41 +46,41 @@
   "phone-874x402": {
     "founding": {
       "frames": {
-        "mean": 2.4961394769613943,
-        "p95": 4.299999999999272,
-        "frames": 1606
+        "mean": 3.8191611058150614,
+        "p95": 4.699999999998909,
+        "frames": 1049
       },
       "renderer": {
-        "triangles": 1378521,
-        "calls": 422,
-        "geometries": 855,
-        "textures": 175
+        "triangles": 1386937,
+        "calls": 438,
+        "geometries": 873,
+        "textures": 174
       }
     },
     "business": {
       "frames": {
-        "mean": 1.9358144030932822,
-        "p95": 3.2999999999992724,
-        "frames": 2069
+        "mean": 2.9853094705443692,
+        "p95": 3.7999999999992724,
+        "frames": 1341
       },
       "renderer": {
-        "triangles": 1341288,
-        "calls": 159,
-        "geometries": 855,
-        "textures": 175
+        "triangles": 1352874,
+        "calls": 194,
+        "geometries": 873,
+        "textures": 174
       }
     },
     "aerial": {
       "frames": {
-        "mean": 2.580154639175259,
-        "p95": 3.099999999998545,
-        "frames": 1552
+        "mean": 4.576914285714285,
+        "p95": 5.400000000001455,
+        "frames": 875
       },
       "renderer": {
-        "triangles": 1387689,
-        "calls": 373,
-        "geometries": 955,
-        "textures": 175
+        "triangles": 1395421,
+        "calls": 383,
+        "geometries": 973,
+        "textures": 174
       }
     }
   }

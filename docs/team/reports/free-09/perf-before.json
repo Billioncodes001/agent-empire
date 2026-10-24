@@ -5,82 +5,82 @@
   "desktop-1440x900": {
     "founding": {
       "frames": {
-        "mean": 2.862973552537526,
-        "p95": 5.199999999998909,
-        "frames": 1399
+        "mean": 4.008591408591409,
+        "p95": 7.5,
+        "frames": 1001
       },
       "renderer": {
         "triangles": 1419160,
         "calls": 266,
         "geometries": 717,
-        "textures": 159
+        "textures": 158
       }
     },
     "business": {
       "frames": {
-        "mean": 2.054774127310062,
-        "p95": 3.3000000000029104,
-        "frames": 1948
+        "mean": 2.809122807017544,
+        "p95": 4.5,
+        "frames": 1425
       },
       "renderer": {
         "triangles": 1390185,
         "calls": 66,
         "geometries": 722,
-        "textures": 159
+        "textures": 158
       }
     },
     "aerial": {
       "frames": {
-        "mean": 3.363140218303946,
-        "p95": 4,
-        "frames": 1191
+        "mean": 5.371313672922252,
+        "p95": 6.30000000000291,
+        "frames": 746
       },
       "renderer": {
         "triangles": 1427914,
         "calls": 418,
         "geometries": 877,
-        "textures": 165
+        "textures": 164
       }
     }
   },
   "phone-874x402": {
     "founding": {
       "frames": {
-        "mean": 2.2845890410958907,
-        "p95": 3.8000000000010914,
-        "frames": 1752
+        "mean": 3.175574940523394,
+        "p95": 4.300000000001091,
+        "frames": 1261
       },
       "renderer": {
         "triangles": 1421024,
         "calls": 318,
         "geometries": 761,
-        "textures": 164
+        "textures": 163
       }
     },
     "business": {
       "frames": {
-        "mean": 1.6836837678721612,
-        "p95": 2.7999999999992724,
-        "frames": 2378
+        "mean": 2.2054545454545442,
+        "p95": 3.399999999997817,
+        "frames": 1815
       },
       "renderer": {
         "triangles": 1390185,
         "calls": 66,
         "geometries": 761,
-        "textures": 164
+        "textures": 163
       }
     },
     "aerial": {
       "frames": {
-        "mean": 2.634605263157894,
-        "p95": 3.099999999998545,
-        "frames": 1520
+        "mean": 5.0710126582278505,
+        "p95": 6.19999999999709,
+        "frames": 790
       },
       "renderer": {
         "triangles": 1427914,
         "calls": 418,
-        "geometries": 910,
-        "textures": 169
+        "geometries": 909,
+        "textures": 168
       }
     }
   }
