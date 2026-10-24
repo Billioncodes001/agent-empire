@@ -3,6 +3,7 @@ import { apiFetch } from './endpoint';
 import type { ResearchReport, ResearchState } from '../shared/research';
 import { STATUS_LABEL, reportBody, reportFacts } from './research-view';
 import { ACTUAL_SPEND_LABEL, PHASE_LABEL, basisLabel, defaultApprovedBudget, fmtDurationRange, fmtUsdRange } from '../shared/org';
+import { PLAN_NOTE, REVIEW_NOTE, ROLE_LABEL, chiefTag, type ChiefPlan, type ChiefState } from '../shared/chief';
 
 /** The CEO's edited budget per pending job, kept across the 5-second refreshes while they type. */
 const budgetDraft = new Map<string, string>();
@@ -63,6 +64,8 @@ const labels: Record<string, string> = { awaiting_approval: 'Your approval', que
 interface Snapshot { revision: number; jobs: ConsultancyJob[]; storageError?: string }
 interface Status { repository: string; resources: { workstations: number; workers: number; attention: number; concurrency: number; queued: number | null; blocker?: string; mode: string }; telegram: {configured: boolean; running: boolean; error?: string; lastPollAt?: number}; email?: { label: string; error?: string } }
 let jobs: ConsultancyJob[] = [], fresh = false, selected: string | undefined, busy = false, refreshing = false;
+/** FREE-02: the chief's planning brain, its plan requests and reviews (null on hosts without it). */
+let chief: ChiefState | null = null;
 let lastRendered = '';
 let refreshFlight: Promise<void> | undefined;
 const detail = $<HTMLDialogElement>('job-detail'), intake = $<HTMLDialogElement>('intake');
@@ -97,6 +100,58 @@ function showJobs() {
     el.append(row);
   }
 }
+async function refreshChief() {
+  try {
+    const r = await apiFetch('/api/chief', { credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(12000) });
+    chief = r.ok ? await r.json() as ChiefState : null;
+  } catch { chief = null; }
+  const ready = !!chief?.brain.ready;
+  $('chief-tag').textContent = chief && ready ? chiefTag(chief.brain) : 'Rule-based coordination';
+  $('chief-tag').dataset.monitor = ready ? 'model_backed' : 'rule_based';
+  $('chief-brain').textContent = chief ? `Planning brain: ${chief.brain.label}.${chief.brain.reason ? ` ${chief.brain.reason}` : ''}${chief.pendingCalls ? ` ${chief.pendingCalls} waiting.` : ''}` : '';
+  $('chief-option').hidden = !ready;
+  $('chief-option-note').textContent = ready ? `${chiefTag(chief!.brain)} · it drafts items with roles and order; you review every prompt and approve with an estimate.` : '';
+  const list = $('chief-plans'); list.replaceChildren();
+  for (const p of (chief?.plans ?? []).slice(-5).reverse()) {
+    const row = text('div', '', 'chief-plan-row'); row.dataset.status = p.status;
+    const label = { queued: 'Waiting for the model', planning: 'Drafting…', proposed: 'Proposed · your approval', needs_attention: 'Needs attention' }[p.status];
+    row.append(text('small', `${p.id} · ${label}`), text('strong', `${p.client} · ${p.title}`));
+    if (p.reason) row.append(text('p', p.reason, 'chief-reason'));
+    if (p.status === 'proposed' && p.jobId) {
+      const open = text('button', 'Review the proposed plan →', 'quiet') as HTMLButtonElement; open.type = 'button';
+      open.addEventListener('click', () => { selected = p.jobId; error('action-error'); renderDetail(); detail.showModal(); });
+      row.append(open);
+    }
+    list.append(row);
+  }
+}
+const planFor = (jobId: string): ChiefPlan | undefined => chief?.plans.find((p) => p.jobId === jobId && p.status === 'proposed');
+function chiefSection(job: ConsultancyJob): HTMLElement | null {
+  const plan = planFor(job.id);
+  const reviews = chief?.reviews.filter((r) => r.jobId === job.id) ?? [];
+  if (!plan && !reviews.length) return null;
+  const box = text('section', '', 'chief-proposed');
+  box.setAttribute('aria-label', 'From the chief');
+  if (plan) {
+    box.append(text('span', `Proposed by the chief · Model-backed · ${plan.model ?? 'model'} · proposals only`, 'tag chief-model-tag'));
+    if (plan.summary) box.append(text('p', plan.summary));
+    box.append(text('p', `${PLAN_NOTE}${plan.costLabel ? ` Planning cost: ${plan.costLabel}.` : ''}`, 'estimate-note'));
+  }
+  if (reviews.length) {
+    box.append(text('h3', 'Chief reviews'));
+    for (const r of reviews) {
+      const art = text('article', '', 'chief-review'); art.dataset.recommendation = r.recommendation ?? r.status;
+      art.append(text('strong', `${r.itemTitle} · ${r.status === 'reviewed' ? (r.recommendation === 'accept' ? 'Recommends accept' : 'Recommends changes') : r.status === 'needs_attention' ? 'Needs attention' : 'Reviewing…'}`));
+      if (r.summary) art.append(text('p', r.summary));
+      for (const c of r.concerns ?? []) art.append(text('p', `· ${c}`, 'chief-concern'));
+      if (r.reason) art.append(text('p', r.reason, 'chief-reason'));
+      if (r.evidence) art.append(text('small', `Based on: ${r.evidence}`));
+      box.append(art);
+    }
+    box.append(text('p', REVIEW_NOTE, 'estimate-note'));
+  }
+  return box;
+}
 function renderDetail() {
   const focusedAction = detail.contains(document.activeElement) ? document.activeElement?.textContent : undefined;
   const budgetFocused = document.activeElement?.id === 'budget-input';
@@ -106,10 +161,14 @@ function renderDetail() {
   if (job.attention) content.append(text('p',job.attention));
   const plan = text('section','','plan'); plan.append(text('h3','Proposed work'));
   // Task prompts remain visible in full before approval, including plans created outside this form.
-  for (const item of job.items) {
-    plan.append(text('h3',item.title), text('small', labels[item.status] ?? item.status), text('p',item.prompt));
+  const proposed = planFor(job.id);
+  job.items.forEach((item, i) => {
+    const meta = proposed?.items?.[i];
+    plan.append(text('h3',item.title), text('small', `${labels[item.status] ?? item.status}${meta ? ` · ${ROLE_LABEL[meta.role]} · ${meta.dependsOn.length ? `after item ${meta.dependsOn.join(' & ')}` : 'starts first'}${meta.parallel ? ' · parallel' : ''}` : ''}`), text('p',item.prompt));
     if (item.attention) plan.append(text('p',item.attention));
-  }
+  });
+  const fromChief = chiefSection(job);
+  if (fromChief) content.append(fromChief);
   const estimate = estimateSection(job);
   if (estimate) content.append(estimate);
   content.append(plan, text('p','Approval submits these work items to this host’s local queue. Existing provider charges, budget, concurrency and funded desks still apply. Worker turn completion requires review before client delivery.'));
@@ -162,7 +221,9 @@ async function refreshNow() {
     $('chief-report').textContent = status.resources.blocker || `${status.resources.attention} workers need input. ${status.resources.queued} tasks waiting. Up to ${status.resources.concurrency} workers can run at once within the funded desk limit. Work is scoped to ${status.repository}.`;
     $('telegram-status').textContent = status.telegram.error || (!status.telegram.configured ? 'Not connected yet. Connect your private bot to send briefs, approve plans and receive updates.' : status.telegram.lastPollAt ? 'Connected to your configured private bot.' : 'Configured. Waiting for the first successful connection.');
     $('email-status').textContent = status.email ? `${status.email.label}${status.email.error ? ` — ${status.email.error}` : ''}` : 'Email: not configured';
-    showJobs(); if (detail.open && (changed || !wasFresh)) renderDetail();
+    const chiefBefore = JSON.stringify(chief);
+    await refreshChief();
+    showJobs(); if (detail.open && (changed || !wasFresh || JSON.stringify(chief) !== chiefBefore)) renderDetail();
     void refreshResearch();
   } catch (e) {
     fresh = false; $('connection').textContent = 'Host unavailable · last view retained'; error('error',(e as Error).message);
@@ -184,11 +245,24 @@ form.addEventListener('submit', async e => {
   e.preventDefault(); if (busy) return;
   const values = new FormData(form); const body = {requestId,client:String(values.get('client') ?? '').trim(),title:String(values.get('title') ?? '').trim(),brief:String(values.get('brief') ?? '').trim()};
   if (!body.client || !body.title || !body.brief) { setStep(1); error('form-error','Please fill in the client, title and brief.'); return; }
+  const useChief = !!chief?.brain.ready && ($('use-chief') as HTMLInputElement).checked;
   if (step === 1) {
-    $('brief-review').replaceChildren(text('h3',`${body.client} / ${body.title}`),text('p',body.brief),text('p','The initial plan contains one work item matching your brief. Saving does not launch a worker. The next step shows a cost and time estimate with its basis; approve the job separately to start.'));
+    $('brief-review').replaceChildren(text('h3',`${body.client} / ${body.title}`),text('p',body.brief),text('p', useChief
+      ? `The chief (${chiefTag(chief!.brain)}) drafts the work items from this brief. Your brief is sent to the model as data. Nothing launches: the proposed plan waits for your approval with an estimate, and a malformed answer is shown as needing attention, never guessed.`
+      : 'The initial plan contains one work item matching your brief. Saving does not launch a worker. The next step shows a cost and time estimate with its basis; approve the job separately to start.'));
     setStep(2); return;
   }
   busy = true; ($('save-job') as HTMLButtonElement).disabled = true; error('form-error');
+  if (useChief) {
+    try {
+      const r = await apiFetch('/api/chief/plans', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(12000) });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'The chief could not take this brief.');
+      intake.close(); await refresh();
+    } catch (e) { error('form-error', (e as Error).message); }
+    finally { busy = false; ($('save-job') as HTMLButtonElement).disabled = false; }
+    return;
+  }
   try { const job = await api<ConsultancyJob>('jobs',body); jobs = [...jobs.filter(j => j.id !== job.id), job]; intake.close(); await refresh(); selected = job.id; error('action-error'); renderDetail(); detail.showModal(); }
   catch (e) { error('form-error',(e as Error).message); }
   finally { busy = false; ($('save-job') as HTMLButtonElement).disabled = false; if (detail.open) renderDetail(); }

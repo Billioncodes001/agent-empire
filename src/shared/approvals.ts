@@ -8,7 +8,19 @@ import type { OutreachExcluded } from './outreach.js';
  * `external_action` (ORG-04a): something leaves the Empire, e.g. a campaign send; approving acts on a frozen snapshot.
  * `tool_proposal` (ORG-05): a researched tool; approving only records the decision.
  */
-export type ApprovalKind = 'job_plan' | 'budget_increase' | 'external_action' | 'tool_proposal';
+export type ApprovalKind = 'job_plan' | 'budget_increase' | 'external_action' | 'tool_proposal' | 'chief_proposal';
+
+/**
+ * FREE-02 `chief_proposal`: the chief's model suggests how to unblock stalled work. Deciding records the decision; an
+ * optional action (retry a held chain) runs through the queue's normal retry only after an approval is saved.
+ */
+export interface ChiefProposal {
+  situation: string;
+  /** The model's suggestion, shown as text. */
+  text: string;
+  model: string;
+  action?: { kind: 'retry_held'; taskId: string; dependencyId: string; label: string };
+}
 
 /** The frozen campaign send an external_action approves: exactly this is sent, to exactly these recipients. */
 export interface OutreachApproval {
@@ -65,6 +77,10 @@ export interface Approval {
   reopenable?: true;
   /** external_action: the campaign send being approved. */
   outreach?: OutreachApproval;
+  /** FREE-02 chief_proposal: the chief's suggestion and its optional one-click action. */
+  proposal?: ChiefProposal;
+  /** FREE-02 job_plan: set when the chief's model proposed the plan, e.g. "Model-backed · gpt-oss:20b · proposals only". */
+  proposedBy?: string;
 }
 
 export interface ApprovalsState {
@@ -83,6 +99,7 @@ export const APPROVAL_KIND_LABEL: Record<ApprovalKind, string> = {
   budget_increase: 'Budget increase',
   external_action: 'Campaign send',
   tool_proposal: 'Tool proposal',
+  chief_proposal: 'Chief proposal',
 };
 
 export const MAX_APPROVAL_BUDGET_USD = 100_000;

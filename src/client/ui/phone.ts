@@ -10,6 +10,7 @@ import { sourceLabel, type ChiefReply, type Transcript, type VoiceState } from '
 import { micUnavailableReason, startRecording, type Recorder } from '../ptt';
 import { store } from '../state';
 import { h, openModal, toast } from './dom';
+import { morphChildren } from './reconcile';
 import { voiceApi } from './voice-setup';
 import './phone.css';
 
@@ -66,8 +67,10 @@ export function openPhone() {
   });
   close.addEventListener('click', () => modal.close());
 
+  // Rows are updated in place, keyed by contact id, so a worker or org update never drops keyboard focus or the
+  // pressed contact (the same rule as the queue and inbox lists, MAINT-03).
   const paintList = () => {
-    list.replaceChildren(...contacts().map((c) => h('li', {},
+    morphChildren(list, contacts().map((c) => h('li', { 'data-key': c.id },
       h('button.phone-contact', { type: 'button', 'data-contact': c.id, 'data-kind': c.kind, 'aria-current': active?.id === c.id ? 'true' : 'false', disabled: c.kind === 'executive' && !c.exec?.active,
         'aria-label': `${c.kind === 'worker' ? 'View' : 'Call'} ${c.name}, ${c.role}, ${c.status}`, onclick: () => dial(c) },
         h('span.phone-avatar', { 'aria-hidden': 'true', 'data-tone': c.tone }, initials(c.name)),

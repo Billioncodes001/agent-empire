@@ -9,6 +9,7 @@ import type { DecorPlacement, Decoration } from './decor.js';
 import type { OrgState } from './org.js';
 import type { ApprovalsState } from './approvals.js';
 import type { ResearchState } from './research.js';
+import type { ChiefState } from './chief.js';
 
 export type WorkerStatus =
   | 'starting' // PTY launched, agent booting
@@ -531,6 +532,8 @@ export type ServerMsg =
       approvals?: ApprovalsState;
       /** The research executive's reports and tool proposals (ORG-05); absent from servers older than it. */
       research?: ResearchState;
+      /** FREE-02: the chief's planning brain, plans, reviews and stall proposals; absent from servers older than it. */
+      chief?: ChiefState;
     }
   | { t: 'peer.join'; peer: PeerInfo }
   | { t: 'peer.update'; peer: PeerInfo }
@@ -562,6 +565,7 @@ export type ServerMsg =
   | { t: 'approvals'; state: ApprovalsState }
   /** Research reports or tool-proposal decisions changed (ORG-05); sent on change only. */
   | { t: 'research'; state: ResearchState }
+  | { t: 'chief'; state: ChiefState }
   /** Sent to whoever watches that worker's changes, whenever they change. */
   | { t: 'changes'; state: ChangesState }
   | { t: 'changes.diff'; workerId: string; path: string; diff: string; truncated: boolean; error?: string }
