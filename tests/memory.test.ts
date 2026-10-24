@@ -71,7 +71,7 @@ test('CEO note: proposed → lesson inbox item (decision only) → approve makes
   const item = lessonItem(s, l.id);
   assert.equal(item.status, 'pending');
   assert.equal(item.raisedBy, 'chief_of_staff');
-  assert.match(approvalLine(item), /Lesson · .* · Company-wide · decision only/);
+  assert.match(approvalLine(item), /Lesson · .* · Company-wide · lesson: Always test double-booking of one appointment slot\. · decision only/);
   assert.match(approvalText(item), /never goes into a worker prompt by itself/);
   assert.equal(s.memory.addNote({ text: 'Always test double-booking of one appointment slot.', scope: 'company', requestId: 'n1' }, 'CEO').id, l.id, 'idempotent by requestId');
   assert.throws(() => s.inbox.approve(item.id, 'CEO', { budgetUsd: 5 }), (e: unknown) => e instanceof ApprovalError && e.status === 400);

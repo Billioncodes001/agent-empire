@@ -554,7 +554,8 @@ export function approvalLine(item: Approval): string {
   } else if (item.outreach) parts.push(`${item.outreach.recipients.length} recipient${item.outreach.recipients.length === 1 ? '' : 's'} from ${item.outreach.from}`);
   else if (item.tool) parts.push(item.tool.url, item.tool.licence);
   else if (item.proposal) parts.push(item.proposal.action ? `action: ${item.proposal.action.label}` : 'decision only');
-  else if (item.lesson) parts.push(scopeText(item.lesson), 'decision only');
+  // Review fix 2: Telegram /approvals shows the whole lesson (and the text an edit replaces), so /approve never decides unseen text.
+  else if (item.lesson) parts.push(scopeText(item.lesson), `lesson: ${item.lesson.text}`, ...(item.lesson.supersedes ? [`replaces ${item.lesson.supersedes}: ${item.lesson.supersedesText ?? ''}`] : []), 'decision only');
   else if (item.estimate) parts.push(`estimate ${fmtUsdRange(item.estimate.costUsd)}`);
   return parts.join(' · ');
 }
