@@ -526,12 +526,15 @@ export class ChiefBrain {
     this.assertMutable();
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new ChiefError(400, 'Expected a client brief.');
     const raw = input as Record<string, unknown>;
-    for (const k of Object.keys(raw)) if (!['requestId', 'client', 'title', 'brief'].includes(k)) throw new ChiefError(400, `Unknown field: ${k}`);
+    for (const k of Object.keys(raw)) if (!['requestId', 'client', 'title', 'brief', 'productId'].includes(k)) throw new ChiefError(400, `Unknown field: ${k}`);
     const requestId = str(raw.requestId, 'requestId', 100);
     const client = str(raw.client, 'client', 160);
     const title = str(raw.title, 'title', 200);
     const brief = str(raw.brief, 'brief', MAX_BRIEF_CHARS);
-    const fingerprint = createHash('sha256').update(JSON.stringify([client, title, brief])).digest('hex');
+    // FREE-06: the product is checked against the registry by the caller (and again when the job is saved).
+    const productId = raw.productId === undefined || raw.productId === '' || raw.productId === 'office' ? undefined : raw.productId;
+    if (productId !== undefined && (typeof productId !== 'string' || !/^[a-z0-9-]{1,64}$/.test(productId))) throw new ChiefError(400, 'productId is invalid');
+    const fingerprint = createHash('sha256').update(JSON.stringify(productId ? [client, title, brief, productId] : [client, title, brief])).digest('hex');
     const known = this.data.plans.find((p) => p.requestId === requestId);
     if (known) {
       if (known.fingerprint !== fingerprint) throw new ChiefError(409, `Request ${requestId} already exists with a different brief`);
@@ -540,7 +543,7 @@ export class ChiefBrain {
     const brain = this.canQueue();
     if (!brain.ready) throw new ChiefError(409, brain.reason ?? 'The planning brain is not available.');
     const at = this.now();
-    const plan: StoredPlan = { id: `P${this.data.nextPlan++}`, requestId, client, title, brief, fingerprint, source, status: 'queued', createdAt: at, updatedAt: at };
+    const plan: StoredPlan = { id: `P${this.data.nextPlan++}`, requestId, client, title, brief, fingerprint, source, status: 'queued', createdAt: at, updatedAt: at, ...(productId ? { productId } : {}) };
     this.data.plans.push(plan);
     if (!this.enqueue(() => this.runPlan(plan.id, actor))) Object.assign(plan, { status: 'needs_attention', reason: 'The chief has too many requests waiting. Try again shortly.' });
     this.trim();
@@ -580,7 +583,7 @@ export class ChiefBrain {
     const reserved = this.ports.office.newJobId?.();
     if (reserved) Object.assign(plan, { jobId: reserved, model: answer.model });
     try {
-      job = this.ports.office.create({ requestId: `chief:${plan.requestId}`, client: plan.client, title: plan.title, brief: plan.brief, tasks }, `${actor} · proposed by the chief`, reserved ? { id: reserved } : {});
+      job = this.ports.office.create({ requestId: `chief:${plan.requestId}`, client: plan.client, title: plan.title, brief: plan.brief, tasks, ...(plan.productId ? { productId: plan.productId } : {}) }, `${actor} · proposed by the chief`, reserved ? { id: reserved } : {});
     } catch (error) {
       delete plan.jobId;
       return this.patchPlan(plan, { status: 'needs_attention', reason: `The proposed plan could not be saved: ${(error as Error).message}` });

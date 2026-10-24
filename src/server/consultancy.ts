@@ -50,6 +50,8 @@ interface StoredJob {
   estimate?: JobEstimate;
   approvedBudgetUsd?: number;
   budgetHold?: BudgetHold;
+  /** FREE-06: absent on jobs saved before products (the office's repository). */
+  productId?: string;
 }
 
 interface StoredJournal {
@@ -74,7 +76,7 @@ interface JobProjection {
 
 type QueuePort = {
   state(): QueueState;
-  add(prompt: string, by: string, title?: string, issue?: number, jobKey?: string, dependsOn?: readonly string[]): string | undefined;
+  add(prompt: string, by: string, title?: string, issue?: number, jobKey?: string, dependsOn?: readonly string[], options?: { productId?: string }): string | undefined;
 };
 
 /** Optional ORG-02 inputs: an estimator over past spend, and each queue task's provider-reported list cost. */
@@ -83,6 +85,8 @@ export interface ConsultancyOrgPorts {
   taskCost?(taskId: string): number | undefined;
   /** ORG-05: why a finished item still needs attention (an internal job's artifact was not accepted), or undefined. */
   itemIssue?(jobKey: string): string | undefined;
+  /** FREE-06: why a job may not name this product (unknown, unlinked), or undefined. Absent: products are refused. */
+  productProblem?(productId: string): string | undefined;
 }
 
 export class ConsultancyError extends Error {
@@ -123,6 +127,10 @@ export class Consultancy {
     this.assertMutable();
     const cleanActor = cleanBounded(actor, 'actor', MAX_ACTOR);
     const input0 = validateCreateInput(input);
+    if (input0.productId !== undefined) {
+      const problem = this.ports.productProblem ? this.ports.productProblem(input0.productId) : 'Products are not available on this office';
+      if (problem) throw new ConsultancyError(400, problem);
+    }
     const known = this.jobs.find((job) => job.requestId === input0.requestId);
     if (known) {
       if (known.requestFingerprint === inputFingerprint(withJobId(input0, known.id))) return this.projectJob(known, this.readQueue()).job;
@@ -150,6 +158,7 @@ export class Consultancy {
       createdAt: now,
       createdBy: cleanActor,
       items,
+      ...(clean.productId ? { productId: clean.productId } : {}),
     };
     this.commit(() => { this.jobs.push(job); return true; });
     return this.projectJob(job, this.readQueue()).job;
@@ -294,7 +303,9 @@ export class Consultancy {
           const waitFor = prerequisites.filter((dep) => !gone.includes(dep)).map((dep) => dep.queueTaskId!);
           let addError: string | undefined;
           try {
-            addError = this.queue.add(item.prompt, job.decidedBy ?? job.createdBy, item.title, undefined, item.jobKey, waitFor);
+            addError = job.productId
+              ? this.queue.add(item.prompt, job.decidedBy ?? job.createdBy, item.title, undefined, item.jobKey, waitFor, { productId: job.productId })
+              : this.queue.add(item.prompt, job.decidedBy ?? job.createdBy, item.title, undefined, item.jobKey, waitFor);
           } catch (error) {
             addError = (error as Error).message;
           }
@@ -364,6 +375,7 @@ export class Consultancy {
         createdBy: job.createdBy,
         decidedAt: job.decidedAt,
         decidedBy: job.decidedBy,
+        ...(job.productId ? { productId: job.productId } : {}),
         items: items.map(({ _weight: _drop, ...publicItem }) => publicItem),
         attention,
         ...(estimate ? { estimate } : {}),
@@ -518,7 +530,7 @@ function parseJournal(value: unknown): StoredJournal {
 function parseStoredJob(value: unknown, index: number): StoredJob {
   const label = `job #${index + 1}`;
   const raw = asObject(value, label);
-  rejectUnknownKeys(raw, ['id', 'requestId', 'requestFingerprint', 'client', 'title', 'brief', 'decision', 'createdAt', 'createdBy', 'decidedAt', 'decidedBy', 'items', 'estimate', 'approvedBudgetUsd', 'budgetHold'], label);
+  rejectUnknownKeys(raw, ['id', 'requestId', 'requestFingerprint', 'client', 'title', 'brief', 'decision', 'createdAt', 'createdBy', 'decidedAt', 'decidedBy', 'items', 'estimate', 'approvedBudgetUsd', 'budgetHold', 'productId'], label);
   const decision = asDecision(raw.decision, `${label} decision`);
   if (!Array.isArray(raw.items)) throw new Error(`${label} items must be an array`);
   if (raw.items.length === 0 || raw.items.length > MAX_TASKS) throw new Error(`${label} items must contain 1-${MAX_TASKS} entries`);
@@ -540,6 +552,7 @@ function parseStoredJob(value: unknown, index: number): StoredJob {
   if (raw.estimate !== undefined) job.estimate = parseEstimate(raw.estimate, `${label} estimate`);
   if (raw.approvedBudgetUsd !== undefined) job.approvedBudgetUsd = parseBudget(raw.approvedBudgetUsd, `${label} approvedBudgetUsd`);
   if (raw.budgetHold !== undefined) job.budgetHold = parseHold(raw.budgetHold, `${label} budgetHold`);
+  if (raw.productId !== undefined) job.productId = asProductId(raw.productId, `${label} productId`);
   if (job.decision !== 'approved' && (job.estimate || job.approvedBudgetUsd !== undefined || job.budgetHold)) throw new Error(`${label} budget evidence requires approval`);
   if (!/^consultancy-[a-f0-9]{12}$/.test(job.id) || job.createdAt < 0) throw new Error(`${label} identity is invalid`);
   const taskIds = new Set<string>();
@@ -552,7 +565,7 @@ function parseStoredJob(value: unknown, index: number): StoredJob {
   });
   if (job.decision === 'pending_approval' ? job.decidedAt !== undefined || job.decidedBy !== undefined : job.decidedAt === undefined || job.decidedAt < 0 || !job.decidedBy)
     throw new Error(`${label} decision evidence is invalid`);
-  const canonical = {requestId: job.requestId, client: job.client, title: job.title, brief: job.brief, tasks: job.items.map(item => canonicalTask(item))};
+  const canonical = {requestId: job.requestId, client: job.client, title: job.title, brief: job.brief, tasks: job.items.map(item => canonicalTask(item)), ...(job.productId ? { productId: job.productId } : {})};
   const fingerprint = inputFingerprint(canonical);
   // Accept the pre-release JSON fingerprint only when it matches the complete saved plan.
   if (job.requestFingerprint !== fingerprint && job.requestFingerprint !== JSON.stringify(canonical)) throw new Error(`${label} plan fingerprint does not match`);
@@ -578,9 +591,17 @@ function parseStoredItem(value: unknown, label: string): StoredItem {
   };
 }
 
-function validateCreateInput(input: unknown): Required<ConsultancyCreateInput> {
+type CleanCreateInput = Required<Omit<ConsultancyCreateInput, 'productId'>> & { productId?: string };
+
+/** FREE-06: a product id as the registry makes them; 'office' (the default product) is stored as absent. */
+function asProductId(value: unknown, label: string): string {
+  if (typeof value !== 'string' || !/^[a-z0-9-]{1,64}$/.test(value) || value === 'office') throw new ConsultancyError(400, `${label} is invalid`);
+  return value;
+}
+
+function validateCreateInput(input: unknown): CleanCreateInput {
   const root = asObject(input, 'consultancy request');
-  rejectUnknownKeys(root, ['requestId', 'client', 'title', 'brief', 'tasks'], 'consultancy request');
+  rejectUnknownKeys(root, ['requestId', 'client', 'title', 'brief', 'tasks', 'productId'], 'consultancy request');
   const requestId = cleanBounded(root.requestId, 'requestId', MAX_REQUEST_ID);
   const client = cleanBounded(root.client, 'client', MAX_CLIENT);
   const title = cleanBounded(root.title, 'title', MAX_TITLE);
@@ -604,7 +625,9 @@ function validateCreateInput(input: unknown): Required<ConsultancyCreateInput> {
       });
     });
   }
-  return { requestId, client, title, brief, tasks };
+  // Last, and only when set: fingerprints of plans without a product stay byte-identical to the ones saved before FREE-06.
+  const productId = root.productId === undefined || root.productId === 'office' || root.productId === '' ? undefined : asProductId(root.productId, 'productId');
+  return { requestId, client, title, brief, tasks, ...(productId ? { productId } : {}) };
 }
 
 /**
@@ -637,12 +660,12 @@ export function itemDependencies<T extends { parallel?: true }>(items: readonly 
 }
 
 /** Replaces the `{{jobId}}` token in task prompts (ORG-05 internal jobs); plans without it are unchanged. */
-function withJobId(input: Required<ConsultancyCreateInput>, jobId: string): Required<ConsultancyCreateInput> {
+function withJobId(input: CleanCreateInput, jobId: string): CleanCreateInput {
   if (!input.tasks.some((task) => task.prompt.includes('{{jobId}}'))) return input;
   return { ...input, tasks: input.tasks.map((task) => ({ ...task, prompt: task.prompt.replaceAll('{{jobId}}', jobId) })) };
 }
 
-function inputFingerprint(input: Required<ConsultancyCreateInput>): string {
+function inputFingerprint(input: CleanCreateInput): string {
   return createHash('sha256').update(JSON.stringify({ ...input, tasks: input.tasks.map(canonicalTask) })).digest('hex');
 }
 

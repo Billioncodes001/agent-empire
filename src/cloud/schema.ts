@@ -11,6 +11,7 @@
  */
 import { initialEmpire, newSector, SITES, type EmpireState, type SectorState, type SiteId } from '../shared/empire.js';
 import { DESKS_PER_FLOOR } from '../shared/layout.js';
+import { normalizeCity } from '../shared/city.js';
 import type { ExecutionConfig, ExecutionTask } from '../shared/execution.js';
 import { COMMIT, PROVIDER_ID, TASK_ID, validateConfig } from '../server/execution-validation.js';
 import { DEFAULT_WORKER_MODEL, isWorkerModel, WORKER_ENVIRONMENT, type WorkerModel } from './worker-spec.js';
@@ -519,6 +520,8 @@ export function validateEmpire(value: unknown): EmpireState {
   if (!office || !Number.isSafeInteger(office.floors) || office.floors < 1 || !Number.isSafeInteger(office.workstations) || office.workstations < 1 || office.workstations > office.floors * DESKS_PER_FLOOR) throw new SchemaError(f, 'invalid headquarters capacity');
   const state = clone(saved) as EmpireState;
   delete state.supervision;
+  // FREE-09: plots and garage vehicles; an older snapshot without them keeps the original district.
+  try { state.city = normalizeCity(saved.city); } catch (e) { throw new SchemaError(f, (e as Error).message); }
   return state;
 }
 

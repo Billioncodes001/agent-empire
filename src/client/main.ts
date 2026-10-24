@@ -3,6 +3,7 @@ import './ui/loading';
 import { Traversal } from './traversal';
 import { openFounding } from './ui/founding';
 import { buildCity } from './world/city';
+import { openCityDialog } from './ui/city';
 import { mountEmpire } from './ui/empire';
 import { officeCode, DEFAULT_KEYS, keyLabel, type Action } from './controls';
 import './style.css';
@@ -54,6 +55,7 @@ import { GRAPHICS, applyGraphics } from './graphics';
 import { openSettings } from './ui/settings';
 import { appPanel } from './ui/app-panel';
 import { linkedAccountsSection } from './ui/engines';
+import { productsSection } from './ui/products';
 import { voiceSetupSection } from './ui/voice-setup';
 import { openPhone } from './ui/phone';
 import { chiefBrainSection } from './ui/chief';
@@ -248,7 +250,15 @@ player.view = settings.view;
 player.bindings = settings.keys;
 const sound = new OfficeSound();
 sound.setVolume(settings.volume, settings.muted);
-const empireUI = mountEmpire(net,player,()=>showQueue(),()=>{if(!traversal.interactCar()&&!empireUI.interact())use(target,'E');},()=>changeView(),(id)=>openWorkerTerminal(id));
+// FREE-09: the garage kiosk and district plot signs (world/districts.ts, ui/city.ts).
+const cityInteract = () => {
+  if (player.driving || player.pos.z < 30 || modalOpen()) return false;
+  const t = city.districts.targetAt(player.pos);
+  if (!t) return false;
+  openCityDialog({ send: (action) => net.send({ t: 'empire.action', action }), blocked: () => city.districts.apronBlocked(player.pos, city.car) }, t);
+  return true;
+};
+const empireUI = mountEmpire(net,player,()=>showQueue(),()=>{if(!traversal.interactCar()&&!cityInteract()&&!empireUI.interact())use(target,'E');},()=>changeView(),(id)=>openWorkerTerminal(id));
 if (cloudNet) {
   mountCloudStrip($('status-strip'), cloudNet, (tab) => openCloudPanel(cloudNet, tab));
   installCloudChrome(cloudNet, {
@@ -612,8 +622,8 @@ function freeDesk(): string | null {
   return best;
 }
 
-function hire(deskId: string, prompt?: string, worktree = false, outfit?: Outfit, engine?: WorkerEngine) {
-  net.send({ t: 'worker.spawn', deskId, prompt, worktree, ...(outfit ? { outfit } : {}), ...(engine ? { engine } : {}) });
+function hire(deskId: string, prompt?: string, worktree = false, outfit?: Outfit, engine?: WorkerEngine, productId?: string) {
+  net.send({ t: 'worker.spawn', deskId, prompt, worktree, ...(outfit ? { outfit } : {}), ...(engine ? { engine } : {}), ...(productId ? { productId } : {}) });
 }
 
 /**
@@ -651,7 +661,8 @@ function promptAtDesk(deskId: string) {
       worktreeOption: !!store.project?.branch,
       outfitOption: true,
       engineOption: true,
-      onSubmit: (text, o) => hire(deskId, text, o.worktree, o.outfit, o.engine),
+      productOption: true,
+      onSubmit: (text, o) => hire(deskId, text, o.worktree, o.outfit, o.engine, o.productId),
     });
   } else if (w.status === 'exited' || w.status === 'offline') {
     toast(`${w.name} is asleep — press R to resume first`, 'warn');
@@ -1006,7 +1017,7 @@ window.addEventListener('keydown', (e) => {
   if ((e.code === 'Enter' || e.code === 'Space') && (e.target as HTMLElement).closest?.('button, a, [role=button]')) return;
   switch (officeCode(e.code, settings.keys)) {
     case 'KeyE':
-      if (traversal.interactCar() || empireUI.interact()) break;
+      if (traversal.interactCar() || cityInteract() || empireUI.interact()) break;
       use(target, 'E');
       break;
     case 'KeyP':
@@ -1284,7 +1295,7 @@ $('btn-settings').addEventListener('click', () =>
     },
     editProfile,
     () => sound.ding('done'),
-    combineSections(appPanel(net), voiceSetupSection(), linkedAccountsSection({ onSignIn: () => { closeAllModals(); signInToClaude(); } }), chiefBrainSection(), updateSettingsSection(updateService)),
+    combineSections(appPanel(net), voiceSetupSection(), linkedAccountsSection({ onSignIn: () => { closeAllModals(); signInToClaude(); } }), productsSection(), chiefBrainSection(), updateSettingsSection(updateService)),
   ),
 );
 
@@ -1336,7 +1347,7 @@ function frame(ts?: number) {
   player.update(dt);
   if (!tower.active) traversal.update(dt);
   tower.update(dt);
-  city.update(t, dt,player.pos,player.driving);
+  city.update(t, dt,player.pos,player.driving,player.facing);
   empireUI.update(dt);
   canvas.dataset.position = `${player.pos.x.toFixed(1)}, ${player.pos.y.toFixed(1)}, ${player.pos.z.toFixed(1)}`;
   canvas.dataset.view = player.view;
@@ -1344,7 +1355,7 @@ function frame(ts?: number) {
   canvas.dataset.floor = String(office.floor + 1);
   canvas.dataset.motion = me.motion ?? 'loading';
   // The splash hands over only when the player is textured and the sky lighting is in (ui/loading.ts).
-  const pending = [!me.materialsReady && 'character', !scene.environment && 'sky lighting', !city.car.userData.ready && 'car'].filter(Boolean).join(', ');
+  const pending = [!me.materialsReady && 'character', !scene.environment && 'sky lighting', !city.car.userData.ready && 'car', !city.districts.ready && 'city districts'].filter(Boolean).join(', ');
   canvas.dataset.assets = pending ? 'loading' : 'ready';
   canvas.dataset.pending = pending;
   canvas.dataset.fps = String(Math.round(1 / Math.max(dt,.001)));
