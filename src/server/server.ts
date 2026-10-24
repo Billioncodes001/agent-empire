@@ -43,6 +43,9 @@ import { LinkedAccounts, envKeys, type Exec, type ProviderKeys } from './engines
 import { DEFAULT_OLLAMA_URL, OllamaRuntime } from './ollama.js';
 import { sanitizeEngine } from '../shared/engines.js';
 import { resolveCommand } from './workers.js';
+import { VoiceError, VoiceRuntime, type VoiceOptions } from './voice.js';
+import { routeChief, ruleBasedBriefing, type ChiefBriefingFn } from './chief-briefing.js';
+import { MAX_AUDIO_BYTES, MAX_CHIEF_TEXT } from '../shared/voice.js';
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -118,6 +121,10 @@ function isSecure(req: http.IncomingMessage, cfg: Config): boolean {
 }
 
 function readBody(req: http.IncomingMessage, limit = 1024 * 1024): Promise<string> {
+  return readBuffer(req, limit).then((b) => b.toString('utf8'));
+}
+
+function readBuffer(req: http.IncomingMessage, limit = 1024 * 1024): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks: Buffer[] = [];
@@ -128,7 +135,7 @@ function readBody(req: http.IncomingMessage, limit = 1024 * 1024): Promise<strin
         req.destroy();
       } else chunks.push(c);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
 }
@@ -191,6 +198,8 @@ export interface ServerRuntime {
    * FREE-01 engines. `providerKeys` is the desktop's sealed vault (default: the office environment). Tests inject a
    * resolver over fake CLIs, a fake exec, a fake Ollama URL and a RAM size; nothing real is probed in fixtures.
    */
+  /** FREE-05 voice: fake engines, fetch and extractor for tests and fixtures (no real models, no network). */
+  voice?: Partial<Omit<VoiceOptions, 'dataDir'>>;
   engines?: { providerKeys?: () => ProviderKeys; resolve?: (cmd: string) => string | null; exec?: Exec; ollamaUrl?: string; totalMem?: () => number; env?: () => Record<string, string> };
 }
 export async function startServer(cfg: Config, runtime: ServerRuntime = {}) {
@@ -505,6 +514,26 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     const r = capacityReport();
     return `${r.workstations} funded workstations · ${r.workers} running workers · concurrency ${r.concurrency} · ${r.queued === null ? 'queue count unavailable' : `${r.queued} tasks queued`} · ${r.attention} workers need input.${r.blocker ? ` Waiting: ${r.blocker}` : ''} This coordinator requires the execution host to remain running.`;
   }, inbox, () => { queue.pump(); publishApprovals(); }, research, outreachService);
+  // FREE-05: offline voice and the chief call. The briefing is the seam FREE-02's model brain can back later.
+  const voice = new VoiceRuntime({ dataDir: cfg.dataDir, ...runtime.voice });
+  const chiefBriefing: ChiefBriefingFn = (question) => {
+    const r = capacityReport();
+    return ruleBasedBriefing({
+      now: Date.now(), org: currentOrg(), approvals: inbox?.state().items,
+      capacity: `${r.workstations} funded workstations · ${r.workers} running workers · concurrency ${r.concurrency} · ${r.queued === null ? 'queue count unavailable' : `${r.queued} tasks queued`} · ${r.attention} workers need input${r.blocker ? ` · waiting: ${r.blocker}` : ''}`,
+    }, question);
+  };
+  const callChief = (text: unknown, requestId: string) => routeChief(text, {
+    briefing: chiefBriefing,
+    createJob: (title, brief, rid) => {
+      // The same consultancy path as the founder desk and Telegram /new: a pending plan; nothing starts before approval.
+      const job = office.create({ requestId: rid, client: 'Your company', title, brief }, 'CEO by phone');
+      inbox?.reconcile();
+      publishApprovals(); publishOrg();
+      const item = inbox?.state().items.find((i) => i.kind === 'job_plan' && i.jobId === job.id);
+      return { jobId: job.id, approvalId: item?.id };
+    },
+  }, requestId);
   let telegram: TelegramBridge | undefined;
   let telegramError: string | undefined;
   try {
@@ -887,6 +916,55 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
           return send(res, 404, { error: 'Unknown engines endpoint.' });
         } catch {
           return send(res, 500, { error: 'Linked accounts could not be checked.' });
+        }
+      }
+      if (p === '/api/voice' || p.startsWith('/api/voice/') || p === '/api/phone/chief') {
+        // FREE-05: offline speech on this host and the chief call. Every route is behind sign-in (above).
+        if (req.method !== 'GET' && !trusted()) return send(res, 403, { error: 'A same-origin Origin header is required' });
+        try {
+          if (p === '/api/voice' && req.method === 'GET') return send(res, 200, await voice.state());
+          if (req.method !== 'POST') return send(res, 404, { error: 'Unknown voice endpoint.' });
+          if (p === '/api/voice/transcribe') {
+            if (Number(req.headers['content-length'] ?? 0) > MAX_AUDIO_BYTES) {
+              req.resume(); // discard the signed-in caller's oversized body so the 413 reaches it
+              return send(res, 413, { error: 'Recordings are limited to 30 seconds.' }, { connection: 'close' });
+            }
+            let audio: Buffer;
+            try { audio = await readBuffer(req, MAX_AUDIO_BYTES); } catch { return send(res, 413, { error: 'Recordings are limited to 30 seconds.' }, { connection: 'close' }); }
+            return send(res, 200, await voice.transcribe(audio));
+          }
+          let body: Record<string, unknown> = {};
+          try { const raw = await readBody(req, MAX_CHIEF_TEXT * 4 + 1024); body = raw.trim() ? JSON.parse(raw) : {}; } catch { return send(res, 400, { error: 'Expected a JSON request.' }); }
+          if (!body || typeof body !== 'object' || Array.isArray(body)) return send(res, 400, { error: 'Expected a JSON request.' });
+          if (p === '/api/phone/chief') {
+            const requestId = typeof body.requestId === 'string' && /^[\w-]{1,80}$/.test(body.requestId) ? `phone-${body.requestId}` : `phone-${Date.now().toString(36)}`;
+            return send(res, 200, await callChief(body.text, requestId));
+          }
+          const tr = /^\/api\/voice\/transcripts\/(T[\w-]{6,40})\/(send|cancel)$/.exec(p);
+          if (tr) {
+            if (tr[2] === 'cancel') return send(res, 200, voice.cancelTranscript(tr[1]));
+            const sent = voice.takeTranscript(tr[1]);
+            return send(res, 200, { ...(await callChief(sent.text, `voice-${sent.id}`)), transcript: sent });
+          }
+          if (p === '/api/voice/speak') {
+            const wav = await voice.speak(body.text);
+            res.writeHead(200, { 'content-type': 'audio/wav', 'cache-control': 'no-store', 'content-length': String(wav.length) });
+            res.end(wav);
+            return;
+          }
+          if (p === '/api/voice/download') {
+            const r = voice.startDownload(body.model, body.confirm);
+            if (r.error) return send(res, 400, { error: r.error });
+            return send(res, 202, await voice.state());
+          }
+          if (p === '/api/voice/cancel') { voice.cancelDownload(); return send(res, 200, await voice.state()); }
+          if (p === '/api/voice/select') { voice.select(body.kind, body.id); return send(res, 200, await voice.state()); }
+          if (p === '/api/voice/settings') { voice.setKeepRecordings(body.keepRecordings); return send(res, 200, await voice.state()); }
+          return send(res, 404, { error: 'Unknown voice endpoint.' });
+        } catch (error) {
+          if (error instanceof VoiceError || error instanceof ConsultancyError || error instanceof ApprovalError) return send(res, error.status, { error: error.message });
+          console.error('[voice]', (error as Error).message);
+          return send(res, 500, { error: 'Voice could not complete this request. Text still works.' });
         }
       }
       if (p.startsWith('/api/execution/')) {
