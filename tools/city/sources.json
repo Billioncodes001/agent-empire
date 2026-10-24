@@ -9,7 +9,7 @@
       "page": "https://kenney.nl/assets/city-kit-commercial",
       "zip": "https://kenney.nl/media/pages/assets/city-kit-commercial/a742d900eb-1753115042/kenney_city-kit-commercial_2.1.zip",
       "sha256": "f8b09b081c2bb88bcc126e2dec1cb40fd0dad7e7e591b6c26aaefe96fb35276b",
-      "models": ["building-skyscraper-a", "building-skyscraper-b", "building-skyscraper-c", "building-skyscraper-d", "building-skyscraper-e", "building-a", "building-c", "building-e", "building-g", "building-h", "building-k", "building-m", "detail-awning-wide", "detail-parasol-a"]
+      "models": ["building-skyscraper-a", "building-skyscraper-b", "building-skyscraper-c", "building-skyscraper-d", "building-skyscraper-e", "building-a", "building-e", "building-g", "building-h", "building-m", "detail-awning-wide", "detail-parasol-a"]
     },
     "industrial": {
       "pack": "City Kit (Industrial) 2.0",

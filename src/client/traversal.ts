@@ -125,6 +125,7 @@ export class Traversal {
       this.hint.textContent = p.pos.z > 8 && Math.abs(p.pos.x) < 4 ? (this.office.floor === 0 ? 'Walk through the glass doors to the waterfront' : 'Take the elevator to floor 1 for the street exit') : '';
     else if (p.pos.distanceTo(this.city.car.position) < 3.8)
       this.hint.textContent = `${keyLabel(p.bindings.interact)} Enter vehicle at driver’s door`;
+    else if (this.city.districts?.hintAt(p.pos, keyLabel(p.bindings.interact))) this.hint.textContent = this.city.districts.hintAt(p.pos, keyLabel(p.bindings.interact));
     else {
       const site = SITES.find((s) => {
         const e = entrance(s.id);

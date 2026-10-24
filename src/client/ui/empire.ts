@@ -1,3 +1,5 @@
+import { DISTRICTS, GARAGE, PLOTS, normalizeCity } from '../../shared/city';
+import { ROADS } from '../world/district-layout';
 import { keyLabel } from '../controls';
 import { FLOOR_RISE } from '../../shared/layout';
 import { SITES, type SiteId } from '../../shared/empire';
@@ -157,6 +159,18 @@ export function mountEmpire(
       c.fillRect(a.x, a.y, b.x - a.x, b.y - a.y);
     };
     rect(-55, 0, 145, 190, '#263131');
+    // FREE-09: Meridian business district and Harbour works, their streets, the garage (G) and district plots.
+    rect(55, 30, 95, 187, '#263131');
+    for (const r of ROADS) rect(r.x - r.w / 2, r.z - r.d / 2, r.w, r.d, '#788484');
+    rect(GARAGE.x - GARAGE.width / 2, GARAGE.z - GARAGE.depth / 2, GARAGE.width, GARAGE.depth, '#a9b6ac');
+    const city = normalizeCity(store.empire.city);
+    for (const plot of PLOTS) rect(plot.x - 10, plot.z - 7, 20, 14, city.plots.includes(plot.id) ? '#8fa58b' : '#3d4a47');
+    {
+      const g = to(GARAGE.x, GARAGE.z);
+      c.fillStyle = '#e3f4de'; c.font = mini ? 'bold 16px system-ui' : 'bold 19px system-ui'; c.textAlign = 'center'; c.textBaseline = 'middle';
+      c.fillText('G', g.x, g.y);
+      if (!mini) for (const d of DISTRICTS.slice(1)) { const q = to((d.minX + d.maxX) / 2, d.minZ + 6); c.font = '14px system-ui'; c.fillStyle = '#d5ddd6'; c.fillText(d.name, q.x, q.y); }
+    }
     rect(-53, 22, 7, 120, '#546260');
     rect(-7.5, 0, 15, 190, '#788484');
     for (const z of [62, 90, 118, 146]) rect(-50, z - 5, 106, 10, '#788484');

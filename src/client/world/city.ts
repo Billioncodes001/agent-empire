@@ -19,6 +19,7 @@ import { textPlane } from './toon';
 import { SURFACE as S, boxMesh as box, solid } from './materials';
 import { Vegetation } from './vegetation';
 import type { Collider } from './office';
+import { buildDistricts } from './districts';
 
 function sign(parent: THREE.Object3D, text: string, x: number, y: number, z: number, width: number) {
   const m = textPlane(text, { size: 64, color: '#eee9dd' });
@@ -359,6 +360,8 @@ export function buildCity() {
     group.add(b);
     curtain(b, 6, 12 + (i % 5) * 4.5, 8, 4 + (i % 5));
     for (let f = 1; f < 4; f++) box(b, 7, 0.15, 1.8, S.concrete, 0, f * 3, 4.5);
+    // FREE-09: the walkable city now reaches z = 215, so the skyline towers are solid.
+    colliders.push({ minX: b.position.x - 3.5, maxX: b.position.x + 3.5, minZ: b.position.z - 4, maxZ: b.position.z + 5.4, top: 12 + (i % 5) * 4.5 });
   }
   for (const z of [-45, -15, 14, 188])
     for (const x of [-27, 27]) {
@@ -369,15 +372,18 @@ export function buildCity() {
       box(block, 4, 14, 13.4, S.concrete, -5, 7, 0);
       for (let floor = 1; floor < 4; floor++) box(block, 16.5, 0.2, 2, S.stone, 0, floor * 3.3, 7);
       foliage.tree(x - Math.sign(x) * 11, z + 8, 8);
+      if (z > 30) colliders.push({ minX: x - 8, maxX: x + 8, minZ: z - 7, maxZ: z + 8, top: 14 });
     }
   for (let z = -58; z < 26; z += 14) for (const x of [-11, 11]) foliage.palm(x, z, 8);
   for (let z = 30; z < 155; z += 13) {
     foliage.tree(47, z, 8);
-    foliage.tree(62, z + 5, 10);
   }
   foliage.finish();
   for (const child of group.children) if (child instanceof THREE.Group && child !== foliage.group) batchStaticMeshes(child);
   batchStaticMeshes(group);
+  // FREE-09 districts and garage, added after batching: the roller door, plot signs and instanced kits stay separate.
+  const districts = buildDistricts(group);
+  colliders.push(...districts.colliders);
   // The chief of staff dresses by the CEO's choice (never in the same suit); see shared/outfit.ts.
   const chief = new Person('Chief of staff', '#345f65', lookFromSeed('empire-chief'), { avatar: chiefAvatar(ceoAvatar(store.profile.look.style)) });
   chief.showLabel(false);
@@ -459,7 +465,9 @@ export function buildCity() {
       const profile = GRAPHICS[quality];
       water.onBeforeRender = profile.reflections ? reflectOcean : () => {};
       crowd = profile.citizens;
+      districts.setQuality(quality);
     },
+    districts,
     group,
     colliders,
     car,
@@ -475,6 +483,7 @@ export function buildCity() {
     dressChief(look: Look) { chief.setOutfit({ avatar: chiefAvatar(ceoAvatar(look.style)) }); },
     sync(state: EmpireState) {
       growTower(state.office.floors);
+      districts.sync(state.city);
       for (const sector of state.sectors) {
         buildings.get(sector.id)!.visible = sector.built;
         plots.get(sector.id)!.visible = !sector.built;
@@ -496,6 +505,7 @@ export function buildCity() {
         top: driving ? 0 : 1.55,
       });
       foliage.update(t);
+      districts.update(dt, playerPosition, car, driving);
       const displayedWorkers = new Set<string>();
       const ev = store.evidence();
       for (const site of SITES) {

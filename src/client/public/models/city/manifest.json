@@ -82,18 +82,6 @@
             0.47
           ]
         },
-        "building-c": {
-          "min": [
-            -0.442,
-            0,
-            -0.545
-          ],
-          "max": [
-            0.442,
-            0.893,
-            0.545
-          ]
-        },
         "building-e": {
           "min": [
             -0.82,
@@ -128,18 +116,6 @@
             0.442,
             1.293,
             0.504
-          ]
-        },
-        "building-k": {
-          "min": [
-            -1.042,
-            0,
-            -0.471
-          ],
-          "max": [
-            1.042,
-            1.47,
-            0.471
           ]
         },
         "building-m": {
@@ -523,8 +499,8 @@
   "files": {
     "commercial.glb": {
       "kit": "commercial",
-      "bytes": 856692,
-      "sha256": "23ab2f37a8fabaad00a7625ea579cfa67cf87163169d3e9f41f96d9f04313765",
+      "bytes": 696192,
+      "sha256": "7691f995de3221fef5519be8e92183c17ef7e3a00c7793a4daf6a014d43e9154",
       "licence": "CC0-1.0",
       "source": "https://kenney.nl/assets/city-kit-commercial"
     },

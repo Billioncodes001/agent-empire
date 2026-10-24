@@ -17,8 +17,8 @@ export const districtAt = (x: number, z: number): DistrictId | undefined =>
   DISTRICTS.find((d) => x >= d.minX && x < d.maxX && z >= d.minZ && z < d.maxZ)?.id;
 
 export const PLOTS = [
-  { id: 'meridian-north', district: 'business', name: 'Meridian North parcel', x: 128, z: 44, cost: 30000 },
-  { id: 'meridian-plaza', district: 'business', name: 'Meridian Plaza parcel', x: 128, z: 104, cost: 42000 },
+  { id: 'meridian-north', district: 'business', name: 'Meridian North parcel', x: 134, z: 44, cost: 30000 },
+  { id: 'meridian-plaza', district: 'business', name: 'Meridian Plaza parcel', x: 134, z: 104, cost: 42000 },
   { id: 'harbour-quay', district: 'harbour', name: 'Harbour Quay parcel', x: 128, z: 162, cost: 26000 },
   { id: 'harbour-yard', district: 'harbour', name: 'Harbour Yard parcel', x: 74, z: 190, cost: 20000 },
 ] as const;

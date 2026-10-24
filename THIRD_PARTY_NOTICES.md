@@ -74,7 +74,7 @@ Nothing found prevents public redistribution. SignPath Foundation additionally r
 
 | Pack | Page | Archive SHA-256 | Models used |
 | --- | --- | --- | --- |
-| City Kit (Commercial) 2.1 | https://kenney.nl/assets/city-kit-commercial | `f8b09b081c2bb88bcc126e2dec1cb40fd0dad7e7e591b6c26aaefe96fb35276b` | building-skyscraper-a to e; building-a, c, e, g, h, k, m; detail-awning-wide; detail-parasol-a |
+| City Kit (Commercial) 2.1 | https://kenney.nl/assets/city-kit-commercial | `f8b09b081c2bb88bcc126e2dec1cb40fd0dad7e7e591b6c26aaefe96fb35276b` | building-skyscraper-a to e; building-a, e, g, h, m; detail-awning-wide; detail-parasol-a |
 | City Kit (Industrial) 2.0 | https://kenney.nl/assets/city-kit-industrial | `5b381164e5760f3830a2dbee43b972deee38b2a695d091b56e238ab2910c96d2` | building-a, c, f, k, o, q; chimney-large; detail-tank-large; detail-tank; shipping-container-a to c; water-tower |
 | City Kit (Roads) | https://kenney.nl/assets/city-kit-roads | `374a4552115cbd11b4ec5c930ee31a533562dc78a09af249a655d03f7ea3b959` | light-square; light-curved-double; traffic-light; dumpster; construction-cone; construction-barrier; road-sign-street |
 | Car Kit | https://kenney.nl/assets/car-kit | `fac7dacac5c7874348cf19729af3ef205f3d366493edaf0a827d93f4fdf3d0c4` | hatchback-sports; sedan-sports; suv-luxury; van; delivery; taxi |

@@ -25,7 +25,7 @@ export const entrance = (id: SiteId) => {
 export function worldPosition(x: number, z: number) {
   return z < 30 ? { x: -24 + x * 0.35, z: 48 + z * 0.35 } : { x, z };
 }
-export const MAP_BOUNDS = { minX: -64, maxX: 66, minZ: 22, maxZ: 153 };
+export const MAP_BOUNDS = { minX: -64, maxX: 160, minZ: 22, maxZ: 222 };
 export function mapPoint(x: number, z: number, width: number, height: number) {
   return {
     x: ((x - MAP_BOUNDS.minX) / (MAP_BOUNDS.maxX - MAP_BOUNDS.minX)) * width,
