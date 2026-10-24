@@ -255,7 +255,12 @@ const cityInteract = () => {
   if (player.driving || player.pos.z < 30 || modalOpen()) return false;
   const t = city.districts.targetAt(player.pos);
   if (!t) return false;
-  openCityDialog({ send: (action) => net.send({ t: 'empire.action', action }), blocked: () => city.districts.apronBlocked(player.pos, city.car) }, t);
+  openCityDialog({
+    send: (action) => net.send({ t: 'empire.action', action }),
+    blocked: () => city.districts.apronBlocked(player.pos),
+    away: (id) => city.districts.away(id),
+    keys: { interact: keyLabel(settings.keys.interact), jump: keyLabel(settings.keys.jump), run: keyLabel(settings.keys.run) },
+  }, t);
   return true;
 };
 const empireUI = mountEmpire(net,player,()=>showQueue(),()=>{if(!traversal.interactCar()&&!cityInteract()&&!empireUI.interact())use(target,'E');},()=>changeView(),(id)=>openWorkerTerminal(id));
@@ -1338,6 +1343,8 @@ let stride = 0;
 let fallV = 0;
 const lookDir = new THREE.Vector3();
 
+/** A parked vehicle's motion: still wheels, no lean. */
+const IDLE_MOTION = { speed: 0, steering: 0, throttle: 0, braking: false, acceleration: 0, rpm: 0, gear: 1 };
 function frame(ts?: number) {
   timer.update(ts);
   const dt = Math.min(timer.getDelta(), 0.1);
@@ -1347,7 +1354,7 @@ function frame(ts?: number) {
   player.update(dt);
   if (!tower.active) traversal.update(dt);
   tower.update(dt);
-  city.update(t, dt,player.pos,player.driving,player.facing);
+  city.update(t, dt,player.pos,player.driving,player.facing,traversal.ride);
   empireUI.update(dt);
   canvas.dataset.position = `${player.pos.x.toFixed(1)}, ${player.pos.y.toFixed(1)}, ${player.pos.z.toFixed(1)}`;
   canvas.dataset.view = player.view;
@@ -1361,11 +1368,14 @@ function frame(ts?: number) {
   canvas.dataset.fps = String(Math.round(1 / Math.max(dt,.001)));
 
 
-  if (player.driving) { city.car.position.copy(player.pos); city.car.rotation.y=player.facing; }
+  // CITY-06/08: the driven ride follows the founder; every ride animates (wheels, doors, rotor spin-down).
+  traversal.syncRide();
   const outside = player.pos.z >= 30;
-  city.animateCar(dt, player.vehicle, player.driving);
+  const activeRide = traversal.ride;
+  for (const r of city.rides()) r.animate(dt, r.spec.kind === 'helicopter' ? player.flight : r === activeRide ? player.vehicle : IDLE_MOTION, player.driving && r === activeRide, reducedMotion.matches);
+  empireUI.touch.setMode(player.flying ? 'fly' : player.driving ? 'drive' : 'walk');
   sound.environment(outside);
-  sound.vehicle(player.vehicle, player.driving, city.car.position, player.view === 'first');
+  sound.vehicle(player.flying ? player.flight.audio() : player.vehicle, player.driving, (activeRide?.object ?? city.car).position, player.view === 'first');
   canvas.dataset.audio = sound.recordings;
   canvas.dataset.vehicle = `${(Math.abs(player.drivingSpeed)*3.6).toFixed(0)} km/h · ${player.vehicle.rpm.toFixed(0)} rpm`;
   office.group.visible = !outside;

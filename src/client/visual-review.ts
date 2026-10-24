@@ -264,7 +264,7 @@ renderer.setAnimationLoop((now) => {
     city.car.rotation.y = player.facing;
   }
   const outside = player.pos.z >= 30;
-  city.animateCar(dt, player.vehicle, player.driving);
+  city.rides()[0].animate(dt, player.vehicle, player.driving, false);
   sound.environment(outside);
   sound.vehicle(player.vehicle, player.driving, city.car.position, player.view === 'first');
   const look = camera.getWorldDirection(new THREE.Vector3());
