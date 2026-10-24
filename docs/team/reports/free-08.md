@@ -1,6 +1,6 @@
 # FREE-08: Onboarding (ORG-06)
 
-Author slice on `claude/free-08-onboarding`, branched from `origin/codex/empire-world` at `2cc2142`, with `8cde79e` (FREE-06, FREE-09, file-open notice) merged in. Awaiting independent review. A security review is recommended because the slice handles credentials.
+Author slice on `claude/free-08-onboarding`, branched from `origin/codex/empire-world` at `2cc2142`. Later merged in: `8cde79e` (FREE-06, FREE-09, file-open notice) and `60d7ace` (FREE-04 #39 and the promotion), both without conflicts in code. The security review (round 1) was accept after fixes; all 12 findings are fixed below, awaiting re-review.
 
 ## Requirements (recorded before coding)
 
@@ -71,7 +71,7 @@ Dialog controls:
 
 `SecretStore` (`src/server/secrets.ts`) supports `names()`, `get`, `set` and `delete`. It has no names for any Claude credential.
 - **Desktop:** `credential-vault.cjs` gains the three fields plus `notifySecrets()`, so the secrets go into the same Electron safeStorage vault as the API keys. `local-host.cjs` passes it as `runtime.notify.secrets`.
-- **Server install:** `FileSecretStore`, an AES-256-GCM `secrets.enc` with a separate owner-only `secrets.key`, both at mode 0600. The UI says plainly that this keeps secrets out of backups, screenshots and git, but not away from someone who can read the account's files.
+- **Server install:** `FileSecretStore`, an AES-256-GCM `secrets.enc` with a separate owner-only `secrets.key`, both at mode 0600. The key file is created whole (temporary file, then linked into place) and is tightened back to 0600 if loosened. The UI says plainly that the key sits beside the data: this keeps secrets out of screenshots, logs and copies of `settings.json`, but a backup of the whole folder holds both, and anyone who can read the account's files can read them. A store that cannot be opened is reported as a storage error in the dialog, never as "not saved".
 - Unreadable files fail closed: reads return nothing, writes are refused, and the file is left untouched.
 - `GET /api/onboarding` returns `secrets: {name: boolean}` only. Validation errors never repeat the value. Secret inputs are `type=password`, are cleared after saving, and show "● Saved on the host" plus **Remove**.
 
@@ -80,9 +80,9 @@ Dialog controls:
 | Setting | Order (first wins) |
 | --- | --- |
 | Telegram | test injection (`runtime.telegram`) > `AGENT_EMPIRE_TELEGRAM_TOKEN` / `_OWNER_ID` > saved |
-| Email | test injection (`runtime.email`) > `AGENT_EMPIRE_SMTP_URL` / `AGENT_EMPIRE_NOTIFY_EMAIL` (/ `_FROM`) > saved |
+| Email | test injection (`runtime.email`) > `AGENT_EMPIRE_SMTP_URL` / `AGENT_EMPIRE_NOTIFY_EMAIL` (/ `_FROM`) > saved. `AGENT_EMPIRE_NOTIFY_FROM` on its own is reported as an error on the Email channel, and saved email settings are not used while it is set |
 | ntfy (new) | `AGENT_EMPIRE_NTFY_URL` (full topic URL) / `AGENT_EMPIRE_NTFY_TOKEN` > saved |
-| Worker daily budget | `--budget` / `--budget-pause` > `AGENT_OFFICE_BUDGET` / `AGENT_OFFICE_BUDGET_PAUSE` > saved |
+| Worker daily budget | Amount: `--budget` > `AGENT_OFFICE_BUDGET` > saved. Pause: `--budget-pause` > `AGENT_OFFICE_BUDGET_PAUSE` > saved, decided separately, so a host pause setting also governs a saved amount |
 | Chief premium cap | Saved (FREE-02, unchanged) |
 
 Precedence is per channel and all-or-nothing. If any of a channel's variables is set, that channel comes from the environment, even when the environment is incomplete; the UI then shows the variable's error. When env wins, the dialog says which variables are responsible, and the saved values are kept for later. `Config.budgetSource` records whether the host budget came from the CLI or the environment.
@@ -148,6 +148,33 @@ The ntfy transport posts JSON to the server root with `redirect: 'error'`.
 
 Onboarding is not offered automatically in cloud mode. Nothing depends on FREE-04.
 
+## Security review fixes (round 2)
+
+The review verdict was accept after fixes. Each fix has a test that fails before the change: `tests/onboarding-review.test.ts`, plus two in `tests/desktop-vault.test.ts`.
+
+| # | Finding | Fix |
+| --- | --- | --- |
+| 1 | Desktop notifications never delivered (`backgroundServices: false`, no `notify.start`) | `local-host.cjs` passes `notify: {secrets, start: true, allowLocalTargets: true}`. Only the notification channels start; the desktop's other background services stay off. Test: the local host passes `start`, and a server with `notify.start` delivers a new approval to a fake ntfy server. "Not delivering in this preview" is now shown only where it is true |
+| 2 | Re-targeting could exfiltrate the ntfy token or SMTP password | Changing the ntfy server, or the SMTP host, port or security, while a token or password is saved returns 400 unless the same request supplies it again or removes it (`null`). Nothing is saved on refusal |
+| 3 | Execution offer marked seen as soon as onboarding opened | Marked seen only when the Workers step is done or skipped, or "Where agents run…" is opened from it (`executionOfferAnswered`). Closing on step 1 keeps the offer (unit test plus 2 UI checks) |
+| 4 | `AGENT_OFFICE_BUDGET_PAUSE` ignored with a saved budget | The pause has its own source (`Config.budgetPauseSource`) and wins over the saved choice |
+| 5 | `AGENT_EMPIRE_NOTIFY_FROM` alone silently ignored | Reported as an env error on the Email channel; the dialog shows it |
+| 6 | Unbounded ntfy response read | The body is cancelled, never read. Test: an endless response returns in under 3 s |
+| 7 | Private targets reachable from a server host | `refusedTarget`: loopback, `localhost`, private, CGNAT, link-local, unique-local IPv6, `.local` and `.internal` are refused for the ntfy server and SMTP host on server installs. The desktop may use loopback; link-local and private ranges stay refused everywhere. Host names are checked as written; DNS answers are not resolved (known limit) |
+| 8 | Corrupt secrets shown as "not saved" | `SecretStore.error()`; the onboarding view's `storageError` includes it |
+| 9 | Key file mode and atomicity; wording | Mode tightened to 0600, atomic creation, wording corrected (see Secrets) |
+| 10 | Partial secret writes | All-or-nothing: earlier secret writes are restored if a later one, or `settings.json`, fails (409 "Nothing was saved") |
+| 11 | Telegram restart race | `TelegramBridge.idle()`; `applyChannels` stops the old bridge and awaits its in-flight poll before moving the checkpoint or starting a new bridge |
+| 12 | Desktop `keys:save` skipped format checks | The vault applies the server's notification-secret formats on every save |
+
+Red evidence: with the server and desktop fixes reverted, 12 of the new tests failed:
+- review 2 (×2), 4, 5, 6, 7, 8, 9, 10 and 11;
+- desktop 1 (`local-host`) and 12.
+
+Two passed before the fixes:
+- the server-delivery test, because the server already honoured `notify.start`; the defect was in `local-host.cjs`, whose test failed;
+- the pure helper test for review 3, which is new code; the defect was in `main.ts` and is covered by the UI checks.
+
 ## Test evidence
 
 Run on the head of this branch after the merge.
@@ -157,12 +184,13 @@ Run on the head of this branch after the merge.
 | Check | Result |
 | --- | --- |
 | `npm run typecheck` | clean |
-| `npm test` | **894/894** |
+| `npm test` | **894/894** (round 1). After the review fixes and the merge of `60d7ace` (FREE-04): **937 pass, 1 skipped (pre-existing), 0 fail**. One earlier full run had a single ECONNRESET in `voice-server.test.ts` (FREE-05 upload test, untouched here); it passed 3/3 alone and in the next full run |
 | `npm run build` | exit 0 |
 | `tests/onboarding.test.ts` (new) | 7/7: step model, legacy, validation, sealing on disk and fail-closed, precedence for every channel and the budget, ntfy URL rules, ntfy transport against a fake server |
 | `tests/onboarding-server.test.ts` (new) | 6/6: cross-origin 403 with nothing sent; secrets never in responses or files and no Claude field; resume across restarts plus skip; legacy installs not offered; env precedence (the test send uses the env token); saved test sends to fake Telegram, ntfy and SMTP servers only when clicked, plus the saved budget |
 | `tests/desktop-vault.test.ts` (+1) | Notification secrets in the vault, presence-only, never provider keys |
-| `onboarding-ui-check` (new) | **48/48** |
+| `onboarding-ui-check` (new) | **48/48**; after the review fixes, **51/51** (adds the execution-offer timing checks) |
+| `cloud-ui-check` (after the FREE-04 merge) | 171/171 |
 | `mobile-ui-check` | 411/411 |
 | `engines-ui-check` | 24/24 |
 | `setup-ui-check` | 127/127 (0 failed) |
