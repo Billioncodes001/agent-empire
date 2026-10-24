@@ -157,6 +157,7 @@ export interface AccountsOptions {
 }
 
 const CACHE_MS = 15_000;
+const REFRESH_FLOOR_MS = 10_000;
 
 export class LinkedAccounts {
   private cache?: { at: number; state: EnginesState };
@@ -194,7 +195,8 @@ export class LinkedAccounts {
 
   async state(refresh = false): Promise<EnginesState> {
     const now = (this.o.now ?? Date.now)();
-    if (!refresh && this.cache && now - this.cache.at < CACHE_MS) {
+    // "Check again" (refresh=1) runs the CLIs at most once per REFRESH_FLOOR_MS; faster requests get the last probe.
+    if (this.cache && now - this.cache.at < (refresh ? REFRESH_FLOOR_MS : CACHE_MS)) {
       return { ...this.cache.state, ollama: { ...this.cache.state.ollama, pull: this.o.ollama.pull } };
     }
     this.inflight ??= this.probe().finally(() => { this.inflight = undefined; });

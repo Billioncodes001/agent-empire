@@ -4,7 +4,7 @@ import type { Voice } from '../voice';
 import { $, h, openModal, STATUS_LABEL } from './dom';
 import { fmtCost, usageTitle } from './usage';
 import { engineStatus, workerPill } from './status';
-import { engineLabel, engineSpendLabel } from '../../shared/engines';
+import { engineSpendLabel, workerEngineLabel } from '../../shared/engines';
 
 /** Makes a list row act like a button for the keyboard too: Tab to it, Enter or Space to press it. */
 function pressable(li: HTMLElement, onPress: () => void) {
@@ -76,7 +76,7 @@ function workerRows(onOpen: (id: string) => void): HTMLElement[] {
   const fresh = store.evidence().fresh;
   const workers = [...store.workers.values()].sort((a, b) => a.createdAt - b.createdAt);
   const rows = workers.map((w) => {
-    const engine = w.kind === 'agent' ? engineLabel(w.engine) : '';
+    const engine = w.kind === 'agent' ? workerEngineLabel(w) : '';
     const sub = [w.worktree && `🌿 ${w.worktree.branch}`, w.pr && `🔀 PR #${w.pr.number}`, w.activity || w.title || w.prompt].filter(Boolean).join(' · ');
     const shown = engineStatus(w, STATUS_LABEL);
     const pill = workerPill(shown.status, shown.label, fresh);

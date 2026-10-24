@@ -7,7 +7,7 @@ import { TERM_THEME } from '../world/laptop';
 import { h, openModal, STATUS_LABEL, type Modal } from './dom';
 import { usageLabel, usageTitle } from './usage';
 import type { ServerMsg } from '../../shared/protocol';
-import { engineLabel, engineSpendLabel } from '../../shared/engines';
+import { engineSpendLabel, workerEngineLabel } from '../../shared/engines';
 import { engineStatus } from './status';
 
 let current: { workerId: string; modal: Modal } | null = null;
@@ -87,7 +87,7 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void)
       return;
     }
     title.textContent = [w.name, w.title, w.worktree && `🌿 ${w.worktree.branch}`].filter(Boolean).join(' · ');
-    engineTag.textContent = w.kind === 'agent' ? engineLabel(w.engine) : '';
+    engineTag.textContent = w.kind === 'agent' ? workerEngineLabel(w) : '';
     const shown = engineStatus(w, STATUS_LABEL);
     pill.className = `pill ${shown.status}`;
     pill.textContent = shown.label;

@@ -14,7 +14,7 @@ import type { WorkerInfo } from '../src/shared/protocol';
 import { LinkedAccounts, engineEnv, parseClaudeAuthStatus, parseCodexLoginStatus } from '../src/server/engines';
 import { OllamaRuntime } from '../src/server/ollama';
 import { chat, provider, LlmError } from '../src/server/llm';
-import { engineLabel, engineOptions, pickEngine, recommendModels, sanitizeEngine, type EnginesState } from '../src/shared/engines';
+import { engineLabel, engineOptions, pickEngine, recommendModels, sanitizeEngine, workerEngineLabel, type EnginesState } from '../src/shared/engines';
 
 const GB = 2 ** 30;
 
@@ -234,7 +234,8 @@ test('linked accounts run fake CLIs (output only, key-free env) and pick premium
       claude: `env > ${JSON.stringify(envLog)}; [ "$1 $2" = "auth status" ] && echo '{"loggedIn": false}'; exit 1`,
       qwen: 'exit 0',
     });
-    const accounts = new LinkedAccounts({ dataDir: dir, ollama: new OllamaRuntime(ollama.url), keys: () => ({ GROQ_API_KEY: 'gsk' }), resolve, totalMem: () => 16 * GB, env: () => ({ PATH: dir, ANTHROPIC_API_KEY: 'sk-leak' }) });
+    let clock = 1_000_000;
+    const accounts = new LinkedAccounts({ dataDir: dir, ollama: new OllamaRuntime(ollama.url), keys: () => ({ GROQ_API_KEY: 'gsk' }), resolve, totalMem: () => 16 * GB, env: () => ({ PATH: dir, ANTHROPIC_API_KEY: 'sk-leak' }), now: () => clock });
     const s = await accounts.state();
     assert.equal(s.claude.installed, true);
     assert.equal(s.claude.loggedIn, false);
@@ -248,6 +249,7 @@ test('linked accounts run fake CLIs (output only, key-free env) and pick premium
     assert.equal(s.options.find((o) => o.engine.id === 'qwen-code')!.label, 'Qwen Code · gpt-oss:20b (local)');
     // Premium preferred when healthy.
     writeFileSync(path.join(dir, 'claude'), '#!/bin/sh\necho \'{"loggedIn": true, "authMethod": "claude.ai"}\'\n');
+    clock += 11_000; // past the 10 s refresh floor
     assert.deepEqual((await accounts.state(true)).recommended, { id: 'claude-code', auth: 'subscription' });
     // A chosen default wins when usable, and persists.
     accounts.setDefault({ id: 'qwen-code', auth: 'local', model: 'gpt-oss:20b' });
@@ -444,7 +446,7 @@ test('review: the task namer gets the scrubbed env; Foundry/Azure keys are scrub
   const env = engineEnv({ ANTHROPIC_API_KEY: 'x', CLAUDE_CODE_USE_FOUNDRY: '1', ANTHROPIC_FOUNDRY_API_KEY: 'f', AZURE_OPENAI_API_KEY: 'a', PATH: '/bin' }, { id: 'claude-code', auth: 'subscription' }, {}, '');
   assert.deepEqual(env, { PATH: '/bin' });
   const src = readFileSync(path.join(import.meta.dirname, '../src/server/workers.ts'), 'utf8');
-  assert.match(src, /new TaskNamer\(claude, engineEnv\(childEnv\(\), LEGACY_ENGINE/);
+  assert.match(src, /new TaskNamer\(claude, scrubProviderEnv\(childEnv\(\), LEGACY_ENGINE/);
 });
 
 test('review: refresh=1 is rate-floored; an invalid saved engine keeps the worker with status unknown', async () => {
@@ -467,6 +469,7 @@ test('review: refresh=1 is rate-floored; an invalid saved engine keeps the worke
       const w = m.get('b1')!;
       assert.equal(w.engine, undefined, 'never silently switched to Claude');
       assert.equal(w.statusKnown, false);
+      assert.equal(workerEngineLabel(w), 'Unknown engine', 'the card never claims Claude Code');
       assert.match(w.activity!, /saved engine is not recognised/i);
       assert.match(m.resume('b1')!, /saved engine is not recognised/i);
     } finally { m.shutdown(); }

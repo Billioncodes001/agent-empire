@@ -37,6 +37,11 @@ export function engineLabel(e: WorkerEngine | undefined): string {
   return `${name} · your ${engine.id === 'codex' ? 'ChatGPT' : 'Claude'} account`;
 }
 
+/** A worker's label: an agent restored with an unrecognised engine says so instead of claiming Claude Code. */
+export function workerEngineLabel(w: { engine?: WorkerEngine; statusKnown?: boolean }): string {
+  return !w.engine && w.statusKnown === false ? 'Unknown engine' : engineLabel(w.engine);
+}
+
 /** Provider spend for a worker's engine: local models cost nothing; premium spend is tracked (and labelled) elsewhere. */
 export function engineSpendLabel(e: WorkerEngine | undefined): string | undefined {
   return e?.auth === 'local' ? 'US$0 · local model' : undefined;

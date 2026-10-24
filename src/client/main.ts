@@ -547,7 +547,7 @@ function syncWorkers() {
       workerViews.set(w.id, v);
     }
     // FREE-01: the name plate says which engine it runs ("Byte · Qwen Code (local)").
-    const plate = w.kind === 'agent' ? `${w.name} · ${ENGINE_NAME[w.engine?.id ?? 'claude-code']}${w.engine?.auth === 'local' ? ' (local)' : ''}` : w.name;
+    const plate = w.kind !== 'agent' ? w.name : !w.engine && w.statusKnown === false ? `${w.name} · unknown engine` : `${w.name} · ${ENGINE_NAME[w.engine?.id ?? 'claude-code']}${w.engine?.auth === 'local' ? ' (local)' : ''}`;
     if (v.plate !== plate) { v.plate = plate; v.model.setName(plate); }
     if (v.status !== w.status || v.acked !== w.acked) {
       const becameHot = shouldBounce(w) && !(v.status === w.status && v.acked === w.acked) && v.status !== '' && (w.status !== v.status);

@@ -16,7 +16,7 @@ import { bookGrowth, newTracker, restoreTracker, scanTracker, switchTranscript, 
 import { writeJsonAtomic } from './persistence.js';
 import { sanitizeOutfit, type Outfit } from '../shared/outfit.js';
 import { LEGACY_ENGINE, sanitizeEngine, type WorkerEngine } from '../shared/engines.js';
-import { engineEnv, launchSpec, type ProviderKeys } from './engines.js';
+import { engineEnv, engineEnv as scrubProviderEnv, launchSpec, type ProviderKeys } from './engines.js';
 import { DEFAULT_OLLAMA_URL } from './ollama.js';
 
 type HeadlessTerminal = InstanceType<typeof headless.Terminal>;
@@ -98,7 +98,10 @@ interface Worker {
   exitWaiters: Set<() => void>;
   /** Typed (without Enter) once Claude reports it is ready: the "Sign in to Claude" helper types `/login`. */
   typeOnReady?: string;
+  /** Restored with an engine this version does not recognise: never relaunched under another engine. */
+  invalidEngine?: boolean;
 }
+const INVALID_ENGINE = 'Its saved engine is not recognised by this version. Status unknown; send it home and hire again with a listed engine.';
 
 /** Injectable process boundary for deterministic tests; no provider must run in fixtures. */
 export interface WorkerRuntime {
@@ -158,7 +161,7 @@ export class WorkerManager {
     this.agentPath = this.runtime.resolveCommand(agentCmd);
     const claude = !this.runtime.taskNaming ? null : /(^|\/)claude$/.test(agentCmd) ? this.agentPath : this.runtime.resolveCommand('claude');
     // The namer runs `claude -p` on the user's own account: same scrub as a subscription worker (rule 6).
-    this.namer = new TaskNamer(claude, engineEnv(childEnv(), LEGACY_ENGINE, {}, this.engineEnv.ollamaUrl), (id, task, ctx) => {
+    this.namer = new TaskNamer(claude, scrubProviderEnv(childEnv(), LEGACY_ENGINE, {}, this.engineEnv.ollamaUrl), (id, task, ctx) => {
       const w = this.workers.get(id);
       if (!w || w.taskEpoch !== ctx.epoch) return;
       w.info.task = task;
@@ -279,6 +282,7 @@ export class WorkerManager {
     if (this.storageError) return this.storageError;
     if (this.closing || w.stopping) return 'The worker is stopping; wait for confirmed exit';
     if (w.pty) return 'Worker is already running';
+    if (w.invalidEngine) return INVALID_ENGINE;
     this.refreshProcessEvidence(w);
     if (w.info.processState !== 'stopped') return this.unknownProcessReason(w);
     if (w.queueOwned) return 'This worker belongs to the task queue. Retry its task from the queue after reviewing the interruption.';
@@ -1032,12 +1036,23 @@ process.stdin.on('end', () => {
           rows: 30,
           viewers: [],
         };
+        let badEngine = false;
         if (info.kind === 'agent') {
-          // Legacy saves predate engines: they ran Claude Code.
-          info.engine = sanitizeEngine(s.engine) ?? LEGACY_ENGINE;
-          if (launchSpec(info.engine, undefined).hooks === 'none') info.statusKnown = false;
+          // Legacy saves (no engine) predate engines: they ran Claude Code. An engine that is present but unrecognised
+          // is kept unknown, never silently switched to Claude.
+          const engine = s.engine === undefined ? LEGACY_ENGINE : sanitizeEngine(s.engine);
+          if (engine) {
+            info.engine = engine;
+            if (launchSpec(engine, undefined).hooks === 'none') info.statusKnown = false;
+          } else {
+            badEngine = true;
+            info.statusKnown = false;
+            info.activity = INVALID_ENGINE;
+            console.warn(`[workers] ${info.name} (${info.id}): saved engine is not recognised; kept with status unknown`);
+          }
         }
         const w = newWorker(info, tracker);
+        w.invalidEngine = badEngine;
         w.processPid = Number.isSafeInteger(s.processPid) && s.processPid! > 0 ? s.processPid : undefined;
         w.queueOwned = s.queueOwned === true || s.createdBy?.endsWith(' (queue)');
         this.refreshProcessEvidence(w);
