@@ -208,7 +208,7 @@ export const APPROVAL_RULES: { what: string; who: string }[] = [
 
 export const CLOUD_APPLIES: Record<OnboardingStep, { applies: 'yes' | 'partly' | 'no'; text: string }> = {
   profile: { applies: 'no', text: 'The company profile is stored on an office host. Cloud mode keeps its state in your GitHub repository and has no host to store it yet.' },
-  engines: { applies: 'partly', text: 'Local models (Ollama, Qwen Code) and “Sign in to Claude” do not apply: cloud jobs run on GitHub, not on this computer. Cloud mode uses the API keys you sealed into your repository during setup.' },
+  engines: { applies: 'partly', text: 'Models on this computer (Ollama) and “Sign in to Claude” do not apply: cloud jobs run in GitHub Actions. The engine for cloud jobs (the free runner, or your own Claude or API-key secret in your repository) is chosen in cloud setup.' },
   notifications: { applies: 'no', text: 'Telegram, ntfy and email are sent by an office host. In cloud mode there is no always-on host to send them yet.' },
   approvals: { applies: 'partly', text: 'Cloud mode has its own limits (jobs at once, per-job and daily allowance, approve each job), set during cloud setup. Every job still waits for your approval.' },
 };
