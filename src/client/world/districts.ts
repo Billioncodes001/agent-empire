@@ -189,6 +189,8 @@ export function buildDistricts(parent: THREE.Group) {
     gltf.scene.traverse((o) => {
       if (o instanceof THREE.Mesh) for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
         m.map = map;
+        // The Kenney palette is bright and flat; a slight grade sits it beside the founding district's surfaces.
+        if (kit !== 'vehicles') m.color = new THREE.Color('#d6d4cf');
         // Kenney lamp heads and lit windows share the palette's pale cells; a little emission keeps them readable.
         if (kit === 'streets') { m.emissive = new THREE.Color('#fff0c8'); m.emissiveMap = map; m.emissiveIntensity = 0.25; }
         m.needsUpdate = true;
