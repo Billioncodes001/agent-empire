@@ -38,7 +38,7 @@ export function submitFailureMessage(kind: string, label: string, error: unknown
     return `${label}: may not have been sent (${reason || 'GitHub didn’t answer'}). Check Cloud Empire → Jobs first: it may already be queued, and assigning it again would start a second paid job.`;
   return `${label}: not sent. ${reason}`.trim();
 }
-const CITY_ACTIONS = new Set(['delegate', 'found', 'build', 'hire', 'buy-land', 'upgrade', 'reinvest', 'office-floor', 'office-workstation']);
+const CITY_ACTIONS = new Set(['delegate', 'found', 'build', 'hire', 'buy-land', 'upgrade', 'reinvest', 'office-floor', 'office-workstation', 'buy-plot', 'buy-vehicle', 'vehicle-spawn', 'vehicle-store']);
 
 /** What each server-only message is, for the explanation shown instead of sending it. */
 const SERVER_ONLY: [RegExp, string][] = [
@@ -419,6 +419,7 @@ function cityLabel(kind: string): string {
     {
       delegate: 'Oversight preference', found: 'Founding plan', build: 'Construction', hire: 'Hiring', 'buy-land': 'Land purchase',
       upgrade: 'Upgrade', reinvest: 'Reinvestment', 'office-floor': 'New office floor', 'office-workstation': 'New workstation',
+      'buy-plot': 'Plot purchase', 'buy-vehicle': 'Vehicle purchase', 'vehicle-spawn': 'Vehicle brought out', 'vehicle-store': 'Vehicle stored',
     } as Record<string, string>
   )[kind] ?? 'City action';
 }

@@ -10,6 +10,7 @@ import {
   type EmpireAction, type EmpireState, type SectorState, type SiteId,
 } from './empire.js';
 import { DESKS_PER_FLOOR } from './layout.js';
+import { freeApronSlot, freeBay, GARAGE, MAX_NONCES, normalizeCity, PLOTS, PURCHASE_NONCE, VEHICLE_MODELS } from './city.js';
 
 export type SiteDefinition = (typeof SITES)[number];
 
@@ -29,6 +30,8 @@ export const CAPITAL_LABELS: Record<string, string> = {
   reinvest: 'Founder reinvestment',
   'office-floor': 'Headquarters floor construction',
   'office-workstation': 'Workstation installation',
+  'buy-plot': 'District plot purchase',
+  'buy-vehicle': 'Garage vehicle purchase',
 };
 
 export type EmployeeRole = 'manager' | 'service' | 'agent';
@@ -140,13 +143,68 @@ export function applyCityAction(state: EmpireState, action: EmpireAction, now: n
       state.funds -= cost; sector.level++;
       report(site.sector, text.upgraded(site, sector.level));
     }
+  } else if (action.kind === 'buy-plot' || action.kind === 'buy-vehicle' || action.kind === 'vehicle-spawn' || action.kind === 'vehicle-store') {
+    const error = applyGarageAction(state, action, now, report);
+    if (error) return error;
   } else return 'Unknown operation';
   if (state.funds !== beforeFunds) {
     const capital = beforeFunds - state.funds; state.funds = beforeFunds;
-    const site = 'site' in action ? SITES.find(s => s.id === action.site)?.name : '';
+    // Labels come from the action kind's own fields only; stray fields (e.g. `site` on buy-plot) are ignored.
+    const site = action.kind === 'buy-plot' ? PLOTS.find(p => p.id === action.plot)?.name
+      : action.kind === 'buy-vehicle' ? VEHICLE_MODELS.find(m => m.id === action.model)?.name
+        : 'site' in action ? SITES.find(s => s.id === action.site)?.name : '';
     const label = CAPITAL_LABELS[action.kind] ?? action.kind;
     recordLedger(state, now, `${label}${site ? ' · ' + site : ''}`, 0, 0, 0, 0, capital);
   }
+  return undefined;
+}
+
+type GarageAction = Extract<EmpireAction, { kind: 'buy-plot' | 'buy-vehicle' | 'vehicle-spawn' | 'vehicle-store' }>;
+/**
+ * FREE-09 (CITY-05/07): district plots and garage vehicles. Purchases spend fictional city credits (the caller moves
+ * them into one capital ledger entry); bringing a vehicle out or storing it is free. Validates before mutating.
+ */
+function applyGarageAction(state: EmpireState, action: GarageAction, now: number, report: CityReport): string | undefined {
+  const city = normalizeCity(state.city);
+  if (action.kind === 'buy-plot' || action.kind === 'buy-vehicle') {
+    if (!state.setup.completed) return 'Complete founding setup first';
+    if (typeof action.nonce !== 'string' || !PURCHASE_NONCE.test(action.nonce)) return 'Invalid purchase request';
+    if (city.nonces?.includes(action.nonce)) return 'This purchase was already made';
+  }
+  if (action.kind === 'buy-plot') {
+    const plot = PLOTS.find(p => p.id === action.plot);
+    if (!plot) return 'Unknown plot';
+    if (city.plots.includes(plot.id)) return 'Plot already owned';
+    if (state.funds < plot.cost) return 'Insufficient simulation credits';
+    state.funds -= plot.cost; city.plots.push(plot.id);
+    report('Expansion', `${plot.name} acquired for ${plot.cost.toLocaleString('en-US')} city credits. Building on district parcels is coming in a later update.`);
+  } else if (action.kind === 'buy-vehicle') {
+    const model = VEHICLE_MODELS.find(m => m.id === action.model);
+    if (!model) return 'Unknown vehicle';
+    const bay = freeBay(city);
+    if (bay < 0) return 'Every garage bay is occupied';
+    if (state.funds < model.cost) return 'Insufficient simulation credits';
+    state.funds -= model.cost;
+    let n = city.vehicles.length + 1;
+    while (city.vehicles.some(v => v.id === `vehicle-${n}`)) n++;
+    city.vehicles.push({ id: `vehicle-${n}`, model: model.id, bay, purchasedAt: now });
+    report('Garage', `${model.name} bought for ${model.cost.toLocaleString('en-US')} city credits and parked in bay ${bay + 1} of ${GARAGE.name}.`);
+  } else {
+    const vehicle = city.vehicles.find(v => v.id === action.vehicle);
+    if (!vehicle) return 'Unknown vehicle';
+    if (action.kind === 'vehicle-store') {
+      if (vehicle.apron === undefined) return 'Vehicle is already in its bay';
+      delete vehicle.apron;
+    } else {
+      if (vehicle.apron !== undefined) return 'Vehicle is already outside';
+      const blocked = Array.isArray(action.blocked) ? action.blocked.filter(i => Number.isInteger(i)) : [];
+      const slot = freeApronSlot(city, blocked);
+      if (slot < 0) return 'The garage apron is occupied. Move the vehicle blocking the exit, then try again.';
+      vehicle.apron = slot;
+    }
+  }
+  if (action.kind === 'buy-plot' || action.kind === 'buy-vehicle') city.nonces = [...(city.nonces ?? []), action.nonce].slice(-MAX_NONCES);
+  state.city = city;
   return undefined;
 }
 

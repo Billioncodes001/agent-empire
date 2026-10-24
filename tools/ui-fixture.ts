@@ -4,7 +4,9 @@ import { readFile } from 'node:fs/promises';
 import { resolve, extname, sep } from 'node:path';
 import { WebSocketServer, WebSocket } from 'ws';
 import { randomBytes } from 'node:crypto';
-import { initialEmpire, MANAGER_NAMES, type SupervisionState } from '../src/shared/empire.js';
+import { initialEmpire, MANAGER_NAMES, type EmpireAction, type SupervisionState } from '../src/shared/empire.js';
+import { newCity, normalizeCity } from '../src/shared/city.js';
+import { applyCityAction, type CityActionText } from '../src/shared/economy-rules.js';
 import type { ServerMsg, WorkerInfo, QueueTask } from '../src/shared/protocol.js';
 import { sanitizeOutfit } from '../src/shared/outfit.js';
 import { HOSTED_FREE, KEY_NAMES, MODEL_CATALOGUE, OLLAMA_INSTALL_URL, engineOptions, pickEngine, recommendModels, sanitizeEngine, type EnginesState, type PullState, type WorkerEngine } from '../src/shared/engines.js';
@@ -195,6 +197,15 @@ if (process.env.FIXTURE_CHIEF === '1') {
   await brain.idle();
   inbox!.reconcile();
 }
+/** FREE-09: garage/plot actions go through the shared rules against the fixture's synthetic treasury. */
+let fixtureCity = newCity(), fixtureSpent = 0;
+function fixtureCityAction(action: EmpireAction): string | undefined {
+  const { state } = snapshot();
+  const before = state.funds;
+  const error = applyCityAction(state, action, Date.now(), new Proxy({}, { get: () => () => '' }) as CityActionText, () => {});
+  if (!error) { fixtureCity = normalizeCity(state.city); fixtureSpent += before - state.funds; }
+  return error;
+}
 function snapshot() {
   const now = Date.now();
   const phase: SupervisionState['chief']['phase'] = ['missing', 'stale', 'disconnected', 'waiting'].includes(scenario) ? 'working' : scenario as SupervisionState['chief']['phase'];
@@ -225,6 +236,9 @@ function snapshot() {
   const tasks = [task, ...job.tasks];
   // The real server projection (src/server/waiting.ts) decides who is waiting on whom; nothing is hand-set here.
   const waits = projectWaitingOn(tasks, [worker, ...job.workers]);
+  // FREE-09: plots and garage vehicles bought in this fixture session (memory only, never a save).
+  state.city = structuredClone(fixtureCity);
+  state.funds -= fixtureSpent;
   return { state, worker, task, tasks, jobWorkers: job.workers.map((w) => withWaitingOn(w, waits)) };
 }
 /**
@@ -489,6 +503,11 @@ sockets.on('connection', ws => {
     if (msg.t === 'worker.attach') send(ws, { t: 'term.snapshot', workerId: 'fixture-chief', cols: 90, rows: 25, data: 'SYNTHETIC TERMINAL — no commands execute.\r\nType to test keyboard routing: ' });
     else if (msg.t === 'term.input' && typeof msg.data === 'string') send(ws, { t: 'term.data', workerId: 'fixture-chief', data: msg.data.replace(/\r/g, '\r\n') });
     else if (msg.t === 'ping') send(ws, { t: 'pong', at: msg.at });
+    else if (msg.t === 'empire.action' && ['buy-plot', 'buy-vehicle', 'vehicle-spawn', 'vehicle-store'].includes(msg.action?.kind)) {
+      const error = fixtureCityAction(msg.action);
+      if (error) send(ws, { t: 'toast', text: error, level: 'error' });
+      else for (const client of sockets.clients) publish(client);
+    }
     else if (msg.t === 'worker.spawn' && typeof msg.deskId === 'string' && /^desk-([2-9]|1[0-9]|20)$/.test(msg.deskId) && msg.kind !== 'shell' && ![...extraWorkers.values()].some((w) => w.deskId === msg.deskId) && !(scenario === 'waiting' && WAITING_DESKS.includes(msg.deskId))) {
       const w = seatFixtureWorker(msg.deskId, msg.outfit, msg.login ? { id: 'claude-code', auth: 'subscription' } : sanitizeEngine(msg.engine));
       for (const client of sockets.clients) send(client, { t: 'worker.update', worker: w });
