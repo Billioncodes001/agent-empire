@@ -20,6 +20,7 @@ import { sealForGitHub } from './sealed-box';
 import { GITHUB_API, githubApiBase } from '../cloud/api-base';
 import { DEFAULT_WORKER_MODEL, workerModelLabel } from '../../cloud/worker-spec';
 import { billingNote, engineLabel, type ActionsSettings } from '../../cloud/actions-spec';
+import { jobMinutesCap } from './model';
 import { installJobWorkflow } from '../../cloud/actions-setup';
 
 export const SECRET_NAMES: Record<ProviderId, SecretName> = { anthropic: 'ANTHROPIC_API_KEY', openai: 'OPENAI_API_KEY' };
@@ -50,7 +51,7 @@ export function executionPlan(plan: Pick<CloudPlan, 'projects' | 'providers'> & 
     const a = plan.actions;
     return {
       repository: { owner: project.owner, name: project.name, baseBranch: project.defaultBranch || 'main' },
-      note: `Jobs run in GitHub Actions in ${project.owner}/${project.name}${plan.projects.length > 1 ? ` (the first of your ${plan.projects.length} projects)` : ''} with ${engineLabel(a)}: ${billingNote(a.engine)}. Setup commits .github/workflows/agent-empire-job.yml to ${project.defaultBranch || 'main'}; each job is one run of it, capped at ${a.timeoutMinutes} minutes and ${a.maxTurns} turns, and pushes a task branch with a draft pull request. Standard runners are free in public repositories; private repositories use your Actions minutes.`,
+      note: `Jobs run in GitHub Actions in ${project.owner}/${project.name}${plan.projects.length > 1 ? ` (the first of your ${plan.projects.length} projects)` : ''} with ${engineLabel(a)}: ${billingNote(a.engine)}. Setup commits .github/workflows/agent-empire-job.yml to ${project.defaultBranch || 'main'}; each job is one run of it: the agent works with read-only access (capped at ${a.timeoutMinutes} minutes and ${a.maxTurns} turns), then a separate job that runs no agent code checks the change and pushes a task branch${a.openPullRequest ? ' with a draft pull request' : ''}. Standard runners are free in public repositories; private repositories use your Actions minutes (up to ${jobMinutesCap(a)} minutes per job).`,
     };
   }
   if (!plan.providers.anthropic.trim())

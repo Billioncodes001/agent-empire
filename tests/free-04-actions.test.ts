@@ -41,9 +41,10 @@ function zip(name: string, text: string): Uint8Array {
   return new Uint8Array(Buffer.concat([local, nameBuf, comp]));
 }
 
-interface Run { id: number; title: string; status: string; conclusion: string | null; path: string; artifact?: Uint8Array | null; artifactSize?: number }
+interface Run { id: number; title: string; status: string; conclusion: string | null; path: string; artifact?: Uint8Array | null; artifactSize?: number; streamBytes?: number }
 class FakeActions {
   requests: { method: string; url: string; auth?: string; body?: any }[] = [];
+  pulled = 0;
   runs = new Map<number, Run>();
   nextRun = 9001;
   dispatchMode: 'ok' | 'no_run_id' | 'network' | 'http500' | 'http422' | 'http404' = 'ok';
@@ -59,6 +60,12 @@ class FakeActions {
     if (url.startsWith('https://blob.example/')) {
       if (auth) return json({ message: 'token leaked to blob storage' }, 400);
       const run = this.runs.get(Number(url.split('/').pop()));
+      if (run?.streamBytes) {
+        // An endless-looking body without content-length; counts how much the client actually pulls.
+        const chunk = new Uint8Array(16_384).fill(0x50);
+        let left = run.streamBytes;
+        return new Response(new ReadableStream({ pull: c => { if (left <= 0) return c.close(); left -= chunk.length; this.pulled += chunk.length; c.enqueue(chunk); } }), { status: 200 });
+      }
       return new Response(run?.artifact ? Buffer.from(run.artifact) : null, { status: 200 });
     }
     const path = url.replace('https://api.github.com', '').split('?')[0];
@@ -532,10 +539,26 @@ test('L2: an artifact served without content-length is capped while streaming', 
   const { gh, h } = actionsHarness(FREE);
   push(h.store, newJob(1, 1)); await h.tick();
   gh.finish(9001, { schemaVersion: 1, jobId: uuid(1), engine: 'qwen-free', status: 'no_changes' });
-  gh.runs.get(9001)!.artifact = new Uint8Array(200_000).fill(0x50);
+  gh.runs.get(9001)!.streamBytes = 10_000_000;
   gh.runs.get(9001)!.artifactSize = 100;
   await h.tick();
   assert.match(job(await h.state(), 1).message, /too large/);
+  assert.ok(gh.pulled < 100_000, `stopped reading early (pulled ${gh.pulled} of 10,000,000 bytes)`);
+});
+
+test('M3/M4: honest minutes copy, draft-PR note only when on, self-hosted runners blocked on public repositories', async () => {
+  const { initialState, validateActionsChoice, jobMinutesNote } = await import('../src/client/setup/model');
+  const { executionPlan } = await import('../src/client/setup/cloud-setup');
+  assert.equal(jobMinutesNote(validateActionsSettings({ ...FREE, timeoutMinutes: 360 })), 'US$0 on public repositories; private repositories use GitHub Actions minutes (up to 375 minutes per job)');
+  const project = { owner: 'o', name: 'r', defaultBranch: 'main', private: false } as any;
+  const withPr = executionPlan({ projects: [project], providers: { anthropic: '', openai: '' }, actions: FREE }).note;
+  const noPr = executionPlan({ projects: [project], providers: { anthropic: '', openai: '' }, actions: { ...FREE, openPullRequest: false } }).note;
+  assert.match(withPr, /draft pull request/);
+  assert.doesNotMatch(noPr, /pull request/);
+  assert.match(withPr, /up to 75 minutes per job/);
+  const s = { ...initialState({ step: 'providers' }), engine: 'qwen-free' as const, projectToken: 'github_pat_' + 'a'.repeat(30), repos: [project], free: { selfHostedLabel: 'box', selfHostedModel: 'm', hostedOptIn: false, hostedBaseUrl: '', hostedModel: '', cpuOptIn: false } };
+  assert.ok(validateActionsChoice(s).some((e: string) => /public repository/.test(e)), 'self-hosted on a public repo is blocked');
+  assert.deepEqual(validateActionsChoice({ ...s, repos: [{ ...project, private: true }] }), []);
 });
 
 test('L4: a rate-limited poll backs off for the rest of the run, and dispatch then provably sends nothing', async () => {

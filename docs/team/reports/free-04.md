@@ -111,3 +111,36 @@ All pins were verified on 2026-10-24 with read-only `gh api` and `npm view`. All
 6. Cancel a second job while it is running. The run should become *cancelled* and the job *Cancelled*.
 7. For a subscription run: in your own terminal, run `claude setup-token` and then `gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo <repo>`. Click "Check secret name". Submit one job and confirm the job shows "billed to your Claude plan".
 8. Afterwards: revoke the setup token from your Claude account (deleting the secret does not revoke it), delete the PAT, and delete the repository.
+
+## Security review fixes (2026-10-24, "accept with fixes")
+
+Each fix has a test in `tests/free-04-actions.test.ts` that was run against the pre-fix sources and failed (or hung) there.
+
+- **H1, fixed:** the job workflow is now two jobs.
+  - **`work`** runs the agent. It has `permissions: contents: read` and no write token. It uploads `git diff --binary` plus a manifest (job id, source commit, sha256, size) as `agent-empire-change`.
+  - **`publish`** runs on a fresh `ubuntu-latest` runner, `needs: work`, and executes no agent code. It:
+    - checks the manifest;
+    - enforces a 5 MB cap;
+    - refuses symlinks, submodules and any path (including rename and copy targets, case-insensitively) under `.git/` or `.github/`, or containing `..`;
+    - applies the patch with `git -c core.hooksPath=/dev/null apply --index`;
+    - commits with `--no-verify` and pushes only `refs/heads/agent-empire/task-$JOB_ID`;
+    - is the only job that opens the draft PR or writes `result.json`.
+  - Tests assert the YAML structure. They also run the real "Check the change" script against hostile patches in a local scratch repository.
+- **M2, fixed:** the Claude agent job also has `contents: read` and publishes through the publish job. `claude-code-action` still receives `github_token: ${{ github.token }}`, because without it the action asks for an OIDC token for the Claude GitHub App and fails. That token is read-only under these permissions.
+  - **Plainly: the Claude agent can read its own `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` from its environment** (yolo tool use in the same job). Use a token that only you use, rotate it, and don't run untrusted tasks with it.
+  - The Qwen agent can likewise read `FREE_LLM_API_KEY` when that source is chosen.
+- **M1, fixed:** `attach_session` accepts `ghrun_<id>` for GitHub Actions jobs (and only for them; Anthropic jobs still need `sesn_…`).
+  - The cursor is rebuilt from the job and the current execution: repository, engine, the job's reservation and the turn cap.
+  - The run is trusted only when its title names this job with that budget and turn cap. Otherwise the job stays `unknown` and its reservation is kept.
+- **M3, fixed:** the copy now says "US$0 on public repositories; private repositories use GitHub Actions minutes (up to N minutes per job)". N is the agent cap plus the 15-minute publish job, and the CPU option allows up to 375.
+  - The minutes estimate now includes job runs.
+  - The setup note mentions a draft PR only when `openPullRequest` is on.
+- **M4, fixed:** setup refuses a self-hosted runner for a public project repository. The free-model panel and the generated YAML warn that the agent controls that machine while it works, and recommend an ephemeral runner (`--ephemeral`) on a dedicated machine or VM.
+- **L1, fixed:**
+  - The schema requires the cursor's owner and name to match the OWNER/REPO patterns and to equal `job.repository`. The adapter re-checks the patterns.
+  - The cost basis is accepted only when it matches the job's own reservation. A money-reserved run can't be recorded as free or plan-billed, and a run-caps run can't gain a dollar estimate.
+- **L2, fixed:** the artifact body is read in chunks and abandoned past 16 KB, whether or not GitHub sent a content-length. The test checks how many bytes were actually pulled from a 10 MB stream. Cancelling the stream is no longer awaited (awaiting it could hang).
+- **L3, fixed:** the job asserts that the packed Qwen `package.json` has no dependencies, then installs with `--offline`. The CPU model's registry manifest digest is pinned and compared after the pull. It is UNVERIFIED that Ollama's `/api/tags` digest equals the registry manifest's sha256; if it doesn't, the job stops, which is safe.
+- **L4, fixed:** a 429, or a 403 that says "rate limit", stops every further GitHub call in that coordinator run. A dispatch after that fails as provably not sent.
+
+New pin: `actions/download-artifact` v8.0.2, commit `9000827ccba6bdab643e8b6fd33ac0654aef8333` (2026-10-07).

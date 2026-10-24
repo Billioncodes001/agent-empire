@@ -178,6 +178,13 @@ export function validateProjectToken(value: string): string | null {
 }
 export const linkedProviders = (p: Record<ProviderId, string>) => (Object.keys(p) as ProviderId[]).filter((id) => p[id].trim());
 
+/** The publish job's own cap (job-workflow.ts), added to the agent job's time cap for the per-job minutes figure. */
+export const PUBLISH_JOB_MINUTES = 15;
+export const jobMinutesCap = (settings: Pick<ActionsSettings, 'timeoutMinutes'>) => settings.timeoutMinutes + PUBLISH_JOB_MINUTES;
+/** Honest cost line for a GitHub Actions engine: free runners only on public repositories. */
+export const jobMinutesNote = (settings: Pick<ActionsSettings, 'timeoutMinutes'>) =>
+  `US$0 on public repositories; private repositories use GitHub Actions minutes (up to ${jobMinutesCap(settings)} minutes per job)`;
+
 /** GitHub Actions settings for the chosen engine, or the reason they are incomplete. */
 export function actionsSettingsFor(s: Pick<SetupState, 'engine' | 'free' | 'claudeAuth'>): { settings: ActionsSettings | null; error?: string } {
   if (s.engine === 'api-keys') return { settings: null };
@@ -202,6 +209,9 @@ export function validateActionsChoice(s: SetupState): string[] {
   if (!s.projectToken.trim()) errors.push('Add the project access token: the coordinator needs it to start job runs in your project.');
   const pt = validateProjectToken(s.projectToken);
   if (pt) errors.push(pt);
+  // Security review M4: a yolo agent on a persistent machine can leave things behind; GitHub also warns against
+  // self-hosted runners on public repositories, where anyone can propose workflow changes.
+  if (settings?.modelSource === 'self_hosted_ollama' && s.repos[0] && s.repos[0].private === false) errors.push(`${s.repos[0].owner}/${s.repos[0].name} is a public repository: don’t run agents on your own runner there. Use a private repository, or another free model source.`);
   if (settings && requiredSecret(settings) && s.secretCheck.status !== 'present') errors.push(`Set ${requiredSecret(settings)} in your project repository from your own terminal, then check it here.`);
   return errors;
 }

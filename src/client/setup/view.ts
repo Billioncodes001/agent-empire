@@ -8,7 +8,7 @@ import { BridgeError } from '../native';
 import {
   actionsEstimate, blockers, CLOUD_STEPS, DEFAULT_LIMITS, dollars, INTERVALS, LIMIT_BOUNDS, linkedProviders, MAX_REPOS, parseCents, progress, PROVIDER_NAMES, reduce, repoKey,
   STATE_REPO_NAME, validateProjectToken, validateProviderKey, type Action, type ProviderId, type RepoRef, type SetupState, type Step,
-  actionsSettingsFor, ENGINE_CHOICES, type EngineChoice,
+  actionsSettingsFor, ENGINE_CHOICES, jobMinutesNote, jobMinutesCap, type EngineChoice,
 } from './model';
 import { CPU_MODEL, JOB_PINS, requiredSecret, SECRETS, subscriptionChecklist } from '../../cloud/actions-spec';
 import { checkJobSecret } from '../../cloud/actions-setup';
@@ -702,7 +702,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
       );
       // ---- FREE-04: engine choice ------------------------------------------------------------------------
       const ENGINE_TEXT: Record<EngineChoice, { title: string; tag: string; needs: string }> = {
-        'qwen-free': { title: 'Free · Qwen Code', tag: 'US$0', needs: 'Runs in your GitHub Actions with an open model: your own runner with Ollama, a free hosted key you opt into, or a small CPU model (slow).' },
+        'qwen-free': { title: 'Free · Qwen Code', tag: 'free model', needs: 'Runs in your GitHub Actions with an open model: your own runner with Ollama, a free hosted key you opt into, or a small CPU model (slow).' },
         'claude-subscription': { title: 'Claude subscription', tag: 'your Claude plan', needs: 'Runs Claude Code in your GitHub Actions with your own Pro or Max plan. You set the token yourself in your terminal; the Empire only checks that the secret exists.' },
         'api-keys': { title: 'API keys', tag: 'billed per use', needs: 'Today’s path: Anthropic Managed Agents with an API key, encrypted on this device and stored as an Actions secret.' },
       };
@@ -741,7 +741,8 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
       const freePanel = el('div', { class: 'su-engine-panel', id: 'su-panel-free' },
         el('p', { class: 'su-note', text: 'Pick at least one. The Empire uses the first that is set up, in this order.' }),
         el('fieldset', { class: 'su-source' }, el('legend', { text: '1 · Your own runner with Ollama (best)' }),
-          el('p', { class: 'su-note', text: 'A self-hosted GitHub Actions runner on your machine, with Ollama serving on 127.0.0.1:11434. Jobs never leave your hardware.' }),
+          el('p', { class: 'su-note', text: 'A self-hosted GitHub Actions runner on your machine, with Ollama serving on 127.0.0.1:11434. The model never leaves your hardware.' }),
+          el('div', { class: 'su-callout' }, icon(ICONS.warn, 'su-inline-ico'), el('span', {}, el('strong', { text: 'The agent gets full control of that runner while it works. ' }), 'Register it as an ephemeral runner (./config.sh --ephemeral) on a machine or VM with nothing else on it, so nothing an agent leaves behind reaches the next job. Never use a self-hosted runner with a public repository; setup refuses it.')),
           el('div', { class: 'su-row su-wrap' },
             input('su-free-label', f.selfHostedLabel, 'my-runner', (v) => dispatch({ type: 'setFree', patch: { selfHostedLabel: v } }), 'Runner label'),
             input('su-free-model', f.selfHostedModel, 'qwen3-coder:30b', (v) => dispatch({ type: 'setFree', patch: { selfHostedModel: v } }), 'Ollama model'))),
@@ -812,7 +813,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
       const { panel, heading } = frame({
         eyebrow: 'Cloud · step 3',
         title: STEP_TITLES.providers,
-        lede: 'Where your agents run and who pays for it. No paid account is required: the free engine costs US$0.',
+        lede: 'Where your agents run and who pays for it. No paid account is required: the free engine is US$0 on public repositories; private repositories use your GitHub Actions minutes.',
         body: [engineGroup, apiPanel, actionsPanel, projectRow, engineErrors],
         primary: next,
       });
@@ -845,9 +846,12 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
         const plan = state.github.plan ? state.github.plan.replace(/^\w/, (c) => c.toUpperCase()) : null;
         const over = (e.share ?? 0) > 1;
         estimate.classList.toggle('is-over', over);
+        const jobSettings = actionsSettingsFor(state).settings;
         estimate.textContent = `About ${e.minutes.toLocaleString()} GitHub Actions minutes a month for scheduled runs` +
           (e.included ? `, ${Math.round((e.share ?? 0) * 100)}% of the ${e.included.toLocaleString()} included on GitHub ${plan} for private repositories.${over ? ' Minutes beyond that are billed to your GitHub account; choose a longer interval to stay inside it.' : ''}` : plan ? ` (your plan: ${plan}; check its included minutes in GitHub billing).` : '. GitHub Free includes 2,000 a month for private repositories, Pro 3,000.') +
-          ' Each run bills at least a minute; waking it from the app adds runs. Figures are estimates.';
+          ' Each run bills at least a minute; waking it from the app adds runs.' +
+          (jobSettings ? ` Each job adds its own run on top: up to ${jobMinutesCap(jobSettings)} minutes per job on private repositories (free on public ones${jobSettings.modelSource === 'self_hosted_ollama' ? '; the agent part uses none on your own runner' : ''}).` : '') +
+          ' Figures are estimates.';
       };
       refresh = () => {
         n.textContent = String(state.limits.maxConcurrent);
@@ -898,7 +902,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
             row('Jobs run', executionPlan({ projects: s.repos, providers: s.providers, actions: actionsSettingsFor(s).settings }).note),
             row('Project token', s.projectToken.trim() ? 'fine-grained token · encrypted, never shown again' : 'not added: jobs can’t reach your projects until you add one (run setup again)'),
             row('App closed', `Your Empire keeps working. Its coordinator runs ${s.interval === 60 ? 'hourly' : `every ${s.interval} minutes`} in GitHub Actions (about ${actionsEstimate(s.interval).minutes.toLocaleString()} Actions minutes a month), sooner when the app wakes it. Only “Shut down Empire” in the game stops it.`),
-            row('Costs', s.engine === 'qwen-free' ? 'Free runs cost US$0. Job runs use GitHub Actions minutes (free on public repositories). Agent Empire charges nothing.' : s.engine === 'claude-subscription' && s.claudeAuth === 'subscription' ? 'Runs draw on your Claude plan’s limits (no US$ figure); GitHub Actions minutes are billed to your GitHub account. Agent Empire charges nothing.' : 'GitHub Actions minutes are billed to your GitHub account; API usage to your AI provider. Agent Empire charges nothing.'),
+            row('Costs', s.engine === 'qwen-free' ? `Free model: ${actionsSettingsFor(s).settings ? jobMinutesNote(actionsSettingsFor(s).settings!) : 'US$0 on public repositories; private repositories use GitHub Actions minutes'}. Agent Empire charges nothing.` : s.engine === 'claude-subscription' && s.claudeAuth === 'subscription' ? 'Runs draw on your Claude plan’s limits (no US$ figure); GitHub Actions minutes are billed to your GitHub account. Agent Empire charges nothing.' : 'GitHub Actions minutes are billed to your GitHub account; API usage to your AI provider. Agent Empire charges nothing.'),
           ),
           el('label', { class: 'su-accept', for: 'su-accept' }, accept, el('span', { text: 'I understand these costs are billed to my own GitHub and AI provider accounts.' })),
         ],
