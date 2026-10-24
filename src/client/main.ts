@@ -54,6 +54,9 @@ import { GRAPHICS, applyGraphics } from './graphics';
 import { openSettings } from './ui/settings';
 import { appPanel } from './ui/app-panel';
 import { linkedAccountsSection } from './ui/engines';
+import { voiceSetupSection } from './ui/voice-setup';
+import { openPhone } from './ui/phone';
+import { chiefBrainSection } from './ui/chief';
 import { ENGINE_NAME, type WorkerEngine } from '../shared/engines';
 import { startUpdates, updateSettingsSection } from './update';
 import { connectionView } from './ui/continuity';
@@ -1262,6 +1265,7 @@ mountInboxButton($('btn-inbox'));
 $('btn-team').addEventListener('click', () => openTeam(net));
 $('btn-upgrade').addEventListener('click', () => openUpgrade(net));
 $('btn-help').addEventListener('click', () => openHelp(settings.keys));
+$('btn-phone').addEventListener('click', () => openPhone());
 $('btn-decor').addEventListener('click', () => office.floor > 0 ? toast('Wall pictures are managed on the ground floor.') : (hanger.active ? hanger.cancel() : hanger.start()));
 $('btn-settings').addEventListener('click', () =>
   openSettings(
@@ -1280,7 +1284,7 @@ $('btn-settings').addEventListener('click', () =>
     },
     editProfile,
     () => sound.ding('done'),
-    combineSections(appPanel(net), linkedAccountsSection({ onSignIn: () => { closeAllModals(); signInToClaude(); } }), updateSettingsSection(updateService)),
+    combineSections(appPanel(net), voiceSetupSection(), linkedAccountsSection({ onSignIn: () => { closeAllModals(); signInToClaude(); } }), chiefBrainSection(), updateSettingsSection(updateService)),
   ),
 );
 

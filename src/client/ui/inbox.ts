@@ -6,12 +6,56 @@ import { safeLink } from '../research-view';
 import { store } from '../state';
 import { h, openModal } from './dom';
 import { morphChildren } from './reconcile';
+import { chiefPlanBlock, chiefPlanFor, chiefReviewsBlock, chiefReviewsFor, promptsShown } from './chief';
+import { LESSON_DECISION_NOTE, SOURCE_LABEL, scopeText } from '../../shared/memory';
 
 // ORG-03: the CEO approval inbox. Every item comes from the server's inbox, which is reconciled from consultancy state;
 // a decision here is the same decision as on the founder desk or in Telegram.
 
 const usd = (n: number) => `$${n.toFixed(2)}`;
-const KIND_ICON: Record<Approval['kind'], string> = { job_plan: '📄', budget_increase: '💵', external_action: '✉️', tool_proposal: '🧰' };
+const KIND_ICON: Record<Approval['kind'], string> = { job_plan: '📄', budget_increase: '💵', external_action: '✉️', tool_proposal: '🧰', chief_proposal: '🧭', lesson: '📘' };
+
+/** FREE-02: who wrote it, honestly. Model-backed items are proposals; everything else is computed from real state. */
+function raisedTag(item: Approval): HTMLElement {
+  // FREE-10: a lesson the CEO wrote is neither a model proposal nor computed state.
+  if (item.kind === 'lesson' && !item.lesson?.proposedBy.startsWith('Model-backed')) return h('span.empire-tag', { title: 'Written by a person in the Empire, not by a model.' }, `Written by ${item.lesson?.proposedBy ?? 'the CEO'}`);
+  const model = item.kind === 'lesson' ? item.lesson!.proposedBy.replace(/^Model-backed · /, '').replace(/ · proposals only$/, '')
+    : item.kind === 'chief_proposal' ? item.proposal?.model : item.proposedBy ? item.proposedBy.replace(/^Model-backed · /, '').replace(/ · proposals only$/, '') : undefined;
+  return model
+    ? h('span.empire-tag', { 'data-monitor': 'model_backed', title: 'Written by the chief’s model. A proposal until you decide.' }, `Model-backed · ${model} · proposals only`)
+    : h('span.empire-tag', { title: 'Computed from real state. No model is called.' }, 'Rule-based');
+}
+
+/** FREE-02: the chief's suggestion and the one action approving runs (if any). */
+function proposalFacts(item: Approval): HTMLElement {
+  const p = item.proposal;
+  if (!p) return h('p.setting-note', {}, 'This proposal has nothing to show.');
+  return h('dl.inbox-facts.chief-proposal', {},
+    h('div', {}, h('dt', {}, 'Situation'), h('dd', {}, p.situation)),
+    h('div', {}, h('dt', {}, 'Chief proposes'), h('dd', {}, p.text)),
+    h('div', {}, h('dt', {}, 'Approving'), h('dd', {}, p.action ? `records your decision, then ${p.action.label.replace(/^Retry/, 'retries')} through the queue` : 'records your decision only')));
+}
+
+/** FREE-10: the proposed lesson, its scope and provenance, and what approving does. */
+function lessonFacts(item: Approval): HTMLElement {
+  const l = item.lesson;
+  if (!l) return h('p.setting-note', {}, 'This lesson has nothing to show.');
+  const link = l.source.kind === 'research' ? `consultancy.html?research=${encodeURIComponent(l.source.ref)}` : l.source.jobId ? `consultancy.html?job=${encodeURIComponent(l.source.jobId)}` : undefined;
+  return h('dl.inbox-facts.lesson-facts', {},
+    h('div', {}, h('dt', {}, 'Lesson'), h('dd', {}, h('blockquote.lesson-text', {}, l.text))),
+    l.supersedes ? h('div', {}, h('dt', {}, `Replaces ${l.supersedes}`), h('dd', {}, l.supersedesText ?? '')) : null,
+    h('div', {}, h('dt', {}, 'Scope'), h('dd', {}, scopeText(l))),
+    h('div', {}, h('dt', {}, 'Source'), h('dd', {}, `${SOURCE_LABEL[l.source.kind]} · ${l.source.label} `, link ? h('a', { href: link, target: '_blank', rel: 'noopener' }, 'Open on the founder desk ↗') : null)),
+    h('div', {}, h('dt', {}, 'Approving'), h('dd', {}, 'makes it planning context for the chief; nothing else happens')));
+}
+
+/** FREE-02: a job's model-proposed plan structure and the chief's reviews of its finished items. */
+function chiefBlocks(item: Approval): HTMLElement[] {
+  if (item.kind !== 'job_plan') return [];
+  const plan = chiefPlanFor(item.jobId);
+  const reviews = chiefReviewsBlock(chiefReviewsFor(item.jobId));
+  return [plan ? chiefPlanBlock(plan) : null, reviews].filter((x): x is HTMLElement => !!x);
+}
 
 export const pendingApprovals = () => (store.cloud ? 0 : store.approvals?.pending ?? 0);
 
@@ -83,7 +127,7 @@ function itemRow(item: Approval, selected: boolean, onSelect: () => void): HTMLE
   const money = item.kind === 'budget_increase' && item.spentUsd !== undefined && item.approvedBudgetUsd !== undefined
     ? `${usd(item.spentUsd)} of ${usd(item.approvedBudgetUsd)} spent`
     : item.outreach ? `${item.outreach.recipients.length} recipient${item.outreach.recipients.length === 1 ? '' : 's'}`
-    : item.tool ? item.tool.licence : item.estimate ? `Estimate ${fmtUsdRange(item.estimate.costUsd)}` : '';
+    : item.tool ? item.tool.licence : item.proposal ? (item.proposal.action ? 'One-click retry' : 'Decision only') : item.estimate ? `Estimate ${fmtUsdRange(item.estimate.costUsd)}` : '';
   return h(
     'li',
     { 'data-key': item.id },
@@ -146,9 +190,10 @@ export function openInbox(focusId?: string) {
       back,
       h('span.inbox-kind', { 'data-kind': item.kind }, h('span', { 'aria-hidden': 'true' }, KIND_ICON[item.kind]), ` ${APPROVAL_KIND_LABEL[item.kind]} · ${item.id}`),
       h('h3', { tabindex: -1, id: 'inbox-detail-title' }, item.title),
-      h('p.inbox-raised', {}, `Raised by ${EXECUTIVES[item.raisedBy].name} `, h('span.empire-tag', { title: 'Computed from real state. No model is called.' }, 'Rule-based')),
+      h('p.inbox-raised', {}, `Raised by ${EXECUTIVES[item.raisedBy].name} `, raisedTag(item)),
       h('p.inbox-detail-text', {}, item.detail),
-      item.kind === 'external_action' ? outreachFacts(item) : moneyFacts(item),
+      item.kind === 'external_action' ? outreachFacts(item) : item.kind === 'chief_proposal' ? proposalFacts(item) : item.kind === 'lesson' ? lessonFacts(item) : moneyFacts(item),
+      ...chiefBlocks(item),
     ];
     const verdict = { approved: '✓ Approved', rejected: '✕ Declined', resolved: '○ Resolved', pending: '' }[item.status];
     const decidedLine = item.status !== 'pending'
@@ -182,7 +227,14 @@ export function openInbox(focusId?: string) {
         h('p.setting-note', {}, `Any change to the recipients or sender makes a new item. Pause or cancel a send on the founder desk. ${approveHint(item.id)}`));
       return;
     }
-    const tool = item.kind === 'tool_proposal';
+    // Review fix 2: a model-proposed plan is approvable only from a view that shows every prompt.
+    if (item.kind === 'job_plan' && item.proposedBy && !promptsShown(chiefPlanFor(item.jobId))) {
+      detail.replaceChildren(...head, h('p.inbox-error', { role: 'note' }, 'The chief’s model proposed this plan, but its prompts are not loaded here. Review and approve it on the founder desk, where every prompt is shown.'));
+      return;
+    }
+    const chiefItem = item.kind === 'chief_proposal';
+    const lessonItem = item.kind === 'lesson';
+    const tool = item.kind === 'tool_proposal' || chiefItem || lessonItem;
     const fallback = defaultBudget(item);
     const input = h('input', { id: 'inbox-budget', type: 'number', inputmode: 'decimal', min: '1', max: String(MAX_APPROVAL_BUDGET_USD), step: '0.01', value: budgetDraft ?? (fallback !== undefined ? String(fallback) : ''), 'aria-describedby': 'inbox-budget-note' }) as HTMLInputElement;
     input.addEventListener('input', () => { budgetDraft = input.value; if (confirming) { confirming = null; render(); input.focus(); } });
@@ -225,7 +277,11 @@ export function openInbox(focusId?: string) {
       }
     };
     const b = budget();
-    const spendSentence = tool
+    const spendSentence = lessonItem
+      ? `Approve ${item.lesson?.lessonId ?? 'this lesson'}${item.lesson?.supersedes ? ` (it replaces ${item.lesson.supersedes})` : ''}? The chief may cite it as planning context. It never goes into a worker prompt by itself.`
+      : chiefItem
+      ? (item.proposal?.action ? `Approve and ${item.proposal.action.label.replace(/^Retry/, 'retry')}? The queue’s normal limits still apply.` : 'Record that you approve this proposal? Nothing else happens.')
+      : tool
       ? `Record that you approve ${item.tool?.name ?? 'this tool'}? Nothing is installed or adopted; adopting it is later reviewed work.`
       : item.kind === 'budget_increase'
       ? `Raise the budget for “${item.title.replace(/ reached its budget$/, '')}” from ${usd(item.approvedBudgetUsd ?? 0)} to ${b !== undefined && Number.isFinite(b) ? usd(b) : '—'}? Held items will start.`
@@ -233,20 +289,20 @@ export function openInbox(focusId?: string) {
     const confirm = confirming && h(
       'div.inbox-confirm',
       { role: 'group', 'aria-label': 'Confirm decision' },
-      h('p', {}, confirming === 'approve' ? spendSentence : tool ? 'Record that you decline this tool proposal?' : item.kind === 'budget_increase' ? 'Decline the increase? The job stays held; its unstarted items will not start.' : 'Decline this plan? Nothing from it will start.'),
+      h('p', {}, confirming === 'approve' ? spendSentence : lessonItem ? 'Decline this lesson? It is retired and never used.' : chiefItem ? 'Dismiss this proposal? Nothing changes.' : tool ? 'Record that you decline this tool proposal?' : item.kind === 'budget_increase' ? 'Decline the increase? The job stays held; its unstarted items will not start.' : 'Decline this plan? Nothing from it will start.'),
       h('div.inbox-actions', {},
         h(`button.btn.${confirming === 'approve' ? 'primary' : 'danger'}`, { type: 'button', disabled: busy, onclick: () => void run(confirming!) }, busy ? 'Saving…' : confirming === 'approve' ? 'Confirm approval' : 'Confirm decline'),
         h('button.btn', { type: 'button', disabled: busy, onclick: () => { confirming = null; render(); } }, 'Cancel')),
     );
     detail.replaceChildren(
       ...head,
-      ...(tool ? [h('p.setting-note', {}, TOOL_DECISION_NOTE)] : [
+      ...(chiefItem ? [] : lessonItem ? [h('p.setting-note', {}, LESSON_DECISION_NOTE)] : tool ? [h('p.setting-note', {}, TOOL_DECISION_NOTE)] : [
         h('label.inbox-budget', { for: 'inbox-budget' }, item.kind === 'budget_increase' ? 'New budget (USD)' : 'Approved budget (USD)', h('span.inbox-dollar', {}, '$', input)),
         h('p.setting-note', { id: 'inbox-budget-note' }, note)]),
       ...(error ? [h('p.inbox-error', { role: 'alert' }, error)] : []),
       confirm || h('div.inbox-actions', {},
-        h('button.btn.primary', { type: 'button', disabled: busy, onclick: () => ask('approve') }, tool ? 'Approve proposal…' : item.kind === 'budget_increase' ? 'Approve increase…' : 'Approve plan…'),
-        reopen ? null : h('button.btn', { type: 'button', disabled: busy, onclick: () => ask('reject') }, 'Decline…')),
+        h('button.btn.primary', { type: 'button', disabled: busy, onclick: () => ask('approve') }, lessonItem ? 'Approve lesson…' : chiefItem ? (item.proposal?.action ? 'Approve & retry…' : 'Approve proposal…') : tool ? 'Approve proposal…' : item.kind === 'budget_increase' ? 'Approve increase…' : 'Approve plan…'),
+        reopen ? null : h('button.btn', { type: 'button', disabled: busy, onclick: () => ask('reject') }, chiefItem ? 'Dismiss…' : 'Decline…')),
       h('p.setting-note', {}, approveHint(item.id)),
     );
   };
@@ -280,7 +336,7 @@ export function openInbox(focusId?: string) {
     storageNote.hidden = !state.storageError;
     // Re-draw the detail only when what it shows changed, so a broadcast never steals focus from the budget input.
     const current = state.items.find((i) => i.id === selected);
-    const key = JSON.stringify([current, confirming, busy, error]);
+    const key = JSON.stringify([current, confirming, busy, error, current?.kind === 'job_plan' ? [chiefPlanFor(current.jobId), chiefReviewsFor(current.jobId)] : null]);
     if (key !== detailKey || !detail.firstChild) { detailKey = key; renderDetail(current); }
   };
 
@@ -288,10 +344,10 @@ export function openInbox(focusId?: string) {
     h('div.modal.inbox-modal', { role: 'dialog', 'aria-labelledby': 'inbox-title' },
       h('header', {}, h('div.inbox-heading', {}, h('small.empire-eyebrow', {}, 'CEO desk · Approval inbox'), h('h2', { id: 'inbox-title' }, 'Waiting for you ', count)), close),
       body,
-      h('footer', {}, h('p.setting-note', {}, 'Plans come from Alex, budget increases from Priya, campaign sends from Jordan, tool proposals from Sam. All are rule-based monitors of real jobs, spend, outreach and worker reports. Telegram: /approvals.'))),
+      h('footer', {}, h('p.setting-note', {}, 'Plans come from Alex, budget increases from Priya, campaign sends from Jordan, tool proposals from Sam. Items tagged Model-backed were written by the chief’s model and are proposals; the rest are rule-based monitors of real jobs, spend, outreach and worker reports. Telegram: /approvals.'))),
     { onClose: () => offs.forEach((off) => off()) },
   );
-  const offs = (['approvals', 'cloud'] as const).map((topic) => store.on(topic, render));
+  const offs = (['approvals', 'cloud', 'chief'] as const).map((topic) => store.on(topic, render));
   close.addEventListener('click', () => modal.close());
   render();
   if (focusId && store.approvals?.items.some((i) => i.id === focusId)) select(focusId);

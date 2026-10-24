@@ -6,6 +6,7 @@ import { startServer } from '../src/server/server.js';
 import { scryptSync } from 'node:crypto';
 import type { Config } from '../src/server/config.js';
 import { syntheticParsed } from './research-fixture.js';
+import { fixtureChat } from './chief-fixture.js';
 if (Number(process.env.PREVIEW_PORT) === 4610) throw new Error('Refusing the protected 4610 session; use an isolated preview port.');
 const dataDir = mkdtempSync(path.join(tmpdir(),'empire-founder-preview-'));
 // ORG-04a (PREVIEW_OUTREACH=1): synthetic leads and campaigns. Each drafting task already finished for a reserved job id
@@ -30,7 +31,7 @@ if (process.env.PREVIEW_RESEARCH === 'seed') {
 }
 const cfg: Config = {dir:dataDir,dataDir,host:'127.0.0.1',port:Number(process.env.PREVIEW_PORT||4622),passwordGenerated:false,verifier:scryptSync('founder-preview',Buffer.alloc(16,2),32),salt:Buffer.alloc(16,2),secret:'isolated-founder-preview-only',claimed:true,markClaimed(){},agentCmd:'disabled-fixture',agentArgs:[],trustProxy:false,iceServers:[],budgetPause:false};
 const sentPreview: string[] = [];
-const host = await startServer(cfg,{...(outreachOn ? { outreach: { config: { from: 'hello@northstar-preview.example', fromName: 'Northstar Studio', address: 'Northstar Studio Ltd, 14 Harbour Row, Bristol BS1 4XX, United Kingdom', dailyCap: 200, intervalMs: 3_600_000, problems: [] }, transport: { send: async (m: { to: string }) => { sentPreview.push(m.to); } } } } : {}),publicDir:process.env.PREVIEW_PUBLIC||'/tmp/agent-empire-consultancy-preview',backgroundServices:false,telegram:false,workers:{taskNaming:false,resolveCommand:()=>null,processExists:()=>false,spawn(){throw new Error('Preview cannot launch workers');}}});
+const host = await startServer(cfg,{...(outreachOn ? { outreach: { config: { from: 'hello@northstar-preview.example', fromName: 'Northstar Studio', address: 'Northstar Studio Ltd, 14 Harbour Row, Bristol BS1 4XX, United Kingdom', dailyCap: 200, intervalMs: 3_600_000, problems: [] }, transport: { send: async (m: { to: string }) => { sentPreview.push(m.to); } } } } : {}),...(process.env.PREVIEW_CHIEF === '1' ? { chief: { chat: fixtureChat }, engines: { providerKeys: () => ({}) } } : {}),publicDir:process.env.PREVIEW_PUBLIC||'/tmp/agent-empire-consultancy-preview',backgroundServices:false,telegram:false,workers:{taskNaming:false,resolveCommand:()=>null,processExists:()=>false,spawn(){throw new Error('Preview cannot launch workers');}}});
 console.log('Isolated founder preview: http://127.0.0.1:'+cfg.port+'/consultancy.html (fixture password: founder-preview)');
 for(const [requestId,client,title,brief] of [
  ['fixture-northstar','Northstar Studio','Customer booking portal','Build a clear booking journey for studio clients. Deliver accessible forms, availability and confirmation, with tests.'],
@@ -61,4 +62,26 @@ if (outreachOn) {
   const autumn = host.inbox!.state().items.find((i) => i.kind === 'external_action' && i.title.includes('Autumn'))!;
   host.inbox!.approve(autumn.id, 'Preview fixture');
   console.log('Outreach preview: 4 campaigns (sending, awaiting approval, needs attention, drafting); the fake transport records sends only.');
+}
+
+// FREE-02 (PREVIEW_CHIEF=1): the free brain with a fake model (no network) proposes one plan and fails one (MALFORMED).
+if (process.env.PREVIEW_CHIEF === '1') {
+  const brain = host.chief;
+  // FREE-10: a small reviewed memory: approved lessons (company, client, role), one retired, one waiting for approval.
+  const memory = host.memory;
+  const approve = (id: string) => { const item = host.inbox!.state().items.find((i) => i.kind === 'lesson' && i.lesson?.lessonId === id); if (item) host.inbox!.approve(item.id, 'Preview fixture'); };
+  if (!memory.state().lessons.length) {
+    approve(memory.addNote({ text: 'Booking work always includes a double-booking test for one appointment slot.', scope: 'company' }, 'CEO').id);
+    approve(memory.addNote({ text: 'Harbour Dental signs off on Mondays; plan a demo before each Monday.', scope: 'client', scopeValue: 'Harbour Dental' }, 'CEO').id);
+    approve(memory.addNote({ text: 'QA testers start from the acceptance list in the brief.', scope: 'role', scopeValue: 'qa_tester' }, 'CEO').id);
+    const old = memory.addNote({ text: 'Storefront reviews need a Lighthouse score.', scope: 'product', scopeValue: 'Storefront' }, 'CEO');
+    approve(old.id);
+    memory.retire(old.id, 'CEO', 'Replaced by the accessibility checklist');
+    memory.addNote({ text: 'Ask workers to open a pull request before a review; a finished turn alone cannot be checked.', scope: 'company' }, 'CEO');
+  }
+  brain.updateSettings({ mode: 'free', freeModel: 'gpt-oss:20b' });
+  brain.requestPlan({ requestId: 'pv-chief-1', client: 'Harbour Dental', title: 'Online booking', brief: 'Patients book and cancel appointments online. Synthetic preview brief.' }, 'Preview fixture', 'founder_desk');
+  brain.requestPlan({ requestId: 'pv-chief-2', client: 'Atlas Commerce', title: 'Storefront review', brief: 'MALFORMED synthetic preview brief.' }, 'Preview fixture', 'telegram');
+  await brain.idle();
+  console.log('Chief preview: one proposed plan and one that needs attention (fake model, no network).');
 }

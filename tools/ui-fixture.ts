@@ -21,6 +21,13 @@ import { estimateJob } from '../src/server/estimate.js';
 import { ResearchDesk, ResearchError } from '../src/server/research.js';
 import { parseArtifact } from '../src/server/artifacts.js';
 import { SYNTHETIC_REPORT, UNSOURCED_REPORT } from './research-fixture.js';
+import { VoiceError, VoiceRuntime } from '../src/server/voice.js';
+import { routeChief, ruleBasedBriefing } from '../src/server/chief-briefing.js';
+import { ConsultancyError } from '../src/server/consultancy.js';
+import { MAX_AUDIO_BYTES } from '../src/shared/voice.js';
+import { ChiefBrain, ChiefError, chiefActions } from '../src/server/chief.js';
+import { LessonMemory } from '../src/server/memory.js';
+import { fixtureChat } from './chief-fixture.js';
 
 /**
  * ORG-03: a real approval inbox over a real consultancy journal in a throwaway temp directory, with a fake queue that
@@ -124,7 +131,8 @@ function fixtureOrg(state: ReturnType<typeof initialEmpire>, workers: WorkerInfo
     job('fixture-portal', { approvedBudgetUsd: 12, actualSpendUsd: 4.8 }),
     job('fixture-audit', { approvedBudgetUsd: 3, actualSpendUsd: 3.1, budgetHold: { reachedAt: 1, spentUsd: 3.1, approvedBudgetUsd: 3 }, items: [{ id: 'item-2', title: 'Second pass', prompt: 'Synthetic', jobKey: 'fixture', status: 'queued', phase: 'iteration', held: true }] }),
   ];
-  return projectOrg({ now: Date.now(), supervision: state.supervision, workers, queue: { tasks, maxWorkers: 3 }, jobs, approvals: inbox?.state().items, outreach: fxOutreach?.summary(), research: research?.state(), usage: { total: { ...zero, cost: 7.9 }, today: { ...zero, cost: 1.2 }, day: '2026-10-08', budget: 10, pauseHiring: false } });
+  const brain = chief?.status();
+  return projectOrg({ now: Date.now(), ...(brain?.ready && brain.model ? { chiefBrain: { model: brain.model } } : {}), supervision: state.supervision, workers, queue: { tasks, maxWorkers: 3 }, jobs, approvals: inbox?.state().items, outreach: fxOutreach?.summary(), research: research?.state(), usage: { total: { ...zero, cost: 7.9 }, today: { ...zero, cost: 1.2 }, day: '2026-10-08', budget: 10, pauseHiring: false } });
 }
 
 const port = Number(process.env.FIXTURE_PORT || 4613);
@@ -149,6 +157,44 @@ if (process.env.FIXTURE_DEVICES === '1') {
 const bearer = (req: import('node:http').IncomingMessage) => /^Bearer ([A-Za-z0-9_-]+)$/.exec(req.headers.authorization ?? '')?.[1];
 const json = (res: import('node:http').ServerResponse, status: number, body: unknown) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
 const send = (ws: WebSocket, msg: ServerMsg) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg)); };
+/**
+ * FREE-02 (FIXTURE_CHIEF=1): a real ChiefBrain over the fixture journal with a fake model (tools/chief-fixture.ts; no
+ * network). The free brain proposes a plan (pending approval), reviews one finished item, and raises one chief proposal
+ * for an item that failed twice. Nothing runs: the fake queue never seats anything.
+ */
+let chief: ChiefBrain | undefined;
+if (process.env.FIXTURE_CHIEF === '1') {
+  const fxQueue = { state: () => ({ tasks: fxTasks.map((t) => ({ ...t })), maxWorkers: 0 }), retry: () => 'Fixture only: nothing is retried.' };
+  // FREE-10: organizational memory over the same throwaway directory. One approved CEO lesson the plans can cite; the
+  // review below proposes another, which waits in the inbox.
+  const memory = new LessonMemory(inboxDir);
+  memory.setInbox({ raise: (f) => inbox!.raiseLesson(f), resolve: (id, note) => inbox!.resolveLesson(id, note), get: (id) => inbox!.get(id) });
+  inbox!.setLessons(memory.actions());
+  if (!memory.state().lessons.length) {
+    const seed = memory.addNote({ text: 'Booking work always includes a double-booking test for one slot.', scope: 'company' }, 'Fixture CEO');
+    const item = inbox!.state().items.find((i) => i.kind === 'lesson' && i.lesson?.lessonId === seed.id);
+    if (item) inbox!.approve(item.id, 'Fixture CEO');
+  }
+  const brain = new ChiefBrain(inboxDir, { keys: () => ({}), chat: fixtureChat, office: fxOffice, queue: fxQueue.state, raise: (f) => inbox!.raiseChief(f), memory,
+    onChange: () => { for (const ws of sockets.clients) { send(ws, { t: 'chief', state: brain.state() }); send(ws, { t: 'approvals', state: inbox!.state() }); } } });
+  chief = brain;
+  inbox!.setChief(chiefActions(fxQueue), (jobId) => (brain.planFor(jobId) ? brain.label() : undefined));
+  brain.updateSettings({ mode: 'free', freeModel: 'gpt-oss:20b' });
+  brain.requestPlan({ requestId: 'fx-chief-reviewed', client: 'Harbour Dental', title: 'Online booking', brief: 'Synthetic fixture brief: patients book and cancel appointments online.' }, 'Fixture CEO', 'founder_desk');
+  await brain.idle();
+  const reviewed = brain.state().plans[0].jobId!;
+  fxOffice.approve(reviewed, 'Fixture CEO', { budgetUsd: 12 });
+  const t1 = fxTasks.find((t) => t.jobKey === `consultancy:${reviewed}:item-1`)!;
+  Object.assign(t1, { status: 'done', outcome: 'done', finishedAt: Date.now(), workerName: 'Bea', branch: 'office/bea-fx' });
+  fxOffice.reconcile();
+  fxTasks.push({ id: 'fx-q-form', jobKey: `consultancy:${reviewed}:item-x`, title: 'Build the booking form', prompt: 'Synthetic', addedBy: 'Fixture', addedAt: Date.now(), status: 'done', outcome: 'failed', attempt: 2, error: 'worker exited: missing BOOKING_API_URL', finishedAt: Date.now(), workerName: 'Cyrus' });
+  brain.reconcile();
+  await brain.idle();
+  brain.requestPlan({ requestId: 'fx-chief-plan', client: 'Northstar Studio', title: 'Customer booking portal', brief: 'Synthetic fixture brief: clients book studio sessions online with accessible forms.' }, 'Fixture CEO', 'founder_desk');
+  brain.requestPlan({ requestId: 'fx-chief-bad', client: 'Atlas Commerce', title: 'Storefront review', brief: 'MALFORMED synthetic brief.' }, 'Fixture CEO', 'telegram');
+  await brain.idle();
+  inbox!.reconcile();
+}
 function snapshot() {
   const now = Date.now();
   const phase: SupervisionState['chief']['phase'] = ['missing', 'stale', 'disconnected', 'waiting'].includes(scenario) ? 'working' : scenario as SupervisionState['chief']['phase'];
@@ -242,6 +288,51 @@ function fxEngines(): EnginesState {
   const picked = pickEngine(options, fxDefault);
   return { ...base, hosted: HOSTED_FREE, defaultEngine: fxDefault, options, recommended: picked.engine, help: picked.help, checkedAt: Date.now() };
 }
+/**
+ * FREE-05 (FIXTURE_VOICE=1): the real VoiceRuntime and chief routing over a throwaway directory, with fake speech
+ * engines (fixed transcript, a synthetic tone for speech) and a fake release server that streams zeros slowly and
+ * never completes. Moonshine Tiny and Kokoro int8 are marked installed (marker files only; no model exists).
+ */
+const FX_VOICE = process.env.FIXTURE_VOICE === '1';
+const fxVoiceDir = mkdtempSync(resolve(tmpdir(), 'empire-fixture-voice-'));
+for (const id of ['moonshine-tiny-en', 'kokoro-en-int8']) { mkdirSync(resolve(fxVoiceDir, 'voice', 'models', id), { recursive: true }); writeFileSync(resolve(fxVoiceDir, 'voice', 'models', id, 'installed.json'), '{"fixture":true}'); }
+const fxVoice = new VoiceRuntime({
+  dataDir: fxVoiceDir,
+  engines: {
+    detect: async () => ({ available: true, detail: 'Fixture: fake speech engines (no sherpa-onnx, no models).' }),
+    stt: async () => ({ transcribe: async () => process.env.FIXTURE_VOICE_HEARD || 'How much did we spend today?' }),
+    tts: async () => ({ synthesize: async () => { const s = new Float32Array(4800); for (let i = 0; i < s.length; i++) s[i] = Math.sin(i / 6) * 0.05; return { samples: s, sampleRate: 24000 }; } }),
+  },
+  fetch: (async (_u: string, init?: RequestInit) => new Response(new ReadableStream({
+    async pull(c) { await new Promise((r) => setTimeout(r, 120)); if (init?.signal?.aborted) return c.close(); c.enqueue(new Uint8Array(4_000_000)); },
+  }))) as unknown as typeof fetch,
+  extract: async () => { throw new Error('Fixture never unpacks'); },
+});
+async function fxVoiceRoute(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse, p: string) {
+  try {
+    if (p === '/api/voice' && req.method === 'GET') return json(res, 200, await fxVoice.state());
+    if (req.method !== 'POST') return json(res, 404, { error: 'Unknown voice endpoint.' });
+    const chunks: Buffer[] = []; let size = 0;
+    for await (const c of req) { size += (c as Buffer).length; if (size > MAX_AUDIO_BYTES) return json(res, 413, { error: 'Recordings are limited to 30 seconds.' }); chunks.push(c as Buffer); }
+    const raw = Buffer.concat(chunks);
+    if (p === '/api/voice/transcribe') return json(res, 200, await fxVoice.transcribe(raw));
+    const body = raw.length ? JSON.parse(raw.toString('utf8')) : {};
+    const callChief = (text: unknown, rid: string) => routeChief(text, {
+      briefing: (q) => { const { state, worker, tasks, jobWorkers } = snapshot(); return ruleBasedBriefing({ now: Date.now(), org: fixtureOrg(state, [worker, ...jobWorkers], tasks), approvals: inbox!.state().items, capacity: 'Fixture: 4 funded workstations · synthetic workers only' }, q); },
+      createJob: (title, brief, requestId) => { const job = fxOffice.create({ requestId, client: 'Your company', title, brief }, 'Fixture CEO by phone'); inbox!.reconcile(); for (const ws of sockets.clients) send(ws, { t: 'approvals', state: inbox!.state() }); return { jobId: job.id, approvalId: inbox!.state().items.find((i) => i.jobId === job.id)?.id }; },
+    }, rid);
+    if (p === '/api/phone/chief') return json(res, 200, await callChief(body.text, `phone-${String(body.requestId ?? Date.now()).slice(0, 60)}`));
+    const tr = /^\/api\/voice\/transcripts\/(T[\w-]{6,40})\/(send|cancel)$/.exec(p);
+    if (tr) { if (tr[2] === 'cancel') return json(res, 200, fxVoice.cancelTranscript(tr[1])); const t = fxVoice.takeTranscript(tr[1]); return json(res, 200, { ...(await callChief(t.text, `voice-${t.id}`)), transcript: t }); }
+    if (p === '/api/voice/speak') { const wav = await fxVoice.speak(body.text); res.writeHead(200, { 'content-type': 'audio/wav' }); return res.end(wav); }
+    if (p === '/api/voice/download') { const r = fxVoice.startDownload(body.model, body.confirm, body.confirmUnverified); return r.error ? json(res, 400, { error: r.error }) : json(res, 202, await fxVoice.state()); }
+    if (p === '/api/voice/cancel') { fxVoice.cancelDownload(); return json(res, 200, await fxVoice.state()); }
+    if (p === '/api/voice/select') { fxVoice.select(body.kind, body.id); return json(res, 200, await fxVoice.state()); }
+    if (p === '/api/voice/settings') { fxVoice.setKeepRecordings(body.keepRecordings); return json(res, 200, await fxVoice.state()); }
+    if (p === '/api/voice/recordings/delete') { fxVoice.deleteRecordings(); return json(res, 200, await fxVoice.state()); }
+    return json(res, 404, { error: 'Unknown voice endpoint.' });
+  } catch (e) { return json(res, e instanceof VoiceError || e instanceof ConsultancyError ? e.status : 500, { error: (e as Error).message }); }
+}
 function publish(ws: WebSocket) {
   const {state, worker, tasks, jobWorkers} = snapshot();
   send(ws, { t: 'worker.update', worker });
@@ -317,6 +408,7 @@ const server = createServer(async (req, res) => {
     return json(res, 200, { ok: true });
   }
   if (url.pathname === '/__fixture/jobs') return json(res, 200, fxOffice.snapshot());
+  if (FX_VOICE && (url.pathname === '/api/voice' || url.pathname.startsWith('/api/voice/') || url.pathname === '/api/phone/chief')) return fxVoiceRoute(req, res, url.pathname);
   if (FX_ENGINES && url.pathname === '/api/engines' && req.method === 'GET') return json(res, 200, fxEngines());
   if (FX_ENGINES && url.pathname.startsWith('/api/engines/') && req.method === 'POST') {
     let raw = ''; for await (const chunk of req) raw += chunk;
@@ -333,6 +425,11 @@ const server = createServer(async (req, res) => {
     }
     if (url.pathname === '/api/engines/ollama/cancel') { if (fxPull && !fxPull.done) Object.assign(fxPull, { done: true, cancelled: true, status: 'cancelled' }); clearInterval(fxPullTimer); return json(res, 200, { cancelled: true, pull: fxPull }); }
     return json(res, 404, { error: 'Unknown engines endpoint.' });
+  }
+  if (chief && url.pathname === '/api/chief' && req.method === 'GET') return json(res, 200, chief.state());
+  if (chief && url.pathname === '/api/chief/settings' && req.method === 'POST') {
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    try { return json(res, 200, chief.updateSettings(JSON.parse(raw || '{}'))); } catch (error) { return json(res, error instanceof ChiefError ? error.status : 400, { error: (error as Error).message }); }
   }
   if (url.pathname === '/api/approvals' && req.method === 'GET') return json(res, 200, inbox!.state());
   if (url.pathname === '/api/research' && req.method === 'GET') return json(res, 200, research!.state());
@@ -385,7 +482,7 @@ sockets.on('connection', ws => {
   const zero = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, cost: 0, calls: 0 };
   send(ws, { t: 'welcome', you: 'fixture-ceo', peers: [], workers: [worker, ...jobWorkers], project: { name: 'UI fixture · synthetic data', dir: '[isolated fixture]', agentCmd: 'disabled' },
     issues: empty, pulls: empty, ice: [], chat: [], invites: false, version: 'fixture', upgrade: { available: false, phase: 'idle' },
-    services: { items: [], port }, decor: [], usage: { total: zero, today: zero, day: '2026-09-27', pauseHiring: false }, queue: { tasks, maxWorkers: jobWorkers.length ? 3 : 1 }, org: fixtureOrg(state, [worker, ...jobWorkers], tasks), approvals: inbox!.state(), research: research!.state() });
+    services: { items: [], port }, decor: [], usage: { total: zero, today: zero, day: '2026-09-27', pauseHiring: false }, queue: { tasks, maxWorkers: jobWorkers.length ? 3 : 1 }, org: fixtureOrg(state, [worker, ...jobWorkers], tasks), approvals: inbox!.state(), research: research!.state(), ...(chief ? { chief: chief.state() } : {}) });
   publish(ws);
   ws.on('message', raw => {
     let msg: any; try { msg = JSON.parse(raw.toString()); } catch { return; }

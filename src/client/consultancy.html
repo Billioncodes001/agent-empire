@@ -137,7 +137,9 @@
           <div class="chief-head"><div class="chief-avatar" aria-hidden="true">A</div><p class="eyebrow">Alex / Chief of staff</p></div>
           <h2 id="chief-title">The current picture.</h2>
           <p id="chief-report">Checking the execution host.</p>
-          <span class="tag">Rule-based coordination</span>
+          <span class="tag" id="chief-tag">Rule-based coordination</span>
+          <p id="chief-brain" class="small chief-brain-line"></p>
+          <div id="chief-plans" class="chief-plans" aria-live="polite"></div>
           <hr />
           <h3>Reach your firm anywhere</h3>
           <p id="telegram-status">Checking Telegram setup…</p>
@@ -196,10 +198,40 @@
           <div><p id="research-summary" class="small"></p><ul id="research-list" class="research-list" aria-label="Research reports"><li class="empty">Loading research…</li></ul></div>
         </div>
       </section>
+      <section class="memory-desk" id="memory" aria-labelledby="memory-title">
+        <div class="section-title"><div><p class="kicker">Alex / Chief of staff · organizational memory</p><h2 id="memory-title" tabindex="-1">Memory</h2></div><button type="button" class="quiet" id="memory-export">Export as Markdown</button></div>
+        <p id="memory-note" class="small memory-note"></p>
+        <div class="memory-grid">
+          <form id="memory-form" class="memory-form" aria-labelledby="memory-form-title">
+            <h3 id="memory-form-title">Add a lesson</h3>
+            <label for="memory-text">What should the chief remember when planning?</label>
+            <textarea id="memory-text" name="text" maxlength="500" rows="3" required placeholder="e.g. Booking work always includes a double-booking test."></textarea>
+            <div class="memory-row">
+              <label>Scope<select id="memory-scope" name="scope" aria-label="Scope"></select></label>
+              <label>Applies to<span id="memory-scope-value"></span></label>
+            </div>
+            <div class="memory-row">
+              <label>Cites (optional)<select name="sourceKind" aria-label="Source kind"><option value="job">Job</option><option value="item">Work item</option><option value="review">Chief review</option><option value="failure">Repeated failure</option><option value="research">Research report</option></select></label>
+              <label>Its id<input name="sourceRef" maxlength="200" placeholder="e.g. J4" autocomplete="off" /></label>
+            </div>
+            <p class="small">Your note goes to the inbox like any lesson. It is not used until you approve it there (game inbox, or /approve in Telegram).</p>
+            <button type="submit" class="primary" id="memory-add">Send to the inbox</button>
+            <p id="memory-status" role="status" aria-live="polite"></p>
+          </form>
+          <div>
+            <div class="memory-filters" role="group" aria-label="Filter lessons">
+              <label>Status<select id="memory-filter-status"><option value="all">All</option><option value="approved">In use</option><option value="proposed">Waiting</option><option value="retired">Retired</option></select></label>
+              <label>Scope<select id="memory-filter-scope"><option value="all">All</option></select></label>
+            </div>
+            <p id="memory-summary" class="small"></p>
+            <div id="memory-list" class="memory-list" aria-live="polite"><p class="empty">Loading memory…</p></div>
+          </div>
+        </div>
+      </section>
       <footer class="site-footer"><span class="footer-mark">Agent Empire</span><span>Client work, with a clear line of sight.</span></footer>
     </div>
   </main>
-  <dialog id="intake" aria-labelledby="form-title"><form id="brief-form"><header><p class="eyebrow" id="step-label">01 / THE BRIEF</p><button type="button" class="close" id="close-intake" aria-label="Close new job">×</button></header><h2 id="form-title">Bring a new opportunity.</h2><div id="brief-fields"><label>Client<input name="client" maxlength="100" required autocomplete="organization" placeholder="e.g. Northstar Studio" /></label><label>Job title<input name="title" maxlength="120" required placeholder="e.g. Customer booking portal" /></label><label>What does success look like?<textarea name="brief" maxlength="8000" required rows="5" placeholder="Describe the outcome, constraints and what the team should deliver."></textarea></label></div><div id="brief-review" hidden></div><p id="form-error" role="alert" hidden></p><footer><button type="button" id="back" class="quiet" hidden>← Edit brief</button><button type="submit" class="primary" id="save-job">Review brief →</button></footer></form></dialog>
+  <dialog id="intake" aria-labelledby="form-title"><form id="brief-form"><header><p class="eyebrow" id="step-label">01 / THE BRIEF</p><button type="button" class="close" id="close-intake" aria-label="Close new job">×</button></header><h2 id="form-title">Bring a new opportunity.</h2><div id="brief-fields"><label>Client<input name="client" maxlength="100" required autocomplete="organization" placeholder="e.g. Northstar Studio" /></label><label>Job title<input name="title" maxlength="120" required placeholder="e.g. Customer booking portal" /></label><label>What does success look like?<textarea name="brief" maxlength="8000" required rows="5" placeholder="Describe the outcome, constraints and what the team should deliver."></textarea></label><label id="chief-option" class="chief-option" hidden><input type="checkbox" name="useChief" id="use-chief" /><span>Ask the chief to propose the work items <small id="chief-option-note"></small></span></label></div><div id="brief-review" hidden></div><p id="form-error" role="alert" hidden></p><footer><button type="button" id="back" class="quiet" hidden>← Edit brief</button><button type="submit" class="primary" id="save-job">Review brief →</button></footer></form></dialog>
   <dialog id="job-detail" aria-labelledby="detail-title"><header><p class="eyebrow">ENGAGEMENT / REVIEW</p><button type="button" class="close" id="close-detail" aria-label="Close job details">×</button></header><div id="detail-content"></div><p id="action-error" role="alert" hidden></p><footer id="detail-actions"></footer></dialog>
   <dialog id="campaign-intake" aria-labelledby="campaign-form-title"><form id="campaign-form"><header><p class="eyebrow">OUTREACH / NEW CAMPAIGN</p><button type="button" class="close" id="close-campaign" aria-label="Close new campaign">×</button></header><h2 id="campaign-form-title">Brief the campaign.</h2><p>Saving creates an internal drafting job for your approval, with an estimate. A worker then writes the subject and plain-text body; the server adds your postal address and the STOP line.</p><label for="campaign-title">Title</label><input id="campaign-title" name="title" maxlength="120" required /><label for="campaign-brief">Brief</label><textarea id="campaign-brief" name="brief" rows="5" maxlength="4000" required placeholder="Who it is for, what to say, the tone. Audience tags, e.g. customers."></textarea><p id="campaign-error" role="alert" hidden></p><footer><button type="submit" class="primary" id="save-campaign">Save for approval</button></footer></form></dialog>
   <dialog id="research-detail" aria-labelledby="research-detail-title"><header><p class="eyebrow">RESEARCH / REPORT</p><button type="button" class="close" id="close-research" aria-label="Close research report">×</button></header><h2 id="research-detail-title"></h2><div id="research-detail-content"></div></dialog>

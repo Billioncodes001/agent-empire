@@ -8,8 +8,10 @@ export interface Executive {
   role: ExecutiveRole;
   /** Stable, e.g. "Morgan · Operations". */
   name: string;
-  /** Honest label; no model behind it this round. */
-  monitor: 'rule_based';
+  /** Honest label. FREE-02: the chief is `model_backed` while its planning brain is on; everything else is rule-based. */
+  monitor: 'rule_based' | 'model_backed';
+  /** model_backed: the model behind it, e.g. "gpt-oss:20b". Its output is proposals only. */
+  model?: string;
   /** marketing_sales is inactive until ORG-04 ("Not staffed yet"); research is active since ORG-05. */
   active: boolean;
   /** One line computed from real state, e.g. "2 tasks blocked · 1 waiting worker". */

@@ -38,11 +38,16 @@ import { SyncArtifacts } from './sync-artifacts.js';
 import { acquireHostLock } from './host-lock.js';
 import { ExecutionManager, ExecutionError, type ExecutionOptions } from './execution.js';
 import { ResearchDesk, ResearchError } from './research.js';
+import { ChiefBrain, ChiefError, chiefActions, defaultEvidence, gitDiffStat, type ChatFn } from './chief.js';
+import { LessonMemory, MemoryError } from './memory.js';
 import { readArtifact } from './artifacts.js';
 import { LinkedAccounts, envKeys, type Exec, type ProviderKeys } from './engines.js';
 import { DEFAULT_OLLAMA_URL, OllamaRuntime } from './ollama.js';
 import { sanitizeEngine } from '../shared/engines.js';
 import { resolveCommand } from './workers.js';
+import { VoiceError, VoiceRuntime, type VoiceOptions } from './voice.js';
+import { routeChief, ruleBasedBriefing, type ChiefBriefingFn } from './chief-briefing.js';
+import { MAX_AUDIO_BYTES, MAX_CHIEF_TEXT } from '../shared/voice.js';
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -118,6 +123,10 @@ function isSecure(req: http.IncomingMessage, cfg: Config): boolean {
 }
 
 function readBody(req: http.IncomingMessage, limit = 1024 * 1024): Promise<string> {
+  return readBuffer(req, limit).then((b) => b.toString('utf8'));
+}
+
+function readBuffer(req: http.IncomingMessage, limit = 1024 * 1024): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks: Buffer[] = [];
@@ -128,7 +137,7 @@ function readBody(req: http.IncomingMessage, limit = 1024 * 1024): Promise<strin
         req.destroy();
       } else chunks.push(c);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
 }
@@ -191,7 +200,11 @@ export interface ServerRuntime {
    * FREE-01 engines. `providerKeys` is the desktop's sealed vault (default: the office environment). Tests inject a
    * resolver over fake CLIs, a fake exec, a fake Ollama URL and a RAM size; nothing real is probed in fixtures.
    */
+  /** FREE-05 voice: fake engines, fetch and extractor for tests and fixtures (no real models, no network). */
+  voice?: Partial<Omit<VoiceOptions, 'dataDir'>>;
   engines?: { providerKeys?: () => ProviderKeys; resolve?: (cmd: string) => string | null; exec?: Exec; ollamaUrl?: string; totalMem?: () => number; env?: () => Record<string, string> };
+  /** FREE-02: the chief's model client. Tests and previews inject a fake; nothing real is called in them. */
+  chief?: { chat?: ChatFn; timeoutMs?: number; probe?: () => Promise<{ running: boolean; models: string[] }> };
 }
 export async function startServer(cfg: Config, runtime: ServerRuntime = {}) {
   const releaseHost = acquireHostLock(cfg.dataDir);
@@ -257,6 +270,8 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   let consultancy: Consultancy | undefined;
   let inbox: ApprovalInbox | undefined;
   let outreach: Outreach | undefined;
+  let chief: ChiefBrain | undefined;
+  let memory: LessonMemory | undefined;
   let research: ResearchDesk | undefined;
   let observing = false;
   const storageError = () => [workers?.recoveryError, queue?.recoveryError, consultancy?.recoveryError].filter(Boolean).join(' ') || undefined;
@@ -375,7 +390,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   );
   // The 📋 task queue seats workers by itself: it watches the workers and links PRs from GitHub.
   queue = new TaskQueue(cfg.dataDir, workers, !!project.branch, {
-    update: (state) => { broadcast({ t: 'queue', state }); syncWaiting(); empire.tick(workers.list(), state, 0); research?.reconcile(); },
+    update: (state) => { broadcast({ t: 'queue', state }); syncWaiting(); empire.tick(workers.list(), state, 0); research?.reconcile(); chief?.reconcile(); },
     toast: (text, level) => broadcast({ t: 'toast', text, level }),
     claimIssue: (issue) => github.claim(issue),
     refreshGitHub: () => void github.refresh(),
@@ -401,7 +416,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     state: () => ({ ...queue.state(), storageError: queue.recoveryError }),
     // dependsOn carries LIFE-04's item order into the queue.
     add: (prompt, by, title, issue, jobKey, dependsOn) => queue.add(prompt, by, title, issue, jobKey, dependsOn),
-  }, () => { inbox?.reconcile(); research?.reconcile(); outreach?.reconcile(); publishOrg(); }, {
+  }, () => { inbox?.reconcile(); research?.reconcile(); outreach?.reconcile(); chief?.reconcile(); publishOrg(); }, {
     estimate: (items) => estimateJob(items, historyFromTaskCosts(ledger.taskCosts(), phaseOfJobKey), { maxWorkers: queue.limit }),
     taskCost: (taskId) => ledger.taskCost(taskId),
     // Round 2 internal jobs: a research report (ORG-05) or campaign draft (ORG-04a) that was not accepted needs
@@ -474,6 +489,37 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   }, publishResearch);
   research.reconcile();
   researchSent = JSON.stringify(research.state());
+  // FREE-02: the chief's optional planning brain. Off by default; when off, the chief stays rule-based.
+  let chiefSent = '';
+  const publishChief = () => {
+    if (!chief) return;
+    const state = chief.state();
+    const sig = JSON.stringify(state);
+    if (sig === chiefSent) return;
+    chiefSent = sig;
+    broadcast({ t: 'chief', state });
+    publishApprovals();
+    publishOrg();
+  };
+  // FREE-10: reviewed organizational memory. Proposals wait in the inbox; only approved lessons reach the chief's planner.
+  memory = new LessonMemory(cfg.dataDir, { jobExists: (id) => { try { return office.snapshot().jobs.some((j) => j.id === id); } catch { return false; } } });
+  const lessons = memory;
+  lessons.setInbox({ raise: (fields) => desk.raiseLesson(fields), resolve: (id, note) => desk.resolveLesson(id, note), get: (id) => desk.get(id) });
+  inbox.setLessons(lessons.actions());
+  lessons.reconcile();
+  chief = new ChiefBrain(cfg.dataDir, {
+    memory: lessons,
+    keys: providerKeys, ollamaUrl, chat: runtime.chief?.chat, timeoutMs: runtime.chief?.timeoutMs,
+    // Review fix 5: the cached loopback Ollama check. An injected fake model (tests, previews) gets no real probe.
+    probe: runtime.chief?.probe ?? (runtime.chief?.chat ? undefined : async () => { const o = await ollama.detect(); return { running: o.running, models: o.models.map((m) => m.name) }; }),
+    office, queue: () => queue.state(),
+    evidence: (task, item) => defaultEvidence(task, item, project.branch && task.branch ? gitDiffStat(cfg.dir, project.branch, task.branch) : undefined),
+    raise: (fields) => desk.raiseChief(fields),
+    onChange: () => publishChief(),
+  });
+  const brain = chief;
+  inbox.setChief(chiefActions(queue), (jobId) => (brain.planFor(jobId) ? brain.label() : undefined));
+  chiefSent = JSON.stringify(chief.state());
   // ORG-01: the executive roster is a pure projection, re-sent only when a summary or attention count changes.
   let orgSent = '';
   const currentOrg = () => projectOrg({
@@ -482,6 +528,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     approvals: inbox?.state().items,
     outreach: outreach?.summary(),
     research: research?.state(),
+    ...(() => { const b = chief?.status(); return b?.ready && b.model ? { chiefBrain: { model: b.model } } : {}; })(),
   });
   publishOrg = () => {
     if (!queue || !consultancy) return;
@@ -501,16 +548,36 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     blocker: storageError() || localExecutionBlocker() || (!localQueueApproved || queue.limit === 0 ? 'The local task queue is paused. Set concurrency in the game’s Queue panel to start approved work.' : undefined) || ledger.hiringPaused,
     mode: execution.setup().config.mode,
   });
-  const chief = chiefCommands(office, () => {
+  const chiefTelegram = chiefCommands(office, () => {
     const r = capacityReport();
     return `${r.workstations} funded workstations · ${r.workers} running workers · concurrency ${r.concurrency} · ${r.queued === null ? 'queue count unavailable' : `${r.queued} tasks queued`} · ${r.attention} workers need input.${r.blocker ? ` Waiting: ${r.blocker}` : ''} This coordinator requires the execution host to remain running.`;
-  }, inbox, () => { queue.pump(); publishApprovals(); }, research, outreachService);
+  }, inbox, () => { queue.pump(); publishApprovals(); }, research, outreachService, brain);
+  // FREE-05: offline voice and the chief call. The briefing is the seam FREE-02's model brain can back later.
+  const voice = new VoiceRuntime({ dataDir: cfg.dataDir, ...runtime.voice });
+  const chiefBriefing: ChiefBriefingFn = (question) => {
+    const r = capacityReport();
+    return ruleBasedBriefing({
+      now: Date.now(), org: currentOrg(), approvals: inbox?.state().items,
+      capacity: `${r.workstations} funded workstations · ${r.workers} running workers · concurrency ${r.concurrency} · ${r.queued === null ? 'queue count unavailable' : `${r.queued} tasks queued`} · ${r.attention} workers need input${r.blocker ? ` · waiting: ${r.blocker}` : ''}`,
+    }, question);
+  };
+  const callChief = (text: unknown, requestId: string) => routeChief(text, {
+    briefing: chiefBriefing,
+    createJob: (title, brief, rid) => {
+      // The same consultancy path as the founder desk and Telegram /new: a pending plan; nothing starts before approval.
+      const job = office.create({ requestId: rid, client: 'Your company', title, brief }, 'CEO by phone');
+      inbox?.reconcile();
+      publishApprovals(); publishOrg();
+      const item = inbox?.state().items.find((i) => i.kind === 'job_plan' && i.jobId === job.id);
+      return { jobId: job.id, approvalId: item?.id };
+    },
+  }, requestId);
   let telegram: TelegramBridge | undefined;
   let telegramError: string | undefined;
   try {
     const config = runtime.telegram === false || runtime.backgroundServices === false && !runtime.telegram
       ? undefined : runtime.telegram?.config ?? telegramConfig(process.env);
-    if (config) telegram = new TelegramBridge(cfg.dataDir, config, chief, runtime.telegram ? runtime.telegram.transport : undefined);
+    if (config) telegram = new TelegramBridge(cfg.dataDir, config, chiefTelegram, runtime.telegram ? runtime.telegram.transport : undefined);
   } catch (error) { telegramError = (error as Error).message; }
   startupCleanup.push(() => telegram?.stop());
 
@@ -783,6 +850,46 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
           return send(res, 500, { error: 'Consultancy service could not complete this request.' });
         }
       }
+      if (p === '/api/memory' || p.startsWith('/api/memory/')) {
+        // FREE-10: list, export, add a CEO note, edit (re-approval) or retire. Approving happens only in the inbox.
+        if (req.method !== 'GET' && !trusted()) return send(res, 403, { error: 'A same-origin Origin header is required' });
+        try {
+          if (p === '/api/memory' && req.method === 'GET') return send(res, 200, lessons.state());
+          if (p === '/api/memory/export.md' && req.method === 'GET') {
+            res.writeHead(200, { 'content-type': 'text/markdown; charset=utf-8', 'cache-control': 'no-store', 'content-disposition': 'attachment; filename="agent-empire-memory.md"' });
+            return res.end(lessons.markdown());
+          }
+          if (req.method !== 'POST') return send(res, 404, { error: 'Unknown memory endpoint.' });
+          let body: unknown;
+          try { const raw = await readBody(req, 8_000); body = raw.trim() ? JSON.parse(raw) : {}; } catch { return send(res, 400, { error: 'Expected a JSON request.' }); }
+          if (p === '/api/memory/lessons') { const l = lessons.addNote(body, 'CEO'); publishApprovals(); return send(res, 201, l); }
+          const action = /^\/api\/memory\/lessons\/(L[1-9]\d{0,8})\/(edit|retire)$/.exec(p);
+          if (action) {
+            const l = action[2] === 'edit' ? lessons.edit(action[1], body, 'CEO') : lessons.retire(action[1], 'CEO', (body as { reason?: unknown } | null)?.reason);
+            publishApprovals();
+            return send(res, action[2] === 'edit' ? 201 : 200, l);
+          }
+          return send(res, 404, { error: 'Unknown memory endpoint.' });
+        } catch (error) {
+          if (error instanceof MemoryError) return send(res, error.status, { error: error.message });
+          return send(res, 500, { error: 'Organizational memory could not complete this request.' });
+        }
+      }
+      if (p === '/api/chief' || p.startsWith('/api/chief/')) {
+        if (req.method !== 'GET' && !trusted()) return send(res, 403, { error: 'A same-origin Origin header is required' });
+        try {
+          if (p === '/api/chief' && req.method === 'GET') return send(res, 200, brain.state());
+          if (req.method !== 'POST') return send(res, 404, { error: 'Unknown chief endpoint.' });
+          let body: unknown;
+          try { body = JSON.parse(await readBody(req, 16_000)); } catch { return send(res, 400, { error: 'Expected a JSON request.' }); }
+          if (p === '/api/chief/settings') { const state = brain.updateSettings(body); publishChief(); return send(res, 200, state); }
+          if (p === '/api/chief/plans') { const plan = brain.requestPlan(body, 'CEO', 'founder_desk'); publishChief(); return send(res, 202, plan); }
+          return send(res, 404, { error: 'Unknown chief endpoint.' });
+        } catch (error) {
+          if (error instanceof ChiefError) return send(res, error.status, { error: error.message });
+          return send(res, 500, { error: 'The chief could not complete this request.' });
+        }
+      }
       if (p === '/api/research' || p.startsWith('/api/research/')) {
         if (req.method !== 'GET' && !trusted()) return send(res, 403, { error: 'A same-origin Origin header is required' });
         const desk = research!;
@@ -887,6 +994,56 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
           return send(res, 404, { error: 'Unknown engines endpoint.' });
         } catch {
           return send(res, 500, { error: 'Linked accounts could not be checked.' });
+        }
+      }
+      if (p === '/api/voice' || p.startsWith('/api/voice/') || p === '/api/phone/chief') {
+        // FREE-05: offline speech on this host and the chief call. Every route is behind sign-in (above).
+        if (req.method !== 'GET' && !trusted()) return send(res, 403, { error: 'A same-origin Origin header is required' });
+        try {
+          if (p === '/api/voice' && req.method === 'GET') return send(res, 200, await voice.state());
+          if (req.method !== 'POST') return send(res, 404, { error: 'Unknown voice endpoint.' });
+          if (p === '/api/voice/transcribe') {
+            if (Number(req.headers['content-length'] ?? 0) > MAX_AUDIO_BYTES) {
+              req.resume(); // discard the signed-in caller's oversized body so the 413 reaches it
+              return send(res, 413, { error: 'Recordings are limited to 30 seconds.' }, { connection: 'close' });
+            }
+            let audio: Buffer;
+            try { audio = await readBuffer(req, MAX_AUDIO_BYTES); } catch { return send(res, 413, { error: 'Recordings are limited to 30 seconds.' }, { connection: 'close' }); }
+            return send(res, 200, await voice.transcribe(audio));
+          }
+          let body: Record<string, unknown> = {};
+          try { const raw = await readBody(req, MAX_CHIEF_TEXT * 4 + 1024); body = raw.trim() ? JSON.parse(raw) : {}; } catch { return send(res, 400, { error: 'Expected a JSON request.' }); }
+          if (!body || typeof body !== 'object' || Array.isArray(body)) return send(res, 400, { error: 'Expected a JSON request.' });
+          if (p === '/api/phone/chief') {
+            const requestId = typeof body.requestId === 'string' && /^[\w-]{1,80}$/.test(body.requestId) ? `phone-${body.requestId}` : `phone-${Date.now().toString(36)}`;
+            return send(res, 200, await callChief(body.text, requestId));
+          }
+          const tr = /^\/api\/voice\/transcripts\/(T[\w-]{6,40})\/(send|cancel)$/.exec(p);
+          if (tr) {
+            if (tr[2] === 'cancel') return send(res, 200, voice.cancelTranscript(tr[1]));
+            const sent = voice.takeTranscript(tr[1]);
+            return send(res, 200, { ...(await callChief(sent.text, `voice-${sent.id}`)), transcript: sent });
+          }
+          if (p === '/api/voice/speak') {
+            const wav = await voice.speak(body.text);
+            res.writeHead(200, { 'content-type': 'audio/wav', 'cache-control': 'no-store', 'content-length': String(wav.length) });
+            res.end(wav);
+            return;
+          }
+          if (p === '/api/voice/download') {
+            const r = voice.startDownload(body.model, body.confirm, body.confirmUnverified);
+            if (r.error) return send(res, 400, { error: r.error });
+            return send(res, 202, await voice.state());
+          }
+          if (p === '/api/voice/cancel') { voice.cancelDownload(); return send(res, 200, await voice.state()); }
+          if (p === '/api/voice/select') { voice.select(body.kind, body.id); return send(res, 200, await voice.state()); }
+          if (p === '/api/voice/settings') { voice.setKeepRecordings(body.keepRecordings); return send(res, 200, await voice.state()); }
+          if (p === '/api/voice/recordings/delete') { voice.deleteRecordings(); return send(res, 200, await voice.state()); }
+          return send(res, 404, { error: 'Unknown voice endpoint.' });
+        } catch (error) {
+          if (error instanceof VoiceError || error instanceof ConsultancyError || error instanceof ApprovalError) return send(res, error.status, { error: error.message });
+          console.error('[voice]', (error as Error).message);
+          return send(res, 500, { error: 'Voice could not complete this request. Text still works.' });
         }
       }
       if (p.startsWith('/api/execution/')) {
@@ -1095,6 +1252,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
       org: currentOrg(),
       approvals: inbox?.state(),
       research: research?.state(),
+      chief: chief?.state(),
       queue: queue.state(),
     });
     sendTo(client, { t: 'empire', state: empire.state });
@@ -1419,7 +1577,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
 
   // Drop dead connections so ghosts don't linger in the office.
   empire.dispatchManagers(queue, 'Chief of staff');
-  const empireTimer = setInterval(() => { empire.tick(workers.list(), queue.state()); try { office.reconcile(); inbox?.reconcile(); research?.reconcile(); outreach?.reconcile(); } catch { /* Durable service exposes recovery errors through its snapshot. */ } }, 5000);
+  const empireTimer = setInterval(() => { empire.tick(workers.list(), queue.state()); try { office.reconcile(); inbox?.reconcile(); research?.reconcile(); outreach?.reconcile(); chief?.reconcile(); memory?.reconcile(); } catch { /* Durable service exposes recovery errors through its snapshot. */ } }, 5000);
   const heartbeat = setInterval(() => {
     for (const c of clients.values()) {
       if ((c.ws as any).isAlive === false) {
@@ -1463,5 +1621,5 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     hookServer.close();
   };
 
-  return { server, shutdown, workers, publicDir, hookPort, execution, consultancy: office, outreach: outreachService, inbox };
+  return { server, shutdown, workers, publicDir, hookPort, execution, consultancy: office, outreach: outreachService, inbox, chief: brain, memory: lessons };
 }
