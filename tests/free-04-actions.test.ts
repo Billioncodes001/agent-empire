@@ -6,7 +6,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { deflateRawSync } from 'node:zlib';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync as writeFile } from 'node:fs';
+import { mkdtempSync, symlinkSync, writeFileSync as writeFile } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CPU_MODEL, PATCH_MAX_BYTES } from '../src/cloud/actions-spec';
@@ -474,6 +474,7 @@ test('H1/N2: the publish job refuses hostile patches: pre-filter, then the stage
   const base = mkdtempSync(join(tmpdir(), 'free04-'));
   let n = 0;
   /** Runs both publish steps against a fresh repository; true only when the change would be published. */
+  let scripts = [checkScript, applyScript];
   const publishes = (patch: string) => {
     const dir = join(base, `r${n++}`);
     const git = (...args: string[]) => execFileSync('git', ['-C', dir, ...args], { stdio: 'pipe', timeout: 10_000 }).toString();
@@ -483,7 +484,7 @@ test('H1/N2: the publish job refuses hostile patches: pre-filter, then the stage
     const file = join(base, `p${n}.patch`);
     writeFile(file, patch);
     const env = { ...process.env, PATCH: file, SOURCE_COMMIT: git('rev-parse', 'HEAD').trim(), JOB_ID: uuid(1), GITHUB_OUTPUT: join(base, `out${n}`) };
-    for (const script of [checkScript, applyScript]) {
+    for (const script of scripts) {
       try { execFileSync('bash', ['-c', script], { cwd: dir, env, stdio: 'pipe', timeout: 10_000 }); } catch { return false; }
     }
     return true;
@@ -504,6 +505,31 @@ test('H1/N2: the publish job refuses hostile patches: pre-filter, then the stage
   assert.equal(publishes(submodule), false, 'submodule');
   const rename = ['diff --git a/README.md b/.github/README.md', 'similarity index 100%', 'rename from README.md', 'rename to .github/README.md', ''].join('\n');
   assert.equal(publishes(rename), false, 'renames into .github are refused');
+  /** A real patch from git (paths quoted the way git quotes them), built in its own scratch repository. */
+  const patchFrom = (setup: (dir: string) => void) => {
+    const dir = join(base, `src${n++}`);
+    execFileSync('git', ['init', '-q', dir], { timeout: 10_000 });
+    const g = (...args: string[]) => execFileSync('git', ['-C', dir, ...args], { stdio: 'pipe', timeout: 10_000 }).toString();
+    g('config', 'user.email', 't@t'); g('config', 'user.name', 't');
+    writeFile(join(dir, 'README.md'), 'hello\n'); g('add', '.'); g('commit', '-qm', 'init');
+    setup(dir);
+    g('add', '-A');
+    return g('diff', '--cached', '--binary', 'HEAD');
+  };
+  // Security re-review N2 (final): a newline in one path used to shift the paste-paired records after it.
+  const desync = patchFrom(d => { writeFile(join(d, 'aaa\nb b'), 'x\n'); symlinkSync('/etc/passwd', join(d, 'z link')); })
+    .replace('new file mode 120000', 'new file mode 0120000');
+  assert.equal(publishes(desync), false, 'newline path followed by a 0120000 symlink');
+  assert.equal(publishes(patchFrom(d => writeFile(join(d, 'aaa\nbbb'), 'x\n'))), false, 'a newline in a path is refused');
+  assert.equal(publishes(patchFrom(d => writeFile(join(d, 'aaa\tbbb'), 'x\n'))), false, 'a tab in a path is refused');
+  assert.equal(publishes(patchFrom(d => { writeFile(join(d, '* ?'), 'x\n'); symlinkSync('/etc/passwd', join(d, '[l]ink')); })), false, 'glob characters do not hide a symlink');
+  assert.equal(publishes(patchFrom(d => writeFile(join(d, '* ?.txt'), 'x\n'))), true, 'glob characters alone are an ordinary path');
+  // The staged check must hold on its own, even if the pre-filter were bypassed.
+  scripts = [applyScript];
+  assert.equal(publishes(desync), false, 'staged check alone: newline path + 0120000 symlink');
+  assert.equal(publishes(np('link', '/etc/passwd', 'new file mode 0120000')), false, 'staged check alone: 0120000 symlink');
+  assert.equal(publishes(submodule), false, 'staged check alone: submodule');
+  assert.equal(publishes(np('src/ok.txt', 'fine', 'new file mode 100644')), true, 'staged check alone: ordinary change');
 });
 
 test('N1: nothing evaluated before the runner exists references the runner context', () => {

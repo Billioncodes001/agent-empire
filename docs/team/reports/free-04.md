@@ -167,3 +167,18 @@ Each fix has a test that failed against b1fa8c6. The actionlint test is skipped 
 - **Re-runs of API-key runs:** re-running a run from the GitHub Actions page spends again, but the coordinator records only the latest attempt's cost estimate. The Anthropic console is the source of truth for API spend.
 
 First-real-run checklist, additional item: confirm that claude-code-action tolerates refused write calls under the read-only token in the agent job. For example, it shouldn't fail the run when it can't post a progress comment.
+
+## Final N2 fix (9731187)
+
+The staged check used to turn `-z` NULs into newlines and pair the lines with `paste`. A path containing a newline shifted every record after it. The confirmed bypass was a file named `aaa\nb b` plus a `z link` symlink written with `new file mode 0120000`.
+
+Both checks now read `-z` output NUL-safely (`read -r -d ''`) and split the modes with `read` instead of an unquoted `set --`, so paths can't trigger glob expansion. They refuse the whole change if any path contains a control character (`[[:cntrl:]]` under `LC_ALL=C`).
+
+The staged check also runs an independent `awk` over the non-`-z` `--raw` output, where git escapes paths, and refuses mode 120000 or 160000 there.
+
+The H1/N2 test adds these cases, each run through the real generated scripts in temporary repositories:
+- the desync bypass;
+- newline and tab paths;
+- a glob-character path next to a symlink;
+- a glob-character path that is legitimate;
+- the staged check on its own against the desync, a 0120000 symlink and a submodule.

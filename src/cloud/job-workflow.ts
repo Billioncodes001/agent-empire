@@ -46,15 +46,20 @@ if [ ! -s "$PATCH" ]; then echo "No change to check."; exit 0; fi
 size=$(wc -c < "$PATCH" | tr -d ' ')
 if [ "$size" -gt ${PATCH_MAX_BYTES} ]; then echo "Refused: the change is $size bytes (limit ${PATCH_MAX_BYTES})."; exit 1; fi
 if grep -Eq '^(new file mode|new mode|old mode|deleted file mode) 1[26]0000$|^index [0-9a-f]+\\.\\.[0-9a-f]+ 1[26]0000$' "$PATCH"; then echo "Refused: symlinks and submodules are not published."; exit 1; fi
+export LC_ALL=C
 list=$(mktemp)
 git -c core.hooksPath=/dev/null apply --numstat -z "$PATCH" > "$list"
-tr '\\0' '\\n' < "$list" | sed -E $'s/^([0-9]+|-)\\t([0-9]+|-)\\t//' | while IFS= read -r p; do
+# NUL-separated records, read NUL-safely: "added<TAB>deleted<TAB>path", or for a rename the prefix then two paths.
+prefix=$'^([0-9]+|-)\\t([0-9]+|-)\\t(.*)$'
+while IFS= read -r -d '' rec; do
+  if [[ $rec =~ $prefix ]]; then p=\${BASH_REMATCH[3]}; else p=$rec; fi
   [ -z "$p" ] && continue
+  if [[ $p == *[[:cntrl:]]* ]]; then echo "Refused: a path contains a control character."; exit 1; fi
   lp=$(printf '%s' "$p" | tr 'A-Z' 'a-z')
   case "/$lp/" in
     */.git/*|*/.github/*|*/../*) echo "Refused path: $p"; exit 1 ;;
   esac
-done
+done < "$list"
 { grep -E '^(rename|copy) (from|to) ' "$PATCH" || true; } | sed -E 's/^(rename|copy) (from|to) //' | while IFS= read -r p; do
   lp=$(printf '%s' "$p" | tr 'A-Z' 'a-z')
   case "/$lp/" in
@@ -73,18 +78,24 @@ ${PATCH_LINE_SHELL}
 if [ ! -s "$PATCH" ]; then echo "status=no_changes" >> "$GITHUB_OUTPUT"; exit 0; fi
 git switch -q -c "agent-empire/task-$JOB_ID"
 git -c core.hooksPath=/dev/null apply --index "$PATCH"
+export LC_ALL=C
 raw=$(mktemp)
 git -c core.hooksPath=/dev/null diff --cached --raw -z --no-renames "$SOURCE_COMMIT" > "$raw"
-tr '\\0' '\\n' < "$raw" | paste - - | while IFS=$'\\t' read -r meta p; do
-  set -- $meta
-  case " \${1#:} $2 " in
-    *" 120000 "*|*" 160000 "*) echo "Refused: $p is a symlink or submodule."; exit 1 ;;
-  esac
+# Each record is ":oldmode newmode oldsha newsha status" NUL path NUL. Read NUL-safely, split the modes without globbing.
+while IFS= read -r -d '' meta && IFS= read -r -d '' p; do
+  read -r om nm _ <<<"\${meta#:}"
+  case "$om" in 120000|160000) echo "Refused: a symlink or submodule is staged."; exit 1 ;; esac
+  case "$nm" in 120000|160000) echo "Refused: a symlink or submodule is staged."; exit 1 ;; esac
+  if [[ $p == *[[:cntrl:]]* ]]; then echo "Refused: a staged path contains a control character."; exit 1; fi
   lp=$(printf '%s' "$p" | tr 'A-Z' 'a-z')
   case "/$lp/" in
     */.git/*|*/.github/*|*/../*) echo "Refused path: $p"; exit 1 ;;
   esac
-done
+done < "$raw"
+# Second, independent check: without -z, git escapes unusual paths, so fields 1-2 are always the modes.
+git -c core.hooksPath=/dev/null diff --cached --raw --no-renames "$SOURCE_COMMIT" \\
+  | awk '$1 ~ /^:?1[26]0000$/ || $2 ~ /^1[26]0000$/ { bad = 1 } END { exit bad }' \\
+  || { echo "Refused: a symlink or submodule is staged."; exit 1; }
 echo "status=staged" >> "$GITHUB_OUTPUT"`;
 
 const indent = (text: string, spaces: number) => text.split('\n').map(line => (line ? ' '.repeat(spaces) + line : line)).join('\n');
