@@ -391,7 +391,7 @@ export class ChiefBrain {
   status(): ChiefBrainStatus {
     const base = this.configured();
     if (!base.ready) return base;
-    if (this.lastFailure && this.now() - this.lastFailure.at < FAILURE_HOLD_MS) return { ...base, ready: false, reason: `The last model call failed (${this.lastFailure.reason.slice(0, 160)}). The chief is rule-based until a call succeeds.` };
+    if (this.inFailureHold() && this.lastFailure) return { ...base, ready: false, reason: `The last model call failed (${this.lastFailure.reason.slice(0, 160)}). The chief is rule-based until a call succeeds.` };
     if (base.mode === 'free' && this.ports.probe && !this.health) return { ...base, ready: false, reason: 'Checking the local model…' };
     return base;
   }
@@ -610,6 +610,8 @@ export class ChiefBrain {
   private async runReview(key: string, itemTitle: string, evidence: string) {
     const review = this.data.reviews.find((r) => r.key === key);
     if (!review || review.status !== 'queued') return;
+    // Re-review fix 1: a call that failed meanwhile puts the brain in a hold; skip and retry after it, unspent.
+    if (this.inFailureHold()) { this.data.reviews = this.data.reviews.filter((r) => r !== review); this.unmarkSeen(key); this.save(); return; }
     review.status = 'reviewing'; this.save();
     try {
       const answer = await this.call(reviewMessages(itemTitle, evidence), REVIEW_TOKENS);
@@ -635,6 +637,7 @@ export class ChiefBrain {
   private async runStall(key: string, job: ConsultancyJob, facts: string, action?: NonNullable<Approval['proposal']>['action']) {
     const stall = this.data.stalls.find((s) => s.key === key);
     if (!stall || stall.status !== 'queued') return;
+    if (this.inFailureHold()) { this.data.stalls = this.data.stalls.filter((x) => x !== stall); this.unmarkSeen(key); this.save(); return; }
     stall.status = 'thinking'; this.save();
     try {
       const answer = await this.call(stallMessages(stall.kind, facts), STALL_TOKENS);
@@ -717,6 +720,15 @@ export class ChiefBrain {
   }
 
   // ---- Storage ----
+
+  private inFailureHold(): boolean {
+    return !!this.lastFailure && this.now() - this.lastFailure.at < FAILURE_HOLD_MS;
+  }
+
+  private unmarkSeen(key: string) {
+    this.seen.delete(key);
+    this.data.seen = this.data.seen.filter((k) => k !== key);
+  }
 
   private markSeen(key: string) {
     this.seen.add(key);
