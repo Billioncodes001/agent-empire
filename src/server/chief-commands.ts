@@ -119,7 +119,8 @@ export function chiefCommands(office: Consultancy, resourceReport: () => string,
           if (cmd === 'approve' && extra.length) return 'Use /approve ID or /approve ID 25 (budget in USD).';
           if (cmd === 'approve' && amount !== undefined && !/^\$?\d+(\.\d{1,2})?$/.test(amount)) return 'Use /approve ID or /approve ID 25 (budget in USD).';
           if (inbox && APPROVAL_ID_RE.test(id.toUpperCase())) return decideInbox(cmd, id.toUpperCase(), amount, requestId);
-          if (cmd === 'approve' && brain?.planFor(id)) return MODEL_PLAN_REFUSAL;
+          // Re-review fix 2: also decided from the inbox's own record of who proposed the plan, not only the chief's.
+          if (cmd === 'approve' && (brain?.planFor(id) || inbox?.state().items.some((i) => i.kind === 'job_plan' && i.jobId === id && i.proposedBy))) return MODEL_PLAN_REFUSAL;
           const job = cmd === 'approve' ? office.approve(id, 'CEO via Telegram', amount === undefined ? {} : { budgetUsd: Number(amount.replace('$', '')) }) : office.reject(raw.trim(), 'CEO via Telegram');
           const budget = cmd === 'approve' && job.approvedBudgetUsd !== undefined ? ` Approved budget $${job.approvedBudgetUsd.toFixed(2)}; unstarted items are held if provider spend reaches it.` : '';
           return `Job ${job.id}: ${job.status.replaceAll('_', ' ')}. ${cmd === 'approve' ? 'Existing execution, budget and workstation limits still apply.' : 'The unstarted plan was declined.'}${budget}`;

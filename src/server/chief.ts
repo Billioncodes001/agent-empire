@@ -742,7 +742,13 @@ export class ChiefBrain {
       let dropped = 0;
       return list.filter((x) => (dropped < drop && !busy.includes(x.status) ? (dropped++, false) : true));
     };
-    this.data.plans = keep(this.data.plans, MAX_PLANS, ['queued', 'planning']);
+    // Re-review fix 2: a proposed plan whose job still waits for approval is never trimmed (nor anything, if unknown).
+    let pending: Set<string> | undefined;
+    try { pending = new Set(this.ports.office.snapshot().jobs.filter((j) => j.decision === 'pending_approval').map((j) => j.id)); } catch { pending = undefined; }
+    if (pending) {
+      const tagged = this.data.plans.map((p) => ({ p, status: p.status === 'proposed' && p.jobId && pending!.has(p.jobId) ? 'awaiting_ceo' : p.status }));
+      this.data.plans = keep(tagged, MAX_PLANS, ['queued', 'planning', 'awaiting_ceo']).map((x) => x.p);
+    }
     this.data.reviews = keep(this.data.reviews, MAX_REVIEWS, ['queued', 'reviewing']);
     this.data.stalls = keep(this.data.stalls, MAX_STALLS, ['queued', 'thinking']);
   }
