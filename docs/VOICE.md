@@ -10,7 +10,7 @@ Agent Empire can talk to you offline. Voice is optional, and typing always works
 
 ## Setting it up (Settings → Voice)
 
-1. **Speech runtime.** This is the optional Node package `sherpa-onnx-node` (Apache-2.0, prebuilt for macOS, Windows and Linux). It isn't bundled. To enable it, run `npm install sherpa-onnx-node` in the office's install folder, then restart the office. Without it, the phone works with text.
+1. **Speech runtime.** This is the optional Node package `sherpa-onnx-node` (Apache-2.0, prebuilt for macOS, Windows and Linux). It isn't bundled. To enable it, run `npm install sherpa-onnx-node@1.13.8` in the office's install folder, then restart the office. Use that version: sherpa-onnx-node 2.x (released 2026-10-23) dropped the pronunciation data the Kokoro voices ship, so the chief can't speak with it, and the office refuses it with this instruction. Without it, the phone works with text.
 2. **Choose models.** Each model shows its name, size, licence, source and how it will be checked. Nothing downloads until you click and confirm.
 
 | Model | Use | Size | Licence | Check |
