@@ -453,3 +453,8 @@ html[data-save-data="true"] *, html[data-save-data="true"] *::before, html[data-
 .chief-review[data-recommendation="accept"] strong { color: #9fd3b2; }
 .chief-review[data-recommendation="needs_changes"] strong { color: var(--champagne); }
 .chief-review small, .chief-concern { display: block; color: var(--muted); font-size: 12px; }
+
+/* FREE-06: the brief's product chooser. */
+.product-option { display: grid !important; gap: 6px; margin-top: 12px; }
+.product-option[hidden] { display: none !important; }
+.product-option small { color: var(--muted, #8a8f98); font-weight: 500; }
