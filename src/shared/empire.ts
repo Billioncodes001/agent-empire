@@ -1,4 +1,6 @@
-export const CITY = { minX: -55, maxX: 55, minZ: 30, maxZ: 153 };
+import { newCity, type CityState, type PlotId, type VehicleModelId } from './city.js';
+/** Walkable city rectangle (founding district plus FREE-09's business and harbour districts east of x = 55). */
+export const CITY = { minX: -55, maxX: 150, minZ: 30, maxZ: 215 };
 export const SITES = [
   {
     id: 'hq',
@@ -188,6 +190,8 @@ export interface EmpireState {
   supervision?: SupervisionState;
   setup: { completed: boolean; selected: SiteId[]; completedAt?: number };
   office: { floors: number; workstations: number };
+  /** FREE-09 plots and garage vehicles. Absent in saves written before FREE-09 (see shared/city.ts normalizeCity). */
+  city?: CityState;
   sectors: SectorState[];
   reports: EmpireReport[];
   workforce: {
@@ -218,7 +222,12 @@ export type EmpireAction =
       site: SiteId;
     }
   | { kind: 'reinvest' }
-  | { kind: 'office-floor' | 'office-workstation' };
+  | { kind: 'office-floor' | 'office-workstation' }
+  | { kind: 'buy-plot'; plot: PlotId }
+  | { kind: 'buy-vehicle'; model: VehicleModelId }
+  /** `blocked`: apron slots the client sees occupied by live objects (the driven sedan, the founder). */
+  | { kind: 'vehicle-spawn'; vehicle: string; blocked?: number[] }
+  | { kind: 'vehicle-store'; vehicle: string };
 export function newSector(id: SiteId): SectorState {
   const site = SITES.find((s) => s.id === id)!;
   return {
@@ -242,6 +251,7 @@ export function initialEmpire(now = Date.now()): EmpireState {
     delegated: true,
     setup: { completed: false, selected: [] },
     office: { floors: 1, workstations: 4 },
+    city: newCity(),
     sectors: SITES.map((s) => newSector(s.id)),
     reports: [
       {
