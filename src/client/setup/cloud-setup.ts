@@ -19,6 +19,8 @@ import { linkedProviders, parseCents, STATE_REPO_NAME, type Interval, type Limit
 import { sealForGitHub } from './sealed-box';
 import { GITHUB_API, githubApiBase } from '../cloud/api-base';
 import { DEFAULT_WORKER_MODEL, workerModelLabel } from '../../cloud/worker-spec';
+import { billingNote, engineLabel, type ActionsSettings } from '../../cloud/actions-spec';
+import { installJobWorkflow } from '../../cloud/actions-setup';
 
 export const SECRET_NAMES: Record<ProviderId, SecretName> = { anthropic: 'ANTHROPIC_API_KEY', openai: 'OPENAI_API_KEY' };
 /** Where the client build ships the coordinator (tools/ship-coordinator.mjs) and its integrity manifest. */
@@ -41,8 +43,16 @@ export interface StateRepo {
  * not call Anthropic: api.anthropic.com refuses browser calls to those endpoints, and the key is sealed into an Actions
  * secret here and never read back. OpenAI-only plans get no execution until the OpenAI adapter exists.
  */
-export function executionPlan(plan: Pick<CloudPlan, 'projects' | 'providers'>): { repository: { owner: string; name: string; baseBranch: string } | null; note: string } {
+export function executionPlan(plan: Pick<CloudPlan, 'projects' | 'providers'> & { actions?: ActionsSettings | null }): { repository: { owner: string; name: string; baseBranch: string } | null; note: string } {
   const project = plan.projects[0];
+  if (plan.actions) {
+    if (!project) return { repository: null, note: 'Choose a project repository for jobs to run on.' };
+    const a = plan.actions;
+    return {
+      repository: { owner: project.owner, name: project.name, baseBranch: project.defaultBranch || 'main' },
+      note: `Jobs run in GitHub Actions in ${project.owner}/${project.name}${plan.projects.length > 1 ? ` (the first of your ${plan.projects.length} projects)` : ''} with ${engineLabel(a)}: ${billingNote(a.engine)}. Setup commits .github/workflows/agent-empire-job.yml to ${project.defaultBranch || 'main'}; each job is one run of it, capped at ${a.timeoutMinutes} minutes and ${a.maxTurns} turns, and pushes a task branch with a draft pull request. Standard runners are free in public repositories; private repositories use your Actions minutes.`,
+    };
+  }
   if (!plan.providers.anthropic.trim())
     return { repository: null, note: 'Jobs need an Anthropic key: OpenAI-only Empires can’t run jobs until the OpenAI adapter exists. Your OpenAI key is stored for then.' };
   if (!project) return { repository: null, note: 'Choose a project repository for jobs to run on.' };
@@ -61,10 +71,14 @@ export interface CloudPlan {
   limits: Limits;
   interval: Interval;
   platform: string;
+  /** FREE-04: run jobs in GitHub Actions with these settings instead of Anthropic Managed Agents. */
+  actions?: ActionsSettings | null;
 }
 
-export type CreateStep = InstallStep;
-export const CREATE_STEPS = INSTALL_STEPS;
+export type CreateStep = InstallStep | 'runner';
+export const CREATE_STEPS: readonly { step: CreateStep; label: string }[] = INSTALL_STEPS;
+/** GitHub Actions engines add one step: the job workflow in the project repository. */
+export const ACTIONS_CREATE_STEPS: readonly { step: CreateStep; label: string }[] = [...INSTALL_STEPS, { step: 'runner', label: 'Install the job workflow in your project' }];
 
 export class CloudSetupError extends Error {
   constructor(message: string, readonly code: 'not_ready' | 'repo_conflict' | 'github' | 'invalid', readonly step?: CreateStep, readonly reasons: string[] = []) {
@@ -147,7 +161,8 @@ export interface CreateDeps {
  * done, and running it again resumes (the repository is reused, existing state kept, unchanged files skipped).
  */
 export async function createEmpire(plan: CloudPlan, token: string, deps: CreateDeps = {}, onStep: (step: CreateStep, state: StepStatus | 'failed', detail?: string) => void = () => {}): Promise<StateRepo> {
-  if (!linkedProviders(plan.providers).length) throw new CloudSetupError('Add at least one API key.', 'invalid', 'secrets');
+  if (!plan.actions && !linkedProviders(plan.providers).length) throw new CloudSetupError('Add at least one API key.', 'invalid', 'secrets');
+  if (plan.actions && !plan.projectToken?.trim()) throw new CloudSetupError('Add the project access token so the coordinator can start job runs.', 'invalid', 'secrets');
   if (!plan.projects.length) throw new CloudSetupError('Choose at least one project repository.', 'invalid', 'repo');
   const limits = planLimits(plan.limits);
   // Before any GitHub call: a build without its coordinator creates nothing at all.
@@ -162,7 +177,9 @@ export async function createEmpire(plan: CloudPlan, token: string, deps: CreateD
         repo: STATE_REPO_NAME,
         secrets: planSecrets(plan),
         limits,
-        ...(executionPlan(plan).repository ? { provision: executionPlan(plan).repository! } : {}),
+        ...(plan.actions && executionPlan(plan).repository
+          ? { execution: { provider: 'github-actions' as const, repository: executionPlan(plan).repository!, actions: plan.actions } }
+          : executionPlan(plan).repository ? { provision: executionPlan(plan).repository! } : {}),
         coordinatorBundle: bundle,
         workflow: { intervalMinutes: plan.interval },
         now: (deps.now ?? Date.now)(),
@@ -171,8 +188,18 @@ export async function createEmpire(plan: CloudPlan, token: string, deps: CreateD
       },
       async (key, value) => seal(key, value),
     );
+    if (plan.actions) {
+      const target = executionPlan(plan).repository!;
+      onStep('runner', 'running');
+      try { onStep('runner', (await installJobWorkflow(client, target, plan.actions)) === 'installed' ? 'done' : 'skipped', `${target.owner}/${target.name}`); }
+      catch (error) {
+        const status = (error as { status?: number }).status ?? 0;
+        throw new CloudSetupError(status === 403 || status === 404 ? `GitHub refused to add the job workflow to ${target.owner}/${target.name}. Your sign-in needs Contents and Workflows write on that repository. Your Empire itself was created; “Try again” continues here.` : `The job workflow could not be added to ${target.owner}/${target.name} (${status ? `HTTP ${status}` : 'GitHub unreachable'}). Your Empire itself was created; “Try again” continues here.`, 'github', 'runner');
+      }
+    }
     return { owner: result.owner, name: result.repo, created: result.created, alreadyInstalled: result.alreadyInstalled, execution: result.execution };
   } catch (error) {
+    if (error instanceof CloudSetupError) throw error;
     if (error instanceof InstallError) {
       const ours = !['github_http', 'github_unreachable', 'github_timeout', 'github_response_large'].includes(error.code);
       const code = ['state_repository_public', 'repo_conflict', 'repo_create_forbidden', 'state_invalid'].includes(error.code) ? 'repo_conflict' : ['invalid', 'bundle_invalid', 'secret_name_invalid', 'project_token_not_fine_grained'].includes(error.code) ? 'invalid' : 'github';
