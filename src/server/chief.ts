@@ -328,6 +328,17 @@ export function gitDiffStat(dir: string, base: string, branch: string): string |
   } catch { return undefined; }
 }
 
+/**
+ * A conservative bound on input tokens for the cap check: one token per two ASCII characters, and one per non-ASCII
+ * character (CJK, emoji and accented text tokenize far denser than English).
+ */
+export function inputTokenBound(messages: ChatMessage[]): number {
+  let ascii = 0;
+  let other = 0;
+  for (const m of messages) for (const ch of m.content) { if (ch.charCodeAt(0) < 128) ascii++; else other++; }
+  return Math.ceil(ascii / 2) + other;
+}
+
 // ---- The brain ------------------------------------------------------------------------------------------------------
 
 const dayOf = (at: number) => new Date(at).toLocaleDateString('en-CA');
@@ -621,9 +632,8 @@ export class ChiefBrain {
     if (s.mode === 'free') p = provider('ollama', s.freeModel, {}, { ollamaUrl: this.ports.ollamaUrl });
     else {
       p = provider(s.premiumProvider, s.premiumModel, this.ports.keys(), { price: s.premiumPrice });
-      // The cap is checked against the worst case before the call: input estimated at ~3 characters per token.
-      const chars = messages.reduce((n, m) => n + m.content.length, 0);
-      worst = estimateCost(s.premiumPrice!, Math.ceil(chars / 3), maxTokens);
+      // The cap is checked against the worst case before the call (see inputTokenBound).
+      worst = estimateCost(s.premiumPrice!, inputTokenBound(messages), maxTokens);
       if (this.spentToday() + worst > s.dailyCapUsd) throw new Error(`Paused: this call could cost up to ${money(worst)}, which would pass today's ${money(s.dailyCapUsd)} cap (${money(this.spentToday())} used).`);
     }
     let result: ChatResult;
@@ -634,7 +644,8 @@ export class ChiefBrain {
       if (s.mode === 'premium') this.addSpend(worst);
       throw new Error(`The chief's model call failed: ${(error as Error).message}`);
     }
-    if (s.mode === 'premium') this.addSpend(result.cost.usd ?? worst);
+    // Review fix 4: a paid answer that reports no usage is charged the worst case, never $0.
+    if (s.mode === 'premium') this.addSpend(result.usage.input + result.usage.output > 0 && result.cost.usd !== null ? result.cost.usd : worst);
     return { text: result.text, model: result.model || p.model, costLabel: result.cost.label };
   }
 
