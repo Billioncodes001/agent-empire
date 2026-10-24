@@ -321,6 +321,8 @@ async function rides(browser: Browser) {
     await s.page.mouse.up();
     const air = await live(s.page);
     check('phone 874x402: holding Up lifts the helicopter', air.y > 12, JSON.stringify(air));
+    const phoneHint = (await s.page.locator('.traversal-hint').textContent()) ?? '';
+    check('phone 874x402: the flight hint names the on-screen Up and Down buttons', /Up Climb · Down Descend/.test(phoneHint), phoneHint);
     await s.page.screenshot({ path: resolve(rideOut, '11-flying-phone-874x402.jpg'), quality: 82 });
     const fit = await s.page.evaluate(() => [...document.querySelectorAll('.touch-btn')].every((b) => { const r = b.getBoundingClientRect(); return (b as HTMLElement).hidden || (r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight); }) && document.documentElement.scrollWidth <= innerWidth);
     check('phone 874x402: every touch button is on screen in flight', fit);
