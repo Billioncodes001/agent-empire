@@ -32,7 +32,7 @@ export function openCityDialog(deps: CityDialogDeps, target: CityTarget) {
   const button = (key: string, label: string, onclick: () => void, disabled = false) =>
     h('button.btn', { type: 'button', 'data-key': key, onclick, disabled }, label);
 
-  // One nonce per purchase target until it is bought or refused (ui/purchase-tracker.ts); the tracker outlives the
+  // One nonce per purchase target until it is bought (ui/purchase-tracker.ts); the tracker outlives the
   // dialog so reopening it cannot mint a second nonce for a purchase still queued in cloud mode.
   tracker ??= new PurchaseTracker(purchaseNonce, store.empire.city);
   const purchases = tracker;
@@ -90,7 +90,7 @@ export function openCityDialog(deps: CityDialogDeps, target: CityTarget) {
   const watch = new MutationObserver((records) => {
     if (!purchases.pending) return;
     const error = records.flatMap((r) => [...r.addedNodes]).find((n) => n instanceof HTMLElement && n.classList.contains('error'));
-    if (error) { purchases.refused(error.textContent ?? ''); render(); }
+    if (error) { purchases.refused(); render(); }
   });
   if (toasts) watch.observe(toasts, { childList: true });
   const modal = openModal(dialog, { escCloses: true, backdropCloses: true, onClose: () => { off?.(); watch.disconnect(); } });
