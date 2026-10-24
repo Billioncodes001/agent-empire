@@ -1293,7 +1293,7 @@ function isRepoTop(dir: string): boolean {
   try {
     if (!existsSync(dir)) return false;
     const top = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 }).trim();
-    return realpathSync(top) === realpathSync(dir);
+    return realpathSync.native(top) === realpathSync.native(dir);
   } catch {
     return false;
   }

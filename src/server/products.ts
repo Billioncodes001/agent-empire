@@ -233,6 +233,25 @@ export class Products {
     return this.list().find((x) => x.id === id)!;
   }
 
+  /**
+   * Retires every product id that saved work still names (workers, queue tasks, client jobs, chief plans) but the
+   * registry does not know, e.g. after products.json was moved away. A repository linked later under the same name
+   * then gets a fresh id, so that old work can never run in it. Returns the ids newly retired.
+   */
+  retireMissing(ids: Iterable<string | undefined>): string[] {
+    const added: string[] = [];
+    for (const id of ids) {
+      if (!id || id === OFFICE_PRODUCT_ID || !/^[a-z0-9-]{1,64}$/.test(id)) continue;
+      if (this.products.some((p) => p.id === id) || this.retired.includes(id) || added.includes(id)) continue;
+      added.push(id);
+    }
+    if (!added.length) return added;
+    this.retired.push(...added);
+    // Read-only after a recovery error: the ids are still retired for this run, and nothing can be linked anyway.
+    if (!this.storageError) this.persist();
+    return added;
+  }
+
   /** Forgets a product. Never deletes its folder or its GitHub repository. */
   unlink(id: string): void {
     this.assertMutable();
@@ -356,8 +375,9 @@ function slug(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'product';
 }
 
+/** The true path: symlinks resolved and, on case-insensitive file systems (macOS), the on-disk case. */
 function real(p: string): string {
-  try { return realpathSync(p); } catch { return path.resolve(p); }
+  try { return realpathSync.native(p); } catch { return path.resolve(p); }
 }
 
 function within(root: string, p: string): boolean {

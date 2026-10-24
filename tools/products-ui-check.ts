@@ -116,33 +116,42 @@ async function game(browser: Browser, size: Size, tag: string, create: boolean) 
     await page.screenshot({ path: resolve(out, `05-queue-rows-${tag}.jpg`), quality: 82 });
     await closeModals(page);
 
-    // Hire dialog product chooser (desktop only: desk targeting needs the keyboard).
-    if (!size.touch) {
-      await page.waitForTimeout(4000);
+    // Hire dialog product chooser: stand next to a free desk (desks are solid, so try the four sides), press P.
+    {
+      await page.waitForTimeout(3000);
+      type O = { __office: { office: { interactables: { kind: string; deskId?: string; x: number; z: number }[] }; store: { workerAtDesk(id: string): unknown }; player: { pos: { x: number; z: number; set(x: number, y: number, z: number): void }; view: string; camYaw: number; facing: number; lookPitch: number } } };
       const candidates = await page.evaluate(() => {
-        const o = (window as unknown as { __office: { office: { interactables: { kind: string; deskId?: string; x: number; z: number }[] }; store: { workerAtDesk(id: string): unknown } } }).__office;
-        const desks = o.office.interactables.filter((it) => it.kind === 'desk' && it.deskId);
-        return desks.filter((it) => !desks.some((n) => Math.hypot(n.x - it.x, n.z - it.z) < 3 && o.store.workerAtDesk(n.deskId!))).map((x) => ({ x: x.x, z: x.z }));
+        const o = (window as unknown as O).__office;
+        return o.office.interactables.filter((it) => it.kind === 'desk' && it.deskId && !o.store.workerAtDesk(it.deskId)).map((x) => ({ x: x.x, z: x.z }));
       });
-      await page.evaluate(() => { const o = (window as unknown as { __office: { player: { pos: { set(x: number, y: number, z: number): void }; view: string; camYaw: number; lookPitch: number; facing: number } } }).__office; o.player.view = 'first'; o.player.pos.set(-1.5, 0, -8); o.player.camYaw = Math.PI; o.player.facing = Math.PI; o.player.lookPitch = -0.12; });
-      await page.waitForTimeout(2000);
       let found = false;
-      // Stand at each free desk and turn until the desk (not a nearby worker) is the target.
-      outer: for (const c of candidates.slice(0, 12)) for (const yaw of [Math.PI, 0, Math.PI / 2, -Math.PI / 2]) {
-        await page.evaluate((q) => { const o = (window as unknown as { __office: { player: { pos: { set(x: number, y: number, z: number): void }; view: string; camYaw: number; facing: number } } }).__office; o.player.view = 'first'; o.player.pos.set(q.x, 0, q.z); o.player.camYaw = q.yaw; o.player.facing = q.yaw; }, { ...c, yaw });
-        if (await page.waitForFunction(() => /Desk \d+ · empty/.test(document.getElementById('hint')?.textContent ?? ''), null, { timeout: 2500 }).then(() => true, () => false)) { found = true; break outer; }
+      const tried: string[] = [];
+      outer: for (const c of candidates) for (const [dx, dz] of [[0, 0], [0, 1.1], [0, -1.1], [1.1, 0], [-1.1, 0]]) {
+        const at = await page.evaluate((q) => { const o = (window as unknown as O).__office; o.player.view = 'first'; o.player.pos.set(q.x, 0, q.z); o.player.lookPitch = -0.12; return { x: o.player.pos.x, z: o.player.pos.z }; }, { x: c.x + dx, z: c.z + dz });
+        if (await page.waitForFunction(() => /Desk \d+ · empty/.test(document.getElementById('hint')?.textContent ?? ''), null, { timeout: 1500 }).then(() => true, () => false)) { found = true; break outer; }
+        const now = await page.evaluate(() => { const o = (window as unknown as O).__office; return `${o.player.pos.x.toFixed(1)},${o.player.pos.z.toFixed(1)}`; });
+        tried.push(`${at.x.toFixed(1)},${at.z.toFixed(1)}→${now} “${(await page.locator('#hint').textContent().catch(() => '')) ?? ''}”`.slice(0, 80));
       }
-      // The 3D desk targeting in this real-server preview does not reliably settle headless; say so instead of passing.
-      if (!found) console.log(`SKIP  ${tag}: hire dialog product chooser NOT visually verified (no empty desk could be targeted headless)`);
-      else check(`${tag}: an empty desk is available to hire at`, found, `${candidates.length} candidates; hint “${await page.locator("#hint").textContent().catch(() => "")}”`);
+      check(`${tag}: a free desk can be targeted to hire at`, found, `${candidates.length} desks; ${tried.slice(0, 4).join(' | ')}`);
       if (found) {
         await page.keyboard.press('KeyP');
         await page.waitForSelector('.product-choice:not([hidden]) #product-choice', { timeout: 10_000 }).catch(() => undefined);
+        const select = page.locator('#product-choice');
         const opts = await page.locator('#product-choice option').allInnerTexts();
-        check(`${tag}: the hire dialog offers the products, the office by default`, opts.length >= 2 && /this office/.test(opts[0]) && opts.some((o) => /Harbour Dental site/.test(o)) && (await page.locator('#product-choice').inputValue()) === 'office', opts.join(','));
-        await page.locator('#product-choice').selectOption('harbour-dental').catch(() => undefined);
-        await page.waitForTimeout(800);
+        check(`${tag}: the hire dialog shows the product chooser, the office by default`, (await select.isVisible()) && opts.length >= 2 && /this office/.test(opts[0]) && opts.some((o) => /Harbour Dental site/.test(o)) && (await select.inputValue()) === 'office', opts.join(','));
+        // Keyboard: Tab from the prompt reaches the chooser, and the arrow keys change it.
+        await page.locator('.modal textarea').first().focus();
+        await page.keyboard.press('Tab');
+        const focused = await page.evaluate(() => document.activeElement?.id ?? '');
+        check(`${tag}: the product chooser is the next Tab stop after the prompt`, focused === 'product-choice', focused);
+        await select.focus();
+        await select.selectOption('harbour-dental');
+        check(`${tag}: choosing a product works`, (await select.inputValue()) === 'harbour-dental');
+        await page.waitForTimeout(700);
         await page.screenshot({ path: resolve(out, `06-hire-dialog-product-${tag}.jpg`), quality: 82 });
+        await page.keyboard.press('Escape');
+        await page.waitForTimeout(200);
+        // A dirty prompt may ask before closing; leave without hiring.
         await closeModals(page);
       }
     }

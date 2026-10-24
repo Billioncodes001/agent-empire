@@ -472,3 +472,27 @@ test('review: a task never continues a dependency from another product', () => {
     assert.equal(f.q.state().tasks.find((t) => t.id === next.id)!.status, 'running');
   } finally { f.close(); }
 });
+
+test('review 2.2: paths are compared in their true on-disk case (case-insensitive file systems)', (t) => {
+  const s = setup();
+  try {
+    const a = repo(path.join(s.root, 'casey'));
+    const upper = path.join(s.root, 'CASEY');
+    if (!existsSync(upper)) { t.skip('case-sensitive file system'); return; }
+    const p = s.make();
+    const linked = p.link({ name: 'Casey', path: upper }, 'CEO');
+    assert.equal(linked.dir, a, 'stored with its real case');
+    assert.throws(() => p.link({ name: 'Casey again', path: a }, 'CEO'), /Already linked/);
+    assert.throws(() => p.link({ name: 'Office', path: s.office.toUpperCase() === s.office ? s.office : path.join(path.dirname(s.office), path.basename(s.office).toUpperCase()) }, 'CEO'), /office repository/);
+  } finally { s.close(); }
+});
+
+test('review 2.1: retireMissing retires unknown ids (not linked ones, not office) and persists them', () => {
+  const s = setup();
+  try {
+    const p = s.make();
+    p.link({ name: 'Beta', path: repo(path.join(s.root, 'beta')) }, 'CEO');
+    assert.deepEqual(p.retireMissing(['acme', undefined, 'office', 'beta', 'acme']), ['acme']);
+    assert.notEqual(s.make().link({ name: 'Acme', path: repo(path.join(s.root, 'acme')) }, 'CEO').id, 'acme');
+  } finally { s.close(); }
+});

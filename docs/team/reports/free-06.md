@@ -89,3 +89,11 @@ Registry persistence and old-save compatibility; job → product → worktree bi
 Tests: 8 new in `tests/products.test.ts` and 2 HTTP tests in `tests/products-server.test.ts` (same-origin 403, error mapping, create through the server with a fake gh, throttle 429, unlink guard with an open job, chief plan with a product). Run against the pre-fix code (0950188), 7 fail: every fix test, plus the HTTP test (open-job guard). The symlink, nested/overlapping, cross-product continuity and chief-plan tests also pass there, because they cover behaviour that already existed.
 
 Merged `origin/codex/empire-world` (e792dee). The only conflict was `src/client/consultancy.css` (FREE-06 and FREE-10 both appended); both sides kept. `workers.ts`, `queue.ts`, `chief.ts` and `server.ts` merged without conflicts. After the merge: typecheck and build pass, npm test 850/850, products-ui-check 35/35 (the hire-dialog chooser is still SKIP, not visually verified), inbox-ui-check 47/47, mobile-ui-check 411/411.
+
+## Re-review (accept) follow-ups
+
+1. At startup the server retires every product id that saved workers, queue tasks, consultancy jobs or chief plans name but the registry lacks (`Products.retireMissing`). So moving `products.json` away no longer frees an old id for a different repository.
+2. `real()` uses `realpathSync.native`, so paths are compared in their on-disk case on macOS. The office dir, data dir, products dir and home dir all go through it before comparison, and the spawn-time git top-level check uses it too. Before this, linking `/…/CASEY` for a repo at `/…/casey` was refused as "inside the repository /…/casey".
+3. products-ui-check now really opens the hire dialog at both sizes. Desks are solid, so the check stands beside a free desk instead of inside it. It asserts the chooser is shown (the office is the default), is the next Tab stop after the prompt, and that choosing a product works. Screenshots: `06-hire-dialog-product-1440x900.jpg` and `06-hire-dialog-product-874x402.jpg`. No more SKIP.
+
+Tests: 3 new (startup retirement through the server, `retireMissing`, true-case comparison). All 3 fail on 1541177 and pass now. Results: typecheck passes, npm test 853/853, products-ui-check 43/43.

@@ -27,12 +27,12 @@ function repo(dir: string) {
 const PLAN = JSON.stringify({ summary: 'One step.', items: [{ title: 'Build', prompt: 'Build it.', phase: 'build', role: 'backend_engineer', parallel: false, dependsOn: [] }] });
 const fakeChat: ChatFn = async (p) => ({ text: PLAN, model: p.model, usage: { input: 1, output: 1 }, cost: { usd: 0, kind: 'local', label: 'US$0 · local model' } });
 
-async function fixture(t: { after(fn: () => Promise<void>): void }) {
+async function fixture(t: { after(fn: () => Promise<void>): void }, seed: { tasks?: unknown[] } = {}) {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), 'empire-products-server-')));
   const office = repo(path.join(root, 'office'));
   const dataDir = path.join(office, '.agent-office');
   mkdirSync(dataDir);
-  writeFileSync(path.join(dataDir, 'queue.json'), JSON.stringify({ tasks: [], maxWorkers: 0 }));
+  writeFileSync(path.join(dataDir, 'queue.json'), JSON.stringify({ tasks: seed.tasks ?? [], maxWorkers: 0 }));
   const ghCalls: string[][] = [];
   const gh: GhRunner = async (args, cwd) => {
     ghCalls.push(args);
@@ -118,4 +118,12 @@ test('/api/chief/plans: a plan may name a linked product; an unknown product is 
   const job = f.running.consultancy.snapshot().jobs.find((j) => j.id === plan.jobId)!;
   assert.equal(job.productId, 'alpha');
   assert.equal(job.decision, 'pending_approval', 'still a proposal');
+});
+
+test('review 2.1: ids named by saved work but missing from the registry are retired at startup (products.json moved away)', async (t) => {
+  const f = await fixture(t, { tasks: [{ id: 'old000000001', title: 'Old Acme work', prompt: 'p', addedBy: 'CEO', addedAt: 1, status: 'queued', productId: 'acme', productName: 'Acme' }] });
+  const other = repo(path.join(f.root, 'acme-new'));
+  const linked = await f.api('products/link', 'POST', { name: 'Acme', path: other });
+  assert.equal(linked.status, 200);
+  assert.notEqual(linked.json.product.id, 'acme', 'the relinked repo never inherits the old work');
 });

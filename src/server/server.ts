@@ -541,6 +541,14 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     onChange: () => publishChief(),
   });
   const brain = chief;
+  // FREE-06 review 2: ids that saved work names but the registry lacks (products.json moved away) are retired at
+  // startup, so a repository relinked under the same name never inherits that work.
+  products.retireMissing([
+    ...workers.list().map((w) => w.productId),
+    ...queue.state().tasks.map((t) => t.productId),
+    ...office.snapshot().jobs.map((j) => j.productId),
+    ...chief.state().plans.map((p) => p.productId),
+  ]);
   inbox.setChief(chiefActions(queue), (jobId) => (brain.planFor(jobId) ? brain.label() : undefined));
   chiefSent = JSON.stringify(chief.state());
   // ORG-01: the executive roster is a pure projection, re-sent only when a summary or attention count changes.
