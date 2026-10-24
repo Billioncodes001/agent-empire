@@ -143,9 +143,24 @@ export const skylineColliders = (): Box[] =>
  * Whether a garage bay or kerb slot can turn solid: the live sedan and the founder must be clear of it, otherwise a
  * vehicle bought or stored while they stand there would trap them inside its collider.
  */
-export function slotClear(box: Box, car: { position: { x: number; z: number }; rotation: { y: number } }, player: { x: number; z: number }) {
-  const person = player.x > box.minX - 0.4 && player.x < box.maxX + 0.4 && player.z > box.minZ - 0.4 && player.z < box.maxZ + 0.4;
+export type CarPose = { position: { x: number; z: number }; rotation: { y: number } };
+export function slotClear(box: Box, car: CarPose, player: { x: number; z: number }, driving = false) {
+  // While driving, the founder is the car: its full 2.14 × 4.72 m body is tested, not a point at its centre.
+  const person = !driving && player.x > box.minX - 0.4 && player.x < box.maxX + 0.4 && player.z > box.minZ - 0.4 && player.z < box.maxZ + 0.4;
   return !person && !vehicleOverlaps(car.position.x, car.position.z, car.rotation.y, box);
+}
+/** The sedan's pose this frame: while driving, the player controller has already moved it (city.car lags a frame). */
+export const liveCarPose = (driving: boolean, player: { x: number; z: number }, facing: number, car: CarPose): CarPose =>
+  driving ? { position: { x: player.x, z: player.z }, rotation: { y: facing } } : car;
+/**
+ * After the saved vehicles change: free slots turn non-solid; occupied slots that are already solid stay solid (so a
+ * walker or the sedan is never let through a parked car); newly occupied ones wait for slotClear.
+ */
+export function settleSlots(slots: { occupied: boolean; collider: Box }[], occupiedNow: boolean[]) {
+  slots.forEach((s, i) => {
+    s.occupied = occupiedNow[i];
+    if (!s.occupied) s.collider.top = 0;
+  });
 }
 
 export const PLOT_PAD = { w: 20, d: 14 };

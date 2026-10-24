@@ -8,6 +8,9 @@ import type { EmpireAction } from '../../shared/empire';
 import { store } from '../state';
 import { h, openModal } from './dom';
 import type { CityTarget } from '../world/districts';
+import { PurchaseTracker } from './purchase-tracker';
+
+let tracker: PurchaseTracker | undefined;
 
 /** A per-click purchase nonce (shared/city.ts PURCHASE_NONCE). */
 export function purchaseNonce(): string {
@@ -29,16 +32,21 @@ export function openCityDialog(deps: CityDialogDeps, target: CityTarget) {
   const button = (key: string, label: string, onclick: () => void, disabled = false) =>
     h('button.btn', { type: 'button', 'data-key': key, onclick, disabled }, label);
 
-  /** One purchase in flight at a time: buttons stay disabled until the city state changes or an error toast arrives. */
-  let pending = false;
+  // One nonce per purchase target until it is bought or refused (ui/purchase-tracker.ts); the tracker outlives the
+  // dialog so reopening it cannot mint a second nonce for a purchase still queued in cloud mode.
+  tracker ??= new PurchaseTracker(purchaseNonce, store.empire.city);
+  const purchases = tracker;
+  purchases.update(store.empire.city);
   const purchase = (action: Omit<Extract<EmpireAction, { kind: 'buy-vehicle' }>, 'nonce'> | Omit<Extract<EmpireAction, { kind: 'buy-plot' }>, 'nonce'>) => {
-    if (pending) return;
-    pending = true;
-    deps.send({ ...action, nonce: purchaseNonce() } as EmpireAction);
-    // Cloud refusals may not toast; the nonce already prevents a double purchase, so re-enable after a while.
-    setTimeout(() => { if (pending) { pending = false; render(); } }, 8000);
+    if (purchases.pending) return;
+    const nonce = purchases.click(action.kind === 'buy-vehicle' ? `vehicle:${action.model}` : `plot:${action.plot}`);
+    deps.send({ ...action, nonce } as EmpireAction);
+    // Cloud mode may answer minutes later and may not toast a refusal. Re-enabling Buy is safe: a further click on
+    // the same target resends the same nonce, which the shared rules refuse once the first purchase is applied.
+    setTimeout(() => { if (purchases.pending) { purchases.timedOut(); render(); } }, 8000);
     render();
   };
+  const pendingNow = () => purchases.pending;
   function render() {
     const focused = (document.activeElement as HTMLElement | null)?.dataset?.key;
     const state = store.empire, city = normalizeCity(state.city);
@@ -61,7 +69,7 @@ export function openCityDialog(deps: CityDialogDeps, target: CityTarget) {
       if (!state.setup.completed) rows.push(h('p.setting-note', {}, 'Complete founding setup before buying vehicles.'));
       rows.push(h('ul.city-list', {}, ...VEHICLE_MODELS.map((m) =>
         h('li', {}, h('span', {}, `${m.name} · ${m.cost.toLocaleString('en-US')} cr`),
-          button(`buy-${m.id}`, full ? 'Garage full' : pending ? 'Buying…' : 'Buy', () => purchase({ kind: 'buy-vehicle', model: m.id }), pending || full || !state.setup.completed || state.funds < m.cost)))));
+          button(`buy-${m.id}`, full ? 'Garage full' : pendingNow() ? 'Buying…' : 'Buy', () => purchase({ kind: 'buy-vehicle', model: m.id }), pendingNow() || full || !state.setup.completed || state.funds < m.cost)))));
     } else {
       const plot = PLOTS.find((p) => p.id === target.plot)!;
       const owned = city.plots.includes(plot.id as PlotId);
@@ -69,17 +77,20 @@ export function openCityDialog(deps: CityDialogDeps, target: CityTarget) {
         ? 'You own this parcel. Building on district parcels is coming in a later update.'
         : `This ${plot.district === 'business' ? 'business district' : 'harbour'} parcel costs ${plot.cost.toLocaleString('en-US')} city credits.`));
       if (!owned && !state.setup.completed) rows.push(h('p.setting-note', {}, 'Complete founding setup before buying parcels.'));
-      if (!owned) rows.push(button(`plot-${plot.id}`, pending ? 'Buying…' : `Buy parcel · ${plot.cost.toLocaleString('en-US')} cr`, () => purchase({ kind: 'buy-plot', plot: plot.id }), pending || !state.setup.completed || state.funds < plot.cost));
+      if (!owned) rows.push(button(`plot-${plot.id}`, pendingNow() ? 'Buying…' : `Buy parcel · ${plot.cost.toLocaleString('en-US')} cr`, () => purchase({ kind: 'buy-plot', plot: plot.id }), pendingNow() || !state.setup.completed || state.funds < plot.cost));
     }
     body.replaceChildren(...rows);
     if (focused) (body.querySelector(`[data-key="${CSS.escape(focused)}"]`) as HTMLElement | null)?.focus();
   }
   render();
-  const off = store.on('empire', () => { pending = false; render(); });
+  // Pending clears only when the city's purchases change, not on every empire event (cloud snapshots, ticks).
+  const off = store.on('empire', () => { purchases.update(store.empire.city); render(); });
   // A refused purchase arrives as an error toast (host) and leaves the state unchanged: re-enable the buttons.
   const toasts = document.getElementById('toasts');
   const watch = new MutationObserver((records) => {
-    if (pending && records.some((r) => [...r.addedNodes].some((n) => n instanceof HTMLElement && n.classList.contains('error')))) { pending = false; render(); }
+    if (!purchases.pending) return;
+    const error = records.flatMap((r) => [...r.addedNodes]).find((n) => n instanceof HTMLElement && n.classList.contains('error'));
+    if (error) { purchases.refused(error.textContent ?? ''); render(); }
   });
   if (toasts) watch.observe(toasts, { childList: true });
   const modal = openModal(dialog, { escCloses: true, backdropCloses: true, onClose: () => { off?.(); watch.disconnect(); } });

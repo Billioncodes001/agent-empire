@@ -12,7 +12,7 @@ import { DISTRICTS, GARAGE, PLOTS, VEHICLE_MODELS, normalizeCity, type CityState
 import { SURFACE as S, boxMesh as box, solid } from './materials';
 import { textPlane } from './toon';
 import { batchStaticMeshes } from './batching';
-import { districtLayout, slotClear, footprint, PLOT_PAD, plotSign, ROADS, type Box, type Kit, type Placement } from './district-layout';
+import { districtLayout, liveCarPose, settleSlots, slotClear, type CarPose, footprint, PLOT_PAD, plotSign, ROADS, type Box, type Kit, type Placement } from './district-layout';
 import type { Collider } from './office';
 import type { GraphicsQuality } from '../graphics';
 
@@ -181,14 +181,14 @@ export function buildDistricts(parent: THREE.Group) {
   function placeGarageCars() {
     garageCars.traverse((o) => { if (o instanceof THREE.InstancedMesh) o.dispose(); });
     garageCars.clear();
-    for (const s of [...baySlots, ...apronSlots]) { s.occupied = false; s.collider.top = 0; }
     if (!ready) return;
+    const slots = [...baySlots, ...apronSlots];
+    settleSlots(slots, slots.map((s) => city.vehicles.some((v) => (v.apron !== undefined ? apronSlots[v.apron] : baySlots[v.bay]) === s)));
     for (const v of city.vehicles) {
       const asset = VEHICLE_MODELS.find((m) => m.id === v.model)!.asset;
       const template = templates.get(`vehicles/${asset}`);
       const slot = v.apron !== undefined ? apronSlots[v.apron] : baySlots[v.bay];
-      // The collider turns solid in update() once the sedan and the founder are clear of the slot.
-      slot.occupied = true;
+      // A newly occupied slot turns solid in update() once the sedan and the founder are clear of it.
       if (!template) continue;
       const car = template.clone();
       car.name = `Owned ${v.model} (${v.id})`;
@@ -226,7 +226,7 @@ export function buildDistricts(parent: THREE.Group) {
     placeGarageCars();
   }, (e) => { failed = true; console.warn('City district kits unavailable', e); });
 
-  const near = (a: { x: number; z: number }, p: THREE.Vector3, r: number) => Math.hypot(a.x - p.x, a.z - p.z) < r;
+  const near = (a: { x: number; z: number }, p: { x: number; z: number }, r: number) => Math.hypot(a.x - p.x, a.z - p.z) < r;
   return {
     group,
     colliders,
@@ -244,7 +244,8 @@ export function buildDistricts(parent: THREE.Group) {
     },
     get city() { return city; },
     setQuality(q: GraphicsQuality) { quality = q; },
-    update(dt: number, player: THREE.Vector3, car: { position: THREE.Vector3; rotation: { y: number } }, driving: boolean) {
+    update(dt: number, player: THREE.Vector3, sedan: CarPose, driving: boolean, facing = 0) {
+      const car = liveCarPose(driving, player, facing, sedan);
       // Street furniture LOD: hidden on Low and beyond 170 m of a district's centre.
       for (const d of districtGroups.values()) d.furniture.visible = quality !== 'low' && d.center.distanceTo(player) < 170;
       const wants = near(door, player, 6.5) || near(door, car.position, 7);
@@ -254,7 +255,7 @@ export function buildDistricts(parent: THREE.Group) {
       doorCollider.top = doorOpen > 0.85 ? 0 : 4.6;
       void driving;
       for (const s of [...baySlots, ...apronSlots])
-        if (s.occupied && s.collider.top === 0 && slotClear(s.collider, car, player)) s.collider.top = 1.7;
+        if (s.occupied && s.collider.top === 0 && slotClear(s.collider, car, player, driving)) s.collider.top = 1.7;
     },
     /** Apron slots the live sedan or the founder currently occupies (sent with "Bring out"; the host adds saved ones). */
     apronBlocked(player: THREE.Vector3, car: { position: THREE.Vector3; rotation: { y: number } }) {

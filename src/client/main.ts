@@ -1345,7 +1345,7 @@ function frame(ts?: number) {
   player.update(dt);
   if (!tower.active) traversal.update(dt);
   tower.update(dt);
-  city.update(t, dt,player.pos,player.driving);
+  city.update(t, dt,player.pos,player.driving,player.facing);
   empireUI.update(dt);
   canvas.dataset.position = `${player.pos.x.toFixed(1)}, ${player.pos.y.toFixed(1)}, ${player.pos.z.toFixed(1)}`;
   canvas.dataset.view = player.view;

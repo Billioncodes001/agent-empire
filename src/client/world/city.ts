@@ -494,7 +494,7 @@ export function buildCity() {
         if (c) c.top = sector.built ? (sector.id === 'hq' ? 12.7 + Math.max(8, state.office.floors - 2) * FLOOR_RISE : sector.id === 'hospital' ? 8 : 4) : 0;
       }
     },
-    update(t: number, dt = 0.016, playerPosition = new THREE.Vector3(), driving = false) {
+    update(t: number, dt = 0.016, playerPosition = new THREE.Vector3(), driving = false, facing = 0) {
       const yaw = car.rotation.y,
         halfX = Math.abs(Math.cos(yaw)) * 1.03 + Math.abs(Math.sin(yaw)) * 2.35,
         halfZ = Math.abs(Math.sin(yaw)) * 1.03 + Math.abs(Math.cos(yaw)) * 2.35;
@@ -506,7 +506,7 @@ export function buildCity() {
         top: driving ? 0 : 1.55,
       });
       foliage.update(t);
-      districts.update(dt, playerPosition, car, driving);
+      districts.update(dt, playerPosition, car, driving, facing);
       const displayedWorkers = new Set<string>();
       const ev = store.evidence();
       for (const site of SITES) {

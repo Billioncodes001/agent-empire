@@ -52,4 +52,7 @@ test('review 6: the asset tool refuses symlinks, escaping paths and oversized ar
   assert.throws(() => checkZipListing(`${head}lrwxrwxrwx  3.0 unx       11 bx stor 26-Oct-10 11:35 Models/link\n`), /symlink/);
   assert.throws(() => checkZipListing(`${head}-rw-r--r--  3.0 unx       11 tx defN 26-Oct-10 11:35 ../evil.txt\n`), /escapes/);
   assert.throws(() => checkZipListing(`${head}-rw-r--r--  3.0 unx  9999999 tx defN 26-Oct-10 11:35 big.bin\n`, 1000), /beyond/);
+  // Re-review 3: an entry line the parser cannot read must not be skipped silently.
+  assert.throws(() => checkZipListing(`${head}-rw-a--     2.3 ntf      703 tx defN 26-Oct-10 11:35 License.txt\n?? unparseable entry ??\n`), /declares 2 entries but 1/);
+  assert.throws(() => checkZipListing('-rw-a--     2.3 ntf      703 tx defN 26-Oct-10 11:35 License.txt\n'), /no entry count/);
 });

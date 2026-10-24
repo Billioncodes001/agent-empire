@@ -54,3 +54,19 @@ test('review 4: a bay or kerb slot turns solid only once the sedan and the found
   assert.equal(slotClear(bay, away, { x: GARAGE.bays[0].x, z: GARAGE.bays[0].z + 2 }), false, 'founder standing in the bay');
   assert.equal(slotClear(bay, away, { x: 72, z: 82 }), true);
 });
+
+test('re-review 2: slots use the live sedan pose and footprint while driving, and solid slots stay solid', async () => {
+  const { liveCarPose, settleSlots, slotClear } = await import('../src/client/world/district-layout');
+  const b = GARAGE.bays[1];
+  const bay = { minX: b.x - 1.1, maxX: b.x + 1.1, minZ: b.z - 2.4, maxZ: b.z + 2.4, top: 0 };
+  // city.car still holds last frame's pose outside; the controller has already driven the sedan into the bay's edge.
+  const stale = { position: { x: b.x, z: 95 }, rotation: { y: 0 } };
+  const player = { x: b.x + 2.0, z: b.z }; // car centre outside the bay (2.0 m > 1.1 + 0.4), its body overlapping it
+  assert.equal(slotClear(bay, stale, player, true), true, 'the stale pose wrongly says clear');
+  assert.equal(slotClear(bay, liveCarPose(true, player, 0, stale), player, true), false, 'the live pose and full body block it');
+  assert.deepEqual(liveCarPose(false, player, 1, stale), stale, 'on foot the parked sedan pose is used');
+  const slots = [{ occupied: true, collider: { ...bay, top: 1.7 } }, { occupied: true, collider: { ...bay, top: 1.7 } }];
+  settleSlots(slots, [true, false]);
+  assert.equal(slots[0].collider.top, 1.7, 'an occupied solid slot stays solid when another vehicle changes');
+  assert.equal(slots[1].collider.top, 0, 'a freed slot opens');
+});

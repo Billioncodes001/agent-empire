@@ -18,5 +18,9 @@ export function checkZipListing(listing: string, maxBytes = MAX_EXTRACTED_BYTES)
     if (bytes > maxBytes) throw new Error(`archive expands beyond ${maxBytes} bytes`);
   }
   if (!entries) throw new Error('archive listing has no entries');
+  // Fail closed: every entry zipinfo announces must have been parsed (and checked) above.
+  const declared = /number of entries:\s*(\d+)/.exec(listing)?.[1] ?? /^(\d+) files?,/m.exec(listing)?.[1];
+  if (declared === undefined) throw new Error('archive listing has no entry count');
+  if (Number(declared) !== entries) throw new Error(`archive listing declares ${declared} entries but ${entries} were checked`);
   return { entries, bytes };
 }
