@@ -67,6 +67,18 @@ if (outreachOn) {
 // FREE-02 (PREVIEW_CHIEF=1): the free brain with a fake model (no network) proposes one plan and fails one (MALFORMED).
 if (process.env.PREVIEW_CHIEF === '1') {
   const brain = host.chief;
+  // FREE-10: a small reviewed memory: approved lessons (company, client, role), one retired, one waiting for approval.
+  const memory = host.memory;
+  const approve = (id: string) => { const item = host.inbox!.state().items.find((i) => i.kind === 'lesson' && i.lesson?.lessonId === id); if (item) host.inbox!.approve(item.id, 'Preview fixture'); };
+  if (!memory.state().lessons.length) {
+    approve(memory.addNote({ text: 'Booking work always includes a double-booking test for one appointment slot.', scope: 'company' }, 'CEO').id);
+    approve(memory.addNote({ text: 'Harbour Dental signs off on Mondays; plan a demo before each Monday.', scope: 'client', scopeValue: 'Harbour Dental' }, 'CEO').id);
+    approve(memory.addNote({ text: 'QA testers start from the acceptance list in the brief.', scope: 'role', scopeValue: 'qa_tester' }, 'CEO').id);
+    const old = memory.addNote({ text: 'Storefront reviews need a Lighthouse score.', scope: 'product', scopeValue: 'Storefront' }, 'CEO');
+    approve(old.id);
+    memory.retire(old.id, 'CEO', 'Replaced by the accessibility checklist');
+    memory.addNote({ text: 'Ask workers to open a pull request before a review; a finished turn alone cannot be checked.', scope: 'company' }, 'CEO');
+  }
   brain.updateSettings({ mode: 'free', freeModel: 'gpt-oss:20b' });
   brain.requestPlan({ requestId: 'pv-chief-1', client: 'Harbour Dental', title: 'Online booking', brief: 'Patients book and cancel appointments online. Synthetic preview brief.' }, 'Preview fixture', 'founder_desk');
   brain.requestPlan({ requestId: 'pv-chief-2', client: 'Atlas Commerce', title: 'Storefront review', brief: 'MALFORMED synthetic preview brief.' }, 'Preview fixture', 'telegram');

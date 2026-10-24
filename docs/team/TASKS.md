@@ -26,7 +26,7 @@ Known protected runtime: localhost:4610, Pixel and its save. Development should 
 | CONSULT-03 | Founder desk | 3D redesign implemented and reviewed | Architectural Three.js hero, Figma desktop/mobile and interaction prototype, responsive brief/review/approval flows. [Design acceptance](reports/founder-3d-design.md). Founder phone, resource requests and credential wizard remain pending |
 | CONSULT-04 | Model chief, scaling, dependencies and cloud jobs | Backlog | Current chief is deterministic and uses one host repository; automatic expansion and provider job unification are not implemented |
 | CONSULT-05a | Employee routines (coffee, breaks, gym) linked to real states | Delivered by LIFE-03 and LIFE-04 | See LIFE-03 and LIFE-04 below |
-| CONSULT-05b | Reviewed organizational memory (persistent roles, scoped lessons) | Backlog | Not started |
+| CONSULT-05b | Reviewed organizational memory (persistent roles, scoped lessons) | Memory part implemented by FREE-10 on `claude/free-10-memory`, awaiting independent review; persistent roles still backlog | [Report](reports/free-10.md), [user guide](../MEMORY.md). Lessons with provenance (lessons.json); chief and CEO proposals go to the inbox as `lesson` (decision only), never active without approval; approved, scope-matched lessons cited in the chief planning prompt ("Based on lessons L…"), never injected into worker prompts; founder-desk Memory panel (filter, edit with re-approval, retire, Markdown export). 12 new tests, memory-ui-check 38/38, chief 38/38, inbox 47/47, mobile 411/411 |
 
 ## Maintenance
 

@@ -113,3 +113,34 @@ test('Telegram /plan proposes through the same brain; a failed plan is announced
   assert.equal(office.snapshot().jobs.length, 1, 'nothing created for the failed plan');
   rmSync(dir, { recursive: true, force: true });
 });
+
+test('/api/memory (FREE-10): CEO note → inbox lesson → approve → used by the planner; edit, retire, export; origin enforced', async (t) => {
+  const f = await fixture(t);
+  assert.deepEqual((await (await f.api('memory')).json()).lessons, [], 'an old data dir starts empty');
+  assert.equal((await f.api('memory/lessons', { text: 'x', scope: 'company' }, { origin: 'http://evil.example' })).status, 403);
+  assert.equal((await f.api('memory/lessons', { text: 'x', scope: 'company', status: 'approved' })).status, 400, 'no self-approval field');
+  const added = await f.api('memory/lessons', { text: 'Portal work needs an accessibility pass.', scope: 'company', requestId: 'note-1' });
+  assert.equal(added.status, 201);
+  const lesson = await added.json();
+  assert.equal(lesson.status, 'proposed');
+  const inbox = await (await f.api('approvals')).json();
+  const item = inbox.items.find((i: { kind: string }) => i.kind === 'lesson');
+  assert.equal(item.lesson.lessonId, lesson.id);
+  assert.equal((await f.api(`approvals/${item.id}/approve`, {})).status, 200);
+  assert.equal((await (await f.api('memory')).json()).lessons[0].status, 'approved');
+  // The planner now gets it as cited context (the fake plan cites none, so the plan says so).
+  await f.api('chief/settings', { mode: 'free', freeModel: 'gpt-oss:20b' });
+  await f.api('chief/plans', { requestId: 'mem-1', client: 'Northwind', title: 'Portal', brief: 'Accessibility matters for this portal.' });
+  let plan: { status?: string; lessons?: { id: string }[] } | undefined;
+  for (let i = 0; i < 150 && plan?.status !== 'proposed'; i++) { plan = (await (await f.api('chief')).json()).plans[0]; await new Promise((r) => setTimeout(r, 20)); }
+  assert.deepEqual(plan?.lessons?.map((l) => l.id), [lesson.id]);
+  const edit = await f.api(`memory/lessons/${lesson.id}/edit`, { text: 'Portal work needs a keyboard and screen-reader pass.' });
+  assert.equal(edit.status, 201);
+  assert.equal((await edit.json()).supersedes, lesson.id);
+  const retired = await f.api(`memory/lessons/${lesson.id}/retire`, { reason: 'Superseded' });
+  assert.equal((await retired.json()).status, 'retired');
+  const md = await f.api('memory/export.md');
+  assert.match(md.headers.get('content-type') ?? '', /text\/markdown/);
+  assert.match(await md.text(), /# Agent Empire · organizational memory[\s\S]*Retired: Superseded/);
+  assert.equal((await f.api('memory/lessons/L99/retire', {})).status, 404);
+});
