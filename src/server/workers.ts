@@ -889,6 +889,17 @@ export class WorkerManager {
     const text = screenText(w.term);
     const loggedOut = NOT_LOGGED_IN.test(text);
     const blocked = loggedOut || (SETUP_PROMPT.test(text) && (s === 'starting' || w.bootBlocked));
+    // "Sign in to Claude": Claude sends no SessionStart while logged out, so type `/login` once its own logged-out
+    // prompt is on screen. Never into a setup menu (login method, trust, onboarding), and never with Enter.
+    if (loggedOut && !SETUP_PROMPT.test(text) && w.typeOnReady && w.pty && !w.stopping) {
+      w.pty.write(w.typeOnReady);
+      w.typeOnReady = undefined;
+      w.bootBlocked = true;
+      w.info.activity = 'Press Enter in the terminal to sign in to Claude, then follow its steps';
+      if (s !== 'needs_input') this.setStatus(w, 'needs_input');
+      else this.emitUpdate(w);
+      return;
+    }
     if (blocked && s !== 'needs_input') {
       w.bootBlocked = true;
       w.info.activity = loggedOut
