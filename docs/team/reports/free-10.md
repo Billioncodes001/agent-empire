@@ -25,6 +25,34 @@ Branch `claude/free-10-memory`, from `e822739`. Author: Claude Opus 5.5 (FREE-10
 
 Screenshots: `docs/team/reports/free-10/` (inbox lesson and confirmation, plan "Based on lessons", Memory panel, add note, edit, desk plan lessons). Unrelated regenerated screenshots were reverted. No real model, Ollama, paid API, port 4610, Pixel or `.agent-office` was touched, and no dependencies were added.
 
+## Review fixes
+
+The security review result was **accept with fixes** (one critical). Each fix below has a regression test in `tests/memory-review.test.ts` that failed before the fix, and each fix is its own commit.
+
+1. **Critical — a stale approval could activate a lesson that was never reviewed** (`aede279`).
+   - Each proposal now carries a random nonce. The nonce is part of the inbox source (`lesson:L1:<nonce>`) and of the item's `lesson` payload.
+   - `raiseLesson` reuses an existing item only when it matches the same proposal: lesson id, text, scope and nonce.
+   - `reconcile`, `actions().check` and `apply` act on a decision only when all of these hold:
+     - the item is of kind `lesson`;
+     - its lesson id, text and scope are the lesson's own;
+     - its nonce matches;
+     - it was created at or after the lesson was proposed.
+   - When the item doesn't match, the lesson gets a fresh nonce and a new pending item, and a mismatched pending item is resolved.
+   - Both reported paths are tested:
+     - lessons.json reset, so a new L1 meets the old approved A-item for L1;
+     - approvals.json reset, so a stale `approvalId` points at an unrelated approved item.
+2. **Important — Telegram `/approve` could approve unseen text** (`516a58c`). `approvalLine`, which `/approvals` uses, now prints the full lesson text, and for an edit the full text it replaces.
+3. **Note — product names matched substrings** (`e991920`). They now match whole words only: "app" no longer matches "happy", and "Clinic Calendar" matches "clinic-calendar".
+
+Re-run results:
+
+| Check | Result |
+| --- | --- |
+| typecheck, build | pass |
+| `npm test` | 828/828 |
+| memory-ui-check | 38/38 |
+| inbox-ui-check | 47/47 |
+
 ## Limits
 
 - Matching is word overlap, so it can miss synonyms. That is deliberate (simple, explainable).
