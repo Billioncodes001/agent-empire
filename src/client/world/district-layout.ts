@@ -200,6 +200,20 @@ export function garagePose(city: CityState, id: string, parked?: Pose): Pose {
   return { x: GARAGE.bays[v.bay].x, z: GARAGE.bays[v.bay].z, yaw: 0 };
 }
 
+/** Kerb slot boxes (as the host numbers them). */
+export const APRON_BOXES: readonly Box[] = GARAGE.apron.map((a) => ({ minX: a.x - 2.4, maxX: a.x + 2.4, minZ: a.z - 1.1, maxZ: a.z + 1.1, top: 0 }));
+/** Kerb slots a live body (any ride, including the helicopter at street level) or the founder occupies. */
+export function apronSlotsBlocked(bodies: readonly CarPose[], player: { x: number; z: number }) {
+  return APRON_BOXES.flatMap((s, i) => (slotClear(s, bodies, player) ? [] : [i]));
+}
+/** Review 5: storing a vehicle is refused while another body (a car parked there this session) stands in its bay. */
+export function bayBlocked(city: CityState, id: string, bodies: readonly CarPose[]) {
+  const v = city.vehicles.find((x) => x.id === id);
+  if (!v) return false;
+  const b = GARAGE.bays[v.bay];
+  return !slotClear({ minX: b.x - 1.1, maxX: b.x + 1.1, minZ: b.z - 2.4, maxZ: b.z + 2.4, top: 0 }, bodies, { x: 1e6, z: 1e6 });
+}
+
 export const PLOT_PAD = { w: 20, d: 14 };
 export const plotSign = (id: string) => {
   const p = PLOTS.find((q) => q.id === id)!;
