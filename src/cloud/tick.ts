@@ -553,7 +553,7 @@ export function planDispatch(input: CloudState, ctx: TickContext, canDispatch: b
 
 // ---------------------------------------------------------------- phase: dispatch receipts
 
-export type DispatchResult = { jobId: string; sourceCommit: string; observation: ProviderObservation; cursor?: EventCursorState } | { jobId: string; failure: { sent: boolean; message: string } };
+export type DispatchResult = { jobId: string; sourceCommit: string; observation: ProviderObservation; cursor?: EventCursorState } | { jobId: string; failure: { sent: boolean; message: string; countsAsAttempt?: boolean } };
 export const MAX_DISPATCH_ATTEMPTS = 3;
 
 export function recordDispatches(input: CloudState, results: DispatchResult[], ctx: TickContext): CloudState {
@@ -564,6 +564,8 @@ export function recordDispatches(input: CloudState, results: DispatchResult[], c
     if ('failure' in result) {
       if (result.failure.sent) { setStatus(state, ctx, job, 'dispatch_uncertain', `${result.failure.message} It will not be retried.`); continue; }
       releaseReservation(state, job, ctx.now);
+      // A rate limit is GitHub asking us to wait, not a failed attempt: give the attempt back.
+      if (result.failure.countsAsAttempt === false && job.dispatch) job.dispatch.attempts = Math.max(0, job.dispatch.attempts - 1);
       if ((job.dispatch?.attempts ?? 0) >= MAX_DISPATCH_ATTEMPTS) setStatus(state, ctx, job, 'failed', `${result.failure.message} Gave up after ${MAX_DISPATCH_ATTEMPTS} attempts; no paid session was requested.`);
       else setStatus(state, ctx, job, 'queued', `${result.failure.message} Requeued; the reservation was released.`);
       continue;
@@ -738,7 +740,7 @@ export async function runCoordinatorTick(deps: CoordinatorDeps): Promise<TickRep
       dispatchResults.push({ jobId, ...created });
     } catch (error) {
       // Anything other than a proven not-sent failure may have created a paid session.
-      dispatchResults.push({ jobId, failure: error instanceof DispatchFailure ? { sent: error.sent, message: error.message } : { sent: true, message: 'The provider request failed in an unexpected way; the session may have been accepted.' } });
+      dispatchResults.push({ jobId, failure: error instanceof DispatchFailure ? { sent: error.sent, message: error.message, ...(error.countsAsAttempt ? {} : { countsAsAttempt: false }) } : { sent: true, message: 'The provider request failed in an unexpected way; the session may have been accepted.' } });
     }
   }
   const ctx2: TickContext = { now: deps.now(), runId: deps.runId };

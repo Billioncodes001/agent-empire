@@ -144,3 +144,26 @@ Each fix has a test in `tests/free-04-actions.test.ts` that was run against the 
 - **L4, fixed:** a 429, or a 403 that says "rate limit", stops every further GitHub call in that coordinator run. A dispatch after that fails as provably not sent.
 
 New pin: `actions/download-artifact` v8.0.2, commit `9000827ccba6bdab643e8b6fd33ac0654aef8333` (2026-10-07).
+
+## Security re-review fixes (b1fa8c6, "accepted with fixes")
+
+Each fix has a test that failed against b1fa8c6. The actionlint test is skipped here because actionlint isn't installed, and nothing was downloaded.
+
+- **N1, fixed:** the publish job no longer sets `PATCH: ${{ runner.temp }}…` in its job-level `env:`. That context isn't available there, so every dispatch would have failed at startup. Each step now derives the path from `$RUNNER_TEMP`.
+  - A test walks the generated YAML. It asserts that nothing evaluated before the runner exists references `runner.`: workflow-level `run-name`, `concurrency` and `env`, plus job-level keys other than `steps` and `outputs`.
+  - An actionlint test runs only when actionlint is installed.
+- **N2, fixed:** the patch-text grep is now only a pre-filter. A new step, "Apply and verify the staged change", runs `git apply --index` and then reads `git diff --cached --raw -z --no-renames "$SOURCE_COMMIT"`. It refuses mode 120000 or 160000 on either side, and re-runs the `.git/`, `.github/` and `..` path rules case-insensitively on the staged list. Nothing is committed unless that step reports `staged`.
+  - The H1 test runs both real scripts in fresh repositories against these cases: `0120000`, `120000\r`, two spaces before the mode, a trailing space, a 160000 submodule, a `.GitHub/` path, plus the earlier cases.
+- **N3, documented:** on GitHub-hosted runners the agent has passwordless sudo. Even with `contents: read` it can:
+  - tamper with the cached upload-artifact action;
+  - take the job's runtime token;
+  - write `actions/cache` entries scoped to the base branch, which other workflows in the same repository may restore.
+
+  **Repositories with privileged workflows that use `actions/cache` are exposed.** Use a dedicated product repository for agent work. The setup review note and the generated workflow header both say so.
+- **N4, fixed:** `npm test` runs with `--test-timeout=60000`, and every git and bash exec in the FREE-04 tests has a 10-second timeout. This has no fail-first test: it guards against hangs rather than changing behaviour.
+- **Self-hosted on a repository of unknown visibility, fixed:** it is now blocked, the same as a public repository.
+- **L4, fixed:** a rate-limited dispatch gives its attempt back, so rate limits never use up the 3-attempt limit. A test runs five rate-limited ticks and the job is still queued.
+- **L2, fixed:** refusing an oversized artifact now aborts the download.
+- **Re-runs of API-key runs:** re-running a run from the GitHub Actions page spends again, but the coordinator records only the latest attempt's cost estimate. The Anthropic console is the source of truth for API spend.
+
+First-real-run checklist, additional item: confirm that claude-code-action tolerates refused write calls under the read-only token in the agent job. For example, it shouldn't fail the run when it can't post a progress comment.

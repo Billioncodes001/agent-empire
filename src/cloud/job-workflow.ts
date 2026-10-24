@@ -39,7 +39,9 @@ function base64ToHex(b64: string): string {
 export const QWEN_SHA512_HEX = base64ToHex(JOB_PINS.qwen.integrity.replace(/^sha512-/, ''));
 
 /** Shell for the publish job's "Check the change" step. Portable bash (also run by the tests against a scratch repo). */
+const PATCH_LINE_SHELL = 'PATCH="${PATCH:-$RUNNER_TEMP/agent-empire-change/change.patch}"';
 const CHECK_CHANGE = `set -euo pipefail
+PATCH="\${PATCH:-$RUNNER_TEMP/agent-empire-change/change.patch}"
 if [ ! -s "$PATCH" ]; then echo "No change to check."; exit 0; fi
 size=$(wc -c < "$PATCH" | tr -d ' ')
 if [ "$size" -gt ${PATCH_MAX_BYTES} ]; then echo "Refused: the change is $size bytes (limit ${PATCH_MAX_BYTES})."; exit 1; fi
@@ -60,6 +62,30 @@ done
   esac
 done
 echo "Change accepted: $size bytes."`;
+
+/**
+ * Shell for "Apply and verify the staged change": the pre-filter above parses patch text, which an attacker can bend
+ * (`0120000`, a trailing \\r or spaces). This checks what git actually staged: no symlink or submodule on either side,
+ * and the same path rules, case-insensitively. Runs before anything is committed (security re-review N2).
+ */
+const APPLY_AND_VERIFY = `set -euo pipefail
+${PATCH_LINE_SHELL}
+if [ ! -s "$PATCH" ]; then echo "status=no_changes" >> "$GITHUB_OUTPUT"; exit 0; fi
+git switch -q -c "agent-empire/task-$JOB_ID"
+git -c core.hooksPath=/dev/null apply --index "$PATCH"
+raw=$(mktemp)
+git -c core.hooksPath=/dev/null diff --cached --raw -z --no-renames "$SOURCE_COMMIT" > "$raw"
+tr '\\0' '\\n' < "$raw" | paste - - | while IFS=$'\\t' read -r meta p; do
+  set -- $meta
+  case " \${1#:} $2 " in
+    *" 120000 "*|*" 160000 "*) echo "Refused: $p is a symlink or submodule."; exit 1 ;;
+  esac
+  lp=$(printf '%s' "$p" | tr 'A-Z' 'a-z')
+  case "/$lp/" in
+    */.git/*|*/.github/*|*/../*) echo "Refused path: $p"; exit 1 ;;
+  esac
+done
+echo "status=staged" >> "$GITHUB_OUTPUT"`;
 
 const indent = (text: string, spaces: number) => text.split('\n').map(line => (line ? ' '.repeat(spaces) + line : line)).join('\n');
 
@@ -156,7 +182,10 @@ ${s.engine === 'claude-subscription'
 # Started only by the Agent Empire coordinator (workflow_dispatch). Engine: ${qwen ? `Qwen Code ${JOB_PINS.qwen.version}` : `claude-code-action ${JOB_PINS.claudeCodeAction.version}`}.
 # Caps: ${s.timeoutMinutes} minutes, at most ${s.maxTurns} turns. Public repositories use standard runners for free;
 # private repositories use your GitHub Actions minutes (up to ${s.timeoutMinutes + 15} per job).
-# The agent job has read-only access; only the separate publish job, which runs no agent code, can push.${selfHosted ? `
+# The agent job has read-only access; only the separate publish job, which runs no agent code, can push.
+# On GitHub-hosted runners the agent still has passwordless sudo: it can tamper with cached actions, take the job's
+# runtime token and write actions/cache entries for the base branch that other workflows here may restore. Use a
+# dedicated repository for agent work, not one with privileged workflows that use actions/cache.${selfHosted ? `
 # WARNING: the agent runs on your self-hosted runner "${s.runnerLabel}" with full control of that machine's workspace.
 # Use an ephemeral runner (--ephemeral) so nothing it leaves behind reaches the next job; never use one on a public repository.` : ''}
 name: Agent Empire job
@@ -247,7 +276,6 @@ ${engineSteps.filter(Boolean).join('\n')}
       pull-requests: write` : ''}
     env:
       BASE_BRANCH: '${target.baseBranch}'
-      PATCH: \${{ runner.temp }}/agent-empire-change/change.patch
     steps:
 ${checkInputs(false)}
       - uses: ${JOB_PINS.downloadArtifact.repo}@${JOB_PINS.downloadArtifact.sha} # ${JOB_PINS.downloadArtifact.version}
@@ -258,21 +286,24 @@ ${checkout}
       - name: Verify the manifest
         run: |
           set -euo pipefail
+          ${PATCH_LINE_SHELL}
           jq -e --arg j "$JOB_ID" --arg s "$SOURCE_COMMIT" --arg h "$(sha256sum "$PATCH" | cut -d' ' -f1)" \\
             '.jobId == $j and .sourceCommit == $s and .sha256 == $h' "$RUNNER_TEMP/agent-empire-change/manifest.json" > /dev/null
       - name: Check the change
         run: |
 ${indent(CHECK_CHANGE, 10)}
-      - name: Apply and publish the task branch
+      - name: Apply and verify the staged change
+        id: apply
+        run: |
+${indent(APPLY_AND_VERIFY, 10)}
+      - name: Publish the task branch
         id: publish
+        if: steps.apply.outputs.status == 'staged'
         env:
           GH_TOKEN: \${{ github.token }}
           OPEN_PR: '${s.openPullRequest ? 'true' : 'false'}'
         run: |
           set -euo pipefail
-          if [ ! -s "$PATCH" ]; then echo "status=no_changes" >> "$GITHUB_OUTPUT"; exit 0; fi
-          git switch -c "agent-empire/task-$JOB_ID"
-          git -c core.hooksPath=/dev/null apply --index "$PATCH"
           git -c core.hooksPath=/dev/null -c user.name='agent-empire[bot]' -c user.email='agent-empire@users.noreply.github.com' commit -q --no-verify -m "Agent Empire task $JOB_ID"
           gh auth setup-git
           if ! git -c core.hooksPath=/dev/null push origin "HEAD:refs/heads/agent-empire/task-$JOB_ID"; then echo "status=push_failed" >> "$GITHUB_OUTPUT"; exit 1; fi
@@ -285,7 +316,7 @@ ${indent(CHECK_CHANGE, 10)}
       - name: Write the result
         if: always()
         env:
-          STATUS: \${{ steps.publish.outputs.status }}
+          STATUS: \${{ steps.publish.outputs.status || steps.apply.outputs.status == 'no_changes' && 'no_changes' || '' }}
           HEAD_SHA: \${{ steps.publish.outputs.head }}
           PR: \${{ steps.publish.outputs.pr }}
           COST_USD: ${money ? '${{ needs.work.outputs.cost_usd }}' : "''"}

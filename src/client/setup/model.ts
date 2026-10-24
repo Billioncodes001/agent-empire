@@ -211,7 +211,8 @@ export function validateActionsChoice(s: SetupState): string[] {
   if (pt) errors.push(pt);
   // Security review M4: a yolo agent on a persistent machine can leave things behind; GitHub also warns against
   // self-hosted runners on public repositories, where anyone can propose workflow changes.
-  if (settings?.modelSource === 'self_hosted_ollama' && s.repos[0] && s.repos[0].private === false) errors.push(`${s.repos[0].owner}/${s.repos[0].name} is a public repository: don’t run agents on your own runner there. Use a private repository, or another free model source.`);
+  // Unknown visibility is treated as public.
+  if (settings?.modelSource === 'self_hosted_ollama' && s.repos[0] && s.repos[0].private !== true) errors.push(`${s.repos[0].owner}/${s.repos[0].name} is ${s.repos[0].private === false ? 'a public repository' : 'not known to be private'}: don’t run agents on your own runner there. Use a private repository, or another free model source.`);
   if (settings && requiredSecret(settings) && s.secretCheck.status !== 'present') errors.push(`Set ${requiredSecret(settings)} in your project repository from your own terminal, then check it here.`);
   return errors;
 }

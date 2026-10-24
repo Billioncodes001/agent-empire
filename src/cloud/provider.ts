@@ -32,7 +32,8 @@ export interface DispatchRequest {
  * `sent: true` means it may have been accepted: the job becomes dispatch_uncertain, never retried.
  */
 export class DispatchFailure extends Error {
-  constructor(readonly sent: boolean, message: string) { super(message); this.name = 'DispatchFailure'; }
+  /** `countsAsAttempt: false` (e.g. a rate limit): requeue without using up the attempt limit. */
+  constructor(readonly sent: boolean, message: string, readonly countsAsAttempt = true) { super(message); this.name = 'DispatchFailure'; }
 }
 export interface ProviderAdapter {
   readonly provider: ProviderId;

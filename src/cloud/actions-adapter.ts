@@ -110,7 +110,7 @@ async function inflateBounded(data: Uint8Array, maxBytes: number): Promise<Uint8
 }
 
 /** Reads a body chunk by chunk and stops past `max` bytes, whatever content-length said (or omitted). */
-async function readCapped(response: Response, max: number): Promise<Uint8Array> {
+async function readCapped(response: Response, max: number, controller?: AbortController): Promise<Uint8Array> {
   if (!response.body) return new Uint8Array(0);
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -119,7 +119,7 @@ async function readCapped(response: Response, max: number): Promise<Uint8Array> 
     const { done, value } = await reader.read();
     if (done) break;
     total += value.length;
-    if (total > max) { void reader.cancel().catch(() => {}); throw new Error('the result artifact is too large'); }
+    if (total > max) { controller?.abort(); void reader.cancel().catch(() => {}); throw new Error('the result artifact is too large'); }
     chunks.push(value);
   }
   const out = new Uint8Array(total);
@@ -168,7 +168,7 @@ export class GitHubActionsAdapter implements ProviderAdapter {
     const execution = request.execution;
     if (execution.provider !== 'github-actions') throw new DispatchFailure(false, 'This Empire does not run jobs in GitHub Actions.');
     if (!this.canDispatch) throw new DispatchFailure(false, 'The project GitHub token (PROJECT_GITHUB_TOKEN) is not configured in the state repository secrets. No run was started.');
-    if (this.rateLimited) throw new DispatchFailure(false, 'GitHub rate limit reached earlier in this coordinator run. No run was started; the job waits for the next run.');
+    if (this.rateLimited) throw new DispatchFailure(false, 'GitHub rate limit reached earlier in this coordinator run. No run was started; the job waits for the next run.', false);
     const { owner, name, baseBranch } = execution.repository;
     const settings = execution.actions;
     const money = isMoneyEngine(settings.engine);
@@ -182,6 +182,7 @@ export class GitHubActionsAdapter implements ProviderAdapter {
       sourceCommit = head.data?.sha;
       if (typeof sourceCommit !== 'string' || !COMMIT.test(sourceCommit)) throw new Error('GitHub returned an invalid commit.');
     } catch (error) {
+      if (error instanceof RateLimited) throw new DispatchFailure(false, `${error.message} No run was started.`, false);
       throw new DispatchFailure(false, `${safeExecutionError(error).message} No run was started.`);
     }
     let data: any;
@@ -193,6 +194,7 @@ export class GitHubActionsAdapter implements ProviderAdapter {
       }));
     } catch (error) {
       // GitHub answered 4xx: the dispatch was refused, so no run exists. Anything else may have started one.
+      if (error instanceof RateLimited) throw new DispatchFailure(false, `${error.message} No run was started.`, false);
       if (error instanceof GitHubError && error.status >= 400 && error.status < 500 && error.status !== 408) {
         const hint = error.status === 404 ? ` Is ${JOB_WORKFLOW_FILE} on ${baseBranch}, and may the project token use Actions?` : error.status === 403 ? ' The project token needs Actions read and write on this repository.' : '';
         throw new DispatchFailure(false, `GitHub refused to start the job run (HTTP ${error.status}).${hint} No run was started.`);
@@ -288,8 +290,8 @@ export class GitHubActionsAdapter implements ProviderAdapter {
       }
       if (!response.ok) throw new Error(`the artifact download failed (HTTP ${response.status})`);
       const declared = Number(response.headers.get('content-length') ?? '0');
-      if (declared > ARTIFACT_MAX_BYTES) throw new Error('the result artifact is too large');
-      return await readCapped(response, ARTIFACT_MAX_BYTES);
+      if (declared > ARTIFACT_MAX_BYTES) { controller.abort(); throw new Error('the result artifact is too large'); }
+      return await readCapped(response, ARTIFACT_MAX_BYTES, controller);
     } finally { clearTimeout(timer); }
   }
 

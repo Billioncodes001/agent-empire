@@ -45,6 +45,7 @@ interface Run { id: number; title: string; status: string; conclusion: string | 
 class FakeActions {
   requests: { method: string; url: string; auth?: string; body?: any }[] = [];
   pulled = 0;
+  blobSignal?: AbortSignal;
   runs = new Map<number, Run>();
   nextRun = 9001;
   dispatchMode: 'ok' | 'no_run_id' | 'network' | 'http500' | 'http422' | 'http404' = 'ok';
@@ -58,6 +59,7 @@ class FakeActions {
     const auth = (init.headers as Record<string, string> | undefined)?.authorization;
     this.requests.push({ method, url, auth, body });
     if (url.startsWith('https://blob.example/')) {
+      this.blobSignal = init.signal ?? undefined;
       if (auth) return json({ message: 'token leaked to blob storage' }, 400);
       const run = this.runs.get(Number(url.split('/').pop()));
       if (run?.streamBytes) {
@@ -465,27 +467,81 @@ test('H1: the publish job runs no agent code, needs the agent job, and enforces 
   }
 });
 
-test('H1: the publish job’s change check refuses hostile patches (run against a local scratch repository)', () => {
-  const script = stepScript(jobsOf(jobWorkflow(TARGET, FREE)).publish, 'Check the change');
-  const dir = mkdtempSync(join(tmpdir(), 'free04-'));
-  const git = (...args: string[]) => execFileSync('git', ['-C', dir, ...args], { stdio: 'pipe' }).toString();
-  git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't');
-  writeFile(join(dir, 'README.md'), 'hello\n'); git('add', '.'); git('commit', '-qm', 'init');
-  const patchFor = (path: string, content: string, mode = '100644') => [
-    `diff --git a/${path} b/${path}`, `new file mode ${mode}`, 'index 0000000..1111111', '--- /dev/null', `+++ b/${path}`, '@@ -0,0 +1 @@', `+${content}`, ''].join('\n');
+test('H1/N2: the publish job refuses hostile patches: pre-filter, then the staged result (real scripts, fresh repos)', () => {
+  const publish = jobsOf(jobWorkflow(TARGET, FREE)).publish;
+  const checkScript = stepScript(publish, 'Check the change');
+  const applyScript = stepScript(publish, 'Apply and verify the staged change');
+  const base = mkdtempSync(join(tmpdir(), 'free04-'));
   let n = 0;
-  const check = (patch: string) => {
-    const file = join(tmpdir(), `free04-${process.pid}-${n++}.patch`);
+  /** Runs both publish steps against a fresh repository; true only when the change would be published. */
+  const publishes = (patch: string) => {
+    const dir = join(base, `r${n++}`);
+    const git = (...args: string[]) => execFileSync('git', ['-C', dir, ...args], { stdio: 'pipe', timeout: 10_000 }).toString();
+    execFileSync('git', ['init', '-q', dir], { timeout: 10_000 });
+    git('config', 'user.email', 't@t'); git('config', 'user.name', 't');
+    writeFile(join(dir, 'README.md'), 'hello\n'); git('add', '.'); git('commit', '-qm', 'init');
+    const file = join(base, `p${n}.patch`);
     writeFile(file, patch);
-    try { execFileSync('bash', ['-c', script], { cwd: dir, env: { ...process.env, PATCH: file }, stdio: 'pipe' }); return true; } catch { return false; }
+    const env = { ...process.env, PATCH: file, SOURCE_COMMIT: git('rev-parse', 'HEAD').trim(), JOB_ID: uuid(1), GITHUB_OUTPUT: join(base, `out${n}`) };
+    for (const script of [checkScript, applyScript]) {
+      try { execFileSync('bash', ['-c', script], { cwd: dir, env, stdio: 'pipe', timeout: 10_000 }); } catch { return false; }
+    }
+    return true;
   };
-  assert.equal(check(patchFor('src/ok.txt', 'fine')), true);
-  assert.equal(check(patchFor('.github/workflows/evil.yml', 'on: push')), false);
-  assert.equal(check(patchFor('.git/hooks/pre-push', 'curl evil')), false);
-  assert.equal(check(patchFor('sub/.git/config', 'x')), false);
-  assert.equal(check(patchFor('link', '/etc/passwd', '120000')), false, 'symlinks are refused');
+  const np = (path: string, content: string, modeLine: string) => [
+    `diff --git a/${path} b/${path}`, modeLine, '--- /dev/null', `+++ b/${path}`, '@@ -0,0 +1 @@', `+${content}`, '\\ No newline at end of file', ''].join('\n');
+  assert.equal(publishes(np('src/ok.txt', 'fine', 'new file mode 100644')), true, 'an ordinary change is published');
+  assert.equal(publishes(np('.github/workflows/evil.yml', 'on: push', 'new file mode 100644')), false);
+  assert.equal(publishes(np('.git/hooks/pre-push', 'curl evil', 'new file mode 100644')), false);
+  assert.equal(publishes(np('sub/.git/config', 'x', 'new file mode 100644')), false);
+  assert.equal(publishes(np('.GitHub/x.yml', 'x', 'new file mode 100644')), false, 'case-insensitive');
+  assert.equal(publishes(np('link', '/etc/passwd', 'new file mode 120000')), false, 'symlink');
+  assert.equal(publishes(np('link', '/etc/passwd', 'new file mode 0120000')), false, 'symlink with a leading zero');
+  assert.equal(publishes(np('link', '/etc/passwd', 'new file mode 120000\r')), false, 'symlink with a carriage return');
+  assert.equal(publishes(np('link', '/etc/passwd', 'new file mode  120000')), false, 'symlink with two spaces');
+  assert.equal(publishes(np('link', '/etc/passwd', 'new file mode 120000 ')), false, 'symlink with a trailing space');
+  const submodule = ['diff --git a/vendor b/vendor', 'new file mode 160000', 'index 0000000..' + 'a'.repeat(40), '--- /dev/null', '+++ b/vendor', '@@ -0,0 +1 @@', '+Subproject commit ' + 'a'.repeat(40), ''].join('\n');
+  assert.equal(publishes(submodule), false, 'submodule');
   const rename = ['diff --git a/README.md b/.github/README.md', 'similarity index 100%', 'rename from README.md', 'rename to .github/README.md', ''].join('\n');
-  assert.equal(check(rename), false, 'renames into .github are refused');
+  assert.equal(publishes(rename), false, 'renames into .github are refused');
+});
+
+test('N1: nothing evaluated before the runner exists references the runner context', () => {
+  for (const settings of [FREE, SUB, KEY, { ...FREE, modelSource: 'self_hosted_ollama', runnerLabel: 'box', model: 'm' } as ActionsSettings]) {
+    const lines = jobWorkflow(TARGET, settings).split('\n');
+    // Workflow-level keys (run-name, concurrency, env) and job-level keys other than steps/outputs: indent 0-2, or a
+    // 4-space job key and everything nested under it until the next 4-space key.
+    let jobKey = '';
+    let topKey = '';
+    for (const line of lines) {
+      if (!line.trim() || line.trim().startsWith('#')) continue;
+      const indent = line.search(/\S/);
+      if (indent === 0) topKey = line.split(':')[0];
+      if (indent === 4) jobKey = line.trim().split(':')[0];
+      const early = topKey !== 'jobs' || indent <= 2 || (indent >= 4 && !['steps', 'outputs'].includes(jobKey));
+      if (early) assert.doesNotMatch(line, /\brunner\./, `${settings.engine}: runner context before the runner exists: ${line.trim()}`);
+    }
+  }
+});
+
+test('N1: actionlint accepts the generated workflows (skipped when actionlint is not installed)', (t) => {
+  let found = true;
+  try { execFileSync('actionlint', ['-version'], { stdio: 'pipe', timeout: 10_000 }); } catch { found = false; }
+  if (!found) return t.skip('actionlint is not installed');
+  const dir = mkdtempSync(join(tmpdir(), 'free04-lint-'));
+  for (const [i, settings] of [FREE, SUB, KEY].entries()) {
+    const file = join(dir, `job-${i}.yml`);
+    writeFile(file, jobWorkflow(TARGET, settings));
+    execFileSync('actionlint', ['-shellcheck=', file], { stdio: 'pipe', timeout: 30_000 });
+  }
+});
+
+test('N3: setup copy and the generated workflow warn about cache poisoning on hosted runners', async () => {
+  const { executionPlan } = await import('../src/client/setup/cloud-setup');
+  const note = executionPlan({ projects: [{ owner: 'o', name: 'r', defaultBranch: 'main', private: true } as any], providers: { anthropic: '', openai: '' }, actions: FREE }).note;
+  assert.match(note, /dedicated/i);
+  assert.match(note, /actions\/cache/);
+  assert.match(jobWorkflow(TARGET, FREE), /# .*actions\/cache/);
 });
 
 test('L3: Qwen install is dependency-free and offline; the CPU model is pinned by digest', () => {
@@ -559,6 +615,30 @@ test('M3/M4: honest minutes copy, draft-PR note only when on, self-hosted runner
   const s = { ...initialState({ step: 'providers' }), engine: 'qwen-free' as const, projectToken: 'github_pat_' + 'a'.repeat(30), repos: [project], free: { selfHostedLabel: 'box', selfHostedModel: 'm', hostedOptIn: false, hostedBaseUrl: '', hostedModel: '', cpuOptIn: false } };
   assert.ok(validateActionsChoice(s).some((e: string) => /public repository/.test(e)), 'self-hosted on a public repo is blocked');
   assert.deepEqual(validateActionsChoice({ ...s, repos: [{ ...project, private: true }] }), []);
+  const { private: _unknown, ...noFlag } = project;
+  assert.ok(validateActionsChoice({ ...s, repos: [noFlag] }).some((e: string) => /public|private/.test(e)), 'unknown visibility is blocked too');
+});
+
+test('L4: rate-limited dispatches never use up the attempt limit', async () => {
+  const gh = new FakeActions();
+  const transport = (async (input: any, init: any) => String(input).includes('/commits/main')
+    ? json({ message: 'API rate limit exceeded' }, 403) : gh.fetch(input, init)) as typeof fetch;
+  const adapter = new GitHubActionsAdapter('github_pat_fixture', { fetch: transport });
+  const h = harness(makeStore({ execution: exec(FREE) }), adapter as unknown as FakeProvider);
+  push(h.store, newJob(1, 1));
+  for (let i = 0; i < 5; i++) await h.tick();
+  const j = job(await h.state(), 1);
+  assert.equal(j.status, 'queued', 'still waiting, not failed');
+  assert.match(j.message, /rate limit/i);
+});
+
+test('L2: refusing an oversized artifact aborts the download', async () => {
+  const { gh, h } = actionsHarness(FREE);
+  push(h.store, newJob(1, 1)); await h.tick();
+  gh.finish(9001, { schemaVersion: 1, jobId: uuid(1), engine: 'qwen-free', status: 'no_changes' });
+  gh.runs.get(9001)!.streamBytes = 10_000_000;
+  await h.tick();
+  assert.equal(gh.blobSignal?.aborted, true);
 });
 
 test('L4: a rate-limited poll backs off for the rest of the run, and dispatch then provably sends nothing', async () => {
