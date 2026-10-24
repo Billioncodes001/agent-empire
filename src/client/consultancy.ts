@@ -4,7 +4,8 @@ import { apiFetch } from './endpoint';
 import type { ResearchReport, ResearchState } from '../shared/research';
 import { STATUS_LABEL, reportBody, reportFacts } from './research-view';
 import { ACTUAL_SPEND_LABEL, PHASE_LABEL, basisLabel, defaultApprovedBudget, fmtDurationRange, fmtUsdRange } from '../shared/org';
-import { PLAN_NOTE, REVIEW_NOTE, ROLE_LABEL, chiefTag, type ChiefPlan, type ChiefState } from '../shared/chief';
+import { PLAN_NOTE, REVIEW_NOTE, ROLE_LABEL, chiefTag, lessonsLine, type ChiefPlan, type ChiefState } from '../shared/chief';
+import { mountMemory, refreshMemory } from './memory-desk';
 
 /** The CEO's edited budget per pending job, kept across the 5-second refreshes while they type. */
 const budgetDraft = new Map<string, string>();
@@ -136,6 +137,15 @@ function chiefSection(job: ConsultancyJob): HTMLElement | null {
   if (plan) {
     box.append(text('span', `Proposed by the chief · Model-backed · ${plan.model ?? 'model'} · proposals only`, 'tag chief-model-tag'));
     if (plan.summary) box.append(text('p', plan.summary));
+    // FREE-10: the approved lessons the chief was given, and which the plan cites.
+    const line = lessonsLine(plan);
+    if (line && plan.lessons) {
+      const d = document.createElement('details'); d.className = 'chief-lessons';
+      const ul = document.createElement('ul');
+      for (const l of plan.lessons) { const li = text('li', ` ${l.text}`); li.prepend(text('strong', l.id)); li.dataset.cited = String(!!plan.citedLessons?.includes(l.id)); ul.append(li); }
+      d.append(text('summary', line), ul, text('p', 'Approved lessons from organizational memory, given to the chief as context. They are not added to the prompts below; only what the plan wrote is.', 'estimate-note'));
+      box.append(d);
+    }
     box.append(text('p', `${PLAN_NOTE}${plan.costLabel ? ` Planning cost: ${plan.costLabel}.` : ''}`, 'estimate-note'));
   }
   if (reviews.length) {
@@ -146,6 +156,7 @@ function chiefSection(job: ConsultancyJob): HTMLElement | null {
       if (r.summary) art.append(text('p', r.summary));
       for (const c of r.concerns ?? []) art.append(text('p', `· ${c}`, 'chief-concern'));
       if (r.reason) art.append(text('p', r.reason, 'chief-reason'));
+      if (r.lessonNote) art.append(text('p', r.lessonNote, 'chief-concern'));
       if (r.evidence) art.append(text('small', `Based on: ${r.evidence}`));
       box.append(art);
     }
@@ -226,6 +237,8 @@ async function refreshNow() {
     await refreshChief();
     showJobs(); if (detail.open && (changed || !wasFresh || JSON.stringify(chief) !== chiefBefore)) renderDetail();
     void refreshResearch();
+    void refreshMemory();
+    deepLink();
   } catch (e) {
     fresh = false; $('connection').textContent = 'Host unavailable · last view retained'; error('error',(e as Error).message);
     if (detail.open) renderDetail();
@@ -311,6 +324,17 @@ async function refreshResearch() {
     li.append(row); list.append(li);
   }
 }
+// FREE-10: provenance links (consultancy.html?job=… or ?research=…) open the cited job or report once, after the first load.
+let linked = false;
+function deepLink() {
+  if (linked) return;
+  linked = true;
+  const q = new URLSearchParams(location.search);
+  const job = q.get('job'), report = q.get('research');
+  if (job && jobs.some((j) => j.id === job)) { selected = job; renderDetail(); detail.showModal(); }
+  else if (report) void openResearch(report);
+}
+mountMemory({ openJob: (id) => { if (!jobs.some((j) => j.id === id)) return false; selected = id; error('action-error'); renderDetail(); detail.showModal(); return true; } });
 const researchDialog = $<HTMLDialogElement>('research-detail');
 async function openResearch(jobId: string) {
   $('research-detail-title').textContent = 'Loading…'; $('research-detail-content').replaceChildren(); researchDialog.showModal();

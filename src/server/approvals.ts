@@ -4,6 +4,7 @@ import { APPROVAL_ID_RE, APPROVAL_KIND_LABEL, MAX_APPROVAL_BUDGET_USD, approveHi
 import type { ConsultancyApproveOptions, ConsultancyJob, ConsultancySnapshot } from '../shared/consultancy.js';
 import { ACTUAL_SPEND_LABEL, EXECUTIVES, basisLabel, fmtDurationRange, fmtUsdRange, type ExecutiveRole } from '../shared/org.js';
 import { ConsultancyError } from './consultancy.js';
+import { LESSON_DECISION_NOTE, SOURCE_LABEL, scopeText } from '../shared/memory.js';
 import { writeJsonAtomic } from './persistence.js';
 
 const FILE = 'approvals.json';
@@ -56,7 +57,7 @@ export class ApprovalError extends Error {
   }
 }
 
-const RAISED_BY: Record<ApprovalKind, ExecutiveRole> = { job_plan: 'chief_of_staff', budget_increase: 'finance', external_action: 'marketing_sales', tool_proposal: 'research', chief_proposal: 'chief_of_staff' };
+const RAISED_BY: Record<ApprovalKind, ExecutiveRole> = { job_plan: 'chief_of_staff', budget_increase: 'finance', external_action: 'marketing_sales', tool_proposal: 'research', chief_proposal: 'chief_of_staff', lesson: 'chief_of_staff' };
 
 /**
  * FREE-02: the owner of chief_proposal actions. `check` answers why the action no longer applies (the inbox answers 409
@@ -65,6 +66,15 @@ const RAISED_BY: Record<ApprovalKind, ExecutiveRole> = { job_plan: 'chief_of_sta
 export interface ChiefActionPort {
   check(item: Approval): string | undefined;
   apply(item: Approval): string;
+}
+
+/**
+ * FREE-10: the owner of `lesson` items (organizational memory). `check` answers why approving no longer applies (409,
+ * nothing recorded); `apply` runs after the decision is saved and answers a note for the record.
+ */
+export interface LessonActionPort {
+  check(item: Approval): string | undefined;
+  apply(item: Approval, decision: 'approved' | 'rejected', actor: string): string;
 }
 const usd = (n: number) => `$${n.toFixed(2)}`;
 
@@ -136,6 +146,7 @@ export class ApprovalInbox {
   private external?: ExternalActionPort;
   private chief?: ChiefActionPort;
   private planOrigin?: (jobId: string) => string | undefined;
+  private lessons?: LessonActionPort;
 
   constructor(dataDir: string, private readonly office: InboxConsultancy, private readonly onChange?: () => void, private readonly now = Date.now) {
     this.file = path.join(dataDir, FILE);
@@ -172,6 +183,37 @@ export class ApprovalInbox {
 
   /** FREE-02: the chief's action owner, and who proposed a plan (the label on a model-proposed job_plan). */
   setChief(port: ChiefActionPort, planOrigin: (jobId: string) => string | undefined) { this.chief = port; this.planOrigin = planOrigin; }
+
+  /** FREE-10: the owner of lesson items (organizational memory). */
+  setLessons(port: LessonActionPort) { this.lessons = port; }
+
+  /** FREE-10: raises a lesson item. Idempotent by `source`; answers the id, or undefined while storage is broken. */
+  raiseLesson(fields: { source: string; jobId: string; title: string; detail: string; lesson: NonNullable<Approval['lesson']> }): string | undefined {
+    if (this.storageError) return undefined;
+    const existing = this.data.items.find((i) => i.source === fields.source);
+    // Review fix 1: reuse an item only when it is this very proposal (same lesson id, text, scope and nonce).
+    if (existing) {
+      const a = existing.lesson, b = fields.lesson;
+      const same = existing.kind === 'lesson' && !!a && a.lessonId === b.lessonId && a.text === b.text && a.scope === b.scope && (a.scopeValue ?? '') === (b.scopeValue ?? '') && !!b.nonce && a.nonce === b.nonce;
+      return same ? existing.id : undefined;
+    }
+    this.add({ kind: 'lesson', createdAt: this.now(), ...structuredClone(fields) });
+    this.trim();
+    try { this.save(); } catch { return undefined; }
+    return this.data.items.find((i) => i.source === fields.source)?.id;
+  }
+
+  /** FREE-10: a pending lesson item whose lesson was retired or replaced elsewhere: resolved with a note, never approved. */
+  resolveLesson(id: string, note: string) {
+    if (this.storageError) return;
+    const item = this.data.items.find((i) => i.id === id);
+    if (!item || item.kind !== 'lesson' || item.status !== 'pending') return;
+    item.status = 'resolved';
+    item.decidedAt = this.now();
+    item.decidedBy = 'Organizational memory';
+    item.note = note.slice(0, 300);
+    this.save();
+  }
 
   /** FREE-02: raises a chief_proposal. Idempotent by `source`; answers the id, or undefined while storage is broken. */
   raiseChief(fields: { source: string; jobId: string; title: string; detail: string; proposal: NonNullable<Approval['proposal']> }): string | undefined {
@@ -259,9 +301,11 @@ export class ApprovalInbox {
     const declined = reopen ? { at: item.decidedAt ?? 0, by: item.decidedBy ?? 'CEO' } : undefined;
     if (item.kind === 'external_action' && options.budgetUsd !== undefined && options.budgetUsd !== null) throw new ApprovalError(400, 'No budget applies to a campaign send. Approve it without an amount.');
     if (item.kind === 'chief_proposal' && options.budgetUsd !== undefined && options.budgetUsd !== null) throw new ApprovalError(400, 'No budget applies to a chief proposal. Decide it without an amount.');
+    if (item.kind === 'lesson' && options.budgetUsd !== undefined && options.budgetUsd !== null) throw new ApprovalError(400, 'No budget applies to a lesson. Decide it without an amount.');
     const budget = decision === 'approved' && options.budgetUsd !== undefined && options.budgetUsd !== null ? validBudget(options.budgetUsd) : undefined;
     let externalApply: (() => void) | undefined;
     let chiefApply: (() => void) | undefined;
+    let lessonApply: (() => void) | undefined;
     this.deciding = true;
     try {
       if (item.kind === 'external_action') {
@@ -292,6 +336,17 @@ export class ApprovalInbox {
             this.save();
           };
         } else this.record(item, decision, who, requestId);
+      } else if (item.kind === 'lesson') {
+        // FREE-10: the decision is saved first; only then does memory activate (or retire) the lesson.
+        if (!this.lessons) throw new ApprovalError(503, 'Organizational memory is not available on this host, so this lesson cannot be decided here.');
+        if (decision === 'approved') { const stale = this.lessons.check(publicItem(item)); if (stale) throw new ApprovalError(409, stale); }
+        this.record(item, decision, who, requestId);
+        this.save();
+        lessonApply = () => {
+          try { item.note = this.lessons!.apply(publicItem(item), decision, who).slice(0, 300) || undefined; } catch (error) { item.note = `Recorded, but memory could not be updated yet: ${(error as Error).message}`.slice(0, 300); }
+          if (item.note === undefined) delete item.note;
+          this.save();
+        };
       } else if (item.kind === 'tool_proposal') {
         // ORG-05: the decision is the record. Nothing is installed or adopted.
         this.record(item, decision, who, requestId);
@@ -321,6 +376,7 @@ export class ApprovalInbox {
     if (item.kind === 'job_plan' && requestId) item.requestId = requestId;
     if (externalApply) externalApply();
     else if (chiefApply) chiefApply();
+    else if (lessonApply) lessonApply();
     else if (!this.reconcile() && item.kind !== 'job_plan') this.save();
     return publicItem(item);
   }
@@ -458,7 +514,11 @@ function parseFile(value: unknown): StoredFile {
     const label = `item #${index + 1}`;
     if (!item || typeof item !== 'object') throw new Error(`${label} must be an object`);
     if (typeof item.id !== 'string' || !APPROVAL_ID_RE.test(item.id) || Number(item.id.slice(1)) >= (raw.nextSeq as number)) throw new Error(`${label} id is invalid`);
-    if (item.kind !== 'job_plan' && item.kind !== 'budget_increase' && item.kind !== 'external_action' && item.kind !== 'tool_proposal' && item.kind !== 'chief_proposal') throw new Error(`${label} kind is invalid`);
+    if (item.kind !== 'job_plan' && item.kind !== 'budget_increase' && item.kind !== 'external_action' && item.kind !== 'tool_proposal' && item.kind !== 'chief_proposal' && item.kind !== 'lesson') throw new Error(`${label} kind is invalid`);
+    if (item.kind === 'lesson') {
+      const l = item.lesson as unknown as Record<string, unknown> | undefined;
+      if (!l || typeof l !== 'object' || ['lessonId', 'text', 'scope', 'proposedBy'].some((k) => typeof l[k] !== 'string' || (l[k] as string).length > 2000) || !l.source || typeof l.source !== 'object') throw new Error(`${label} lesson is invalid`);
+    }
     if (item.kind === 'chief_proposal') {
       const p = item.proposal as unknown as Record<string, unknown> | undefined;
       if (!p || typeof p !== 'object' || ['situation', 'text', 'model'].some((k) => typeof p[k] !== 'string' || (p[k] as string).length > 2000)) throw new Error(`${label} proposal is invalid`);
@@ -494,16 +554,22 @@ export function approvalLine(item: Approval): string {
   } else if (item.outreach) parts.push(`${item.outreach.recipients.length} recipient${item.outreach.recipients.length === 1 ? '' : 's'} from ${item.outreach.from}`);
   else if (item.tool) parts.push(item.tool.url, item.tool.licence);
   else if (item.proposal) parts.push(item.proposal.action ? `action: ${item.proposal.action.label}` : 'decision only');
+  // Review fix 2: Telegram /approvals shows the whole lesson (and the text an edit replaces), so /approve never decides unseen text.
+  else if (item.lesson) parts.push(scopeText(item.lesson), `lesson: ${item.lesson.text}`, ...(item.lesson.supersedes ? [`replaces ${item.lesson.supersedes}: ${item.lesson.supersedesText ?? ''}`] : []), 'decision only');
   else if (item.estimate) parts.push(`estimate ${fmtUsdRange(item.estimate.costUsd)}`);
   return parts.join(' · ');
 }
 
 /** The plain-text notification for a new pending item (Telegram and email): no secrets, no action links. */
 export function approvalText(item: Approval): string {
-  const by = item.kind === 'chief_proposal' ? `model-backed · ${item.proposal?.model ?? 'model'} · proposal only` : item.proposedBy ?? 'rule-based';
+  const by = item.kind === 'chief_proposal' ? `model-backed · ${item.proposal?.model ?? 'model'} · proposal only` : item.kind === 'lesson' ? (item.lesson?.proposedBy ?? 'CEO') : item.proposedBy ?? 'rule-based';
   const lines = [`Approval ${item.id} · ${APPROVAL_KIND_LABEL[item.kind]} · raised by ${EXECUTIVES[item.raisedBy].name} (${by})`, item.title, item.detail];
   if (item.proposedBy) lines.push('The chief’s model proposed this plan. Read every item prompt and approve it in the game inbox or on the founder desk; Telegram can only decline it.');
   if (item.proposal) lines.push(`${item.proposal.situation}: ${item.proposal.text}`, item.proposal.action ? `Approving also runs: ${item.proposal.action.label}` : 'Approving records your decision only.');
+  if (item.lesson) {
+    const l = item.lesson;
+    lines.push(`Lesson (${scopeText(l)}): ${l.text}`, `Source: ${SOURCE_LABEL[l.source.kind]} · ${l.source.label}`, ...(l.supersedes ? [`Replaces ${l.supersedes}: ${l.supersedesText ?? ''}`] : []), LESSON_DECISION_NOTE);
+  }
   if (item.estimate) lines.push(`Estimate (not a quote): ${fmtUsdRange(item.estimate.costUsd)}${item.estimate.calendarMs ? ` · ${fmtDurationRange(item.estimate.calendarMs)} calendar time` : ''}`);
   if (item.outreach) {
     const o = item.outreach;

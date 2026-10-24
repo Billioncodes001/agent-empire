@@ -81,3 +81,7 @@ Each stall is raised once (idempotent by source). Approving records your decisio
 - `POST /api/chief/plans`: answers 202 with the plan request.
 
 All POSTs need a same-origin `Origin` header. State is kept in `<dataDir>/chief.json`. WebSocket clients receive `{t: 'chief'}` updates.
+
+## Organizational memory (FREE-10)
+
+With the brain on, approved lessons relevant to a brief are given to the planner as delimited, cited context, and the proposed plan shows "Based on lessons L…". Reviews and repeated-failure proposals may propose one lesson, which waits in the inbox. Lessons never go into worker prompts by themselves. See [MEMORY.md](MEMORY.md).
