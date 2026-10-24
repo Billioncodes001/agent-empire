@@ -1,4 +1,5 @@
 import type { ConsultancyJob } from '../shared/consultancy';
+import type { ProductInfo, ProductsState } from '../shared/products';
 import { apiFetch } from './endpoint';
 import type { ResearchReport, ResearchState } from '../shared/research';
 import { STATUS_LABEL, reportBody, reportFacts } from './research-view';
@@ -236,18 +237,32 @@ function setStep(n: number) {
   $('form-title').textContent = n === 1 ? 'Bring a new opportunity.' : 'Ready for the chief’s desk.';
   $('save-job').textContent = n === 1 ? 'Review brief →' : 'Save for approval';
 }
-$('new-job').addEventListener('click', () => { form.reset(); requestId = newRequestId(); setStep(1); error('form-error'); intake.showModal(); });
+$('new-job').addEventListener('click', () => { form.reset(); requestId = newRequestId(); setStep(1); error('form-error'); void loadProducts(); intake.showModal(); });
+// FREE-06: the brief can target a product (its own repository); the chooser appears once the office has more than one.
+let products: ProductInfo[] = [];
+const productName = (id: string) => products.find(p => p.id === (id || 'office'))?.name ?? 'this office’s repository';
+async function loadProducts() {
+  try {
+    const r = await apiFetch('/api/products', { credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(8000) });
+    if (!r.ok) return;
+    products = ((await r.json()) as ProductsState).products;
+    const select = $<HTMLSelectElement>('product-select');
+    select.replaceChildren(...products.map(p => { const o = document.createElement('option'); o.value = p.id; o.textContent = `${p.name}${p.origin === 'office' ? ' (this office)' : p.client ? ` · ${p.client}` : ''}${p.present ? '' : ' — folder missing'}`; o.disabled = !p.present; return o; }));
+    select.value = 'office';
+    $('product-option').hidden = products.length < 2;
+  } catch { /* an older host without products: the brief runs in the office repository, as before */ }
+}
 $('close-intake').addEventListener('click', () => { if (!busy) intake.close(); });
 $('close-detail').addEventListener('click', () => detail.close());
 $('back').addEventListener('click', () => setStep(1));
 $('refresh').addEventListener('click', () => void refresh());
 form.addEventListener('submit', async e => {
   e.preventDefault(); if (busy) return;
-  const values = new FormData(form); const body = {requestId,client:String(values.get('client') ?? '').trim(),title:String(values.get('title') ?? '').trim(),brief:String(values.get('brief') ?? '').trim()};
+  const values = new FormData(form); const productId = String(values.get('productId') ?? ''); const body = {requestId,client:String(values.get('client') ?? '').trim(),title:String(values.get('title') ?? '').trim(),brief:String(values.get('brief') ?? '').trim(),...(productId && productId !== 'office' ? {productId} : {})};
   if (!body.client || !body.title || !body.brief) { setStep(1); error('form-error','Please fill in the client, title and brief.'); return; }
   const useChief = !!chief?.brain.ready && ($('use-chief') as HTMLInputElement).checked;
   if (step === 1) {
-    $('brief-review').replaceChildren(text('h3',`${body.client} / ${body.title}`),text('p',body.brief),text('p', useChief
+    $('brief-review').replaceChildren(text('h3',`${body.client} / ${body.title}`),text('p',body.brief),text('p',`Product: ${productName(productId)}`),text('p', useChief
       ? `The chief (${chiefTag(chief!.brain)}) drafts the work items from this brief. Your brief is sent to the model as data. Nothing launches: the proposed plan waits for your approval with an estimate, and a malformed answer is shown as needing attention, never guessed.`
       : 'The initial plan contains one work item matching your brief. Saving does not launch a worker. The next step shows a cost and time estimate with its basis; approve the job separately to start.'));
     setStep(2); return;
