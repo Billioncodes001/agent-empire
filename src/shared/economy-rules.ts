@@ -10,7 +10,7 @@ import {
   type EmpireAction, type EmpireState, type SectorState, type SiteId,
 } from './empire.js';
 import { DESKS_PER_FLOOR } from './layout.js';
-import { freeApronSlot, freeBay, GARAGE, MAX_NONCES, normalizeCity, PLOTS, PURCHASE_NONCE, VEHICLE_MODELS } from './city.js';
+import { freeApronSlot, freeBay, GARAGE, HELICOPTER, HELIPAD, MAX_NONCES, normalizeCity, PLOTS, PURCHASE_NONCE, VEHICLE_MODELS } from './city.js';
 
 export type SiteDefinition = (typeof SITES)[number];
 
@@ -32,6 +32,7 @@ export const CAPITAL_LABELS: Record<string, string> = {
   'office-workstation': 'Workstation installation',
   'buy-plot': 'District plot purchase',
   'buy-vehicle': 'Garage vehicle purchase',
+  'buy-helicopter': 'Helicopter purchase',
 };
 
 export type EmployeeRole = 'manager' | 'service' | 'agent';
@@ -143,7 +144,7 @@ export function applyCityAction(state: EmpireState, action: EmpireAction, now: n
       state.funds -= cost; sector.level++;
       report(site.sector, text.upgraded(site, sector.level));
     }
-  } else if (action.kind === 'buy-plot' || action.kind === 'buy-vehicle' || action.kind === 'vehicle-spawn' || action.kind === 'vehicle-store') {
+  } else if (action.kind === 'buy-plot' || action.kind === 'buy-vehicle' || action.kind === 'vehicle-spawn' || action.kind === 'vehicle-store' || action.kind === 'buy-helicopter') {
     const error = applyGarageAction(state, action, now, report);
     if (error) return error;
   } else return 'Unknown operation';
@@ -152,6 +153,7 @@ export function applyCityAction(state: EmpireState, action: EmpireAction, now: n
     // Labels come from the action kind's own fields only; stray fields (e.g. `site` on buy-plot) are ignored.
     const site = action.kind === 'buy-plot' ? PLOTS.find(p => p.id === action.plot)?.name
       : action.kind === 'buy-vehicle' ? VEHICLE_MODELS.find(m => m.id === action.model)?.name
+        : action.kind === 'buy-helicopter' ? HELICOPTER.name
         : 'site' in action ? SITES.find(s => s.id === action.site)?.name : '';
     const label = CAPITAL_LABELS[action.kind] ?? action.kind;
     recordLedger(state, now, `${label}${site ? ' · ' + site : ''}`, 0, 0, 0, 0, capital);
@@ -159,14 +161,15 @@ export function applyCityAction(state: EmpireState, action: EmpireAction, now: n
   return undefined;
 }
 
-type GarageAction = Extract<EmpireAction, { kind: 'buy-plot' | 'buy-vehicle' | 'vehicle-spawn' | 'vehicle-store' }>;
+type GarageAction = Extract<EmpireAction, { kind: 'buy-plot' | 'buy-vehicle' | 'vehicle-spawn' | 'vehicle-store' | 'buy-helicopter' }>;
+const isPurchase = (a: GarageAction): a is Extract<GarageAction, { nonce: string }> => a.kind === 'buy-plot' || a.kind === 'buy-vehicle' || a.kind === 'buy-helicopter';
 /**
  * FREE-09 (CITY-05/07): district plots and garage vehicles. Purchases spend fictional city credits (the caller moves
  * them into one capital ledger entry); bringing a vehicle out or storing it is free. Validates before mutating.
  */
 function applyGarageAction(state: EmpireState, action: GarageAction, now: number, report: CityReport): string | undefined {
   const city = normalizeCity(state.city);
-  if (action.kind === 'buy-plot' || action.kind === 'buy-vehicle') {
+  if (isPurchase(action)) {
     if (!state.setup.completed) return 'Complete founding setup first';
     if (typeof action.nonce !== 'string' || !PURCHASE_NONCE.test(action.nonce)) return 'Invalid purchase request';
     if (city.nonces?.includes(action.nonce)) return 'This purchase was already made';
@@ -178,6 +181,13 @@ function applyGarageAction(state: EmpireState, action: GarageAction, now: number
     if (state.funds < plot.cost) return 'Insufficient simulation credits';
     state.funds -= plot.cost; city.plots.push(plot.id);
     report('Expansion', `${plot.name} acquired for ${plot.cost.toLocaleString('en-US')} city credits. Building on district parcels is coming in a later update.`);
+  } else if (action.kind === 'buy-helicopter') {
+    // CITY-08: one company helicopter; it waits on the rooftop helipad.
+    if (city.helicopter) return 'The company helicopter is already owned';
+    if (state.funds < HELICOPTER.cost) return 'Insufficient simulation credits';
+    state.funds -= HELICOPTER.cost;
+    city.helicopter = true;
+    report('Garage', `${HELICOPTER.name} bought for ${HELICOPTER.cost.toLocaleString('en-US')} city credits. It waits on the ${HELIPAD.name}.`);
   } else if (action.kind === 'buy-vehicle') {
     const model = VEHICLE_MODELS.find(m => m.id === action.model);
     if (!model) return 'Unknown vehicle';
@@ -203,7 +213,7 @@ function applyGarageAction(state: EmpireState, action: GarageAction, now: number
       vehicle.apron = slot;
     }
   }
-  if (action.kind === 'buy-plot' || action.kind === 'buy-vehicle') city.nonces = [...(city.nonces ?? []), action.nonce].slice(-MAX_NONCES);
+  if (isPurchase(action)) city.nonces = [...(city.nonces ?? []), action.nonce].slice(-MAX_NONCES);
   state.city = city;
   return undefined;
 }
