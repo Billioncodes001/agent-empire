@@ -78,3 +78,24 @@ export const RIDES: Record<RideId, RideSpec> = {
   helicopter: HELICOPTER_SPEC,
 };
 export const rideSpec = (id: RideId): RideSpec => RIDES[id];
+
+/**
+ * A ride standing in the world (world/city.ts provides them): the sedan, each bought garage vehicle and the helicopter.
+ * `locked` explains why it cannot be boarded (the helicopter before it is bought).
+ */
+export interface Ride {
+  key: string;
+  spec: RideSpec;
+  object: import('three').Object3D;
+  ready: boolean;
+  locked?: string;
+  /** Driver's door, 0 closed to 1 open. */
+  setDoor(amount: number): void;
+  /** The authored door handle in world space, if the model has one. */
+  handle?(): import('three').Vector3 | undefined;
+  /** The founder boarded: the ride stops being a solid obstacle. */
+  enter?(): void;
+  /** The founder left it here: it becomes solid where it stands (once nobody overlaps it). */
+  exit?(): void;
+  animate(dt: number, motion: import('./vehicle').VehicleMotion, running: boolean, reduced: boolean): void;
+}

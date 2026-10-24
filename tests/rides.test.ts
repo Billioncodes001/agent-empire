@@ -218,7 +218,7 @@ test('CITY-08: descending lands on the terrain and never falls through it', () =
 });
 
 test('CITY-08: a tall building stops the airframe; climbing above it clears it; landing on its roof is not an exit', () => {
-  const tower = { minX: 30, maxX: 40, minZ: 92, maxZ: 108, top: 40 };
+  const tower = { minX: 30, maxX: 90, minZ: 92, maxZ: 108, top: 40 };
   const { player, tick } = pilot([tower], 15, 10, 100);
   player.setAction('forward', true);
   tick(8);

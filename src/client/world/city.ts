@@ -21,6 +21,7 @@ import { Vegetation } from './vegetation';
 import type { Collider } from './office';
 import { buildDistricts } from './districts';
 import { SKYLINE_TOWERS, skylineColliders } from './district-layout';
+export type { Ride } from '../rides';
 
 function sign(parent: THREE.Object3D, text: string, x: number, y: number, z: number, width: number) {
   const m = textPlane(text, { size: 64, color: '#eee9dd' });

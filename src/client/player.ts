@@ -386,7 +386,8 @@ export class PlayerController {
     const floor = airframeFloor(this.colliders, this.pos.x, this.pos.z, this.facing, half, this.pos.y);
     const top = airframeTop(this.colliders, this.pos.x, this.pos.z, this.facing, half, this.pos.y, this.ride.height);
     let y = this.pos.y + f.vy * dt;
-    if (y <= floor) { y = floor; f.vy = Math.max(0, f.vy); }
+    // Touchdown: within 5 cm of what is beneath and not climbing, the skids rest on it.
+    if (y <= floor || (y - floor < 0.05 && f.vy <= 0)) { y = floor; f.vy = Math.max(0, f.vy); }
     if (y >= top) { y = top; f.vy = Math.min(0, f.vy); }
     this.pos.y = y;
     this.vy = 0;
