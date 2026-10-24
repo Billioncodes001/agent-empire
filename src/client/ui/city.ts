@@ -24,6 +24,8 @@ export interface CityDialogDeps {
   blocked(): number[];
   /** CITY-06: a vehicle driven or parked away from the garage this session (it cannot be moved from the kiosk). */
   away?(vehicleId: string): boolean;
+  /** Review 5: another car parked this session stands in this vehicle's bay. */
+  bayTaken?(vehicleId: string): boolean;
   /** Current key labels, so the how-to copy follows remapped keys. */
   keys?: { interact: string; jump: string; run: string };
 }
@@ -70,7 +72,9 @@ export function openCityDialog(deps: CityDialogDeps, target: CityTarget) {
                 ? button(`away-${v.id}`, 'Drive it back first', () => {}, true)
                 : v.apron === undefined
                 ? button(`out-${v.id}`, 'Bring out', () => deps.send({ kind: 'vehicle-spawn', vehicle: v.id, blocked: deps.blocked() }))
-                : button(`store-${v.id}`, 'Store in bay', () => deps.send({ kind: 'vehicle-store', vehicle: v.id })));
+                : deps.bayTaken?.(v.id)
+                  ? button(`store-${v.id}`, 'Bay taken · move the car parked there', () => {}, true)
+                  : button(`store-${v.id}`, 'Store in bay', () => deps.send({ kind: 'vehicle-store', vehicle: v.id })));
           }))
         : h('p', {}, 'No vehicles in the garage yet.'));
       rows.push(h('h3', {}, 'Buy a vehicle'));

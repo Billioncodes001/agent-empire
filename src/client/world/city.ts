@@ -462,6 +462,7 @@ export function buildCity() {
     const collider = siteColliders.get('hq'); if (collider) collider.top = 12.7 + height;
   }
   const reflectOcean = water.onBeforeRender;
+  let rideCache: { version: number; list: Ride[] } = { version: -1, list: [] };
   // CITY-06/08: the sedan as a ride, beside the bought vehicles and the helicopter (world/districts.ts).
   const sedanRide: Ride = {
     key: 'sedan', spec: SEDAN, object: car,
@@ -484,7 +485,11 @@ export function buildCity() {
     car,
     carCollider,
     doors,
-    rides: (): Ride[] => [sedanRide, ...districts.rides()],
+    /** Every ride; the list is cached until the garage vehicles change (review 7). */
+    rides(): Ride[] {
+      if (rideCache.version !== districts.rideVersion) rideCache = { version: districts.rideVersion, list: [sedanRide, ...districts.rides()] };
+      return rideCache.list;
+    },
     setCarDoor(amount: number) {
       const hinge = car.getObjectByName('Driver_door_hinge');
       if (hinge) hinge.rotation.y = amount * 1.08;

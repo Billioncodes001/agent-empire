@@ -4,7 +4,8 @@ import type { Person } from './world/character';
 import type { Office } from './world/office';
 import type { buildCity } from './world/city';
 import { entrance, entranceAccess } from './navigation';
-import { SITES } from '../shared/empire';
+import { CITY, SITES } from '../shared/empire';
+import { groundAt } from './player';
 import { store } from './state';
 import { h, modalOpen, toast } from './ui/dom';
 import { keyLabel } from './controls';
@@ -98,20 +99,25 @@ export class Traversal {
   private at(v: Vec3, side = this.current?.side ?? 1, dx = 0, dy = 0, dz = 0) {
     return this.carPoint((v[0] + dx) * side, v[1] + dy, v[2] + dz);
   }
+  /**
+   * Whether the founder cannot step out on this side. Review fixes: every solid counts (the parked sedan too; the ride
+   * being left has already lowered its own collider), the path from the seat to the door point must be clear (rails,
+   * walls), there must be floor at the ride's base under the door point (never a drop off a roof), and the door point
+   * must stay inside the city (south of z = 30 is the office).
+   */
   private sideBlocked(side: number) {
     const s = this.spec;
     const exit = this.at([s.door[0] - 0.15, 0, s.door[2]], side);
     const base = this.car.position.y;
-    return this.office.colliders.some(
-      (c) =>
-        c !== this.city.carCollider &&
-        c.top > base + 0.4 &&
-        (c.bottom ?? 0) < base + 1.7 &&
-        exit.x > c.minX - 0.35 &&
-        exit.x < c.maxX + 0.35 &&
-        exit.z > c.minZ - 0.35 &&
-        exit.z < c.maxZ + 0.35,
-    );
+    if (exit.z < CITY.minZ + 0.5 || exit.x < CITY.minX + 0.4 || exit.x > CITY.maxX - 0.4 || exit.z > CITY.maxZ - 0.4) return true;
+    if (Math.abs(groundAt(this.office.colliders, exit.x, exit.z, base + 0.1) - base) > 0.05) return true;
+    const seat = this.at(s.seat, 1);
+    for (let i = 0; i <= 6; i++) {
+      const x = seat.x + (exit.x - seat.x) * (0.4 + 0.1 * i), z = seat.z + (exit.z - seat.z) * (0.4 + 0.1 * i);
+      for (const c of this.office.colliders)
+        if (c.top > base + 0.4 && (c.bottom ?? 0) < base + 1.7 && x > c.minX - 0.35 && x < c.maxX + 0.35 && z > c.minZ - 0.35 && z < c.maxZ + 0.35) return true;
+    }
+    return false;
   }
   private begin(kind: Transition['kind'], side = 1) {
     if (this.current) return;
@@ -133,12 +139,15 @@ export class Traversal {
       p.camYaw = this.car.rotation.y - Math.PI * 0.65 * side;
     }
   }
+  /** The nearest ride within reach of its body (no per-frame allocation beyond the rides list). */
   private near(): Ride | undefined {
     const p = this.player;
-    return this.rides()
-      .map((r) => ({ r, d: Math.hypot(p.pos.x - r.object.position.x, p.pos.z - r.object.position.z) }))
-      .filter(({ r, d }) => d < r.spec.half.l + 1.5 && Math.abs(p.pos.y - r.object.position.y) < 1.5)
-      .sort((a, b) => a.d - b.d)[0]?.r;
+    let best: Ride | undefined, bestD = Infinity;
+    for (const r of this.rides()) {
+      const d = Math.hypot(p.pos.x - r.object.position.x, p.pos.z - r.object.position.z);
+      if (d < r.spec.half.l + 1.5 && d < bestD && Math.abs(p.pos.y - r.object.position.y) < 1.5) { best = r; bestD = d; }
+    }
+    return best;
   }
   interactCar() {
     const p = this.player;
@@ -162,7 +171,7 @@ export class Traversal {
       // The driver's side first; if a wall is there, climb across and out of the passenger side.
       const side = !this.sideBlocked(1) ? 1 : !this.sideBlocked(-1) ? -1 : 0;
       if (!side) {
-        toast('Both doors are blocked. Move to where there is space beside the vehicle.', 'info');
+        toast(p.flying ? 'There is no safe place to step out here. Land nearer the middle of the pad, or at street level.' : 'Both doors are blocked. Move to where there is space beside the vehicle.', 'info');
         return true;
       }
       this.begin('exit-car', side);
@@ -224,8 +233,11 @@ export class Traversal {
     const k = p.bindings;
     if (p.flying) {
       const floor = airframeFloor(this.office.colliders, p.pos.x, p.pos.z, p.facing, p.ride.half, p.pos.y);
-      const exit = p.flight.landed && landingSpot(p.pos, floor) ? `${keyLabel(k.interact)} Exit · ` : '';
-      this.hint.textContent = `${Math.round(Math.abs(p.drivingSpeed) * 3.6)} km/h · ${Math.round(p.pos.y)} m${p.flight.spool < 1 ? ' · rotor spinning up' : ''} · ${keyLabel(k.jump)} Climb · ${keyLabel(k.run)} Descend · ${exit}${keyLabel(k.camera)} Camera`;
+      // Review 3: on touch screens name the on-screen buttons, not keyboard keys.
+      const touch = !!document.documentElement?.classList.contains('ae-touch');
+      const [climb, descend, use, camera] = touch ? ['Up', 'Down', 'Use', 'View'] : [keyLabel(k.jump), keyLabel(k.run), keyLabel(k.interact), keyLabel(k.camera)];
+      const exit = p.flight.landed && landingSpot(p.pos, floor) ? `${use} Exit · ` : '';
+      this.hint.textContent = `${Math.round(Math.abs(p.drivingSpeed) * 3.6)} km/h · ${Math.round(p.pos.y)} m${p.flight.spool < 1 ? ' · rotor spinning up' : ''} · ${climb} Climb · ${descend} Descend · ${exit}${camera} Camera`;
     } else if (p.driving) this.hint.textContent = `${Math.round(Math.abs(p.drivingSpeed) * 3.6)} km/h · ${p.vehicle.gear < 0 ? 'R' : `D${p.vehicle.gear}`} · ${keyLabel(k.backward)} Brake / reverse · ${keyLabel(k.interact)} Exit · ${keyLabel(k.camera)} Camera`;
     else if (p.pos.z < 30)
       this.hint.textContent = p.pos.z > 8 && Math.abs(p.pos.x) < 4 ? (this.office.floor === 0 ? 'Walk through the glass doors to the waterfront' : 'Take the elevator to floor 1 for the street exit') : '';

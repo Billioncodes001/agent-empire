@@ -95,6 +95,11 @@ export function dressKenneyCar(template: THREE.Object3D, spec: RideSpec) {
     },
     handle: () => handlePoint.getWorldPosition(new THREE.Vector3()),
     cabinView(on: boolean) { model.visible = !on; },
+    /** Review 6: frees the geometry generated here (door leaf, glass, dashboard, wheel, header); kit geometry is shared. */
+    dispose() {
+      root.removeFromParent();
+      for (const m of [...leaf.children, dash, wheel, header]) if (m instanceof THREE.Mesh) m.geometry.dispose();
+    },
     animate(dt: number, motion: VehicleMotion, running: boolean, reduced: boolean) {
       spin = (spin + motion.speed * dt / (0.3 * KENNEY_SCALE)) % (Math.PI * 2);
       for (const x of wheels) { x.node.rotation.x = spin; x.node.rotation.y = x.front ? motion.steering : 0; }

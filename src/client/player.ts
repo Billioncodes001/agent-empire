@@ -197,6 +197,8 @@ export class PlayerController {
   }
 
   get flying() { return this.driving && this.ride.kind === 'helicopter'; }
+  /** The default chase-camera distance: the ride's own (CITY-06/08), or the walking shoulder camera. */
+  resetChase() { this.camDist = this.driving ? this.ride.chase : 4.6; }
   get drivingSpeed() { return this.flying ? this.flight.speed : this.vehicle.speed; }
 
   clearKeys() {

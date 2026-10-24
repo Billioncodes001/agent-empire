@@ -259,6 +259,7 @@ const cityInteract = () => {
     send: (action) => net.send({ t: 'empire.action', action }),
     blocked: () => city.districts.apronBlocked(player.pos),
     away: (id) => city.districts.away(id),
+    bayTaken: (id) => city.districts.bayTaken(id),
     keys: { interact: keyLabel(settings.keys.interact), jump: keyLabel(settings.keys.jump), run: keyLabel(settings.keys.run) },
   }, t);
   return true;
@@ -291,7 +292,7 @@ paintViewButton();
 $('btn-camera').addEventListener('click', () => { changeView(); canvas.focus(); });
 function changeView() {
   player.setView(player.view==='first'?'third':'first');
-  if(player.view==='third'){player.camDist=player.driving?7:4.6;player.camPitch=.16;}
+  if(player.view==='third'){player.resetChase();player.camPitch=.16;}
   settings.view=player.view;saveSettings(settings);
   paintViewButton();
 }
@@ -1372,8 +1373,11 @@ function frame(ts?: number) {
   traversal.syncRide();
   const outside = player.pos.z >= 30;
   const activeRide = traversal.ride;
-  for (const r of city.rides()) r.animate(dt, r.spec.kind === 'helicopter' ? player.flight : r === activeRide ? player.vehicle : IDLE_MOTION, player.driving && r === activeRide, reducedMotion.matches);
-  for (const r of city.rides()) r.cabinView?.(player.driving && r === activeRide && player.view === 'first' && !traversal.state.includes('car'));
+  const cabin = player.driving && player.view === 'first' && !traversal.state.includes('car');
+  for (const r of city.rides()) {
+    r.animate(dt, r.spec.kind === 'helicopter' ? player.flight : r === activeRide ? player.vehicle : IDLE_MOTION, player.driving && r === activeRide, reducedMotion.matches);
+    r.cabinView?.(cabin && r === activeRide);
+  }
   empireUI.touch.setMode(player.flying ? 'fly' : player.driving ? 'drive' : 'walk');
   sound.environment(outside);
   sound.vehicle(player.flying ? player.flight.audio() : player.vehicle, player.driving, (activeRide?.object ?? city.car).position, player.view === 'first');

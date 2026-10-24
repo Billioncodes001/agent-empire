@@ -15,7 +15,7 @@ import { dressKenneyCar } from './garage-rides';
 import { SURFACE as S, boxMesh as box, solid } from './materials';
 import { textPlane } from './toon';
 import { batchStaticMeshes } from './batching';
-import { districtLayout, garagePose, poseBox, settleSlots, slotClear, type CarPose, footprint, PLOT_PAD, plotSign, ROADS, type Kit, type Placement, type Pose } from './district-layout';
+import { apronSlotsBlocked, bayBlocked, districtLayout, garagePose, poseBox, settleSlots, slotClear, type CarPose, footprint, PLOT_PAD, plotSign, ROADS, type Kit, type Placement, type Pose } from './district-layout';
 import type { Collider } from './office';
 import type { GraphicsQuality } from '../graphics';
 
@@ -141,7 +141,6 @@ export function buildDistricts(parent: THREE.Group) {
   // with the model's own footprint and height, and turns solid only once nobody overlaps it (FREE-09 review 4).
   const pool = GARAGE.bays.map(() => ({ occupied: false, collider: { minX: 0, maxX: 0, minZ: 0, maxZ: 0, top: 0 } as Collider }));
   colliders.push(...pool.map((s) => s.collider));
-  const apronBoxes = GARAGE.apron.map((a) => ({ minX: a.x - 2.4, maxX: a.x + 2.4, minZ: a.z - 1.1, maxZ: a.z + 1.1, top: 0 }));
 
   // CITY-08: rooftop helipad deck, markings, rails, the staircase and the heliport kiosk.
   const roofTop = HELIPAD.y;
@@ -201,6 +200,7 @@ export function buildDistricts(parent: THREE.Group) {
   const heliState = { driven: false, pending: true };
   void heliSign;
   let lastBodies: readonly CarPose[] = [];
+  let rideVersion = 0;
   const heliRide: Ride = {
     key: 'helicopter', spec: HELICOPTER_SPEC, object: heli.root, ready: true,
     get locked() { return city.helicopter ? undefined : `The ${HELICOPTER.name.toLowerCase()} is for sale at the heliport kiosk (${HELICOPTER.cost.toLocaleString('en-US')} city credits).`; },
@@ -255,10 +255,15 @@ export function buildDistricts(parent: THREE.Group) {
   const entries = new Map<string, Entry>();
   const homeKey = (v: CityState['vehicles'][number]) => (v.apron !== undefined ? `apron-${v.apron}` : `bay-${v.bay}`);
   const poseOf = (o: THREE.Object3D): Pose => ({ x: o.position.x, z: o.position.z, yaw: o.rotation.y });
+  /** Cars parked away from their slot this session (not driven), optionally except one vehicle. */
+  const parkedBodies = (except?: string): CarPose[] =>
+    [...entries.values()].filter((e) => e.parked && !e.driven && e.id !== except).map((e) => ({ position: e.car.root.position, rotation: e.car.root.rotation, half: e.spec.half }));
+  /** Review 7: the ride list is rebuilt only when the saved vehicles change, not every frame. */
+  let rideList: Ride[] = [heliRide];
   function placeGarageCars() {
     if (!ready) return;
     settleSlots(pool, pool.map((_, b) => city.vehicles.some((v) => v.bay === b)));
-    for (const [id, e] of entries) if (!city.vehicles.some((v) => v.id === id)) { e.car.root.removeFromParent(); entries.delete(id); }
+    for (const [id, e] of entries) if (!city.vehicles.some((v) => v.id === id)) { e.car.dispose(); entries.delete(id); }
     for (const v of city.vehicles) {
       let e = entries.get(v.id);
       if (!e) {
@@ -300,6 +305,8 @@ export function buildDistricts(parent: THREE.Group) {
         }
       }
     }
+    rideList = [...[...entries.values()].map((e) => e.ride), heliRide];
+    rideVersion++;
   }
 
   const suffix = cityTextureSuffix();
@@ -346,10 +353,16 @@ export function buildDistricts(parent: THREE.Group) {
       if (city.helicopter && heliSale) { heliSale.removeFromParent(); heliSale.geometry.dispose(); heliSale.material.dispose(); heliSale = undefined; }
     },
     get city() { return city; },
+    /** Bumped whenever rides() returns a new list. */
+    get rideVersion() { return rideVersion; },
     setQuality(q: GraphicsQuality) { quality = q; },
     /** CITY-06/08: the bought vehicles (once the kit has loaded) and the helicopter, for the traversal. */
     rides(): Ride[] {
-      return [...[...entries.values()].map((e) => e.ride), heliRide];
+      return rideList;
+    },
+    /** Review 5: storing this vehicle is refused while another car parked this session (or a live body) stands in its bay. */
+    bayTaken(id: string) {
+      return bayBlocked(city, id, [...lastBodies, ...parkedBodies(id)]);
     },
     /** A vehicle parked away from the garage this session cannot be moved from the kiosk (no jump across the city). */
     away(id: string) {
@@ -385,8 +398,9 @@ export function buildDistricts(parent: THREE.Group) {
     },
     /** Kerb slots a live body or the founder occupies now (sent with "Bring out"; the host adds saved ones). */
     apronBlocked(player: THREE.Vector3) {
-      const parked = [...entries.values()].filter((e) => e.parked && !e.driven).map((e) => ({ position: e.car.root.position, rotation: e.car.root.rotation, half: e.spec.half }));
-      return apronBoxes.flatMap((s, i) => (slotClear(s, [...lastBodies, ...parked], player) ? [] : [i]));
+      // Review 5: the helicopter counts when it stands at street level (it may land on the kerb).
+      const heliBody = heli.root.position.y < 1 ? [{ position: heli.root.position, rotation: heli.root.rotation, half: HELICOPTER_SPEC.half }] : [];
+      return apronSlotsBlocked([...lastBodies, ...parkedBodies(), ...heliBody], player);
     },
     /** What the interaction key does here: the garage kiosk, the heliport kiosk, or a plot's sign. */
     targetAt(p: THREE.Vector3): CityTarget | null {
