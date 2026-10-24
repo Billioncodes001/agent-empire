@@ -57,13 +57,14 @@ import { appPanel } from './ui/app-panel';
 import { linkedAccountsSection } from './ui/engines';
 import { productsSection } from './ui/products';
 import { voiceSetupSection } from './ui/voice-setup';
+import { maybeOfferOnboarding, onboardingSection } from './ui/onboarding';
 import { openPhone } from './ui/phone';
 import { chiefBrainSection } from './ui/chief';
 import { ENGINE_NAME, type WorkerEngine } from '../shared/engines';
 import { startUpdates, updateSettingsSection } from './update';
 import { connectionView } from './ui/continuity';
 import { setupPwa } from './ui/pwa';
-import { maybeOfferExecutionSetup, openCloudTasks, openExecutionSetup } from './ui/execution';
+import { markOfferSeen, maybeOfferExecutionSetup, openCloudTasks, openExecutionSetup } from './ui/execution';
 import { cloudSession, forgetSavedSnapshots } from './cloud/session';
 import { CloudNet } from './cloud/net';
 import { installCloudChrome, mountCloudStrip, openCloudPanel } from './cloud/ui';
@@ -373,12 +374,29 @@ window.addEventListener('offline', () => store.setOnline(false));
 setupPwa();
 
 let executionOfferChecked = false;
+let onboardingOfferChecked = false;
+const openExecutionFromAnywhere = (): void => void openExecutionSetup({ openTasks: () => openCloudTasks({ openSetup: openExecutionFromAnywhere }) });
+/** FREE-08: onboarding hooks into the existing flows (Linked accounts, Sign in to Claude, execution setup). */
+const onboardingHooks = () => ({
+  openLinkedAccounts: () => { $('btn-settings').click(); setTimeout(() => document.querySelector('.linked-accounts')?.scrollIntoView({ block: 'start' }), 300); },
+  signInToClaude: () => { closeAllModals(); signInToClaude(); },
+  openExecution: openExecutionFromAnywhere,
+  markExecutionOfferSeen: markOfferSeen,
+  cloud: !!cloudNet,
+});
 function offerExecutionWhenFree() {
   // Waits for character and founding to finish; retried whenever the last dialog closes.
   if (cloudNet || executionOfferChecked || !store.empire.setup.completed || modalOpen()) return;
+  // FREE-08: onboarding first (once per page load, only when the host offers it: new installs after founding). Its
+  // Workers step contains "Where agents run"; the execution offer is marked seen only once that step is answered (review
+  // 3), so closing onboarding early still brings the execution offer when the dialog closes.
+  if (!onboardingOfferChecked) {
+    onboardingOfferChecked = true;
+    void maybeOfferOnboarding(onboardingHooks()).then((shown) => { if (!shown) offerExecutionWhenFree(); });
+    return;
+  }
   executionOfferChecked = true;
-  const openSetup = (): void => void openExecutionSetup({ openTasks: () => openCloudTasks({ openSetup }) });
-  void maybeOfferExecutionSetup(openSetup);
+  void maybeOfferExecutionSetup(openExecutionFromAnywhere);
 }
 onModalChange((open) => {
   if (!open) setTimeout(offerExecutionWhenFree, 0);
@@ -1295,7 +1313,7 @@ $('btn-settings').addEventListener('click', () =>
     },
     editProfile,
     () => sound.ding('done'),
-    combineSections(appPanel(net), voiceSetupSection(), linkedAccountsSection({ onSignIn: () => { closeAllModals(); signInToClaude(); } }), productsSection(), chiefBrainSection(), updateSettingsSection(updateService)),
+    combineSections(appPanel(net), onboardingSection(onboardingHooks()), voiceSetupSection(), linkedAccountsSection({ onSignIn: () => { closeAllModals(); signInToClaude(); } }), productsSection(), chiefBrainSection(), updateSettingsSection(updateService)),
   ),
 );
 

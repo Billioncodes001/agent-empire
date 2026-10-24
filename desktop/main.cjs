@@ -403,6 +403,7 @@ async function startLocal(project) {
       project,
       runtimeDir: path.join(__dirname, 'runtime'),
       credentials: () => vault.read(),
+      secrets: vault.notifySecrets(),
       port: c.localProject === project ? c.localPort : undefined,
     });
   localSession = await localDeviceSession(localHost, deviceName(), (url, init) => net.fetch(url, init));

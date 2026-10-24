@@ -387,6 +387,13 @@ export class Ledger {
     return { total: { ...this.total }, today: { ...(this.days[day] ?? zeroUsage()) }, day, budget: this.opts.budget, pauseHiring: this.opts.pauseHiring };
   }
 
+  /** FREE-08: the budget saved in onboarding/Settings changed (a --budget or env budget is never replaced). */
+  setBudget(opts: LedgerOptions) {
+    this.opts = { ...opts };
+    this.warnedDay = '';
+    this.emit();
+  }
+
   get overBudget(): boolean {
     return this.opts.budget !== undefined && (this.days[localDay()]?.cost ?? 0) >= this.opts.budget;
   }
