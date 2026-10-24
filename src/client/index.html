@@ -44,6 +44,10 @@
     </style>
   </head>
   <body>
+    <!-- Shown only when this page is opened from disk: its stylesheet (which hides .file-open-note) cannot load. -->
+    <div class="file-open-note" role="alert" style="position:fixed;top:0;left:0;right:0;z-index:2147483000;margin:0;padding:14px 16px;background:#14211f;color:#f2efe6;border-bottom:1px solid #9bd1ba66;font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif">
+      <strong>Agent Empire can't run from a file.</strong> Open it through your office address instead (the address the office server prints when it starts, for example <code>http://localhost:4610</code>), or use the installed app.
+    </div>
     <div id="splash" aria-busy="true">
       <div class="splash-inner">
         <svg class="splash-mark" viewBox="120 70 272 300" aria-hidden="true">
