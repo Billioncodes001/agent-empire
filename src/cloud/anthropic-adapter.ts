@@ -10,7 +10,7 @@ import { GitHubClient, GitHubError } from './store.js';
 import { AnthropicManaged, type ProviderCredentials } from '../server/providers/anthropic-managed.js';
 import { provisionAnthropicExecution, type ProvisionResult, type WorkerModel } from './provisioning.js';
 import { DispatchFailure, type DispatchRequest, type ProviderAdapter, type ProviderObservation } from './provider.js';
-import { utcDay, type CloudExecution, type EventCursorState } from './schema.js';
+import { utcDay, type AnthropicExecution, type CloudExecution, type EventCursorState } from './schema.js';
 
 const MAX_EVENT_PAGES = 5;
 
@@ -33,14 +33,16 @@ export class AnthropicCloudAdapter implements ProviderAdapter {
     this.now = options.now ?? Date.now;
   }
 
-  private config(execution: CloudExecution, budgetCents: number): ExecutionConfig {
+  private config(execution: AnthropicExecution, budgetCents: number): ExecutionConfig {
     return { schemaVersion: 1, completed: true, mode: 'anthropic_cloud', repository: execution.repository, anthropic: execution.anthropic, githubAuth: 'host_token', limits: { maxConcurrent: 1, perTaskBudgetCents: budgetCents, dailyBudgetCents: budgetCents } };
   }
 
   async dispatch(request: DispatchRequest): Promise<{ sourceCommit: string; observation: ProviderObservation }> {
+    if (request.execution.provider !== 'anthropic') throw new DispatchFailure(false, 'This Empire does not run jobs on Anthropic Managed Agents.');
     if (!this.canDispatch) throw new DispatchFailure(false, 'Anthropic API key or project GitHub token is not configured in the state repository secrets.');
-    const config = this.config(request.execution, request.budgetCents);
-    const key = JSON.stringify([request.execution.repository, request.execution.anthropic]);
+    const execution = request.execution;
+    const config = this.config(execution, request.budgetCents);
+    const key = JSON.stringify([execution.repository, execution.anthropic]);
     let prepared: { agentVersion: number; sourceCommit: string };
     try {
       let check = this.checked.get(key);

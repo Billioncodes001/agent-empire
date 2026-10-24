@@ -23,6 +23,7 @@ import { advanceEconomy, applyEmpireAction, rewardAcceptedJob, settleCapMs, sync
 import { intentIdFromPath, parseIntent, sortIntents, IntentError, type CloudIntent } from './intents.js';
 import { DispatchFailure, ProvisionError, type ProviderAdapter, type ProviderObservation, type ProvisionResult } from './provider.js';
 import { SITES } from '../shared/empire.js';
+import { isMoneyEngine } from './actions-spec.js';
 import { DEFAULT_WORKER_MODEL, WORKER_ENVIRONMENT, workerModelLabel } from './worker-spec.js';
 import {
   clone, PROVISION_RETRY_MS, FINAL_STATUSES, holdsSlot, LIMITS, parseStateFiles, promptHash, promptPreview, PROMPT_STATUSES, REVIEW_STATUSES, serializeState, sessionLive, SLOT_STATUSES, STATE_FILES, utcDay,
@@ -48,11 +49,14 @@ function spend(state: CloudState, entry: SpendEntry) {
   if (entry.kind === 'reserved') day.reservedCents += entry.cents;
   if (entry.kind === 'released') day.reservedCents = Math.max(0, day.reservedCents - entry.cents);
   if (entry.kind === 'cost_observed') day.observedCostCents += entry.cents;
+  if (entry.kind === 'cost_estimated') day.estimatedCostCents = (day.estimatedCostCents ?? 0) + entry.cents;
   const days = Object.keys(state.ledger.days).sort();
   for (const old of days.slice(0, Math.max(0, days.length - LIMITS.spendDays))) delete state.ledger.days[old];
 }
 function releaseReservation(state: CloudState, job: CloudJob, now: number) {
   if (!job.reservation) return;
+  // A run-caps reservation (free and subscription GitHub Actions runs) holds no money and never entered the ledger.
+  if (job.reservation.basis === 'run_caps') { delete job.reservation; return; }
   spend(state, { at: now, jobId: job.id, kind: 'released', cents: job.reservation.cents, day: job.reservation.day, basis: 'per_job_allowance_estimate' });
   delete job.reservation;
 }
@@ -132,7 +136,7 @@ function applyOne(state: CloudState, intent: CloudIntent, ctx: TickContext): { o
         ...(input.site ? { site: input.site } : {}), intentId: intent.id,
         createdAt: ctx.now, updatedAt: ctx.now, configRevision: input.configRevision, authorizedCents: meta.limits.perTaskBudgetCents,
         status: 'queued', message: meta.lifecycle.status === 'running' ? 'Queued. The coordinator dispatches within your concurrency and daily limits.' : 'Queued while the Empire is shut down. Nothing is dispatched until you start it again.',
-        provider: 'anthropic', repository: clone(execution.repository), branch: `agent-empire/task-${input.id}`, outputs: 'unverified',
+        provider: execution.provider, repository: clone(execution.repository), branch: `agent-empire/task-${input.id}`, outputs: 'unverified',
       });
       journal(state, ctx, 'job', `${input.title}: queued (allowance ${meta.limits.perTaskBudgetCents} cents, estimate).`, { intentId: intent.id, jobId: input.id });
       return { outcome: 'applied' };
@@ -414,10 +418,12 @@ function observeInto(state: CloudState, ctx: TickContext, job: CloudJob, observa
   if (cursor) job.cursor = cursor;
   if (observation.costCents !== undefined) {
     const previous = job.cost?.amountCents ?? 0;
-    if (observation.costCents > previous || !job.cost) {
-      const amount = Math.max(previous, observation.costCents);
-      if (amount > previous) spend(state, { at: ctx.now, jobId: job.id, kind: 'cost_observed', cents: amount - previous, day: utcDay(ctx.now), basis: 'provider_reported_list_cost' });
-      job.cost = { amountCents: amount, currency: 'USD', observedAt: ctx.now, basis: 'provider_reported_list_cost' };
+    const basis = observation.costBasis ?? 'provider_reported_list_cost';
+    if (observation.costCents > previous || !job.cost || job.cost.basis !== basis) {
+      // Free and Claude-plan runs always record 0 (never a US$ figure for a plan); estimates stay out of observed costs.
+      const amount = basis === 'free_run' || basis === 'claude_plan' ? 0 : Math.max(previous, observation.costCents);
+      if (amount > previous) spend(state, { at: ctx.now, jobId: job.id, kind: basis === 'engine_reported_estimate' ? 'cost_estimated' : 'cost_observed', cents: amount - previous, day: utcDay(ctx.now), basis });
+      job.cost = { amountCents: amount, currency: 'USD', observedAt: ctx.now, basis };
     }
   }
   const closed = observation.status === 'cancelled' || observation.status === 'failed';
@@ -506,18 +512,24 @@ export function planDispatch(input: CloudState, ctx: TickContext, canDispatch: b
   const { meta } = state;
   if (meta.lifecycle.status !== 'running') { queued.forEach(job => wait(job, 'Queued while the Empire is shut down. Nothing is dispatched until you start it again.')); return { state, planned }; }
   if (!meta.execution) { queued.forEach(job => wait(job, 'Waiting: cloud execution is not configured.')); return { state, planned }; }
-  if (!canDispatch) { queued.forEach(job => wait(job, 'Waiting: the provider API key or project GitHub token is missing from the state repository secrets.')); return { state, planned }; }
+  if (!canDispatch) { queued.forEach(job => wait(job, meta.execution?.provider === 'github-actions' ? 'Waiting: the project GitHub token (PROJECT_GITHUB_TOKEN, with Actions read and write on the project) is missing from the state repository secrets.' : 'Waiting: the provider API key or project GitHub token is missing from the state repository secrets.')); return { state, planned }; }
+  // FREE-04: free and Claude-subscription runs in GitHub Actions reserve no money. Their budget is the job workflow's
+  // time and turn caps, recorded as a zero-cent run-caps reservation that still holds the concurrency slot.
+  const execution = meta.execution;
+  const capsOnly = execution.provider === 'github-actions' && !isMoneyEngine(execution.actions.engine);
   let active = state.jobs.jobs.filter(holdsSlot).length;
   let reserved = reservedToday(state, ctx.now);
   for (const job of queued) {
     if (active >= meta.limits.maxConcurrent) { wait(job, `Waiting for a free slot (${meta.limits.maxConcurrent} concurrent).`); continue; }
-    const cents = Math.min(meta.limits.perTaskBudgetCents, job.authorizedCents);
-    if (reserved + cents > meta.limits.dailyBudgetCents) { wait(job, 'Waiting: today\'s allowance is fully reserved (UTC day). This is an admission limit, not a billing meter.'); continue; }
+    const cents = capsOnly ? 0 : Math.min(meta.limits.perTaskBudgetCents, job.authorizedCents);
+    if (!capsOnly && reserved + cents > meta.limits.dailyBudgetCents) { wait(job, 'Waiting: today\'s allowance is fully reserved (UTC day). This is an admission limit, not a billing meter.'); continue; }
     const day = utcDay(ctx.now);
-    job.reservation = { cents, day, basis: 'per_job_allowance_estimate' };
+    job.reservation = { cents, day, basis: capsOnly ? 'run_caps' : 'per_job_allowance_estimate' };
     job.dispatch = { runId: ctx.runId, preparedAt: ctx.now, attempts: (job.dispatch?.attempts ?? 0) + 1 };
-    spend(state, { at: ctx.now, jobId: job.id, kind: 'reserved', cents, day, basis: 'per_job_allowance_estimate' });
-    setStatus(state, ctx, job, 'dispatching', `Dispatch recorded before the paid request (reserved ${cents} cents, estimate). If this run stops, the job becomes dispatch uncertain and is never retried blindly.`);
+    if (!capsOnly) spend(state, { at: ctx.now, jobId: job.id, kind: 'reserved', cents, day, basis: 'per_job_allowance_estimate' });
+    setStatus(state, ctx, job, 'dispatching', capsOnly
+      ? `Dispatch recorded before the run starts (no money reserved: capped at ${execution.provider === 'github-actions' ? `${execution.actions.timeoutMinutes} minutes and ${execution.actions.maxTurns} turns` : ''}). If this run stops, the job becomes dispatch uncertain and is never retried blindly.`
+      : `Dispatch recorded before the paid request (reserved ${cents} cents, estimate). If this run stops, the job becomes dispatch uncertain and is never retried blindly.`);
     active++; reserved += cents; planned.push(job.id);
   }
   return { state, planned };
@@ -525,7 +537,7 @@ export function planDispatch(input: CloudState, ctx: TickContext, canDispatch: b
 
 // ---------------------------------------------------------------- phase: dispatch receipts
 
-export type DispatchResult = { jobId: string; sourceCommit: string; observation: ProviderObservation } | { jobId: string; failure: { sent: boolean; message: string } };
+export type DispatchResult = { jobId: string; sourceCommit: string; observation: ProviderObservation; cursor?: EventCursorState } | { jobId: string; failure: { sent: boolean; message: string } };
 export const MAX_DISPATCH_ATTEMPTS = 3;
 
 export function recordDispatches(input: CloudState, results: DispatchResult[], ctx: TickContext): CloudState {
@@ -545,7 +557,7 @@ export function recordDispatches(input: CloudState, results: DispatchResult[], c
       continue;
     }
     job.sourceCommit = result.sourceCommit;
-    job.cursor = {};
+    job.cursor = result.cursor ? clone(result.cursor) : {};
     journal(state, ctx, 'dispatch', `${job.title}: provider session ${result.observation.sessionId} created from ${result.sourceCommit.slice(0, 12)} on branch ${job.branch}.`, { jobId: job.id });
     applyObservation(state, ctx, job, result.observation, undefined);
   }
@@ -680,7 +692,7 @@ export async function runCoordinatorTick(deps: CoordinatorDeps): Promise<TickRep
       if (!provisionOutcome || provisionOutcome.key !== provisionKey(state)) provisionOutcome = await attemptProvisioning(state, deps.provider);
       state = recordProvisioning(state, provisionOutcome, ctx1);
     }
-    const plan = planDispatch(state, ctx1, deps.provider.canDispatch);
+    const plan = planDispatch(state, ctx1, deps.provider.canDispatchFor?.(state.meta.execution) ?? deps.provider.canDispatch);
     state = plan.state;
     const lifecycle = lifecycleStep(state, ctx1);
     economyStep(state, ctx1);

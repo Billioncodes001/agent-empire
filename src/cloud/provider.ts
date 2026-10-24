@@ -4,7 +4,7 @@
  * implement the same interface. Tests use an in-memory fake.
  */
 import type { ExecutionTask } from '../shared/execution.js';
-import type { CloudExecution, EventCursorState } from './schema.js';
+import type { CloudExecution, CostBasis, EventCursorState, ProviderId } from './schema.js';
 import type { ProvisionResult, WorkerModel } from './provisioning.js';
 export { ProvisionError, type ProvisionResult } from './provisioning.js';
 
@@ -14,6 +14,8 @@ export interface ProviderObservation {
   providerStatus?: ExecutionTask['providerStatus'];
   stopReason?: ExecutionTask['stopReason'];
   costCents?: number;
+  /** Absent means `provider_reported_list_cost` (Anthropic). GitHub Actions runs report the other bases. */
+  costBasis?: CostBasis;
   budgetCents?: number;
   message: string;
 }
@@ -33,7 +35,7 @@ export class DispatchFailure extends Error {
   constructor(readonly sent: boolean, message: string) { super(message); this.name = 'DispatchFailure'; }
 }
 export interface ProviderAdapter {
-  readonly provider: 'anthropic';
+  readonly provider: ProviderId;
   /** False when credentials are missing; the coordinator then dispatches nothing. */
   readonly canDispatch: boolean;
   /** True when the provider key is configured, so the agent and environment can be looked up or created. */
@@ -43,7 +45,10 @@ export interface ProviderAdapter {
    * starts a session. Throws ProvisionError with a user-safe message.
    */
   provision(model: WorkerModel): Promise<ProvisionResult>;
-  dispatch(request: DispatchRequest): Promise<{ sourceCommit: string; observation: ProviderObservation }>;
+  /** `cursor`: provider bookkeeping stored with the job from the start (GitHub Actions: the run's repository and caps). */
+  dispatch(request: DispatchRequest): Promise<{ sourceCommit: string; observation: ProviderObservation; cursor?: EventCursorState }>;
+  /** Whether jobs for this execution can be dispatched now. Defaults to `canDispatch`. */
+  canDispatchFor?(execution: CloudExecution | undefined): boolean;
   /** Reads status/usage events after `cursor`, then the session. Never persists model text. */
   observe(sessionId: string, cursor: EventCursorState): Promise<{ observation: ProviderObservation; cursor: EventCursorState }>;
   interrupt(sessionId: string): Promise<void>;
@@ -68,4 +73,24 @@ export class UnavailableProvider implements ProviderAdapter {
   async interrupt(): Promise<never> { throw new Error(this.reason); }
   async archive(): Promise<never> { throw new Error(this.reason); }
   async branchHead(): Promise<never> { throw new Error(this.reason); }
+}
+
+/**
+ * FREE-04: one coordinator, two kinds of execution. Routes each call to the adapter for the Empire's execution
+ * provider: dispatch and branch checks by `execution.provider`, session calls by session id (`ghrun_` runs belong to
+ * GitHub Actions, `sesn_` sessions to Anthropic). Never picks an adapter from which keys happen to exist.
+ */
+export class ProviderRouter implements ProviderAdapter {
+  readonly provider = 'anthropic' as const;
+  constructor(private adapters: { anthropic: ProviderAdapter; 'github-actions': ProviderAdapter }) {}
+  private bySession(sessionId: string) { return this.adapters[sessionId.startsWith('ghrun_') ? 'github-actions' : 'anthropic']; }
+  get canDispatch() { return this.adapters.anthropic.canDispatch || this.adapters['github-actions'].canDispatch; }
+  get canProvision() { return this.adapters.anthropic.canProvision; }
+  canDispatchFor(execution: CloudExecution | undefined) { return execution ? this.adapters[execution.provider].canDispatch : false; }
+  provision(model: WorkerModel) { return this.adapters.anthropic.provision(model); }
+  dispatch(request: DispatchRequest) { return this.adapters[request.execution.provider].dispatch(request); }
+  observe(sessionId: string, cursor: EventCursorState) { return this.bySession(sessionId).observe(sessionId, cursor); }
+  interrupt(sessionId: string) { return this.bySession(sessionId).interrupt(sessionId); }
+  archive(sessionId: string) { return this.bySession(sessionId).archive(sessionId); }
+  branchHead(execution: CloudExecution, branch: string) { return this.adapters[execution.provider].branchHead(execution, branch); }
 }
