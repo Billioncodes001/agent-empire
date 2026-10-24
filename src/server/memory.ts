@@ -12,6 +12,7 @@
  * Model-written lesson text is untrusted: bounded, refused when it holds invisible/control characters, and screened by
  * the same heuristic as the chief's prompts. CEO notes are bounded and refused on invisible characters too.
  */
+import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { Approval } from '../shared/approvals.js';
@@ -35,6 +36,8 @@ interface Stored extends Lesson {
   key?: string;
   /** Idempotency for CEO notes and edits. Server only. */
   requestId?: string;
+  /** Review fix 1: a random nonce per proposal, carried by its inbox item. Server only. */
+  nonce?: string;
 }
 
 interface StoredFile { version: 1; nextId: number; lessons: Stored[] }
@@ -188,11 +191,14 @@ export class LessonMemory {
     return {
       check: (item: Approval): string | undefined => {
         const l = item.lesson && this.find(item.lesson.lessonId);
-        if (!l) return 'This lesson no longer exists, so it cannot be approved.';
+        if (!l || !this.matches(item, l)) return 'This item is for a lesson that no longer exists, so it no longer applies.';
         if (l.status !== 'proposed') return `${l.id} is already ${l.status}, so this item no longer applies.`;
         return undefined;
       },
-      apply: (item: Approval, decision: 'approved' | 'rejected', actor: string): string => this.decide(item.lesson?.lessonId ?? '', decision, actor),
+      apply: (item: Approval, decision: 'approved' | 'rejected', actor: string): string => {
+        const l = item.lesson && this.find(item.lesson.lessonId);
+        return l && this.matches(item, l) ? this.decide(l.id, decision, actor) : '';
+      },
     };
   }
 
@@ -206,13 +212,26 @@ export class LessonMemory {
       for (const l of this.data.lessons) {
         if (l.status !== 'proposed') continue;
         const item = l.approvalId ? this.inbox.get(l.approvalId) : undefined;
-        if (!item) { this.raiseFor(l); continue; }
+        // Review fix 1: an item counts only if it was raised for exactly this proposal (a reset inbox reuses ids).
+        if (!item || !this.matches(item, l)) {
+          // A pending lesson item for the same id that does not match is retired from the inbox, never applied.
+          if (item && item.kind === 'lesson' && item.status === 'pending' && item.lesson?.lessonId === l.id) this.inbox.resolve(item.id, 'Replaced by a fresh item for this proposal.');
+          this.raiseFor(l, true);
+          continue;
+        }
         if (item.status === 'approved' || item.status === 'rejected') this.decide(l.id, item.status, item.decidedBy ?? 'CEO');
       }
     } catch { /* retried on the next tick */ }
   }
 
   // ---- internals ----
+
+  /** Review fix 1: the inbox item was raised for exactly this proposal. */
+  private matches(item: Approval, l: Stored): boolean {
+    const a = item.lesson;
+    return item.kind === 'lesson' && !!a && a.lessonId === l.id && a.text === l.text && a.scope === l.scope && (a.scopeValue ?? '') === (l.scopeValue ?? '')
+      && !!l.nonce && a.nonce === l.nonce && item.createdAt >= l.proposedAt;
+  }
 
   private decide(id: string, decision: 'approved' | 'rejected', actor: string): string {
     const l = this.find(id);
@@ -237,7 +256,7 @@ export class LessonMemory {
   }
 
   private add(fields: Pick<Stored, 'text' | 'scope' | 'scopeValue' | 'source' | 'proposedBy' | 'supersedes' | 'key' | 'requestId'>, raise = true): Stored {
-    const lesson: Stored = { id: `L${this.data.nextId++}`, status: 'proposed', proposedAt: this.now(), uses: 0, ...stripUndefined(fields) };
+    const lesson: Stored = { id: `L${this.data.nextId++}`, status: 'proposed', proposedAt: this.now(), uses: 0, nonce: randomBytes(8).toString('hex'), ...stripUndefined(fields) };
     this.data.lessons.push(lesson);
     this.trim();
     this.save();
@@ -245,15 +264,17 @@ export class LessonMemory {
     return lesson;
   }
 
-  private raiseFor(l: Stored) {
+  private raiseFor(l: Stored, replace = false) {
     if (!this.inbox || l.status !== 'proposed' || this.storageError) return;
+    // A missing or mismatched item gets a fresh proposal nonce, so the new item can never collide with an old one.
+    if (!l.nonce || replace) { l.nonce = randomBytes(8).toString('hex'); delete l.approvalId; this.save(); }
     const old = l.supersedes ? this.find(l.supersedes) : undefined;
     const id = this.inbox.raise({
-      source: `lesson:${l.id}`, jobId: l.source.jobId ?? '',
+      source: `lesson:${l.id}:${l.nonce}`, jobId: l.source.jobId ?? '',
       title: old ? `Edit of lesson ${old.id}` : `Lesson ${l.id}: ${l.text.length > 70 ? `${l.text.slice(0, 67)}…` : l.text}`,
       detail: `${l.proposedBy.startsWith('Model-backed') ? 'The chief proposes' : `${l.proposedBy} proposes`} a ${l.scope === 'company' ? 'company-wide' : l.scope} lesson from ${SOURCE_LABEL[l.source.kind].toLowerCase()}. Approving makes it planning context for the chief; nothing else happens.`,
       lesson: { lessonId: l.id, text: l.text, scope: l.scope, ...(l.scopeValue ? { scopeValue: l.scopeValue } : {}), source: structuredClone(l.source), proposedBy: l.proposedBy,
-        ...(old ? { supersedes: old.id, supersedesText: old.text } : {}) },
+        ...(old ? { supersedes: old.id, supersedesText: old.text } : {}), nonce: l.nonce },
     });
     if (id && l.approvalId !== id) { l.approvalId = id; this.save(); }
   }
@@ -336,6 +357,6 @@ function stripUndefined<T extends object>(o: T): T {
   return Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as T;
 }
 
-function publicLesson({ key: _k, requestId: _r, ...l }: Stored): Lesson {
+function publicLesson({ key: _k, requestId: _r, nonce: _n, ...l }: Stored): Lesson {
   return structuredClone(l);
 }

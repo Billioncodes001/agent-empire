@@ -191,7 +191,12 @@ export class ApprovalInbox {
   raiseLesson(fields: { source: string; jobId: string; title: string; detail: string; lesson: NonNullable<Approval['lesson']> }): string | undefined {
     if (this.storageError) return undefined;
     const existing = this.data.items.find((i) => i.source === fields.source);
-    if (existing) return existing.id;
+    // Review fix 1: reuse an item only when it is this very proposal (same lesson id, text, scope and nonce).
+    if (existing) {
+      const a = existing.lesson, b = fields.lesson;
+      const same = existing.kind === 'lesson' && !!a && a.lessonId === b.lessonId && a.text === b.text && a.scope === b.scope && (a.scopeValue ?? '') === (b.scopeValue ?? '') && !!b.nonce && a.nonce === b.nonce;
+      return same ? existing.id : undefined;
+    }
     this.add({ kind: 'lesson', createdAt: this.now(), ...structuredClone(fields) });
     this.trim();
     try { this.save(); } catch { return undefined; }

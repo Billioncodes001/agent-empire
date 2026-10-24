@@ -25,6 +25,11 @@ export interface LessonApproval {
   /** An edit: the lesson it replaces once approved, and that lesson's current text. */
   supersedes?: string;
   supersedesText?: string;
+  /**
+   * Review fix 1: the proposal's random nonce. Lesson ids repeat if lessons.json is reset, so a decision applies only to
+   * the exact proposal (id, text, scope and nonce) it was raised for.
+   */
+  nonce?: string;
 }
 
 /**
