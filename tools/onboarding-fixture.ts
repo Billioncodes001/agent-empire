@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { OnboardingError, OnboardingService } from '../src/server/onboarding.js';
 import { FileSecretStore } from '../src/server/secrets.js';
-import { ntfyTransport, resolveBudget, resolveEmail, resolveNtfy, resolveTelegram } from '../src/server/notify.js';
+import { guardedLookup, ntfyTransport, refusedTarget, resolveBudget, resolveEmail, resolveNtfy, resolveTelegram } from '../src/server/notify.js';
 import { smtpTransport } from '../src/server/email.js';
 import { telegramTransport } from '../src/server/telegram.js';
 import { shouldOffer, type ChannelId, type ChannelView } from '../src/shared/onboarding.js';
@@ -94,14 +94,14 @@ export async function onboardingFixture(mode: 'new' | 'legacy', founded: () => b
       if (!c) throw new OnboardingError(400, 'Save an ntfy server and topic first.');
       if (c.server !== ntfy.base) throw new OnboardingError(400, `Fixture only: use the fake ntfy server ${ntfy.base}.`);
       lastTest.set(id, Date.now());
-      await ntfyTransport(c).send({ from: 'x@fixture.invalid', to: 'x@fixture.invalid', subject, text });
+      await ntfyTransport(c, { guard: { allowLoopback: true } }).send({ from: 'x@fixture.invalid', to: 'x@fixture.invalid', subject, text });
       return `Sent a test to the ntfy topic ${c.topic}.`;
     }
     const c = resolveEmail(env, s, secrets).config;
     if (!c) throw new OnboardingError(400, 'Save the SMTP server and the address to notify first.');
     if (c.smtp.host !== '127.0.0.1' || c.smtp.port !== smtp.port) throw new OnboardingError(400, `Fixture only: use the fake SMTP server 127.0.0.1:${smtp.port}.`);
     lastTest.set(id, Date.now());
-    await smtpTransport(c.smtp).send({ from: c.from, to: c.to, subject, text });
+    await smtpTransport(c.smtp, { refuse: (h) => refusedTarget(h, true), lookup: guardedLookup(true) }).send({ from: c.from, to: c.to, subject, text });
     return `Sent a test email to ${c.to}.`;
   };
 
@@ -115,7 +115,7 @@ export async function onboardingFixture(mode: 'new' | 'legacy', founded: () => b
       let raw = ''; for await (const chunk of req) raw += chunk;
       let body: unknown; try { body = raw.trim() ? JSON.parse(raw) : {}; } catch { json(res, 400, { error: 'Expected a JSON request.' }); return true; }
       if (p === '/api/onboarding/progress' && req.method === 'POST') { service.updateProgress(body); json(res, 200, view()); return true; }
-      if (p === '/api/settings' && req.method === 'PUT') { service.updateSettings(body); json(res, 200, view()); return true; }
+      if (p === '/api/settings' && req.method === 'PUT') { await service.checkTargets(body); service.updateSettings(body); json(res, 200, view()); return true; }
       const t = /^\/api\/settings\/test\/(telegram|ntfy|email)$/.exec(p);
       if (t && req.method === 'POST') {
         try { json(res, 200, { ok: true, message: await test(t[1] as ChannelId) }); }

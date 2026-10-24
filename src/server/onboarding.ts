@@ -10,7 +10,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { writeJsonAtomic } from './persistence.js';
 import { invalidSecret, type SecretStore } from './secrets.js';
-import { refusedTarget } from './notify.js';
+import { checkResolvedTarget, refusedTarget, type Resolver } from './notify.js';
 import {
   DEFAULT_SETTINGS, ONBOARDING_STEPS, SECRET_NAMES, advance, dismiss, goTo, initialProgress, isStep, reopen,
   validateApprovals, validateNotifications, validateProfile,
@@ -144,6 +144,24 @@ export class OnboardingService {
   }
 
   /**
+   * Re-review 2: on a server install a changed ntfy server or SMTP host is resolved and every address checked before
+   * saving (the transports check again, and pin the address, when they connect). Tests inject `resolve`.
+   */
+  async checkTargets(body: unknown, resolve?: Resolver): Promise<void> {
+    if (!isObj(body) || !isObj(body.notifications)) return;
+    const n = body.notifications, cur = this.saved.notifications;
+    const hosts: [string, string][] = [];
+    if (isObj(n.ntfy) && typeof n.ntfy.server === 'string' && n.ntfy.server.trim() && n.ntfy.server.trim().replace(/\/+$/, '') !== cur.ntfy.server) {
+      try { hosts.push(['ntfy server', new URL(n.ntfy.server.trim()).hostname]); } catch { /* validation reports it */ }
+    }
+    if (isObj(n.email) && typeof n.email.host === 'string' && n.email.host.trim() && n.email.host.trim() !== cur.email.host) hosts.push(['SMTP server', n.email.host.trim()]);
+    for (const [label, host] of hosts) {
+      try { await checkResolvedTarget(host, this.allowLocalTargets, resolve); }
+      catch (e) { throw new OnboardingError(400, `${label}: ${(e as Error).message}`); }
+    }
+  }
+
+  /**
    * Applies a partial update. `secrets` maps a name to a new value, or null to remove it; absent names are kept.
    * Everything is validated before anything is written. Returns which parts changed so the host re-applies only those.
    */
@@ -176,6 +194,12 @@ export class OnboardingService {
     // in the same request; otherwise nothing is saved.
     const supplied = (n: SecretName) => secretOps.some(([name]) => name === n);
     const present = this.secrets.names();
+    // Re-review 3: an unreadable store reports nothing as present, which would skip the guard below; refuse instead.
+    const ntfyMoved = nb.ntfy.server !== bb.ntfy.server;
+    const smtpMoved = nb.email.host !== bb.email.host || nb.email.port !== bb.email.port || nb.email.security !== bb.email.security;
+    const storeError = this.secrets.error?.();
+    if (storeError && (ntfyMoved || smtpMoved))
+      throw new OnboardingError(409, 'Saved secrets cannot be read right now, so the ntfy server and the SMTP server, port and security cannot be changed (a saved token or password might follow them). Fix the secret store first.');
     if (present.ntfyToken && !supplied('ntfyToken') && nb.ntfy.server !== bb.ntfy.server)
       throw new OnboardingError(400, 'You changed the ntfy server. Enter its access token again (or remove the saved one) so it is never sent to a new server.');
     if (present.smtpPassword && !supplied('smtpPassword') && (nb.email.host !== bb.email.host || nb.email.port !== bb.email.port || nb.email.security !== bb.email.security))

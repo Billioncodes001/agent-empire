@@ -218,6 +218,12 @@ export interface SmtpOptions {
   /** Tests route the plain connection to a local fake server. */
   connect?: (cfg: SmtpConfig) => net.Socket;
   tls?: tls.ConnectionOptions;
+  /**
+   * FREE-08 re-review 2: a target guard for saved settings. `refuse` checks the host as written; `lookup` resolves it,
+   * checks every answer and connects to the checked address (pinned). TLS still verifies the configured host name.
+   */
+  refuse?: (host: string) => string | undefined;
+  lookup?: net.LookupFunction;
 }
 
 export function smtpTransport(cfg: SmtpConfig, opts: SmtpOptions = {}): MailTransport {
@@ -228,7 +234,10 @@ async function smtpSend(cfg: SmtpConfig, m: MailMessage, opts: SmtpOptions): Pro
   if (!ADDRESS.test(m.from) || !ADDRESS.test(m.to)) throw new SmtpError('Email addresses are invalid');
   const timeoutMs = opts.timeoutMs ?? 20_000;
   const servername = net.isIP(cfg.host) ? undefined : cfg.host;
-  let socket: net.Socket = cfg.secure ? tls.connect({ host: cfg.host, port: cfg.port, servername, ...opts.tls }) : opts.connect?.(cfg) ?? net.connect({ host: cfg.host, port: cfg.port });
+  const refused = opts.refuse?.(cfg.host);
+  if (refused) throw new SmtpError(refused);
+  const lookup = opts.lookup ? { lookup: opts.lookup } : {};
+  let socket: net.Socket = cfg.secure ? tls.connect({ host: cfg.host, port: cfg.port, servername, ...lookup, ...opts.tls }) : opts.connect?.(cfg) ?? net.connect({ host: cfg.host, port: cfg.port, ...lookup });
   // A deadline for the whole conversation as well as for each silence.
   const deadline = setTimeout(() => socket.destroy(new SmtpError('SMTP timed out')), timeoutMs * 3);
   let dataWritten = false;

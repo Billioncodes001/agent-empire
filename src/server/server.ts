@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { existsSync as fileExists, readFileSync, renameSync } from 'node:fs';
 import { OnboardingError, OnboardingService, type SettingsChange } from './onboarding.js';
 import { FileSecretStore, type SecretStore } from './secrets.js';
-import { ntfyTransport, resolveBudget, resolveEmail, resolveNtfy, resolveTelegram } from './notify.js';
+import { guardedLookup, ntfyTransport, refusedTarget, resolveBudget, resolveEmail, resolveNtfy, resolveTelegram, type Resolver } from './notify.js';
 import { shouldOffer, type ChannelId, type ChannelView, type OnboardingView, type Source } from '../shared/onboarding.js';
 import { chiefCommands } from './chief-commands.js';
 import { Outreach, OutreachError, outreachConfig, type OutreachConfig } from './outreach.js';
@@ -218,7 +218,7 @@ export interface ServerRuntime {
    * FREE-08 onboarding: a test environment (instead of process.env), a secret store (the desktop's vault), and for tests
    * only a fake Telegram API base and fetch. `start` lets saved/env channels deliver even with backgroundServices off.
    */
-  notify?: { env?: NodeJS.ProcessEnv; secrets?: SecretStore; telegramApiBase?: string; fetch?: typeof fetch; start?: boolean; allowLocalTargets?: boolean };
+  notify?: { env?: NodeJS.ProcessEnv; secrets?: SecretStore; telegramApiBase?: string; resolve?: Resolver; start?: boolean; allowLocalTargets?: boolean };
 }
 export async function startServer(cfg: Config, runtime: ServerRuntime = {}) {
   const releaseHost = acquireHostLock(cfg.dataDir);
@@ -633,8 +633,13 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     try { if (JSON.parse(readFileSync(file, 'utf8'))?.binding === binding) return; } catch { /* unreadable: set aside too */ }
     renameSync(file, path.join(cfg.dataDir, `telegram.previous-${Date.now()}.json`));
   };
-  const applyChannels = async (which: Set<ChannelId>, fromSettings = false) => {
-    const saved = onboarding.settings();
+  // Re-review 2: saved targets are checked as written, resolved, and connected to only at the checked address.
+  const allowLocal = !!runtime.notify?.allowLocalTargets;
+  const ntfyGuard = { guard: { allowLoopback: allowLocal, resolve: runtime.notify?.resolve } };
+  const smtpGuard = { refuse: (host: string) => refusedTarget(host, allowLocal), lookup: guardedLookup(allowLocal, runtime.notify?.resolve) };
+  const bridges = new Set<TelegramBridge>();
+  const applyChannelsNow = async (which: Set<ChannelId>, fromSettings = false) => {
+    let saved = onboarding.settings();
     const fromName = saved.profile.name || undefined;
     if (which.has('email')) {
       email?.stop(); email = undefined; emailError = undefined;
@@ -644,7 +649,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
         const r = resolveEmail(notifyEnv, saved, secrets);
         channelSource.email = { source: r.source, error: r.error };
         emailError = r.error;
-        if (r.config && deliver) email = new EmailNotifier(cfg.dataDir, smtpTransport(r.config.smtp), { to: r.config.to, from: r.config.from }, { fromName });
+        if (r.config && deliver) email = new EmailNotifier(cfg.dataDir, smtpTransport(r.config.smtp, r.source === 'saved' ? smtpGuard : {}), { to: r.config.to, from: r.config.from }, { fromName });
       }
       email?.observe(desk.state().items);
     }
@@ -652,7 +657,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
       ntfy?.stop(); ntfy = undefined;
       const r = resolveNtfy(notifyEnv, saved, secrets);
       channelSource.ntfy = { source: r.source, error: r.error };
-      if (r.config && deliver) ntfy = new EmailNotifier(cfg.dataDir, ntfyTransport(r.config, runtime.notify?.fetch), { to: 'ntfy@agent-empire.local', from: 'ntfy@agent-empire.local' }, { file: 'ntfy-notify.json', channel: 'ntfy' });
+      if (r.config && deliver) ntfy = new EmailNotifier(cfg.dataDir, ntfyTransport(r.config, r.source === 'saved' ? ntfyGuard : {}), { to: 'ntfy@agent-empire.local', from: 'ntfy@agent-empire.local' }, { file: 'ntfy-notify.json', channel: 'ntfy' });
       ntfy?.observe(desk.state().items);
     }
     if (which.has('telegram')) {
@@ -660,6 +665,8 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
       old?.stop(); telegram = undefined; telegramError = undefined;
       // Review 11: the old bridge's in-flight poll finishes before its checkpoint is moved or a new bridge starts.
       if (old) await old.idle();
+      // Re-review 1: what was saved while waiting wins.
+      saved = onboarding.settings();
       let config: TelegramConfig | undefined;
       if (runtime.telegram === false) channelSource.telegram = { source: 'off' };
       else if (runtime.telegram) { channelSource.telegram = { source: 'runtime' }; config = runtime.telegram.config; }
@@ -674,11 +681,17 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
       }
       if (config) {
         telegram = new TelegramBridge(cfg.dataDir, config, chiefTelegram, tgTransport(config.token));
+        bridges.add(telegram);
         if (listening) telegram.start();
       }
+      // Exactly one bridge may run: any other one is stopped.
+      for (const b of bridges) if (b !== telegram) { b.stop(); bridges.delete(b); }
     }
   };
-  void applyChannels(new Set(['telegram', 'ntfy', 'email'])); // nothing to wait for at start-up (no old bridge)
+  // Re-review 1: one application at a time, in order. The start-up one has no old bridge, so it completes synchronously.
+  let channelChain: Promise<void> = applyChannelsNow(new Set(['telegram', 'ntfy', 'email']));
+  const applyChannels = (which: Set<ChannelId>, fromSettings = false) =>
+    (channelChain = channelChain.catch(() => {}).then(() => applyChannelsNow(which, fromSettings)));
   const applySettings = async (changed: Set<SettingsChange>) => {
     if (changed.has('budget') && hostBudget.usd === undefined) {
       const b = resolveBudget(hostBudget, onboarding.settings());
@@ -739,10 +752,10 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
       const config = resolveNtfy(notifyEnv, saved, secrets).config;
       if (!config) throw new OnboardingError(400, channelSource.ntfy.error ?? 'Save an ntfy server and topic first.');
       lastTest.set(id, now);
-      await ntfyTransport(config, runtime.notify?.fetch).send({ from: 'ntfy@agent-empire.local', to: 'ntfy@agent-empire.local', subject, text });
+      await ntfyTransport(config, resolveNtfy(notifyEnv, saved, secrets).source === 'saved' ? ntfyGuard : {}).send({ from: 'ntfy@agent-empire.local', to: 'ntfy@agent-empire.local', subject, text });
       return `Sent a test to the ntfy topic ${config.topic}.`;
     }
-    const setup = runtime.email === false ? undefined : runtime.email ? runtime.email : (() => { const c = resolveEmail(notifyEnv, saved, secrets).config; return c && { transport: smtpTransport(c.smtp), to: c.to, from: c.from }; })();
+    const setup = runtime.email === false ? undefined : runtime.email ? runtime.email : (() => { const r = resolveEmail(notifyEnv, saved, secrets), c = r.config; return c && { transport: smtpTransport(c.smtp, r.source === 'saved' ? smtpGuard : {}), to: c.to, from: c.from }; })();
     if (!setup) throw new OnboardingError(400, channelSource.email.error ?? 'Save the SMTP server and the address to notify first.');
     lastTest.set(id, now);
     await setup.transport.send({ from: setup.from, to: setup.to, subject, text, ...(saved.profile.name ? { fromName: saved.profile.name } : {}) });
@@ -1186,7 +1199,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
           let body: unknown;
           try { const raw = await readBody(req, 16_000); body = raw.trim() ? JSON.parse(raw) : {}; } catch { return send(res, 400, { error: 'Expected a JSON request.' }); }
           if (p === '/api/onboarding/progress' && req.method === 'POST') { onboarding.updateProgress(body); return send(res, 200, onboardingView()); }
-          if (p === '/api/settings' && req.method === 'PUT') { await applySettings(onboarding.updateSettings(body)); return send(res, 200, onboardingView()); }
+          if (p === '/api/settings' && req.method === 'PUT') { await onboarding.checkTargets(body, runtime.notify?.resolve); await applySettings(onboarding.updateSettings(body)); return send(res, 200, onboardingView()); }
           const test = /^\/api\/settings\/test\/(telegram|ntfy|email)$/.exec(p);
           if (test && req.method === 'POST') {
             try { return send(res, 200, { ok: true, message: await testSend(test[1] as ChannelId) }); }
