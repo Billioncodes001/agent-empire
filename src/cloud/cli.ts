@@ -4,7 +4,8 @@
  * environment; prints only non-secret progress lines.
  */
 import { AnthropicCloudAdapter } from './anthropic-adapter.js';
-import { UnavailableProvider, type ProviderAdapter } from './provider.js';
+import { GitHubActionsAdapter } from './actions-adapter.js';
+import { ProviderRouter, UnavailableProvider, type ProviderAdapter } from './provider.js';
 import { GitHubClient, GitHubStateStore } from './store.js';
 import { runCoordinatorTick } from './tick.js';
 import { readCloudView } from './client.js';
@@ -16,6 +17,21 @@ export function providerFromEnv(env: CliEnv, transport?: typeof fetch): Provider
   const githubToken = env.PROJECT_GITHUB_TOKEN?.trim() ?? '';
   if (!apiKey) return new UnavailableProvider();
   return new AnthropicCloudAdapter({ apiKey, githubToken }, transport ? { fetch: transport } : {});
+}
+
+/**
+ * FREE-04: the coordinator's adapters by execution provider. Anthropic Managed Agents needs ANTHROPIC_API_KEY; GitHub
+ * Actions needs only PROJECT_GITHUB_TOKEN (Actions read/write on the project). Engine secrets such as
+ * CLAUDE_CODE_OAUTH_TOKEN live in the project repository and are read only by the job workflow, never here.
+ */
+export function providersFromEnv(env: CliEnv, transport?: typeof fetch): ProviderRouter {
+  const githubToken = env.PROJECT_GITHUB_TOKEN?.trim() ?? '';
+  return new ProviderRouter({
+    anthropic: providerFromEnv(env, transport),
+    'github-actions': githubToken
+      ? new GitHubActionsAdapter(githubToken, transport ? { fetch: transport } : {})
+      : new UnavailableProvider('The project GitHub token (PROJECT_GITHUB_TOKEN) is not configured in the state repository secrets.'),
+  });
 }
 
 /** The state lives on the repository's default branch (AGENT_EMPIRE_STATE_BRANCH, set by the workflow). */
@@ -50,7 +66,7 @@ export async function main(argv: string[], env: CliEnv, out: (line: string) => v
     }
     const runId = `${env.GITHUB_RUN_ID ?? 'local'}-${env.GITHUB_RUN_ATTEMPT ?? '1'}`.replace(/[^A-Za-z0-9._-]/g, '').slice(0, 80) || 'local-1';
     const report = await runCoordinatorTick({
-      store, provider: providerFromEnv(env, transport), now: Date.now, runId,
+      store, provider: providersFromEnv(env, transport), now: Date.now, runId,
       allowSelfDisable: env.AGENT_EMPIRE_SELF_DISABLE === 'true', log: out,
     });
     out(JSON.stringify({ runId: report.runId, revision: report.revision, intents: report.intents.map(i => ({ id: i.id, kind: i.kind, outcome: i.outcome, reason: i.reason })), observed: report.observed, stopped: report.stopped, commits: report.commits, dispatched: report.dispatched, lifecycle: report.lifecycle, migrated: report.migrated, intentsTruncated: report.intentsTruncated, provisioning: report.provisioning }));

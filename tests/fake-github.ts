@@ -157,6 +157,8 @@ export class FakeGitHub {
       }
     }
     if (rest === '/actions/secrets/public-key') return json({ key_id: 'key-1', key: this.publicKey });
+    // Names and dates only, like GitHub: secret values are never returned.
+    if (rest === '/actions/secrets' && method === 'GET') return json({ total_count: repo.secrets.size, secrets: [...repo.secrets.keys()].map((name) => ({ name, created_at: '2026-10-20T00:00:00Z', updated_at: '2026-10-20T00:00:00Z' })) });
     if ((r = /^\/actions\/secrets\/([A-Z_]+)$/.exec(rest)) && method === 'PUT') { const had = repo.secrets.has(r[1]); repo.secrets.set(r[1], body); return json(undefined, had ? 204 : 201); }
     if ((r = /^\/actions\/workflows\/agent-empire\.yml\/(enable|disable)$/.exec(rest)) && method === 'PUT') { repo.workflow = r[1] === 'enable' ? 'active' : 'disabled_manually'; return json(undefined, 204); }
     if (rest === '/actions/workflows/agent-empire.yml' && method === 'GET') return json({ id: 1, path: '.github/workflows/agent-empire.yml', state: repo.workflow });

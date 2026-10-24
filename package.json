@@ -23,7 +23,7 @@
     "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.client.json --noEmit && tsc -p tsconfig.cloud.json --noEmit",
     "start": "node bin/agent-office.js",
     "prepare": "npm run build",
-    "test": "tsx --test tests/*.test.ts",
+    "test": "tsx --test --test-timeout=60000 tests/*.test.ts",
     "test:browser": "node tests/browser-smoke.mjs",
     "desktop:prepare": "npm run build && node tools/prepare-desktop.mjs",
     "desktop": "npm run desktop:prepare && npm start --prefix desktop",

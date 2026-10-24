@@ -8,11 +8,16 @@ import { BridgeError } from '../native';
 import {
   actionsEstimate, blockers, CLOUD_STEPS, DEFAULT_LIMITS, dollars, INTERVALS, LIMIT_BOUNDS, linkedProviders, MAX_REPOS, parseCents, progress, PROVIDER_NAMES, reduce, repoKey,
   STATE_REPO_NAME, validateProjectToken, validateProviderKey, type Action, type ProviderId, type RepoRef, type SetupState, type Step,
+  actionsSettingsFor, ENGINE_CHOICES, jobMinutesNote, jobMinutesCap, type EngineChoice,
 } from './model';
+import { CPU_MODEL, JOB_PINS, requiredSecret, SECRETS, subscriptionChecklist } from '../../cloud/actions-spec';
+import { checkJobSecret } from '../../cloud/actions-setup';
+import { GitHubClient as CloudGitHubClient } from '../../cloud/store';
+import { GITHUB_API, githubApiBase } from '../cloud/api-base';
 import { PROJECT_TOKEN_GUIDANCE } from '../../cloud/installer';
 import { defaultDeviceName, LoginFailure, parseServerAddress, revokeDevice, signInToServer, type ServerSession } from './server-login';
 import { GitHubClient, GitHubError, type RepoListing } from './github';
-import { CloudSetupError, createEmpire, CREATE_STEPS, executionPlan, type CreateStep, type StateRepo } from './cloud-setup';
+import { ACTIONS_CREATE_STEPS, CloudSetupError, createEmpire, CREATE_STEPS, executionPlan, type CreateStep, type StateRepo } from './cloud-setup';
 import { GITHUB_NEW_STATE_REPO_URL, GITHUB_SCOPES, GITHUB_TOKEN_URL, PROVIDER_KEY_URLS } from './config';
 import { dismissKeyboard, isTouchDevice, trackKeyboard } from '../keyboard';
 
@@ -123,7 +128,7 @@ const STEP_TITLES: Record<Step, string> = {
   server: 'Connect your server',
   github: 'Link your GitHub',
   repos: 'Choose your projects',
-  providers: 'Add your AI keys',
+  providers: 'Choose your cloud engine',
   limits: 'Set spending limits',
   review: 'Review your Empire',
   create: 'Creating your Empire',
@@ -590,7 +595,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
       const search = el('input', { class: 'su-input', type: 'search', placeholder: 'Filter repositories', 'aria-label': 'Filter repositories', autocomplete: 'off', oninput: () => draw() });
       const more = el('button', { type: 'button', class: 'su-btn su-ghost su-small', hidden: true, onclick: () => void load() }, 'Load more');
       const count = el('span', { class: 'su-chip', 'aria-live': 'polite' });
-      const next = primary('Add AI keys', () => dispatch({ type: 'next' }));
+      const next = primary('Choose engine', () => dispatch({ type: 'next' }));
       if (repoCache.login !== state.github.login) Object.assign(repoCache, { login: state.github.login, repos: [], page: 0, more: true, error: undefined });
 
       function draw() {
@@ -688,29 +693,128 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
       const ptErr = el('p', { class: 'su-field-error', id: 'su-project-token-e', 'aria-live': 'polite' });
       pt.setAttribute('aria-describedby', ptErr.id);
       const projectRow = el('div', { class: 'su-provider' },
-        el('div', { class: 'su-provider-head' }, icon(ICONS.github, 'su-inline-ico'), el('label', { for: pt.id, text: 'Project access token (optional now)' }), external('Create one', GITHUB_TOKEN_URL)),
+        el('div', { class: 'su-provider-head' }, icon(ICONS.github, 'su-inline-ico'), el('label', { for: pt.id, text: 'Project access token (required for GitHub Actions engines)' }), external('Create one', GITHUB_TOKEN_URL)),
         el('div', { class: 'su-row' }, pt),
         ptErr,
         el('details', { class: 'su-details' }, el('summary', { text: 'What this token is for and how to scope it' }),
           el('p', { class: 'su-note', text: 'Agents clone your project and push their work to a new branch with this token. Without it, jobs can’t reach your projects; you can add it later by running setup again.' }),
           el('ol', { class: 'su-howto' }, ...PROJECT_TOKEN_GUIDANCE.map((t) => el('li', { text: t })))),
       );
-      rows.push(projectRow);
+      // ---- FREE-04: engine choice ------------------------------------------------------------------------
+      const ENGINE_TEXT: Record<EngineChoice, { title: string; tag: string; needs: string }> = {
+        'qwen-free': { title: 'Free · Qwen Code', tag: 'free model', needs: 'Runs in your GitHub Actions with an open model: your own runner with Ollama, a free hosted key you opt into, or a small CPU model (slow).' },
+        'claude-subscription': { title: 'Claude subscription', tag: 'your Claude plan', needs: 'Runs Claude Code in your GitHub Actions with your own Pro or Max plan. You set the token yourself in your terminal; the Empire only checks that the secret exists.' },
+        'api-keys': { title: 'API keys', tag: 'billed per use', needs: 'Today’s path: Anthropic Managed Agents with an API key, encrypted on this device and stored as an Actions secret.' },
+      };
+      const engineGroup = el('div', { class: 'su-engines', role: 'radiogroup', 'aria-label': 'Cloud engine' },
+        ...ENGINE_CHOICES.map((id) => {
+          const radio = el('input', { type: 'radio', name: 'su-engine', id: `su-engine-${id}`, value: id, checked: state.engine === id, onchange: () => dispatch({ type: 'setEngine', engine: id }) });
+          return el('label', { class: 'su-engine', for: radio.id }, radio,
+            el('span', { class: 'su-engine-head' }, el('strong', { text: ENGINE_TEXT[id].title }), el('span', { class: 'su-chip', text: ENGINE_TEXT[id].tag })),
+            el('span', { class: 'su-engine-needs', text: ENGINE_TEXT[id].needs }));
+        }));
+      const project = state.repos[0];
+      const repoName = project ? `${project.owner}/${project.name}` : 'your project';
+      const input = (id: string, value: string, placeholder: string, on: (v: string) => void, label: string) => {
+        const i = el('input', { id, class: 'su-input su-mono', type: 'text', autocomplete: 'off', autocapitalize: 'off', spellcheck: false, value, placeholder, oninput: () => on(i.value) });
+        return el('div', { class: 'su-field' }, el('label', { class: 'su-label', for: id, text: label }), i);
+      };
+      const check = (id: string, checked: boolean, on: (v: boolean) => void, strong: string, text: string) => {
+        const c = el('input', { type: 'checkbox', id, class: 'su-check', checked, onchange: () => on(c.checked) });
+        return el('label', { class: 'su-accept', for: id }, c, el('span', {}, el('strong', { text: strong + ' ' }), text));
+      };
+      const command = (text: string) => el('div', { class: 'su-cmd' }, el('code', { class: 'su-mono', text }),
+        el('button', { type: 'button', class: 'su-btn su-ghost su-small', 'aria-label': `Copy: ${text}`, onclick: () => void navigator.clipboard?.writeText(text).catch(() => {}) }, 'Copy'));
+      const secretStatus = el('p', { class: 'su-note su-secret-status', role: 'status', 'aria-live': 'polite' });
+      const checkBtn = el('button', { type: 'button', class: 'su-btn su-small', onclick: () => void runSecretCheck() }, 'Check secret name');
+      async function runSecretCheck() {
+        const { settings } = actionsSettingsFor(state);
+        if (!settings || !project || !state.github.token) return;
+        dispatch({ type: 'setSecretCheck', value: { status: 'checking' } });
+        const apiBase = githubApiBase();
+        const client = new CloudGitHubClient(state.github.token, { browser: true, fetch: fetchImpl, timeoutMs: 20_000, ...(apiBase !== GITHUB_API ? { apiBase } : {}) });
+        const r = await checkJobSecret(client, project, settings, Date.now());
+        dispatch({ type: 'setSecretCheck', value: r.error ? { status: 'error', error: r.error } : { status: r.present ? 'present' : 'missing', ...(r.name ? { name: r.name } : {}), ...(r.updatedAt ? { updatedAt: r.updatedAt } : {}), ...(r.rotationDue !== undefined ? { rotationDue: r.rotationDue } : {}) } });
+      }
+      const secretBlock = el('div', { class: 'su-secret' }, el('div', { class: 'su-row' }, checkBtn), secretStatus);
+      const f = state.free;
+      const freePanel = el('div', { class: 'su-engine-panel', id: 'su-panel-free' },
+        el('p', { class: 'su-note', text: 'Pick at least one. The Empire uses the first that is set up, in this order.' }),
+        el('fieldset', { class: 'su-source' }, el('legend', { text: '1 · Your own runner with Ollama (best)' }),
+          el('p', { class: 'su-note', text: 'A self-hosted GitHub Actions runner on your machine, with Ollama serving on 127.0.0.1:11434. The model never leaves your hardware.' }),
+          el('div', { class: 'su-callout' }, icon(ICONS.warn, 'su-inline-ico'), el('span', {}, el('strong', { text: 'The agent gets full control of that runner while it works. ' }), 'Register it as an ephemeral runner (./config.sh --ephemeral) on a machine or VM with nothing else on it, so nothing an agent leaves behind reaches the next job. Never use a self-hosted runner with a public repository; setup refuses it.')),
+          el('div', { class: 'su-row su-wrap' },
+            input('su-free-label', f.selfHostedLabel, 'my-runner', (v) => dispatch({ type: 'setFree', patch: { selfHostedLabel: v } }), 'Runner label'),
+            input('su-free-model', f.selfHostedModel, 'qwen3-coder:30b', (v) => dispatch({ type: 'setFree', patch: { selfHostedModel: v } }), 'Ollama model'))),
+        el('fieldset', { class: 'su-source' }, el('legend', { text: '2 · A free hosted tier (your key)' }),
+          check('su-free-hosted', f.hostedOptIn, (v) => dispatch({ type: 'setFree', patch: { hostedOptIn: v } }), 'Use a free hosted key.', 'Free tiers may log prompts and code and use them for training. Read the provider’s data-use terms before you opt in; don’t use it for private code you can’t share.'),
+          el('div', { class: 'su-row su-wrap' },
+            input('su-free-url', f.hostedBaseUrl, 'https://openrouter.ai/api/v1', (v) => dispatch({ type: 'setFree', patch: { hostedBaseUrl: v } }), 'OpenAI-compatible address'),
+            input('su-free-hmodel', f.hostedModel, 'qwen/qwen3-coder:free', (v) => dispatch({ type: 'setFree', patch: { hostedModel: v } }), 'Model')),
+          el('p', { class: 'su-note', text: `Store the key yourself, in your terminal: ` }), command(`gh secret set ${SECRETS.freeKey} --repo ${repoName}`)),
+        el('fieldset', { class: 'su-source' }, el('legend', { text: '3 · Small CPU model on GitHub’s runner (slow)' }),
+          check('su-free-cpu', f.cpuOptIn, (v) => dispatch({ type: 'setFree', patch: { cpuOptIn: v } }), `Download ${CPU_MODEL.name} in each run.`, `About ${Math.round(CPU_MODEL.approxBytes / 1e6)} MB, ${CPU_MODEL.licence}, plus Ollama ${JOB_PINS.ollama.version} (${(JOB_PINS.ollama.bytes / 1e9).toFixed(1)} GB, checksum-pinned). CPU only: very slow, for trivial tasks. Runs get the maximum 6-hour cap.`)),
+      );
+      const subAuth = el('div', { class: 'su-segment', role: 'radiogroup', 'aria-label': 'Claude credential' },
+        ...(['subscription', 'api-key'] as const).map((v) => {
+          const r = el('input', { type: 'radio', name: 'su-claude-auth', id: `su-claude-${v}`, value: v, checked: state.claudeAuth === v, onchange: () => dispatch({ type: 'setClaudeAuth', value: v }) });
+          return el('label', { class: 'su-seg', for: r.id }, r, el('span', { text: v === 'subscription' ? 'My Claude plan' : 'An API key secret' }));
+        }));
+      const subSteps = el('ol', { class: 'su-howto su-checklist' });
+      const subPanel = el('div', { class: 'su-engine-panel', id: 'su-panel-sub' }, subAuth, subSteps,
+        el('div', { class: 'su-callout su-callout-info' }, icon(ICONS.lock, 'su-inline-ico'),
+          el('span', {}, el('strong', { text: 'The Empire never asks for, sees or stores your Claude token. ' }), 'There is no field for it on purpose: Anthropic doesn’t let apps collect Claude sign-ins. Your token goes straight from your terminal into an encrypted GitHub secret.')),
+      );
+      const minutes = el('p', { class: 'su-note', text: 'GitHub Actions minutes: standard runners are free in public repositories. Private repositories use your plan’s included minutes (2,000 a month on Free, 3,000 on Pro), and a self-hosted runner uses none.' });
+      const actionsPanel = el('div', { class: 'su-engine-actions' }, freePanel, subPanel, secretBlock, minutes);
+      const apiRows = rows.slice();
+      const apiNotes = [
+        el('div', { class: 'su-callout su-callout-info' }, icon(ICONS.spark, 'su-inline-ico'),
+          el('span', {}, el('strong', { text: 'API keys aren’t your Claude or ChatGPT subscription. ' }), 'To use your Claude plan, choose “Claude subscription” above. API usage is billed separately by Anthropic or OpenAI.')),
+        el('p', { class: 'su-note' }, icon(ICONS.lock, 'su-inline-ico'), 'Each key is encrypted on this device to your state repository’s public key and stored as a GitHub Actions secret. The app doesn’t keep it and it never passes through Agent Empire.'),
+      ];
+      const apiPanel = el('div', { class: 'su-engine-api' }, ...apiRows, ...apiNotes);
+      const engineErrors = el('ul', { class: 'su-error-list', 'aria-live': 'polite' });
       refresh = () => {
         for (const id of Object.keys(errs) as ProviderId[]) errs[id]!.textContent = validateProviderKey(id, state.providers[id]) ?? '';
         ptErr.textContent = validateProjectToken(state.projectToken) ?? '';
-        next.disabled = blockers(state).length > 0;
+        const actionsMode = state.engine !== 'api-keys';
+        apiPanel.hidden = actionsMode;
+        actionsPanel.hidden = !actionsMode;
+        freePanel.hidden = state.engine !== 'qwen-free';
+        subPanel.hidden = state.engine !== 'claude-subscription';
+        const { settings } = actionsSettingsFor(state);
+        const secret = settings ? requiredSecret(settings) : null;
+        secretBlock.hidden = !actionsMode || !secret;
+        const sc = state.secretCheck;
+        checkBtn.disabled = sc.status === 'checking' || !project;
+        checkBtn.textContent = secret ? `Check that ${secret} exists in ${repoName}` : 'Check secret name';
+        secretStatus.textContent = sc.status === 'checking' ? 'Checking secret names (values are never read)…'
+          : sc.status === 'present' ? `Found ${sc.name}${sc.updatedAt ? `, set ${new Date(sc.updatedAt).toLocaleDateString()}` : ''}.${sc.rotationDue ? ' It is about a year old: run claude setup-token and gh secret set again to rotate it, then revoke the old token in your Claude account.' : sc.name === SECRETS.claudeOAuth ? ' We’ll remind you to rotate it after 11 months (setup tokens last a year).' : ''}`
+          : sc.status === 'missing' ? `${sc.name} isn’t in ${repoName} yet. Run the commands above in your own terminal, then check again.`
+          : sc.status === 'error' ? sc.error ?? 'The check failed.' : secret ? `Only the secret’s name is checked. GitHub never returns secret values.` : '';
+        secretStatus.classList.toggle('is-ok', sc.status === 'present');
+        const authSecret = state.claudeAuth === 'api-key' ? SECRETS.anthropicKey : SECRETS.claudeOAuth;
+        subSteps.replaceChildren(...(state.claudeAuth === 'subscription'
+          ? [
+            el('li', {}, el('span', { text: 'In your own terminal, create a one-year token for CI with your Claude Pro or Max plan:' }), command(subscriptionChecklist(project ?? { owner: 'owner', name: 'repo' })[0])),
+            el('li', {}, el('span', { text: `Store it as an Actions secret in ${repoName} (gh prompts for the value and encrypts it locally):` }), command(subscriptionChecklist(project ?? { owner: 'owner', name: 'repo' })[1])),
+            el('li', { text: 'Or, inside that repository, run claude and then /install-github-app, which sets the same secret for you.' }),
+            el('li', { text: 'Check the secret name below. Runs draw on your Claude plan’s usage limits; GitHub Actions minutes are separate.' }),
+          ]
+          : [
+            el('li', {}, el('span', { text: `Store your Anthropic API key as an Actions secret in ${repoName}:` }), command(`gh secret set ${authSecret} --repo ${repoName}`)),
+            el('li', { text: 'Check the secret name below. Usage is billed by Anthropic; the Empire shows Claude Code’s own estimate per job.' }),
+          ]));
+        const list = blockers(state);
+        engineErrors.replaceChildren(...(actionsMode ? list : []).map((t) => el('li', { text: t })));
+        next.disabled = list.length > 0;
       };
       const { panel, heading } = frame({
         eyebrow: 'Cloud · step 3',
         title: STEP_TITLES.providers,
-        lede: 'Add at least one. Agents run in the provider’s cloud and bill your provider account.',
-        body: [
-          ...rows,
-          el('div', { class: 'su-callout su-callout-info' }, icon(ICONS.spark, 'su-inline-ico'),
-            el('span', {}, el('strong', { text: 'API keys aren’t your Claude or ChatGPT subscription. ' }), 'Subscriptions can’t be linked to other apps; there is no sign-in for that. API usage is billed separately by Anthropic or OpenAI.')),
-          el('p', { class: 'su-note' }, icon(ICONS.lock, 'su-inline-ico'), 'Each key is encrypted on this device to your state repository’s public key and stored as a GitHub Actions secret. The app doesn’t keep it and it never passes through Agent Empire.'),
-        ],
+        lede: 'Where your agents run and who pays for it. No paid account is required: the free engine is US$0 on public repositories; private repositories use your GitHub Actions minutes.',
+        body: [engineGroup, apiPanel, actionsPanel, projectRow, engineErrors],
         primary: next,
       });
       refresh();
@@ -742,9 +846,12 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
         const plan = state.github.plan ? state.github.plan.replace(/^\w/, (c) => c.toUpperCase()) : null;
         const over = (e.share ?? 0) > 1;
         estimate.classList.toggle('is-over', over);
+        const jobSettings = actionsSettingsFor(state).settings;
         estimate.textContent = `About ${e.minutes.toLocaleString()} GitHub Actions minutes a month for scheduled runs` +
           (e.included ? `, ${Math.round((e.share ?? 0) * 100)}% of the ${e.included.toLocaleString()} included on GitHub ${plan} for private repositories.${over ? ' Minutes beyond that are billed to your GitHub account; choose a longer interval to stay inside it.' : ''}` : plan ? ` (your plan: ${plan}; check its included minutes in GitHub billing).` : '. GitHub Free includes 2,000 a month for private repositories, Pro 3,000.') +
-          ' Each run bills at least a minute; waking it from the app adds runs. Figures are estimates.';
+          ' Each run bills at least a minute; waking it from the app adds runs.' +
+          (jobSettings ? ` Each job adds its own run on top: up to ${jobMinutesCap(jobSettings)} minutes per job on private repositories (free on public ones${jobSettings.modelSource === 'self_hosted_ollama' ? '; the agent part uses none on your own runner' : ''}).` : '') +
+          ' Figures are estimates.';
       };
       refresh = () => {
         n.textContent = String(state.limits.maxConcurrent);
@@ -790,12 +897,12 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
           el('dl', { class: 'su-review' },
             row('Home', el('span', { class: 'su-mono', text: `${s.github.login}/${STATE_REPO_NAME}` }), el('span', { class: 'su-chip', text: 'private' })),
             row('Projects', s.repos.map((r) => `${r.owner}/${r.name}`).join(', ')),
-            row('AI providers', linkedProviders(s.providers).map((id) => PROVIDER_NAMES[id]).join(' and ') + ' · key encrypted, never shown again'),
+            row(s.engine === 'api-keys' ? 'AI providers' : 'Engine', s.engine === 'api-keys' ? linkedProviders(s.providers).map((id) => PROVIDER_NAMES[id]).join(' and ') + ' · key encrypted, never shown again' : s.engine === 'qwen-free' ? 'Free · Qwen Code in your GitHub Actions' : `Claude Code in your GitHub Actions · ${s.claudeAuth === 'subscription' ? 'your Claude plan (token set by you; never seen by the Empire)' : 'your Anthropic API key secret'}`),
             row('Limits', `${s.limits.maxConcurrent} job${s.limits.maxConcurrent === 1 ? '' : 's'} at once · ${per === null ? '?' : dollars(per)} per job · ${day === null ? '?' : dollars(day)} per day${s.limits.approveEachJob ? ' · you approve each job' : ''}`),
-            row('Jobs run', executionPlan({ projects: s.repos, providers: s.providers }).note),
+            row('Jobs run', executionPlan({ projects: s.repos, providers: s.providers, actions: actionsSettingsFor(s).settings }).note),
             row('Project token', s.projectToken.trim() ? 'fine-grained token · encrypted, never shown again' : 'not added: jobs can’t reach your projects until you add one (run setup again)'),
             row('App closed', `Your Empire keeps working. Its coordinator runs ${s.interval === 60 ? 'hourly' : `every ${s.interval} minutes`} in GitHub Actions (about ${actionsEstimate(s.interval).minutes.toLocaleString()} Actions minutes a month), sooner when the app wakes it. Only “Shut down Empire” in the game stops it.`),
-            row('Costs', 'GitHub Actions minutes are billed to your GitHub account; API usage to your AI provider. Agent Empire charges nothing.'),
+            row('Costs', s.engine === 'qwen-free' ? `Free model: ${actionsSettingsFor(s).settings ? jobMinutesNote(actionsSettingsFor(s).settings!) : 'US$0 on public repositories; private repositories use GitHub Actions minutes'}. Agent Empire charges nothing.` : s.engine === 'claude-subscription' && s.claudeAuth === 'subscription' ? 'Runs draw on your Claude plan’s limits (no US$ figure); GitHub Actions minutes are billed to your GitHub account. Agent Empire charges nothing.' : 'GitHub Actions minutes are billed to your GitHub account; API usage to your AI provider. Agent Empire charges nothing.'),
           ),
           el('label', { class: 'su-accept', for: 'su-accept' }, accept, el('span', { text: 'I understand these costs are billed to my own GitHub and AI provider accounts.' })),
         ],
@@ -807,7 +914,8 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
 
     create() {
       const items = new Map<CreateStep, HTMLElement>();
-      const list = el('ol', { class: 'su-progress' }, ...CREATE_STEPS.map((c) => {
+      const actionsSettings = actionsSettingsFor(state).settings;
+      const list = el('ol', { class: 'su-progress' }, ...(actionsSettings ? ACTIONS_CREATE_STEPS : CREATE_STEPS).map((c) => {
         const li = el('li', { class: 'su-prog is-waiting' }, el('span', { class: 'su-prog-dot', 'aria-hidden': 'true' }), el('span', { text: c.label }), el('span', { class: 'su-sr su-prog-state', text: ' — waiting' }));
         items.set(c.step, li);
         return li;
@@ -832,7 +940,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
         const login = state.github.login;
         try {
           const repo = await createEmpire(
-            { login, projects: state.repos, providers: state.providers, projectToken: state.projectToken, limits: state.limits, interval: state.interval, platform: deps.shell?.platform ?? 'web' },
+            { login, projects: state.repos, providers: state.engine === 'api-keys' ? state.providers : { anthropic: '', openai: '' }, projectToken: state.projectToken, limits: state.limits, interval: state.interval, platform: deps.shell?.platform ?? 'web', actions: actionsSettings },
             token,
             { fetch: fetchImpl, ...(deps.coordinator ? { bundle: deps.coordinator } : {}) },
             (step, s, detail) => mark(step, s, detail),
@@ -846,7 +954,8 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
             already_configured: 'Execution is already set up; jobs run where they did before.',
             no_anthropic_key: 'No Anthropic key: jobs can’t run yet. OpenAI-only Empires can’t run jobs until the OpenAI adapter exists.',
           }[repo.execution ?? 'requested'];
-          result.append(el('p', { class: 'su-note', text: executionNote }));
+          const finalNote = actionsSettings ? 'Jobs run in GitHub Actions in your project. The job workflow is installed; nothing has run yet. Each job you confirm starts one run.' : executionNote;
+          result.append(el('p', { class: 'su-note', text: finalNote }));
           busy = false;
           setTimeout(() => deps.onCloudCreated(repo, { token, login }), reduced ? 0 : 900);
         } catch (err) {
