@@ -1506,5 +1506,5 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     hookServer.close();
   };
 
-  return { server, shutdown, workers, publicDir, hookPort, execution, consultancy: office, outreach: outreachService, inbox };
+  return { server, shutdown, workers, publicDir, hookPort, execution, consultancy: office, outreach: outreachService, inbox, chief: brain };
 }
