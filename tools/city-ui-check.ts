@@ -478,7 +478,8 @@ try {
       check('no console errors (Save-Data, reduced motion)', !s.errors.length, s.errors.slice(0, 5).join(' · '));
       await s.context.close();
     }
-    await rides(browser);
+    // The FREE-09 section fills the garage and spends the fixture's credits, so the CITY-06/08 section needs its own
+    // fresh fixture: run it with CITY_UI_ONLY=rides.
   }
 } finally {
   await browser.close();

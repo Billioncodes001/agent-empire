@@ -60,7 +60,7 @@ export function buildHelicopter() {
     mesh(body, new THREE.BoxGeometry(0.5, 0.12, 0.5), dark, x, 0.95, 1.0);
     mesh(body, new THREE.BoxGeometry(0.5, 0.65, 0.1), dark, x, 1.3, 0.72, -0.15);
   }
-  mesh(body, new THREE.BoxGeometry(1.25, 0.28, 0.25), dark, 0, 1.55, 1.95, -0.5);
+  mesh(body, new THREE.BoxGeometry(1.1, 0.22, 0.22), dark, 0, 1.27, 2.0, -0.6);
   mesh(body, new THREE.CylinderGeometry(0.02, 0.02, 0.55, 6), metal, -0.42, 1.18, 1.45, 0.35);
   batchStaticMeshes(body);
   // Canopy glass over the cockpit (kept separate: transparent).
