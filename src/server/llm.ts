@@ -82,6 +82,30 @@ export interface ChatOptions {
   signal?: AbortSignal;
 }
 
+/** A model answer larger than this is abandoned, never buffered whole (security review). */
+export const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+
+/** Removes key-shaped text (OpenAI/Anthropic `sk-…`, Google `AIza…`, Groq `gsk_…`, OpenRouter `sk-or-…`) from provider messages. */
+export function redactKeys(s: string): string {
+  return s.replace(/\b(sk-[A-Za-z0-9_-]{8,}|AIza[0-9A-Za-z_-]{20,}|gsk_[A-Za-z0-9]{16,})/g, '[redacted]');
+}
+
+/** Reads a body up to `limit` bytes. Over the limit: cancels the stream and throws (or truncates when `strict` is false). */
+async function readCapped(r: Response, limit: number, id: string, strict: boolean): Promise<string> {
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  for await (const chunk of r.body as unknown as AsyncIterable<Uint8Array>) {
+    bytes += chunk.byteLength;
+    if (bytes > limit) {
+      await r.body?.cancel().catch(() => {});
+      if (strict) throw new LlmError(`${id}'s response was too large (over ${limit} bytes); stopped reading it.`);
+      break;
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 export async function chat(p: LlmProvider, messages: ChatMessage[], o: ChatOptions = {}): Promise<ChatResult> {
   const timeout = AbortSignal.timeout(o.timeoutMs ?? 120_000);
   const signal = o.signal ? AbortSignal.any([o.signal, timeout]) : timeout;
@@ -103,7 +127,7 @@ export async function chat(p: LlmProvider, messages: ChatMessage[], o: ChatOptio
     throw new LlmError(timeout.aborted ? 'The model did not answer in time.' : `Could not reach ${p.id}: ${(error as Error).message}`);
   }
   if (!r.ok) {
-    const body = (await r.text().catch(() => '')).slice(0, 300);
+    const body = redactKeys((await readCapped(r, 4096, p.id, false).catch(() => '')).slice(0, 300));
     throw new LlmError(`${p.id} answered HTTP ${r.status}${r.status === 429 ? ' (rate-limited)' : ''}${body ? `: ${body.replace(/\s+/g, ' ')}` : ''}`, r.status);
   }
   let text = '';
@@ -111,7 +135,8 @@ export async function chat(p: LlmProvider, messages: ChatMessage[], o: ChatOptio
   let input = 0;
   let output = 0;
   if (!stream) {
-    const j: any = await r.json().catch(() => { throw new LlmError(`${p.id} returned invalid JSON.`); });
+    const raw = await readCapped(r, MAX_RESPONSE_BYTES, p.id, true);
+    const j: any = (() => { try { return JSON.parse(raw); } catch { throw new LlmError(`${p.id} returned invalid JSON.`); } })();
     text = String(j?.choices?.[0]?.message?.content ?? '');
     model = typeof j?.model === 'string' ? j.model : model;
     input = Number(j?.usage?.prompt_tokens) || 0;
@@ -119,7 +144,10 @@ export async function chat(p: LlmProvider, messages: ChatMessage[], o: ChatOptio
   } else {
     const decoder = new TextDecoder();
     let buf = '';
+    let bytes = 0;
     for await (const chunk of r.body as unknown as AsyncIterable<Uint8Array>) {
+      bytes += chunk.byteLength;
+      if (bytes > MAX_RESPONSE_BYTES) { await r.body?.cancel().catch(() => {}); throw new LlmError(`${p.id}'s response was too large (over ${MAX_RESPONSE_BYTES} bytes); stopped reading it.`); }
       buf += decoder.decode(chunk, { stream: true });
       let nl: number;
       while ((nl = buf.indexOf('\n')) >= 0) {
