@@ -56,7 +56,16 @@ export class ApprovalError extends Error {
   }
 }
 
-const RAISED_BY: Record<ApprovalKind, ExecutiveRole> = { job_plan: 'chief_of_staff', budget_increase: 'finance', external_action: 'marketing_sales', tool_proposal: 'research' };
+const RAISED_BY: Record<ApprovalKind, ExecutiveRole> = { job_plan: 'chief_of_staff', budget_increase: 'finance', external_action: 'marketing_sales', tool_proposal: 'research', chief_proposal: 'chief_of_staff' };
+
+/**
+ * FREE-02: the owner of chief_proposal actions. `check` answers why the action no longer applies (the inbox answers 409
+ * and records nothing); `apply` runs after the approval is saved and answers a note for the record.
+ */
+export interface ChiefActionPort {
+  check(item: Approval): string | undefined;
+  apply(item: Approval): string;
+}
 const usd = (n: number) => `$${n.toFixed(2)}`;
 
 /**
@@ -125,6 +134,8 @@ export class ApprovalInbox {
   private deciding = false;
   private reconciling = false;
   private external?: ExternalActionPort;
+  private chief?: ChiefActionPort;
+  private planOrigin?: (jobId: string) => string | undefined;
 
   constructor(dataDir: string, private readonly office: InboxConsultancy, private readonly onChange?: () => void, private readonly now = Date.now) {
     this.file = path.join(dataDir, FILE);
@@ -158,6 +169,20 @@ export class ApprovalInbox {
 
   /** ORG-04a: the owner of external_action items (outreach). */
   setExternal(port: ExternalActionPort) { this.external = port; }
+
+  /** FREE-02: the chief's action owner, and who proposed a plan (the label on a model-proposed job_plan). */
+  setChief(port: ChiefActionPort, planOrigin: (jobId: string) => string | undefined) { this.chief = port; this.planOrigin = planOrigin; }
+
+  /** FREE-02: raises a chief_proposal. Idempotent by `source`; answers the id, or undefined while storage is broken. */
+  raiseChief(fields: { source: string; jobId: string; title: string; detail: string; proposal: NonNullable<Approval['proposal']> }): string | undefined {
+    if (this.storageError) return undefined;
+    const existing = this.data.items.find((i) => i.source === fields.source);
+    if (existing) return existing.id;
+    this.add({ kind: 'chief_proposal', createdAt: this.now(), ...structuredClone(fields) });
+    this.trim();
+    try { this.save(); } catch { return undefined; }
+    return this.data.items.find((i) => i.source === fields.source)?.id;
+  }
 
   /**
    * Raises an external_action item for `source` (a campaign id plus its snapshot hash). A still-pending item for the
@@ -233,8 +258,10 @@ export class ApprovalInbox {
     if (item.status !== 'pending' && !reopen) return publicItem(item);
     const declined = reopen ? { at: item.decidedAt ?? 0, by: item.decidedBy ?? 'CEO' } : undefined;
     if (item.kind === 'external_action' && options.budgetUsd !== undefined && options.budgetUsd !== null) throw new ApprovalError(400, 'No budget applies to a campaign send. Approve it without an amount.');
+    if (item.kind === 'chief_proposal' && options.budgetUsd !== undefined && options.budgetUsd !== null) throw new ApprovalError(400, 'No budget applies to a chief proposal. Decide it without an amount.');
     const budget = decision === 'approved' && options.budgetUsd !== undefined && options.budgetUsd !== null ? validBudget(options.budgetUsd) : undefined;
     let externalApply: (() => void) | undefined;
+    let chiefApply: (() => void) | undefined;
     this.deciding = true;
     try {
       if (item.kind === 'external_action') {
@@ -252,6 +279,19 @@ export class ApprovalInbox {
           // The plan was decided the other way meanwhile: the consultancy decision stands and is reconciled below.
           if (!(error instanceof ConsultancyError && error.status === 409)) throw error;
         }
+      } else if (item.kind === 'chief_proposal') {
+        // FREE-02: the decision is the record. An action runs only after an approval is saved, through the queue.
+        if (decision === 'approved' && item.proposal?.action) {
+          if (!this.chief) throw new ApprovalError(503, 'The chief is not available on this host, so this action cannot run here.');
+          const stale = this.chief.check(publicItem(item));
+          if (stale) throw new ApprovalError(409, stale);
+          this.record(item, decision, who, requestId);
+          this.save();
+          chiefApply = () => {
+            try { item.note = this.chief!.apply(publicItem(item)).slice(0, 300); } catch (error) { item.note = `Approved, but the action failed: ${(error as Error).message}`.slice(0, 300); }
+            this.save();
+          };
+        } else this.record(item, decision, who, requestId);
       } else if (item.kind === 'tool_proposal') {
         // ORG-05: the decision is the record. Nothing is installed or adopted.
         this.record(item, decision, who, requestId);
@@ -280,6 +320,7 @@ export class ApprovalInbox {
     }
     if (item.kind === 'job_plan' && requestId) item.requestId = requestId;
     if (externalApply) externalApply();
+    else if (chiefApply) chiefApply();
     else if (!this.reconcile() && item.kind !== 'job_plan') this.save();
     return publicItem(item);
   }
@@ -297,8 +338,10 @@ export class ApprovalInbox {
     const existing = this.data.items.find((i) => i.source === source);
     if (job.decision === 'pending_approval') {
       if (!existing) {
+        const proposedBy = this.planOrigin?.(job.id);
         this.add({ source, kind: 'job_plan', jobId: job.id, title: `${job.client} · ${job.title}`, detail: planDetail(job), createdAt: at,
-          ...(job.estimate ? { estimate: { costUsd: job.estimate.costUsd, calendarMs: job.estimate.calendarMs, basis: job.estimate.basis } } : {}) });
+          ...(job.estimate ? { estimate: { costUsd: job.estimate.costUsd, calendarMs: job.estimate.calendarMs, basis: job.estimate.basis } } : {}),
+          ...(proposedBy ? { proposedBy } : {}) });
       } else if (existing.status === 'pending') {
         existing.detail = planDetail(job);
         if (job.estimate) existing.estimate = { costUsd: job.estimate.costUsd, calendarMs: job.estimate.calendarMs, basis: job.estimate.basis };
@@ -415,7 +458,13 @@ function parseFile(value: unknown): StoredFile {
     const label = `item #${index + 1}`;
     if (!item || typeof item !== 'object') throw new Error(`${label} must be an object`);
     if (typeof item.id !== 'string' || !APPROVAL_ID_RE.test(item.id) || Number(item.id.slice(1)) >= (raw.nextSeq as number)) throw new Error(`${label} id is invalid`);
-    if (item.kind !== 'job_plan' && item.kind !== 'budget_increase' && item.kind !== 'external_action' && item.kind !== 'tool_proposal') throw new Error(`${label} kind is invalid`);
+    if (item.kind !== 'job_plan' && item.kind !== 'budget_increase' && item.kind !== 'external_action' && item.kind !== 'tool_proposal' && item.kind !== 'chief_proposal') throw new Error(`${label} kind is invalid`);
+    if (item.kind === 'chief_proposal') {
+      const p = item.proposal as unknown as Record<string, unknown> | undefined;
+      if (!p || typeof p !== 'object' || ['situation', 'text', 'model'].some((k) => typeof p[k] !== 'string' || (p[k] as string).length > 2000)) throw new Error(`${label} proposal is invalid`);
+      const a = p.action as Record<string, unknown> | undefined;
+      if (a !== undefined && (!a || a.kind !== 'retry_held' || typeof a.taskId !== 'string' || typeof a.dependencyId !== 'string' || typeof a.label !== 'string')) throw new Error(`${label} proposal action is invalid`);
+    }
     if (item.kind === 'tool_proposal') {
       const t = item.tool as Record<string, unknown> | undefined;
       if (!t || typeof t !== 'object' || ['name', 'url', 'licence', 'enables', 'risk'].some((k) => typeof t[k] !== 'string' || (t[k] as string).length > 2000) || !/^https:\/\//.test(t.url as string)) throw new Error(`${label} tool is invalid`);
@@ -444,13 +493,17 @@ export function approvalLine(item: Approval): string {
     if (item.suggestedBudgetUsd !== undefined) parts.push(`suggested ${money(item.suggestedBudgetUsd)}`);
   } else if (item.outreach) parts.push(`${item.outreach.recipients.length} recipient${item.outreach.recipients.length === 1 ? '' : 's'} from ${item.outreach.from}`);
   else if (item.tool) parts.push(item.tool.url, item.tool.licence);
+  else if (item.proposal) parts.push(item.proposal.action ? `action: ${item.proposal.action.label}` : 'decision only');
   else if (item.estimate) parts.push(`estimate ${fmtUsdRange(item.estimate.costUsd)}`);
   return parts.join(' · ');
 }
 
 /** The plain-text notification for a new pending item (Telegram and email): no secrets, no action links. */
 export function approvalText(item: Approval): string {
-  const lines = [`Approval ${item.id} · ${APPROVAL_KIND_LABEL[item.kind]} · raised by ${EXECUTIVES[item.raisedBy].name} (rule-based)`, item.title, item.detail];
+  const by = item.kind === 'chief_proposal' ? `model-backed · ${item.proposal?.model ?? 'model'} · proposal only` : item.proposedBy ?? 'rule-based';
+  const lines = [`Approval ${item.id} · ${APPROVAL_KIND_LABEL[item.kind]} · raised by ${EXECUTIVES[item.raisedBy].name} (${by})`, item.title, item.detail];
+  if (item.proposedBy) lines.push('The chief’s model proposed this plan. Read every item prompt on the founder desk before approving.');
+  if (item.proposal) lines.push(`${item.proposal.situation}: ${item.proposal.text}`, item.proposal.action ? `Approving also runs: ${item.proposal.action.label}` : 'Approving records your decision only.');
   if (item.estimate) lines.push(`Estimate (not a quote): ${fmtUsdRange(item.estimate.costUsd)}${item.estimate.calendarMs ? ` · ${fmtDurationRange(item.estimate.calendarMs)} calendar time` : ''}`);
   if (item.outreach) {
     const o = item.outreach;

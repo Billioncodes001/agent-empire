@@ -21,6 +21,8 @@ export interface OrgInput {
   outreach?: OutreachSummary;
   /** ORG-05: the research index (reports and tool proposals). */
   research?: ResearchState;
+  /** FREE-02: the chief's planning brain when it can propose right now. Absent: the chief stays rule-based. */
+  chiefBrain?: { model: string };
 }
 
 
@@ -138,7 +140,10 @@ export function projectOrg(input: OrgInput): OrgState {
       const def = EXECUTIVES[role];
       const compute = def.active ? COMPUTE[role] : undefined;
       const { summary, attention } = compute ? compute(input) : { summary: NOT_STAFFED, attention: 0 };
-      return { role, name: def.name, monitor: 'rule_based', active: !!compute, summary, attention };
+      const brain = role === 'chief_of_staff' && compute ? input.chiefBrain : undefined;
+      return brain
+        ? { role, name: def.name, monitor: 'model_backed' as const, model: brain.model, active: true, summary, attention }
+        : { role, name: def.name, monitor: 'rule_based' as const, active: !!compute, summary, attention };
     }),
   };
 }
