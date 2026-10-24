@@ -194,7 +194,7 @@ export interface ServerRuntime {
    */
   engines?: { providerKeys?: () => ProviderKeys; resolve?: (cmd: string) => string | null; exec?: Exec; ollamaUrl?: string; totalMem?: () => number; env?: () => Record<string, string> };
   /** FREE-02: the chief's model client. Tests and previews inject a fake; nothing real is called in them. */
-  chief?: { chat?: ChatFn; timeoutMs?: number };
+  chief?: { chat?: ChatFn; timeoutMs?: number; probe?: () => Promise<{ running: boolean; models: string[] }> };
 }
 export async function startServer(cfg: Config, runtime: ServerRuntime = {}) {
   const releaseHost = acquireHostLock(cfg.dataDir);
@@ -492,6 +492,8 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   };
   chief = new ChiefBrain(cfg.dataDir, {
     keys: providerKeys, ollamaUrl, chat: runtime.chief?.chat, timeoutMs: runtime.chief?.timeoutMs,
+    // Review fix 5: the cached loopback Ollama check. An injected fake model (tests, previews) gets no real probe.
+    probe: runtime.chief?.probe ?? (runtime.chief?.chat ? undefined : async () => { const o = await ollama.detect(); return { running: o.running, models: o.models.map((m) => m.name) }; }),
     office, queue: () => queue.state(),
     evidence: (task, item) => defaultEvidence(task, item, project.branch && task.branch ? gitDiffStat(cfg.dir, project.branch, task.branch) : undefined),
     raise: (fields) => desk.raiseChief(fields),

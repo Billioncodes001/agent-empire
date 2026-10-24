@@ -45,6 +45,9 @@ const MAX_EVIDENCE = 4000;
 const PLAN_TOKENS = 3000;
 const REVIEW_TOKENS = 700;
 const STALL_TOKENS = 500;
+/** Review fix 5: how long a cached Ollama check stays fresh, and how long a failed call keeps the brain not ready. */
+const HEALTH_TTL_MS = 30_000;
+const FAILURE_HOLD_MS = 10 * 60_000;
 
 export type ChatFn = (p: LlmProvider, messages: ChatMessage[], o: ChatOptions) => Promise<ChatResult>;
 
@@ -66,6 +69,11 @@ export interface ChiefPorts {
   raise?: (fields: { source: string; jobId: string; title: string; detail: string; proposal: NonNullable<Approval['proposal']> }) => string | undefined;
   now?: () => number;
   timeoutMs?: number;
+  /**
+   * Review fix 5: a cheap Ollama health check (running, downloaded model names). Absent in tests that inject a fake
+   * model, which are then treated as healthy.
+   */
+  probe?: () => Promise<{ running: boolean; models: string[] }>;
   onChange?: () => void;
 }
 
@@ -353,6 +361,10 @@ export class ChiefBrain {
   private readonly now: () => number;
   private readonly chatFn: ChatFn;
   private seen = new Set<string>();
+  /** Review fix 5: the cached Ollama check, and the last failed model call (not ready until a success). */
+  private health?: { ok: boolean; reason?: string; at: number };
+  private healthFlight?: Promise<void>;
+  private lastFailure?: { reason: string; at: number };
 
   constructor(dataDir: string, private readonly ports: ChiefPorts) {
     this.file = path.join(dataDir, FILE);
@@ -368,11 +380,48 @@ export class ChiefBrain {
     return this.data.spend.day === dayOf(this.now()) ? this.data.spend.usd : 0;
   }
 
+  /**
+   * `ready` means the chief can propose right now, and only then is it labelled model-backed. A request may still be
+   * queued (`canQueue`) while the local check is pending or after a failed call, so a retry can restore it.
+   */
   status(): ChiefBrainStatus {
+    const base = this.configured();
+    if (!base.ready) return base;
+    if (this.lastFailure && this.now() - this.lastFailure.at < FAILURE_HOLD_MS) return { ...base, ready: false, reason: `The last model call failed (${this.lastFailure.reason.slice(0, 160)}). The chief is rule-based until a call succeeds.` };
+    if (base.mode === 'free' && this.ports.probe && !this.health) return { ...base, ready: false, reason: 'Checking the local model…' };
+    return base;
+  }
+
+  private canQueue(): ChiefBrainStatus {
+    const st = this.configured();
+    if (!st.ready) return st;
+    // Lazy fallback: a probe that has not answered yet is not a refusal; the call itself will fail with its reason.
+    return { ...st, ready: true };
+  }
+
+  /** Review fix 5: refreshes the cached Ollama check (one at a time). A healthy check clears a previous failure. */
+  checkHealth(): Promise<void> {
+    if (this.healthFlight) return this.healthFlight;
+    const probe = this.ports.probe;
+    if (!probe || this.data.settings.mode !== 'free') return Promise.resolve();
+    const model = this.data.settings.freeModel;
+    this.healthFlight = probe().then((h) => {
+      const has = h.models.some((m) => m === model || m === `${model}:latest`);
+      this.health = { ok: h.running && has, at: this.now(), ...(!h.running ? { reason: 'Ollama is not running on this computer. Start it, or turn the brain off.' } : !has ? { reason: `${model} is not downloaded in Ollama. Download it under Linked accounts.` } : {}) };
+      if (this.health.ok) this.lastFailure = undefined;
+    }, (e) => { this.health = { ok: false, at: this.now(), reason: `Could not check Ollama: ${(e as Error).message}` }; })
+      .finally(() => { this.healthFlight = undefined; this.notify(); });
+    return this.healthFlight;
+  }
+
+  private configured(): ChiefBrainStatus {
     const s = this.data.settings;
     if (this.storageError) return { mode: s.mode, ready: false, label: 'Unavailable', reason: this.storageError };
     if (s.mode === 'off') return { mode: 'off', ready: false, label: 'Off · the chief is rule-based', reason: 'The planning brain is off. Turn it on in Settings.' };
-    if (s.mode === 'free') return { mode: 'free', ready: true, model: s.freeModel, label: `Free · ${s.freeModel} on this computer (Ollama) · US$0` };
+    if (s.mode === 'free') {
+      const free = { mode: 'free' as const, model: s.freeModel, label: `Free · ${s.freeModel} on this computer (Ollama) · US$0` };
+      return this.health && !this.health.ok ? { ...free, ready: false, reason: this.health.reason } : { ...free, ready: true };
+    }
     const name = s.premiumProvider === 'anthropic' ? 'Anthropic API' : 'OpenAI API';
     const base = { mode: 'premium' as const, model: s.premiumModel || undefined, label: `Premium · ${s.premiumModel || 'no model set'} · your ${name} key · cap ${money(s.dailyCapUsd)}/day` };
     if (!s.premiumModel) return { ...base, ready: false, reason: `Set the ${name} model id in Settings.` };
@@ -425,6 +474,10 @@ export class ChiefBrain {
     const next = cleanSettings(input, this.data.settings);
     this.data.settings = next;
     if (next.mode !== before) this.data.enabledAt = next.mode === 'off' ? undefined : this.now();
+    // New settings start from a fresh health check and no remembered failure.
+    this.health = undefined;
+    this.lastFailure = undefined;
+    void this.checkHealth();
     this.save();
     return this.state();
   }
@@ -446,7 +499,7 @@ export class ChiefBrain {
       if (known.fingerprint !== fingerprint) throw new ChiefError(409, `Request ${requestId} already exists with a different brief`);
       return this.publicPlan(known);
     }
-    const brain = this.status();
+    const brain = this.canQueue();
     if (!brain.ready) throw new ChiefError(409, brain.reason ?? 'The planning brain is not available.');
     const at = this.now();
     const plan: StoredPlan = { id: `P${this.data.nextPlan++}`, requestId, client, title, brief, fingerprint, source, status: 'queued', createdAt: at, updatedAt: at };
@@ -504,6 +557,7 @@ export class ChiefBrain {
   /** Queues reviews for newly finished items and proposals for new stalls. Synchronous and cheap; never throws. */
   reconcile(): void {
     try {
+      if (this.data.settings.mode === 'free' && this.ports.probe && (!this.health || this.now() - this.health.at > HEALTH_TTL_MS)) void this.checkHealth();
       if (this.storageError || !this.status().ready) return;
       const since = this.data.enabledAt ?? Infinity;
       let snapshot: ConsultancySnapshot;
@@ -624,7 +678,7 @@ export class ChiefBrain {
   }
 
   private async call(messages: ChatMessage[], maxTokens: number): Promise<{ text: string; model: string; costLabel: string }> {
-    const brain = this.status();
+    const brain = this.canQueue();
     if (!brain.ready) throw new Error(brain.reason ?? 'The planning brain is not available.');
     const s = this.data.settings;
     let p: LlmProvider;
@@ -642,8 +696,10 @@ export class ChiefBrain {
     } catch (error) {
       // A failed paid call may still have been billed; count the worst case so the cap stays conservative.
       if (s.mode === 'premium') this.addSpend(worst);
+      this.lastFailure = { reason: (error as Error).message, at: this.now() };
       throw new Error(`The chief's model call failed: ${(error as Error).message}`);
     }
+    this.lastFailure = undefined;
     // Review fix 4: a paid answer that reports no usage is charged the worst case, never $0.
     if (s.mode === 'premium') this.addSpend(result.usage.input + result.usage.output > 0 && result.cost.usd !== null ? result.cost.usd : worst);
     return { text: result.text, model: result.model || p.model, costLabel: result.cost.label };
