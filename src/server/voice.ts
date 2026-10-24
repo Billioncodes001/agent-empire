@@ -11,10 +11,10 @@
  * - No cloud speech service is used. Downloads go only to the catalogue's official sherpa-onnx release URLs.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { createWriteStream, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, statfsSync, writeFileSync } from 'node:fs';
+import { closeSync, createWriteStream, existsSync, mkdirSync, openSync, writeSync, readFileSync, readdirSync, renameSync, rmSync, statSync, statfsSync, writeFileSync } from 'node:fs';
 import { Readable, Transform, type Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import {
@@ -111,7 +111,7 @@ export function sherpaEngines(load: () => any = () => createRequire(import.meta.
   return {
     async detect() {
       try { get(); return { available: true, detail: `${SHERPA_PACKAGE} is installed (Apache-2.0). Speech runs on the office host, offline.` }; }
-      catch { return { available: false, detail: `${SHERPA_PACKAGE} is not installed on the office host, so voice is off and text is used. To enable it, run “npm install ${SHERPA_PACKAGE}” in the office’s install folder (Apache-2.0; macOS, Windows, Linux).${loadError ? ` Load error: ${loadError.split('\n')[0].slice(0, 160)}` : ''}` }; }
+      catch { return { available: false, detail: `${SHERPA_PACKAGE} is not installed on the office host, so voice is off and text is used. To enable it, run “npm install ${SHERPA_PACKAGE}” in the office’s install folder (Apache-2.0; macOS, Windows, Linux).${loadError ? ` Load error: ${loadError.split('\n')[0].replace(/(?:[A-Za-z]:)?[\\/][^\s'"]+/g, '…').slice(0, 160)}` : ''}` }; }
     },
     async stt(model, dir) {
       const cached = stt.get(model.id); if (cached) return cached;
@@ -163,50 +163,110 @@ export function systemTar(): string | undefined {
   return ['/usr/bin/tar', '/bin/tar'].find((p) => existsSync(p));
 }
 
-export interface ExtractLimits { maxBytes: number; maxFiles: number; signal?: AbortSignal }
+export interface ExtractLimits { maxBytes: number; maxFiles: number; signal?: AbortSignal; /** Tests only: a fake tar. */ tar?: string }
 
+/** An error whose message is safe to show any client (no host paths, no tool output). */
+export class PublicError extends Error {}
+
+const TAR_ENV = { LC_ALL: 'C', PATH: '' };
 const run = (file: string, args: string[], signal?: AbortSignal, maxBuffer = 16 * 1024 * 1024) => new Promise<string>((resolve, reject) => {
-  execFile(file, args, { timeout: 15 * 60_000, maxBuffer, signal, env: { LC_ALL: 'C', PATH: '' }, windowsHide: true }, (err, stdout) => (err ? reject(err) : resolve(String(stdout))));
+  execFile(file, args, { timeout: 15 * 60_000, maxBuffer, signal, env: TAR_ENV, windowsHide: true }, (err, stdout, stderr) => {
+    if (!err) return resolve(String(stdout));
+    if (signal?.aborted) return reject(new Error('cancelled'));
+    console.error('[voice] tar failed:', err.message.split('\n')[0], String(stderr).slice(0, 400)); // details stay in the host log
+    reject(new PublicError('The model archive could not be read (tar failed). Details are in the office host log.'));
+  });
 });
 
 const unsafeName = (name: string) => !name || path.isAbsolute(name) || /^[A-Za-z]:/.test(name) || name.startsWith('\\') || name.split(/[\\/]+/).includes('..');
 
 /**
+ * The size in a `tar -tv` line, anchored on the date that follows it (bsdtar `Oct 24 10:00` / `Jan  3  2025`, GNU
+ * `2026-10-24 10:00`), so owner or group names with spaces cannot shift it. Undefined when no date is found.
+ */
+export function parseListedSize(line: string): number | undefined {
+  const m = /\s(\d+)\s+(?:[A-Z][a-z]{2}\s+\d{1,2}\s+(?:\d{1,2}:\d{2}|\d{4})|\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2})\s/.exec(line);
+  return m ? Number(m[1]) : undefined;
+}
+
+/**
  * Lists the archive first and refuses absolute or `..` paths, links, devices, more than `maxFiles` entries and more
- * than `maxBytes` in total; then unpacks with `--no-same-owner` and re-checks what landed (no links, same caps).
+ * than `maxBytes` listed. Then it streams every member through `tar -xO` in one pass and writes each file itself,
+ * splitting the stream by the listed sizes and counting the bytes really produced: past `maxBytes` (or past the
+ * listed total) tar is killed at once, so a bomb cannot fill the disk; a total that differs from the listing is
+ * refused. tar never writes to the filesystem, so ownership, permissions and paths are entirely ours.
  */
 export async function safeExtract(archive: string, dest: string, limits: ExtractLimits): Promise<void> {
-  const tar = systemTar();
-  if (!tar || !existsSync(tar)) throw new Error('No system tar was found to unpack the model.');
+  const tar = limits.tar ?? systemTar();
+  if (!tar || !existsSync(tar)) throw new PublicError('No system tar was found to unpack the model.');
   const names = (await run(tar, ['-tjf', archive], limits.signal)).split('\n').filter((l) => l.length);
   const long = (await run(tar, ['-tvjf', archive], limits.signal)).split('\n').filter((l) => l.length);
-  if (names.length !== long.length) throw new Error('The archive listing is inconsistent; refusing to unpack.');
-  if (names.length > limits.maxFiles) throw new Error(`The archive has too many files (${names.length}); refusing to unpack.`);
-  let total = 0;
-  names.forEach((name, i) => {
-    if (unsafeName(name)) throw new Error(`The archive contains an unsafe path (${name.slice(0, 80)}); refusing to unpack.`);
-    const line = long[i];
-    const type = line[0];
-    if (type !== '-' && type !== 'd') throw new Error(`The archive contains a link or special file (${name.slice(0, 80)}), not a regular file; refusing to unpack.`);
-    const f = line.trim().split(/\s+/);
-    const size = Number(f[1]?.includes('/') ? f[2] : f[4]); // GNU: mode owner/group size …; bsdtar: mode links owner group size …
-    if (!Number.isFinite(size) || size < 0) throw new Error('The archive listing could not be read; refusing to unpack.');
-    total += size;
+  if (names.length !== long.length) throw new PublicError('The archive listing is inconsistent; refusing to unpack.');
+  if (names.length > limits.maxFiles) throw new PublicError(`The archive has too many files (${names.length}); refusing to unpack.`);
+  const entries = names.map((name, i) => {
+    if (unsafeName(name)) throw new PublicError(`The archive contains an unsafe path (${name.slice(0, 80)}); refusing to unpack.`);
+    const type = long[i][0];
+    if (type !== '-' && type !== 'd') throw new PublicError(`The archive contains a link or special file (${name.slice(0, 80)}), not a regular file; refusing to unpack.`);
+    const size = type === 'd' ? 0 : parseListedSize(long[i]);
+    if (size === undefined || !Number.isSafeInteger(size)) throw new PublicError('The archive listing could not be read; refusing to unpack.');
+    return { name, dir: type === 'd', size };
   });
-  if (total > limits.maxBytes) throw new Error(`The archive is too large when unpacked (${total} bytes); refusing to unpack.`);
-  mkdirSync(dest, { recursive: true });
-  await run(tar, ['-xjf', archive, '-C', dest, '--no-same-owner'], limits.signal);
-  // Defence in depth: what actually landed.
-  let files = 0; let bytes = 0;
-  const walk = (d: string) => {
-    for (const e of readdirSync(d)) {
-      const p = path.join(d, e); const st = lstatSync(p);
-      if (st.isSymbolicLink() || (!st.isFile() && !st.isDirectory())) throw new Error('The unpacked model contains a link or special file; removed.');
-      if (st.isDirectory()) walk(p); else { files++; bytes += st.size; }
-    }
-  };
-  walk(dest);
-  if (files > limits.maxFiles || bytes > limits.maxBytes) throw new Error('The unpacked model is larger than allowed; removed.');
+  const listed = entries.reduce((n, e) => n + e.size, 0);
+  if (listed > limits.maxBytes) throw new PublicError(`The archive is too large when unpacked (${listed} bytes listed); refusing to unpack.`);
+  const root = path.resolve(dest);
+  const target = (name: string) => { const p = path.resolve(root, name); if (p !== root && !p.startsWith(root + path.sep)) throw new PublicError('The archive contains an unsafe path; refusing to unpack.'); return p; };
+  try {
+    mkdirSync(root, { recursive: true });
+    for (const e of entries) if (e.dir) mkdirSync(target(e.name), { recursive: true });
+    const files = entries.filter((e) => !e.dir);
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(tar, ['-xOjf', archive], { env: TAR_ENV, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      let produced = 0; let index = -1; let fd: number | undefined; let remaining = 0; let failed: Error | undefined; let stderr = '';
+      const fail = (err: Error) => { if (failed) return; failed = err; child.kill('SIGKILL'); };
+      const onAbort = () => fail(new Error('cancelled'));
+      limits.signal?.addEventListener('abort', onAbort, { once: true });
+      const next = () => {
+        if (fd !== undefined) { closeSync(fd); fd = undefined; }
+        while (++index < files.length) {
+          const f = files[index];
+          mkdirSync(path.dirname(target(f.name)), { recursive: true });
+          fd = openSync(target(f.name), 'wx', 0o644);
+          remaining = f.size;
+          if (remaining > 0) return;
+          closeSync(fd); fd = undefined;
+        }
+      };
+      next();
+      child.stdout.on('data', (chunk: Buffer) => {
+        if (failed) return;
+        produced += chunk.length;
+        if (produced > limits.maxBytes) return fail(new PublicError(`The archive is too large when unpacked (more than ${limits.maxBytes} bytes); stopped and removed.`));
+        if (produced > listed) return fail(new PublicError('The unpacked content does not match the archive listing (larger than listed); stopped and removed.'));
+        let off = 0;
+        try {
+          while (off < chunk.length && fd !== undefined) {
+            const n = Math.min(remaining, chunk.length - off);
+            writeSync(fd, chunk, off, n);
+            off += n; remaining -= n;
+            if (remaining === 0) next();
+          }
+        } catch (err) { fail(new PublicError(`The model could not be written on the office host (${(err as NodeJS.ErrnoException).code ?? 'write error'}).`)); }
+      });
+      child.stderr.on('data', (c: Buffer) => { if (stderr.length < 2000) stderr += c.toString(); });
+      child.on('error', (err) => fail(err));
+      child.on('close', (code) => {
+        limits.signal?.removeEventListener('abort', onAbort);
+        if (fd !== undefined) { try { closeSync(fd); } catch { /* closed */ } fd = undefined; }
+        if (failed) return reject(failed);
+        if (code !== 0) { console.error('[voice] tar -x failed:', code, stderr.slice(0, 400)); return reject(new PublicError('The model archive could not be unpacked (tar failed). Details are in the office host log.')); }
+        if (produced !== listed || index < files.length) return reject(new PublicError('The unpacked content does not match the archive listing; removed.'));
+        resolve();
+      });
+    });
+  } catch (err) {
+    rmSync(root, { recursive: true, force: true });
+    throw err;
+  }
 }
 
 // ---- runtime -----------------------------------------------------------------------------------------------------
@@ -332,7 +392,9 @@ export class VoiceRuntime {
     if (this.running) return { error: this.dl?.cancelled ? `${this.dl.model} is still stopping; try again in a moment.` : `${this.dl?.model ?? 'A model'} is still downloading.` };
     if (this.installed(m.id)) return { error: `${m.name} is already installed.` };
     const free = freeBytes(this.root);
-    if (free !== undefined && free < m.sizeBytes * 3) return { error: `Not enough free disk space for ${m.name}: about ${Math.ceil((m.sizeBytes * 3) / 1e6)} MB is needed for the download and unpacking.` };
+    // Reserve the archive plus the most it may unpack to (the same cap extraction enforces).
+    const need = m.sizeBytes + unpackCap(m);
+    if (free !== undefined && free < need) return { error: `Not enough free disk space for ${m.name}: about ${Math.ceil(need / 1e6)} MB is needed for the download and unpacking.` };
     const abort = new AbortController();
     this.abort = abort;
     this.dl = { model: m.id, status: 'starting', completed: 0, total: m.sizeBytes, done: false };
@@ -360,12 +422,12 @@ export class VoiceRuntime {
     const hash = createHash('sha256');
     try {
       const res = await this.fetcher(m.url, { signal, redirect: 'follow' });
-      if (!res.ok || !res.body) throw new Error(`The release server answered HTTP ${res.status}.`);
+      if (!res.ok || !res.body) throw new PublicError(`The release server answered HTTP ${res.status}.`);
       dl.status = 'downloading';
       const meter = new Transform({
         transform(chunk: Buffer, _enc, cb) {
           dl.completed += chunk.length;
-          if (dl.completed > m.sizeBytes) return cb(new Error(`The download is larger than the pinned size (${m.sizeBytes} bytes); stopped.`));
+          if (dl.completed > m.sizeBytes) return cb(new PublicError(`The download is larger than the pinned size (${m.sizeBytes} bytes); stopped.`));
           hash.update(chunk); cb(null, chunk);
         },
       });
@@ -374,16 +436,16 @@ export class VoiceRuntime {
       } catch (e) {
         if (signal.aborted) throw new Error('cancelled');
         const code = (e as NodeJS.ErrnoException).code;
-        if (code === 'ENOSPC' || code === 'EACCES' || code === 'EPERM' || code === 'EROFS' || code === 'EEXIST' || /no space/i.test((e as Error).message)) throw new Error(`The download could not be saved on the office host (${code ?? 'write error'}: ${(e as Error).message}). Nothing was installed.`);
+        if (code === 'ENOSPC' || code === 'EACCES' || code === 'EPERM' || code === 'EROFS' || code === 'EEXIST' || /no space/i.test((e as Error).message)) throw new PublicError(`The download could not be saved on the office host (${code ?? 'write error'}). Nothing was installed.`);
         throw e;
       }
-      if (dl.completed !== m.sizeBytes) throw new Error(`Size mismatch: got ${dl.completed} bytes, expected ${m.sizeBytes}. Nothing was installed.`);
+      if (dl.completed !== m.sizeBytes) throw new PublicError(`Size mismatch: got ${dl.completed} bytes, expected ${m.sizeBytes}. Nothing was installed.`);
       const digest = hash.digest('hex');
-      if (m.sha256 && digest !== m.sha256) throw new Error('Checksum mismatch: the file is not the published release. Nothing was installed.');
+      if (m.sha256 && digest !== m.sha256) throw new PublicError('Checksum mismatch: the file is not the published release. Nothing was installed.');
       if (signal.aborted) throw new Error('cancelled');
       dl.status = 'unpacking';
       this.onChange();
-      await this.extract(part, tmp, signal, { maxBytes: m.maxUnpackedBytes ?? Math.max(m.sizeBytes * 4, 64e6), maxFiles: 2000 });
+      await this.extract(part, tmp, signal, { maxBytes: unpackCap(m), maxFiles: 2000 });
       if (signal.aborted) throw new Error('cancelled');
       const earlier = this.saved.digests?.[m.id];
       if (!m.sha256 && earlier && earlier !== digest) dl.warning = `This download’s sha256 (${digest.slice(0, 12)}…) differs from the earlier install (${earlier.slice(0, 12)}…). The release file changed; check the source before using it.`;
@@ -397,7 +459,9 @@ export class VoiceRuntime {
       Object.assign(dl, { done: true, status: 'installed' });
     } catch (e) {
       const cancelled = signal.aborted || (e as Error).name === 'AbortError' || (e as Error).message === 'cancelled';
-      Object.assign(dl, cancelled ? { done: true, cancelled: true, status: 'cancelled' } : { done: true, error: (e as Error).message, status: 'failed' });
+      if (!cancelled && !(e instanceof PublicError)) console.error(`[voice] download of ${m.id} failed:`, (e as Error).message); // details (paths) stay in the host log
+      const shown = e instanceof PublicError ? e.message : `The download failed (${(e as NodeJS.ErrnoException).code ?? 'error'}). Details are in the office host log. Nothing was installed.`;
+      Object.assign(dl, cancelled ? { done: true, cancelled: true, status: 'cancelled' } : { done: true, error: shown, status: 'failed' });
     } finally {
       rmSync(tmp, { recursive: true, force: true });
       rmSync(part, { force: true });
@@ -469,6 +533,9 @@ export class VoiceRuntime {
     });
   }
 }
+
+/** The most a model may unpack to: its own cap, else 4x the archive (at least 64 MB). */
+export const unpackCap = (m: VoiceModel) => m.maxUnpackedBytes ?? Math.max(m.sizeBytes * 4, 64e6);
 
 function freeBytes(dir: string): number | undefined {
   try { mkdirSync(dir, { recursive: true }); const s = statfsSync(dir); return Number(s.bavail) * Number(s.bsize); } catch { return undefined; }

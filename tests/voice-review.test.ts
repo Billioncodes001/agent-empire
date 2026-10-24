@@ -4,11 +4,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { Writable } from 'node:stream';
-import { VoiceError, VoiceRuntime, decodeWav, encodeWav, safeExtract, systemTar, type VoiceEngines } from '../src/server/voice.js';
+import { VoiceError, VoiceRuntime, decodeWav, encodeWav, parseListedSize, safeExtract, systemTar, type VoiceEngines } from '../src/server/voice.js';
 import type { VoiceModel } from '../src/shared/voice.js';
 
 const withTemp = async (fn: (dir: string) => Promise<void> | void) => {
@@ -177,4 +177,54 @@ test('safeExtract rejects ../ entries, symlinks and oversized content; nothing i
   await assert.rejects(safeExtract(big, out, { maxBytes: 1e6, maxFiles: 10 }), /too large/i);
   assert.equal(existsSync(path.join(dir, 'x', 'evil.txt')), false);
   assert.equal(existsSync(out) ? readdirSync(out).length : 0, 0, 'nothing unpacked');
+}));
+
+// ---- re-review: the cap holds on bytes actually written; errors sent to clients carry no host paths ----
+
+test('parseListedSize anchors on the date, so an owner name with spaces cannot shift the size column', () => {
+  assert.equal(parseListedSize('-rw-r--r--  0 x 0    staff    5000 Oct 24 10:00 model/big.bin'), 5000);
+  assert.equal(parseListedSize('-rw-r--r--  0 a b 12 Jan  3  2025 a b.txt'), 12);
+  assert.equal(parseListedSize('-rw-r--r-- x 0/staff 77 2026-10-24 10:00 model/f'), 77);
+  assert.equal(parseListedSize('garbage'), undefined);
+});
+
+test('an owner name with a space does not hide the real size: the cap still refuses it before writing', { skip }, () => withTemp(async (dir) => {
+  const src = path.join(dir, 'src'); mkdirSync(src);
+  writeFileSync(path.join(src, 'big.bin'), Buffer.alloc(5000, 7));
+  const arch = path.join(dir, 'owner.tar.bz2');
+  execFileSync(tar!, ['-cjf', arch, '--uname', 'x 0', '--gname', 'staff', '-C', src, 'big.bin']);
+  assert.match(execFileSync(tar!, ['-tvjf', arch]).toString(), /x 0/, 'the crafted archive really has an owner with a space');
+  const out = path.join(dir, 'out');
+  await assert.rejects(safeExtract(arch, out, { maxBytes: 1000, maxFiles: 10 }), /too large/i);
+  assert.equal(existsSync(out) ? readdirSync(out).length : 0, 0);
+  await safeExtract(arch, out, { maxBytes: 10_000, maxFiles: 10 });
+  assert.equal(readFileSync(path.join(out, 'big.bin')).length, 5000);
+}));
+
+test('a bomb (listed small, real output large) is stopped at the cap while extracting; nothing is left', () => withTemp(async (dir) => {
+  // A fake tar: lists one 10-byte file, but -x streams 5 MB. Only for this test; the real code uses the system tar.
+  const fake = path.join(dir, 'faketar.sh');
+  writeFileSync(fake, `#!/bin/sh\ncase "$1" in\n  -tjf) echo big.bin ;;\n  -tvjf) echo "-rw-r--r--  0 a b 10 Oct 24 10:00 big.bin" ;;\n  -xOjf) exec /bin/dd if=/dev/zero bs=65536 count=80 2>/dev/null ;;\nesac\n`);
+  chmodSync(fake, 0o755);
+  const arch = path.join(dir, 'bomb.tar.bz2'); writeFileSync(arch, 'x');
+  const out = path.join(dir, 'out');
+  await assert.rejects(safeExtract(arch, out, { maxBytes: 100_000, maxFiles: 10, tar: fake }), /larger than|too large|does not match/i);
+  assert.equal(existsSync(out), false, 'the partial output is removed');
+}));
+
+test('errors shown to clients never contain the data directory or the home path', () => withTemp(async (dir) => {
+  // Real default extraction of a file that is not a bzip2 archive: tar fails with host paths in its message.
+  const v = new VoiceRuntime({ dataDir: dir, catalogue: [model()], engines: engines(), fetch: okFetch() });
+  await v.startDownload('fake-stt', true).started;
+  const a = (await v.state()).download?.error ?? '';
+  assert.ok(a.length > 0);
+  // An open error whose Node message names the path.
+  const denied = () => { const w = new Writable({ write(_c, _e, cb) { cb(Object.assign(new Error(`EACCES: permission denied, open '${dir}/voice/x.part'`), { code: 'EACCES' })); } }); return w; };
+  const v2 = new VoiceRuntime({ dataDir: path.join(dir, 'b'), catalogue: [model()], engines: engines(), fetch: okFetch(), extract: fakeExtract, openWrite: denied });
+  await v2.startDownload('fake-stt', true).started;
+  const b = (await v2.state()).download?.error ?? '';
+  assert.match(b, /EACCES/);
+  for (const msg of [a, b]) {
+    assert.ok(!msg.includes(dir) && !msg.includes(homedir()) && !msg.includes(tmpdir()), msg);
+  }
 }));
