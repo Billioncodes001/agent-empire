@@ -176,7 +176,18 @@ function applyOne(state: CloudState, intent: CloudIntent, ctx: TickContext): { o
         setStatus(state, ctx, job, 'failed', 'You confirmed the provider never created a session. Its reservation was released; submit a new job to try again.');
       } else {
         if (state.jobs.jobs.some(other => other.sessionId === intent.sessionId)) reject('session_in_use', 'That provider session is already linked to another job.');
-        job.sessionId = intent.sessionId; job.cursor = {};
+        const sessionId = intent.sessionId ?? '';
+        const runRef = sessionId.startsWith('ghrun_');
+        if (runRef !== (job.provider === 'github-actions')) reject('wrong_session_kind', job.provider === 'github-actions' ? 'This job runs in GitHub Actions: attach its run as ghrun_<run id> (the number in the run’s URL).' : 'This job runs on Anthropic: attach its sesn_… session ID.');
+        if (runRef) {
+          // Rebuild the run reference from the job itself. The next poll trusts the run only if its title names this
+          // job with the same budget and turn cap ("Agent Empire job <id> budget <n>c turns <t>"); otherwise it stays unknown.
+          const ex = meta.execution;
+          if (ex?.provider !== 'github-actions' || ex.repository.owner !== job.repository.owner || ex.repository.name !== job.repository.name) reject('execution_changed', 'The Empire no longer runs jobs in this job’s GitHub repository, so its run cannot be attached here.');
+          const actions = (ex as Extract<typeof ex, { provider: 'github-actions' }>).actions;
+          job.cursor = { actions: { owner: job.repository.owner, name: job.repository.name, runId: Number(sessionId.slice(6)), jobId: job.id, engine: actions.engine, budgetCents: job.reservation?.cents ?? 0, maxTurns: actions.maxTurns } };
+        } else job.cursor = {};
+        job.sessionId = intent.sessionId;
         setStatus(state, ctx, job, 'unknown', 'Provider session attached by the user. The next poll confirms its state and budget.');
       }
       return { outcome: 'applied' };
@@ -416,7 +427,11 @@ function observeInto(state: CloudState, ctx: TickContext, job: CloudJob, observa
   job.sessionId = observation.sessionId;
   job.providerStatus = observation.providerStatus;
   if (cursor) job.cursor = cursor;
-  if (observation.costCents !== undefined) {
+  // The cost basis follows the job's own reservation, not the provider's bookkeeping: a money-reserved run can never be
+  // recorded as free or plan-billed, and a run-caps run never gains a dollar estimate.
+  const free = observation.costBasis === 'free_run' || observation.costBasis === 'claude_plan';
+  const consistent = job.provider !== 'github-actions' || !job.reservation || (job.reservation.basis === 'run_caps') === free;
+  if (observation.costCents !== undefined && consistent) {
     const previous = job.cost?.amountCents ?? 0;
     const basis = observation.costBasis ?? 'provider_reported_list_cost';
     if (observation.costCents > previous || !job.cost || job.cost.basis !== basis) {

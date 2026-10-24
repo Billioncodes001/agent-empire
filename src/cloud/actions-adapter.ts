@@ -20,6 +20,13 @@ import type { ActionsCursor, CloudExecution, EventCursorState } from './schema.j
 import { GitHubClient, GitHubError } from './store.js';
 
 export const ACTIONS_SESSION = /^ghrun_[1-9][0-9]{0,19}$/;
+const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+const REPO = /^[A-Za-z0-9._-]{1,100}$/;
+
+/** GitHub said "slow down": no further GitHub call is made in this coordinator run. A 4xx, so a dispatch is provably not sent. */
+export class RateLimited extends GitHubError {
+  constructor() { super(429, 'github_rate_limited', 'GitHub rate limit reached; the coordinator backs off and polls again on its next run.'); this.name = 'RateLimited'; }
+}
 const TASK_BRANCH = /^agent-empire\/task-[a-f0-9-]{36}$/;
 
 export const runTitle = (jobId: string, budgetCents: number, maxTurns: number) => `Agent Empire job ${jobId} budget ${budgetCents}c turns ${maxTurns}`;
@@ -92,7 +99,27 @@ async function inflateBounded(data: Uint8Array, maxBytes: number): Promise<Uint8
     const { done, value } = await reader.read();
     if (done) break;
     total += value.length;
-    if (total > maxBytes) { await reader.cancel(); throw new Error('Zip entry too large.'); }
+    // Not awaited: cancelling a piped stream can wait on its source, and the refusal must not hang the coordinator.
+    if (total > maxBytes) { void reader.cancel().catch(() => {}); throw new Error('Zip entry too large.'); }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const c of chunks) { out.set(c, at); at += c.length; }
+  return out;
+}
+
+/** Reads a body chunk by chunk and stops past `max` bytes, whatever content-length said (or omitted). */
+async function readCapped(response: Response, max: number): Promise<Uint8Array> {
+  if (!response.body) return new Uint8Array(0);
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > max) { void reader.cancel().catch(() => {}); throw new Error('the result artifact is too large'); }
     chunks.push(value);
   }
   const out = new Uint8Array(total);
@@ -114,6 +141,8 @@ export class GitHubActionsAdapter implements ProviderAdapter {
   private closed = new Set<string>();
   /** Where each observed run lives, so interrupt (always preceded by observe in tick.ts) can address it. */
   private lastSeen = new Map<string, { owner: string; name: string }>();
+  /** Set by a 429, or a 403 that says "rate limit"; every later call in this run fails fast without a request. */
+  private rateLimited = false;
 
   constructor(private githubToken: string, options: { fetch?: typeof fetch; timeoutMs?: number; apiBase?: string } = {}) {
     this.transport = options.fetch ?? ((...args: Parameters<typeof fetch>) => fetch(...args));
@@ -123,12 +152,23 @@ export class GitHubActionsAdapter implements ProviderAdapter {
     this.canDispatch = !!githubToken;
   }
 
+  /** All GitHub calls go through here, so one rate-limit reply stops the rest of this run's calls. */
+  private async api(method: 'GET' | 'POST', route: string, body?: unknown) {
+    if (this.rateLimited) throw new RateLimited();
+    try { return await this.github.request(method, route, body); }
+    catch (error) {
+      if (error instanceof GitHubError && (error.status === 429 || (error.status === 403 && /rate limit/i.test(error.message)))) { this.rateLimited = true; throw new RateLimited(); }
+      throw error;
+    }
+  }
+
   async provision(): Promise<never> { throw new Error('GitHub Actions jobs need no provisioning: setup installs the job workflow.'); }
 
   async dispatch(request: DispatchRequest): Promise<{ sourceCommit: string; observation: ProviderObservation; cursor: EventCursorState }> {
     const execution = request.execution;
     if (execution.provider !== 'github-actions') throw new DispatchFailure(false, 'This Empire does not run jobs in GitHub Actions.');
     if (!this.canDispatch) throw new DispatchFailure(false, 'The project GitHub token (PROJECT_GITHUB_TOKEN) is not configured in the state repository secrets. No run was started.');
+    if (this.rateLimited) throw new DispatchFailure(false, 'GitHub rate limit reached earlier in this coordinator run. No run was started; the job waits for the next run.');
     const { owner, name, baseBranch } = execution.repository;
     const settings = execution.actions;
     const money = isMoneyEngine(settings.engine);
@@ -138,7 +178,7 @@ export class GitHubActionsAdapter implements ProviderAdapter {
     const base = `/repos/${owner}/${name}`;
     let sourceCommit: string;
     try {
-      const head = await this.github.request('GET', `${base}/commits/${encodeURIComponent(baseBranch)}`);
+      const head = await this.api('GET', `${base}/commits/${encodeURIComponent(baseBranch)}`);
       sourceCommit = head.data?.sha;
       if (typeof sourceCommit !== 'string' || !COMMIT.test(sourceCommit)) throw new Error('GitHub returned an invalid commit.');
     } catch (error) {
@@ -146,7 +186,7 @@ export class GitHubActionsAdapter implements ProviderAdapter {
     }
     let data: any;
     try {
-      ({ data } = await this.github.request('POST', `${base}/actions/workflows/${JOB_WORKFLOW_FILE}/dispatches`, {
+      ({ data } = await this.api('POST', `${base}/actions/workflows/${JOB_WORKFLOW_FILE}/dispatches`, {
         ref: baseBranch,
         inputs: { job_id: request.jobId, source_commit: sourceCommit, task_b64: taskB64, max_turns: String(settings.maxTurns), budget_cents: String(request.budgetCents) },
         return_run_details: true,
@@ -178,6 +218,7 @@ export class GitHubActionsAdapter implements ProviderAdapter {
   private actionsOf(sessionId: string, cursor: EventCursorState): ActionsCursor {
     const a = cursor.actions;
     if (!ACTIONS_SESSION.test(sessionId) || !a || `ghrun_${a.runId}` !== sessionId) throw new Error('The GitHub Actions run reference is missing from this job.');
+    if (typeof a.owner !== 'string' || typeof a.name !== 'string' || !OWNER.test(a.owner) || !REPO.test(a.name)) throw new Error('The GitHub Actions run reference names an invalid repository.');
     return a;
   }
 
@@ -190,7 +231,7 @@ export class GitHubActionsAdapter implements ProviderAdapter {
     if (this.closed.has(sessionId)) {
       return { cursor: next, observation: { sessionId, status: 'cancelled', providerStatus: 'archived', budgetCents: a.budgetCents, ...free, message: 'The run record is closed.' } };
     }
-    const { data: run } = await this.github.request('GET', `/repos/${a.owner}/${a.name}/actions/runs/${a.runId}`);
+    const { data: run } = await this.api('GET', `/repos/${a.owner}/${a.name}/actions/runs/${a.runId}`);
     const title = typeof run?.display_title === 'string' ? run.display_title : '';
     const ours = title === runTitle(a.jobId, a.budgetCents, a.maxTurns) && typeof run?.path === 'string' && run.path.endsWith(`/${JOB_WORKFLOW_FILE}`);
     // Without a matching title the caps are unconfirmed: budgetCents is left out, so the coordinator marks it unknown.
@@ -220,7 +261,7 @@ export class GitHubActionsAdapter implements ProviderAdapter {
 
   /** Lists the run's artifacts, downloads the one result artifact within the size caps, and validates it. */
   private async readResult(a: ActionsCursor): Promise<RunResult> {
-    const { data } = await this.github.request('GET', `/repos/${a.owner}/${a.name}/actions/runs/${a.runId}/artifacts?per_page=10`);
+    const { data } = await this.api('GET', `/repos/${a.owner}/${a.name}/actions/runs/${a.runId}/artifacts?per_page=10`);
     const list = Array.isArray(data?.artifacts) ? data.artifacts : [];
     const found = list.filter((x: any) => x?.name === RESULT_ARTIFACT);
     if (found.length !== 1) throw new Error('the result artifact is missing');
@@ -248,9 +289,7 @@ export class GitHubActionsAdapter implements ProviderAdapter {
       if (!response.ok) throw new Error(`the artifact download failed (HTTP ${response.status})`);
       const declared = Number(response.headers.get('content-length') ?? '0');
       if (declared > ARTIFACT_MAX_BYTES) throw new Error('the result artifact is too large');
-      const buffer = new Uint8Array(await response.arrayBuffer());
-      if (buffer.length > ARTIFACT_MAX_BYTES) throw new Error('the result artifact is too large');
-      return buffer;
+      return await readCapped(response, ARTIFACT_MAX_BYTES);
     } finally { clearTimeout(timer); }
   }
 
@@ -261,7 +300,7 @@ export class GitHubActionsAdapter implements ProviderAdapter {
     // The run's repository is not in the session id; interrupt is preceded by observe, which recorded it.
     const target = this.lastSeen.get(sessionId);
     if (!target) throw new Error('The run must be observed before it is cancelled.');
-    try { await this.github.request('POST', `/repos/${target.owner}/${target.name}/actions/runs/${runId}/cancel`); }
+    try { await this.api('POST', `/repos/${target.owner}/${target.name}/actions/runs/${runId}/cancel`); }
     catch (error) { if (!(error instanceof GitHubError && error.status === 409)) throw error; } // 409: already finished
   }
 
@@ -276,7 +315,7 @@ export class GitHubActionsAdapter implements ProviderAdapter {
     if (!TASK_BRANCH.test(branch)) throw new Error('Unexpected task branch name.');
     const { owner, name } = execution.repository;
     try {
-      const ref = await this.github.request('GET', `/repos/${owner}/${name}/git/ref/heads/${branch}`);
+      const ref = await this.api('GET', `/repos/${owner}/${name}/git/ref/heads/${branch}`);
       const sha = ref.data?.object?.sha;
       if (typeof sha !== 'string' || !COMMIT.test(sha)) throw new Error('GitHub returned an invalid branch head.');
       return { state: 'found', sha };

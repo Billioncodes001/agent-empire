@@ -97,7 +97,8 @@ export function parseIntent(path: string, text: string): CloudIntent {
       allow(['jobId', 'resolution', 'sessionId']);
       if (base.resolution === 'not_dispatched') { if (base.sessionId !== undefined) throw bad('not_dispatched takes no sessionId.'); return { ...common, kind: 'resolve_uncertain', jobId: jobId(base.jobId), resolution: 'not_dispatched' }; }
       if (base.resolution === 'attach_session') {
-        if (typeof base.sessionId !== 'string' || !/^sesn_[A-Za-z0-9]{8,100}$/.test(base.sessionId)) throw bad('attach_session needs a provider session ID.');
+        // Anthropic session (sesn_…) or GitHub Actions run (ghrun_<run id>); the coordinator checks it matches the job's provider.
+        if (typeof base.sessionId !== 'string' || !/^(sesn_[A-Za-z0-9]{8,100}|ghrun_[1-9][0-9]{0,19})$/.test(base.sessionId)) throw bad('attach_session needs a provider session ID or a GitHub Actions run ID (ghrun_<id>).');
         return { ...common, kind: 'resolve_uncertain', jobId: jobId(base.jobId), resolution: 'attach_session', sessionId: base.sessionId };
       }
       throw bad('resolution must be not_dispatched or attach_session.');

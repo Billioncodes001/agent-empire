@@ -5,6 +5,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { deflateRawSync } from 'node:zlib';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync as writeFile } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { CPU_MODEL, PATCH_MAX_BYTES } from '../src/cloud/actions-spec';
 import { GitHubActionsAdapter, readZipEntry, runTitle } from '../src/cloud/actions-adapter';
 import { chooseModelSource, engineLabel, JOB_PINS, MAX_TASK_B64, parseRunResult, rotationStatus, subscriptionChecklist, validateActionsSettings, type ActionsSettings } from '../src/cloud/actions-spec';
 import { checkJobSecret, installJobWorkflow } from '../src/cloud/actions-setup';
@@ -14,7 +19,7 @@ import { providersFromEnv } from '../src/cloud/cli';
 import { serializeState, validateJobs, type ActionsExecution, type CloudExecution } from '../src/cloud/schema';
 import { GitHubClient } from '../src/cloud/store';
 import { PINNED_ACTIONS } from '../src/cloud/workflow';
-import { FakeProvider, harness, intent, job, makeStore, newJob, push, uuid, EXECUTION } from './cloud-fixtures';
+import { FakeProvider, harness, intent, job, makeStore, newJob, push, uuid, EXECUTION, T0 } from './cloud-fixtures';
 
 const json = (data: unknown, status = 200, headers: Record<string, string> = {}) =>
   new Response(data === undefined || status === 204 ? null : JSON.stringify(data), { status, headers: { 'content-type': 'application/json', ...headers } });
@@ -98,7 +103,7 @@ class FakeActions {
 function actionsHarness(settings: ActionsSettings, limits = { maxConcurrent: 2, perTaskBudgetCents: 100, dailyBudgetCents: 1000 }) {
   const gh = new FakeActions();
   const adapter = new GitHubActionsAdapter('github_pat_fixture', { fetch: gh.fetch as typeof fetch });
-  const h = harness(makeStore({ execution: exec(settings), limits, mutate: s => { s.empire.setup.completed = true; s.empire.economy.startedAt = 0; } }), adapter as unknown as FakeProvider);
+  const h = harness(makeStore({ execution: exec(settings), limits, mutate: s => { s.empire.setup.completed = true; s.empire.economy.startedAt = T0 - 1; } }), adapter as unknown as FakeProvider);
   return { gh, adapter, h };
 }
 
@@ -401,4 +406,149 @@ test('job workflow install commits once and skips when unchanged', async () => {
   assert.equal(await installJobWorkflow(client, target, FREE), 'unchanged');
   assert.equal(await installJobWorkflow(client, target, SUB), 'installed');
   assert.equal(gh.requests.filter(r => r.method === 'PUT').length, 2);
+});
+
+// ---------------------------------------------------------------- security review fixes (H1, M1, M2, L1-L4)
+
+const TARGET = { owner: 'fixture', name: 'repo', baseBranch: 'main' };
+/** The two jobs of the generated workflow, split by their keys under `jobs:`. */
+function jobsOf(yaml: string) {
+  const work = yaml.indexOf('\n  work:\n'); const publish = yaml.indexOf('\n  publish:\n');
+  assert.ok(work > 0 && publish > work, 'two jobs: work, then publish');
+  return { agent: yaml.slice(work, publish), publish: yaml.slice(publish) };
+}
+/** The `run: |` block of the named step, de-indented. */
+function stepScript(section: string, name: string): string {
+  const lines = section.split('\n');
+  const at = lines.findIndex(l => l.trim() === `- name: ${name}`);
+  assert.ok(at >= 0, `step ${name}`);
+  const run = lines.findIndex((l, i) => i > at && l.trim() === 'run: |');
+  const indent = lines[run + 1].search(/\S/);
+  const body: string[] = [];
+  for (let i = run + 1; i < lines.length && (lines[i].trim() === '' || lines[i].search(/\S/) >= indent); i++) body.push(lines[i].slice(indent));
+  return body.join('\n');
+}
+
+test('H1/M2: the agent job has read-only contents and no write token; Qwen never sees github.token', () => {
+  for (const settings of [FREE, SUB, KEY]) {
+    const { agent } = jobsOf(jobWorkflow(TARGET, settings));
+    assert.match(agent, /\n {4}permissions:\n {6}contents: read\n {4}[a-z]/, 'contents: read only');
+    assert.doesNotMatch(agent, /contents: write|pull-requests: write|id-token|GH_TOKEN|gh auth|git push|gh pr/);
+    const tokenLines = agent.split('\n').filter(l => l.includes('github.token'));
+    if (settings.engine === 'qwen-free') assert.equal(tokenLines.length, 0);
+    // claude-code-action will not start without a token (it would otherwise request an OIDC app token); it gets the
+    // job's own token, which this job's permissions make read-only.
+    else assert.deepEqual(tokenLines.map(l => l.trim()), ['github_token: ${{ github.token }}']);
+    assert.match(agent, /git -c core\.hooksPath=\/dev\/null[^\n]*diff --cached --binary/);
+    assert.match(agent, /name: agent-empire-change/);
+  }
+});
+
+test('H1: the publish job runs no agent code, needs the agent job, and enforces the patch cap and task-branch-only push', () => {
+  for (const settings of [FREE, SUB, KEY, { ...FREE, modelSource: 'self_hosted_ollama', runnerLabel: 'box', model: 'm' } as ActionsSettings]) {
+    const { publish } = jobsOf(jobWorkflow(TARGET, settings));
+    assert.match(publish, /\n {4}needs: work\n/);
+    assert.match(publish, /\n {4}runs-on: ubuntu-latest\n/, 'always a fresh GitHub-hosted runner');
+    assert.doesNotMatch(publish, /qwen|claude-code-action|ollama|npm |setup-node|AGENT_EMPIRE_INSTRUCTION|secrets\./i);
+    assert.match(publish, /download-artifact@[0-9a-f]{40}/);
+    assert.ok(publish.includes(`-gt ${PATCH_MAX_BYTES} `));
+    assert.match(publish, /git -c core\.hooksPath=\/dev\/null apply --index/);
+    assert.match(publish, /push origin "HEAD:refs\/heads\/agent-empire\/task-\$JOB_ID"/);
+    assert.equal((publish.match(/ push /g) ?? []).length, 1, 'exactly one push, to the task branch');
+  }
+});
+
+test('H1: the publish job’s change check refuses hostile patches (run against a local scratch repository)', () => {
+  const script = stepScript(jobsOf(jobWorkflow(TARGET, FREE)).publish, 'Check the change');
+  const dir = mkdtempSync(join(tmpdir(), 'free04-'));
+  const git = (...args: string[]) => execFileSync('git', ['-C', dir, ...args], { stdio: 'pipe' }).toString();
+  git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't');
+  writeFile(join(dir, 'README.md'), 'hello\n'); git('add', '.'); git('commit', '-qm', 'init');
+  const patchFor = (path: string, content: string, mode = '100644') => [
+    `diff --git a/${path} b/${path}`, `new file mode ${mode}`, 'index 0000000..1111111', '--- /dev/null', `+++ b/${path}`, '@@ -0,0 +1 @@', `+${content}`, ''].join('\n');
+  let n = 0;
+  const check = (patch: string) => {
+    const file = join(tmpdir(), `free04-${process.pid}-${n++}.patch`);
+    writeFile(file, patch);
+    try { execFileSync('bash', ['-c', script], { cwd: dir, env: { ...process.env, PATCH: file }, stdio: 'pipe' }); return true; } catch { return false; }
+  };
+  assert.equal(check(patchFor('src/ok.txt', 'fine')), true);
+  assert.equal(check(patchFor('.github/workflows/evil.yml', 'on: push')), false);
+  assert.equal(check(patchFor('.git/hooks/pre-push', 'curl evil')), false);
+  assert.equal(check(patchFor('sub/.git/config', 'x')), false);
+  assert.equal(check(patchFor('link', '/etc/passwd', '120000')), false, 'symlinks are refused');
+  const rename = ['diff --git a/README.md b/.github/README.md', 'similarity index 100%', 'rename from README.md', 'rename to .github/README.md', ''].join('\n');
+  assert.equal(check(rename), false, 'renames into .github are refused');
+});
+
+test('L3: Qwen install is dependency-free and offline; the CPU model is pinned by digest', () => {
+  const yaml = jobWorkflow(TARGET, FREE);
+  assert.ok(yaml.includes(`package/package.json | jq -e '(.dependencies // {}) | length == 0'`));
+  assert.match(yaml, /npm install --global --ignore-scripts --offline/);
+  assert.ok(yaml.includes(CPU_MODEL.digest));
+});
+
+test('M1: an uncertain Actions dispatch can be attached by run id; the cursor is rebuilt and the title must match', async () => {
+  const { gh, h } = actionsHarness(FREE);
+  gh.dispatchMode = 'no_run_id';
+  push(h.store, newJob(1, 1));
+  await h.tick();
+  assert.equal(job(await h.state(), 1).status, 'dispatch_uncertain');
+  push(h.store, intent(5, { kind: 'resolve_uncertain', jobId: uuid(1), resolution: 'attach_session', sessionId: 'ghrun_9001' } as any));
+  await h.tick();
+  await h.tick();
+  let j = job(await h.state(), 1);
+  assert.equal(j.sessionId, 'ghrun_9001');
+  assert.deepEqual(j.cursor?.actions, { owner: 'fixture', name: 'repo', runId: 9001, jobId: uuid(1), engine: 'qwen-free', budgetCents: 0, maxTurns: 30 });
+  assert.equal(j.status, 'running', 'the title matched, so the run is trusted');
+  const other = actionsHarness(FREE);
+  other.gh.dispatchMode = 'no_run_id';
+  push(other.h.store, newJob(1, 1)); await other.h.tick();
+  other.gh.runs.get(9001)!.title = runTitle(uuid(7), 0, 30);
+  push(other.h.store, intent(5, { kind: 'resolve_uncertain', jobId: uuid(1), resolution: 'attach_session', sessionId: 'ghrun_9001' } as any));
+  await other.h.tick(); await other.h.tick();
+  j = job(await other.h.state(), 1);
+  assert.equal(j.status, 'unknown', 'a run for another job is never trusted');
+  assert.ok(j.reservation, 'the reservation is kept');
+  const third = actionsHarness(KEY);
+  third.gh.dispatchMode = 'no_run_id';
+  push(third.h.store, newJob(1, 1)); await third.h.tick();
+  push(third.h.store, intent(6, { kind: 'resolve_uncertain', jobId: uuid(1), resolution: 'attach_session', sessionId: 'sesn_abcdefgh12' } as any));
+  const report = await third.h.tick();
+  assert.equal(report.intents.find(i => i.id === uuid(100_006))?.outcome, 'rejected', 'an Anthropic session id cannot attach to an Actions job');
+});
+
+test('L1: a cursor that names another repository is refused by the schema', async () => {
+  const { h } = actionsHarness(FREE);
+  push(h.store, newJob(1, 1)); await h.tick();
+  const jobs = JSON.parse(serializeState(await h.state())['state/jobs.json']);
+  jobs.jobs[0].cursor.actions.owner = 'attacker';
+  assert.throws(() => validateJobs(jobs), /cursor/);
+  jobs.jobs[0].cursor.actions.owner = 'bad owner!';
+  assert.throws(() => validateJobs(jobs), /cursor/);
+});
+
+test('L2: an artifact served without content-length is capped while streaming', async () => {
+  const { gh, h } = actionsHarness(FREE);
+  push(h.store, newJob(1, 1)); await h.tick();
+  gh.finish(9001, { schemaVersion: 1, jobId: uuid(1), engine: 'qwen-free', status: 'no_changes' });
+  gh.runs.get(9001)!.artifact = new Uint8Array(200_000).fill(0x50);
+  gh.runs.get(9001)!.artifactSize = 100;
+  await h.tick();
+  assert.match(job(await h.state(), 1).message, /too large/);
+});
+
+test('L4: a rate-limited poll backs off for the rest of the run, and dispatch then provably sends nothing', async () => {
+  const gh = new FakeActions();
+  let limited = true;
+  const transport = (async (input: any, init: any) => limited && String(input).includes('/actions/runs/')
+    ? json({ message: 'API rate limit exceeded' }, 429, { 'retry-after': '60' }) : gh.fetch(input, init)) as typeof fetch;
+  const adapter = new GitHubActionsAdapter('github_pat_fixture', { fetch: transport });
+  const cursor = { actions: { owner: 'fixture', name: 'repo', runId: 5, jobId: uuid(1), engine: 'qwen-free' as const, budgetCents: 0, maxTurns: 30 } };
+  await assert.rejects(adapter.observe('ghrun_5', cursor), /rate limit/i);
+  const before = gh.requests.length;
+  limited = false;
+  await assert.rejects(adapter.observe('ghrun_5', cursor), /rate limit/i);
+  await assert.rejects(adapter.dispatch({ jobId: uuid(2), branch: `agent-empire/task-${uuid(2)}`, execution: exec(FREE), prompt: 'x', budgetCents: 0 }), (e: unknown) => e instanceof DispatchFailure && !e.sent);
+  assert.equal(gh.requests.length, before, 'no request while backing off');
 });

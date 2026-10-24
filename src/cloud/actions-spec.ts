@@ -55,6 +55,8 @@ export const JOB_PINS = {
   claudeCodeAction: { repo: 'anthropics/claude-code-action', sha: '6fed3ca145920b639991cb756090506e1bcaf515', version: 'v1.0.245' },
   /** actions/upload-artifact tag v7.0.2 (2026-10-07). */
   uploadArtifact: { repo: 'actions/upload-artifact', sha: 'cf430e030ddbb5b0abf93d22962f4752f3646cd9', version: 'v7.0.2' },
+  /** actions/download-artifact tag v8.0.2 (2026-10-07). Used only by the publish job. */
+  downloadArtifact: { repo: 'actions/download-artifact', sha: '9000827ccba6bdab643e8b6fd33ac0654aef8333', version: 'v8.0.2' },
   /** @qwen-code/qwen-code 0.25.0 (2026-10-05), Apache-2.0, no runtime dependencies; npm `dist.integrity`. */
   qwen: { version: '0.25.0', integrity: 'sha512-XlqtxN7UKEkXLpuKioorDTBoIR/rWMdNHMtO/aPuQb7HDsTswMPqkEMYsVY56wuF3xSaI9PKgh9Q2NU/CSTkAQ==' },
   /** ollama v0.40.10 linux amd64 release asset and its GitHub-reported sha256 (1.5 GB download). */
@@ -65,7 +67,14 @@ export const JOB_PINS = {
 } as const;
 
 /** The small CPU model for trivial tasks on a GitHub-hosted runner. Shown with its size and licence before opt-in. */
-export const CPU_MODEL = { name: 'qwen2.5-coder:1.5b', approxBytes: 986_000_000, licence: 'Apache-2.0' } as const;
+/**
+ * `digest`: sha256 of the registry manifest (registry.ollama.ai, read 2026-10-24). The job compares it with the digest
+ * Ollama reports after the pull and stops on a mismatch. UNVERIFIED until a real run that both use the same bytes.
+ */
+export const CPU_MODEL = { name: 'qwen2.5-coder:1.5b', approxBytes: 986_000_000, licence: 'Apache-2.0', digest: 'd7372fd828518a4d38b1eb196c673c31a85f2ed302b3d1e406c4c2d1b64a0668' } as const;
+/** Hard cap on the change one job may publish (the `git diff --binary` patch). */
+export const PATCH_MAX_BYTES = 5_000_000;
+export const CHANGE_ARTIFACT = 'agent-empire-change';
 
 /** Run caps: the free engines' budget is wall time and turns, never money. */
 export const RUN_CAPS = { turns: { min: 1, max: 200, default: 30 }, minutes: { min: 5, max: 360, default: 60 } } as const;

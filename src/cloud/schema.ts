@@ -300,7 +300,9 @@ function str(file: string, value: unknown, max: number, pattern?: RegExp): strin
 }
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const RUN_ID = /^[A-Za-z0-9._-]{1,80}$/;
-const ACTIONS_RUN = /^ghrun_[1-9][0-9]{0,19}$/;
+export const ACTIONS_RUN = /^ghrun_[1-9][0-9]{0,19}$/;
+const GH_OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+const GH_REPO = /^[A-Za-z0-9._-]{1,100}$/;
 
 /** Reuses the host ranges: 1–10 concurrent, per-task 1–100,000 cents, daily ≥ per-task and ≤ 10,000,000. */
 export function validateLimits(value: unknown): CloudLimits {
@@ -430,7 +432,10 @@ export function validateJobs(value: unknown): CloudJobs {
       if (c.actions !== undefined) {
         if (!actions) throw new SchemaError(f, 'invalid cursor');
         const a = rec(f, c.actions, ['owner', 'name', 'runId', 'jobId', 'engine', 'budgetCents', 'maxTurns']);
-        str(f, a.owner, 39); str(f, a.name, 100); int(f, a.runId, 1); int(f, a.budgetCents, 0, 100_000); int(f, a.maxTurns, RUN_CAPS.turns.min, RUN_CAPS.turns.max);
+        const repo = j.repository as { owner?: unknown; name?: unknown };
+        if (a.owner !== repo.owner || a.name !== repo.name) throw new SchemaError(f, 'cursor names another repository');
+        str(f, a.owner, 39, GH_OWNER); str(f, a.name, 100, GH_REPO);
+        int(f, a.runId, 1); int(f, a.budgetCents, 0, 100_000); int(f, a.maxTurns, RUN_CAPS.turns.min, RUN_CAPS.turns.max);
         if (a.jobId !== id || !isCloudEngine(a.engine)) throw new SchemaError(f, 'invalid cursor');
         if (j.sessionId !== undefined && j.sessionId !== `ghrun_${a.runId}`) throw new SchemaError(f, 'cursor does not match the run');
       }
