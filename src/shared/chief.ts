@@ -66,6 +66,10 @@ export interface ChiefPlan {
   costLabel?: string;
   summary?: string;
   items?: ChiefPlanItem[];
+  /** FREE-10: the approved lessons given to the chief as context for this plan (a snapshot of their text). */
+  lessons?: { id: string; text: string; scope: string; scopeValue?: string }[];
+  /** FREE-10: the lesson ids the plan says it relies on (always a subset of `lessons`). */
+  citedLessons?: string[];
   createdAt: number;
   updatedAt: number;
 }
@@ -88,6 +92,9 @@ export interface ChiefReview {
   evidence?: string;
   reason?: string;
   model?: string;
+  /** FREE-10: a lesson the review proposed (waiting in the inbox), or why one was refused. */
+  lessonId?: string;
+  lessonNote?: string;
   at: number;
 }
 
@@ -101,7 +108,17 @@ export interface ChiefStall {
   status: 'queued' | 'thinking' | 'raised' | 'needs_attention';
   approvalId?: string;
   reason?: string;
+  /** FREE-10: a lesson proposed from a repeated failure, or why one was refused. */
+  lessonId?: string;
+  lessonNote?: string;
   at: number;
+}
+
+/** FREE-10: "Based on lessons L3, L7" for a plan, or undefined when no lessons were given. */
+export function lessonsLine(plan: Pick<ChiefPlan, 'lessons' | 'citedLessons'>): string | undefined {
+  if (!plan.lessons?.length) return undefined;
+  if (plan.citedLessons?.length) return `Based on lessons ${plan.citedLessons.join(', ')}`;
+  return `Lessons given as context: ${plan.lessons.map((l) => l.id).join(', ')} (the plan cites none)`;
 }
 
 export interface ChiefBrainStatus {
