@@ -187,9 +187,13 @@ export function engineOptions(s: Pick<EnginesState, 'claude' | 'codex' | 'qwen' 
   const key = (n: KeyName) => s.keys.some((k) => k.name === n && k.present);
   const out: EngineOption[] = [];
   const add = (engine: WorkerEngine, premium: boolean, usable: boolean, reason: string) => out.push({ engine, label: engineLabel(engine), premium, usable, reason });
-  const claudeOk = s.claude.installed && s.claude.loggedIn === true && !s.claude.expired;
+  // Rules 4 and 6: an apiKeyHelper or ANTHROPIC_API_KEY in the user's or project's Claude settings makes `claude auth
+  // status` report an API-key method; that is API billing, so it is never offered as "your Claude account".
+  const subscription = isSubscriptionMethod(s.claude.method);
+  const claudeOk = s.claude.installed && s.claude.loggedIn === true && !s.claude.expired && subscription;
   add({ id: 'claude-code', auth: 'subscription' }, true, claudeOk,
-    !s.claude.installed ? 'Install Claude Code, then sign in inside it with /login.' : s.claude.expired ? 'Your Claude sign-in has expired: sign in again with /login.' : s.claude.loggedIn === false ? 'Not signed in: use “Sign in to Claude”, then complete /login yourself.' : s.claude.loggedIn === null ? 'Sign-in state unknown: `claude auth status` gave no answer we understand.' : 'Signed in on this computer.');
+    !s.claude.installed ? 'Install Claude Code, then sign in inside it with /login.' : s.claude.expired ? 'Your Claude sign-in has expired: sign in again with /login.' : s.claude.loggedIn === false ? 'Not signed in: use “Sign in to Claude”, then complete /login yourself.' : s.claude.loggedIn === null ? 'Sign-in state unknown: `claude auth status` gave no answer we understand.'
+      : !subscription ? `Claude Code reports the sign-in method “${s.claude.method ?? 'unknown'}”, which is not your Claude subscription (an API key or apiKeyHelper in your Claude settings bills the API). Remove it, or choose the API-key engine.` : 'Signed in on this computer.');
   add({ id: 'claude-code', auth: 'api-key' }, true, s.claude.installed && key('ANTHROPIC_API_KEY'),
     !s.claude.installed ? 'Install Claude Code.' : key('ANTHROPIC_API_KEY') ? 'Uses your Anthropic API key; billed by Anthropic at API rates.' : 'No Anthropic API key saved.');
   const codexOk = s.codex.installed && s.codex.loggedIn === true;
@@ -206,6 +210,11 @@ export function engineOptions(s: Pick<EnginesState, 'claude' | 'codex' | 'qwen' 
     add({ id: 'codex', auth: 'local', model: tag }, false, s.codex.installed && s.ollama.running && local.includes(tag), freeReason(s.codex.installed, 'Codex CLI', tag));
   }
   return out;
+}
+
+/** A Claude sign-in method that is the user's subscription (claude.ai login or their own OAuth token), never a key or helper. */
+export function isSubscriptionMethod(method: string | undefined): boolean {
+  return !!method && /claude\.ai|oauth|subscription/i.test(method) && !/api|key|helper|console|bedrock|vertex|foundry/i.test(method);
 }
 
 export function pickEngine(options: EngineOption[], preference: 'auto' | WorkerEngine = 'auto'): { engine: WorkerEngine | null; help: string[] } {

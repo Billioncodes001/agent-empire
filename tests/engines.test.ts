@@ -354,6 +354,125 @@ test('shared model client: Ollama $0, free tier labelled, paid estimate labelled
   } finally { await fake.close(); }
 });
 
+// ---- Security review fixes (2026-10-24) ----
+
+const baseState = (claude: Partial<EnginesState['claude']>): Pick<EnginesState, 'claude' | 'codex' | 'qwen' | 'ollama' | 'keys' | 'ram'> => ({
+  claude: { installed: true, loggedIn: true, detail: '', ...claude }, codex: { installed: false, loggedIn: null, detail: '' }, qwen: { installed: true, detail: '' },
+  ollama: { running: true, models: [{ name: 'gpt-oss:20b', sizeBytes: 1 }], url: '', installUrl: '', detail: '' }, keys: [], ram: { totalGb: 16, note: '', models: recommendModels(16 * GB).models },
+});
+
+test('review 1: an API-key or helper sign-in is never offered as "your Claude account"', () => {
+  for (const method of ['apiKeyHelper', 'API key', 'ANTHROPIC_API_KEY', 'console', undefined]) {
+    const opts = engineOptions(baseState({ method }));
+    const sub = opts.find((o) => o.engine.id === 'claude-code' && o.engine.auth === 'subscription')!;
+    assert.equal(sub.usable, false, `method ${method}`);
+    assert.match(sub.reason, /not your Claude subscription|sign-in method/i);
+    assert.deepEqual(pickEngine(opts).engine, { id: 'qwen-code', auth: 'local', model: 'gpt-oss:20b' }, 'auto falls back to free, never silent API billing');
+  }
+  for (const method of ['claude.ai', 'oauth_token', 'Claude subscription']) assert.equal(engineOptions(baseState({ method })).find((o) => o.engine.auth === 'subscription')!.usable, true, method);
+});
+
+test('review 2: a dash-leading prompt is never parsed as a Qwen Code option', () => withTemp((dir) => {
+  const { m, spawned } = manager(dir);
+  try {
+    for (const [i, prompt] of ['--yolo', '--approval-mode=yolo', '-y do it'].entries()) {
+      m.spawn(`desk-${i + 1}`, 'Owner', prompt, false, 'agent', false, undefined, undefined, undefined, { engine: { id: 'qwen-code', auth: 'local', model: 'gpt-oss:20b' } });
+      assert.deepEqual(spawned[i].args, ['--model', 'gpt-oss:20b', `--prompt-interactive=${prompt}`]);
+      assert.ok(!spawned[i].args.includes(prompt), 'never a standalone argv element');
+    }
+  } finally { m.shutdown(); }
+}));
+
+test('review 3: "Sign in to Claude" types /login when Claude sits on its logged-out prompt without SessionStart', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'empire-engines-test-'));
+  const written: string[] = [];
+  let feed: ((d: string) => void) | undefined;
+  const runtime: WorkerRuntime = {
+    taskNaming: false, resolveCommand: (cmd) => `/fixture/${cmd}`, processExists: () => false,
+    spawn: (() => ({ pid: 9100, onData: (cb: (d: string) => void) => { feed = cb; return { dispose() {} }; }, onExit: () => ({ dispose() {} }), write: (d: string) => written.push(d), resize() {}, kill() {} })) as unknown as WorkerRuntime['spawn'],
+  };
+  const m = new WorkerManager(dir, dir, 'claude', [], { url: 'http://127.0.0.1:1', token: '' }, { update() {}, remove() {}, data() {}, screen() {}, toast() {} },
+    { get hiringPaused() { return undefined; }, add() {} } as unknown as Ledger, () => 4, runtime);
+  try {
+    m.spawn('desk-1', 'Owner', undefined, false, 'agent', false, undefined, undefined, undefined, { engine: { id: 'claude-code', auth: 'subscription' }, typeOnReady: '/login' });
+    feed!('Welcome to Claude Code\r\n> \r\nNot logged in · Run /login\r\n');
+    await new Promise((r) => setTimeout(r, 700)); // the 250 ms screen flush runs the blocked-screen check
+    assert.deepEqual(written, ['/login']);
+    assert.ok(!written.join('').includes('\r'), 'never presses Enter');
+  } finally { m.shutdown(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('review: a setup menu (login method / trust) is never typed into', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'empire-engines-test-'));
+  const written: string[] = [];
+  let feed: ((d: string) => void) | undefined;
+  const runtime: WorkerRuntime = {
+    taskNaming: false, resolveCommand: (cmd) => `/fixture/${cmd}`, processExists: () => false,
+    spawn: (() => ({ pid: 9101, onData: (cb: (d: string) => void) => { feed = cb; return { dispose() {} }; }, onExit: () => ({ dispose() {} }), write: (d: string) => written.push(d), resize() {}, kill() {} })) as unknown as WorkerRuntime['spawn'],
+  };
+  const m = new WorkerManager(dir, dir, 'claude', [], { url: 'http://127.0.0.1:1', token: '' }, { update() {}, remove() {}, data() {}, screen() {}, toast() {} },
+    { get hiringPaused() { return undefined; }, add() {} } as unknown as Ledger, () => 4, runtime);
+  try {
+    m.spawn('desk-1', 'Owner', undefined, false, 'agent', false, undefined, undefined, undefined, { engine: { id: 'claude-code', auth: 'subscription' }, typeOnReady: '/login' });
+    feed!('Select login method:\r\n 1. Claude account with subscription\r\n');
+    await new Promise((r) => setTimeout(r, 700));
+    assert.deepEqual(written, []);
+  } finally { m.shutdown(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('review: model client caps response size and strips key-shaped text from errors', async () => {
+  const big = 'x'.repeat(5 * 1024 * 1024);
+  const fake = await server((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      const j = JSON.parse(body);
+      if (j.model === 'leak') { res.statusCode = 401; return res.end('{"error":"Incorrect API key provided: sk-proj-ABCDEFGHIJKLMNOPQRSTUV and AIzaSyA1234567890abcdefghijklmnopq and gsk_abcdefghijklmnopqrstuvwx"}'); }
+      if (j.stream) { res.write(`data: {"choices":[{"delta":{"content":"${'y'.repeat(1024)}"}}]}\n\n`); for (let i = 0; i < 5000; i++) res.write(`data: {"choices":[{"delta":{"content":"${'y'.repeat(1024)}"}}]}\n\n`); return res.end(); }
+      res.end(JSON.stringify({ choices: [{ message: { content: big } }] }));
+    });
+  });
+  try {
+    const p = (model: string) => provider('openai', model, { OPENAI_API_KEY: 'k' }, { baseUrl: fake.url });
+    await assert.rejects(chat(p('huge'), []), /too large/);
+    await assert.rejects(chat(p('huge'), [], { onToken: () => {} }), /too large/);
+    await assert.rejects(chat(p('leak'), []), (e: Error) => !/sk-proj-ABC|AIzaSy|gsk_abc/.test(e.message) && /\[redacted\]/.test(e.message));
+  } finally { await fake.close(); }
+});
+
+test('review: the task namer gets the scrubbed env; Foundry/Azure keys are scrubbed too', () => {
+  const env = engineEnv({ ANTHROPIC_API_KEY: 'x', CLAUDE_CODE_USE_FOUNDRY: '1', ANTHROPIC_FOUNDRY_API_KEY: 'f', AZURE_OPENAI_API_KEY: 'a', PATH: '/bin' }, { id: 'claude-code', auth: 'subscription' }, {}, '');
+  assert.deepEqual(env, { PATH: '/bin' });
+  const src = readFileSync(path.join(import.meta.dirname, '../src/server/workers.ts'), 'utf8');
+  assert.match(src, /new TaskNamer\(claude, engineEnv\(childEnv\(\), LEGACY_ENGINE/);
+});
+
+test('review: refresh=1 is rate-floored; an invalid saved engine keeps the worker with status unknown', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'empire-accounts-floor-'));
+  try {
+    let runs = 0;
+    let now = 1_000_000;
+    const accounts = new LinkedAccounts({ dataDir: dir, ollama: new OllamaRuntime('http://127.0.0.1:9'), keys: () => ({}), resolve: () => null, exec: async () => { runs++; return { stdout: '', stderr: '', code: 0 }; }, totalMem: () => 16 * GB, now: () => now, env: () => ({}) });
+    const probes = () => accounts.state(true);
+    await probes(); await probes(); await probes();
+    const first = (await accounts.state()).checkedAt;
+    now += 11_000;
+    const later = (await probes()).checkedAt;
+    assert.equal(first, 1_000_000, 'refreshes within 10 s reuse the last probe');
+    assert.equal(later, 1_011_000);
+    assert.equal(runs, 0);
+    writeFileSync(path.join(dir, 'workers.json'), JSON.stringify([{ id: 'b1', kind: 'agent', deskId: 'desk-1', name: 'Bolt', processState: 'stopped', engine: { id: 'aider', auth: 'local' } }]));
+    const { m } = manager(dir);
+    try {
+      const w = m.get('b1')!;
+      assert.equal(w.engine, undefined, 'never silently switched to Claude');
+      assert.equal(w.statusKnown, false);
+      assert.match(w.activity!, /saved engine is not recognised/i);
+      assert.match(m.resume('b1')!, /saved engine is not recognised/i);
+    } finally { m.shutdown(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('desktop vault seals free hosted keys and reports names only', async () => {
   const { createRequire } = await import('node:module');
   const { createVault, HOSTED } = createRequire(import.meta.url)('../desktop/credential-vault.cjs');
