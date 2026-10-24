@@ -7,7 +7,7 @@ import { store } from '../state';
 import { h, toast } from './dom';
 import { PHASE_LABEL } from '../../shared/org';
 import {
-  MAX_CHIEF_CAP_USD, PLAN_NOTE, REVIEW_NOTE, ROLE_LABEL,
+  MAX_CHIEF_CAP_USD, PLAN_NOTE, REVIEW_NOTE, ROLE_LABEL, lessonsLine,
   type BrainMode, type ChiefPlan, type ChiefReview, type ChiefSettings, type ChiefState,
 } from '../../shared/chief';
 import type { EnginesState } from '../../shared/engines';
@@ -100,11 +100,22 @@ export function chiefPlanBlock(plan: ChiefPlan): HTMLElement {
   return h('section.chief-plan', { 'aria-label': 'Proposed by the chief' },
     h('p.chief-plan-head', {}, h('span.empire-tag', {}, `Model-backed · ${plan.model ?? 'model'} · proposals only`), plan.costLabel ? h('small', {}, ` ${plan.costLabel}`) : null),
     plan.summary ? h('p.chief-summary', {}, plan.summary) : null,
+    lessonsBlock(plan),
     h('ol.chief-items', {}, ...(plan.items ?? []).map((it) => h('li', {},
       h('strong', {}, it.title),
       h('span.chief-meta', {}, `${ROLE_LABEL[it.role]} · ${PHASE_LABEL[it.phase]}${it.parallel ? ' · parallel with the item before' : ''}${it.dependsOn.length ? ` · after item ${it.dependsOn.join(' & ')}` : ' · starts first'}`),
       it.prompt ? h('pre.chief-prompt', { tabindex: 0, 'aria-label': `Full prompt for ${it.title}` }, it.prompt) : null))),
     h('p.setting-note', {}, PLAN_NOTE));
+}
+
+/** FREE-10: "Based on lessons L3, L7" and the approved lesson text the chief was given, as a collapsed list. */
+export function lessonsBlock(plan: ChiefPlan): HTMLElement | null {
+  const line = lessonsLine(plan);
+  if (!line || !plan.lessons) return null;
+  return h('details.chief-lessons', {},
+    h('summary', {}, line),
+    h('ul', {}, ...plan.lessons.map((l) => h('li', { 'data-cited': String(!!plan.citedLessons?.includes(l.id)) }, h('strong', {}, `${l.id} `), l.text))),
+    h('p.setting-note', {}, 'Approved lessons from organizational memory, given to the chief as context. They are not added to the prompts below; only what the plan wrote is.'));
 }
 
 /** The chief's reviews of a job's finished items: recommendation, summary, concerns, evidence. Never an acceptance. */
@@ -119,6 +130,7 @@ export function chiefReviewsBlock(reviews: ChiefReview[]): HTMLElement | null {
       r.summary ? h('p', {}, r.summary) : null,
       r.concerns?.length ? h('ul', {}, ...r.concerns.map((c) => h('li', {}, c))) : null,
       r.reason ? h('p.inbox-error', {}, r.reason) : null,
+      r.lessonNote ? h('p.setting-note.chief-lesson-note', {}, r.lessonNote) : null,
       r.evidence ? h('small', {}, `Based on: ${r.evidence}`) : null)),
     h('p.setting-note', {}, REVIEW_NOTE));
 }
