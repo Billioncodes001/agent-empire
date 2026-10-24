@@ -157,7 +157,8 @@ export class WorkerManager {
     this.writeHookSettings();
     this.agentPath = this.runtime.resolveCommand(agentCmd);
     const claude = !this.runtime.taskNaming ? null : /(^|\/)claude$/.test(agentCmd) ? this.agentPath : this.runtime.resolveCommand('claude');
-    this.namer = new TaskNamer(claude, childEnv(), (id, task, ctx) => {
+    // The namer runs `claude -p` on the user's own account: same scrub as a subscription worker (rule 6).
+    this.namer = new TaskNamer(claude, engineEnv(childEnv(), LEGACY_ENGINE, {}, this.engineEnv.ollamaUrl), (id, task, ctx) => {
       const w = this.workers.get(id);
       if (!w || w.taskEpoch !== ctx.epoch) return;
       w.info.task = task;
