@@ -1524,3 +1524,4 @@ html.ae-touch #hud .topbar .controls > #btn-inbox > span:not(.svc-count):not(.in
 .chief-review small { display: block; opacity: .75; font-size: 11px; }
 .exec-model-note { font-size: 12px; }
 @media (max-width: 720px), (max-height: 420px) { .chief-modes { grid-template-columns: 1fr; } .chief-row { grid-template-columns: 1fr; } }
+.chief-prompt { margin: 4px 0 0; max-height: 9.5em; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 6px 8px; border: 1px solid #ffffff1f; border-radius: 6px; background: #00000026; }

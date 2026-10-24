@@ -6,7 +6,7 @@ import { safeLink } from '../research-view';
 import { store } from '../state';
 import { h, openModal } from './dom';
 import { morphChildren } from './reconcile';
-import { chiefPlanBlock, chiefPlanFor, chiefReviewsBlock, chiefReviewsFor } from './chief';
+import { chiefPlanBlock, chiefPlanFor, chiefReviewsBlock, chiefReviewsFor, promptsShown } from './chief';
 
 // ORG-03: the CEO approval inbox. Every item comes from the server's inbox, which is reconciled from consultancy state;
 // a decision here is the same decision as on the founder desk or in Telegram.
@@ -208,6 +208,11 @@ export function openInbox(focusId?: string) {
           h('button.btn.primary', { type: 'button', disabled: busy, onclick: () => askSend('approve') }, 'Approve send…'),
           h('button.btn', { type: 'button', disabled: busy, onclick: () => askSend('reject') }, 'Decline…')),
         h('p.setting-note', {}, `Any change to the recipients or sender makes a new item. Pause or cancel a send on the founder desk. ${approveHint(item.id)}`));
+      return;
+    }
+    // Review fix 2: a model-proposed plan is approvable only from a view that shows every prompt.
+    if (item.kind === 'job_plan' && item.proposedBy && !promptsShown(chiefPlanFor(item.jobId))) {
+      detail.replaceChildren(...head, h('p.inbox-error', { role: 'note' }, 'The chief’s model proposed this plan, but its prompts are not loaded here. Review and approve it on the founder desk, where every prompt is shown.'));
       return;
     }
     const chiefItem = item.kind === 'chief_proposal';

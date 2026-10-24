@@ -22,6 +22,9 @@ export function estimateText(job: ConsultancyJob): string {
 }
 
 /** A deterministic command surface shared with the same consultancy service as the CEO console. */
+/** Review fix 2: Telegram cannot show a whole model-written plan, so it cannot approve one. */
+export const MODEL_PLAN_REFUSAL = 'This plan was proposed by the chief’s model. Review the prompts in the game or on the founder desk and approve it there; Telegram can show only part of them. You can still /reject it here.';
+
 export function chiefCommands(office: Consultancy, resourceReport: () => string, inbox?: ApprovalInbox, afterDecision?: () => void, research?: ResearchDesk, outreach?: { optOutCommand(email: string, actor: string): string }, brain?: ChiefBrain): TelegramCommands {
   const ACTOR = 'CEO via Telegram';
   /** Inbox ids the owner already heard about in a command reply (/new); announced silently. */
@@ -30,6 +33,8 @@ export function chiefCommands(office: Consultancy, resourceReport: () => string,
   const decideInbox = (cmd: 'approve' | 'reject', id: string, amount: string | undefined, requestId: string) => {
     const before = inbox!.get(id);
     if (!before) return `Unknown approval ${id}. Use /approvals for pending items.`;
+    // Review fix 2: a model-proposed plan is approved only where every item prompt was shown in full.
+    if (cmd === 'approve' && before.kind === 'job_plan' && before.proposedBy) return MODEL_PLAN_REFUSAL;
     const reopen = cmd === 'approve' && before.status === 'rejected' && before.reopenable === true;
     if (before.status !== 'pending' && !reopen) return `${id} is already ${before.status}.`;
     const item = cmd === 'approve' ? inbox!.approve(id, ACTOR, { requestId, ...(amount === undefined ? {} : { budgetUsd: Number(amount.replace('$', '')) }) }) : inbox!.reject(id, ACTOR, { requestId });
@@ -94,9 +99,9 @@ export function chiefCommands(office: Consultancy, resourceReport: () => string,
           if (!job) return 'Job not found. Use /jobs for its ID.';
           // Explicit plan review can reveal the requested brief to the configured CEO, never in unsolicited updates.
           const proposed = brain?.planFor(job.id);
-          const meta = proposed?.items ? `\n\nProposed by the chief (${proposed.model ?? 'model'} · proposal only):\n${proposed.items.map((it, i) => `${i + 1}. ${it.title} · ${ROLE_LABEL[it.role]}${it.dependsOn.length ? ` · after ${it.dependsOn.join(', ')}` : ''}${it.parallel ? ' · parallel' : ''}`).join('\n')}` : '';
+          const meta = proposed?.items ? `\n\nProposed by the chief (${proposed.model ?? 'model'} · proposal only):\n${proposed.items.map((it, i) => `${i + 1}. ${it.title} · ${ROLE_LABEL[it.role]}${it.dependsOn.length ? ` · after ${it.dependsOn.join(', ')}` : ''}${it.parallel ? ' · parallel' : ''}\n${it.prompt.length > 360 ? `${it.prompt.slice(0, 360)}… (shortened)` : it.prompt}`).join('\n')}\n\n${MODEL_PLAN_REFUSAL}` : '';
           const reviews = brain?.state().reviews.filter((r) => r.jobId === job.id && r.status === 'reviewed').map((r) => `Review of “${r.itemTitle}”: ${r.recommendation === 'accept' ? 'recommend accept' : 'needs changes'} — ${r.summary}`) ?? [];
-          return `${job.id} · ${job.client} · ${job.title}\n${job.status.replaceAll('_', ' ')}\n\n${job.brief}${meta}${estimateText(job)}${reviews.length ? `\n\n${reviews.join('\n')}\n${REVIEW_NOTE}` : ''}\n\nReview the complete work-item plan in the CEO console before approval. Approval submits it to this host’s local worker queue under existing budget and desk limits. /approve ${job.id} (or /approve ${job.id} 25 to set a $25 budget)`;
+          return `${job.id} · ${job.client} · ${job.title}\n${job.status.replaceAll('_', ' ')}\n\n${job.brief}${meta}${estimateText(job)}${reviews.length ? `\n\n${reviews.join('\n')}\n${REVIEW_NOTE}` : ''}${proposed ? '' : `\n\nReview the complete work-item plan in the CEO console before approval. Approval submits it to this host’s local worker queue under existing budget and desk limits. /approve ${job.id} (or /approve ${job.id} 25 to set a $25 budget)`}`;
         }
         if (cmd === 'optout') {
           if (!outreach) return 'Email outreach is not available on this host.';
@@ -114,6 +119,7 @@ export function chiefCommands(office: Consultancy, resourceReport: () => string,
           if (cmd === 'approve' && extra.length) return 'Use /approve ID or /approve ID 25 (budget in USD).';
           if (cmd === 'approve' && amount !== undefined && !/^\$?\d+(\.\d{1,2})?$/.test(amount)) return 'Use /approve ID or /approve ID 25 (budget in USD).';
           if (inbox && APPROVAL_ID_RE.test(id.toUpperCase())) return decideInbox(cmd, id.toUpperCase(), amount, requestId);
+          if (cmd === 'approve' && brain?.planFor(id)) return MODEL_PLAN_REFUSAL;
           const job = cmd === 'approve' ? office.approve(id, 'CEO via Telegram', amount === undefined ? {} : { budgetUsd: Number(amount.replace('$', '')) }) : office.reject(raw.trim(), 'CEO via Telegram');
           const budget = cmd === 'approve' && job.approvedBudgetUsd !== undefined ? ` Approved budget $${job.approvedBudgetUsd.toFixed(2)}; unstarted items are held if provider spend reaches it.` : '';
           return `Job ${job.id}: ${job.status.replaceAll('_', ' ')}. ${cmd === 'approve' ? 'Existing execution, budget and workstation limits still apply.' : 'The unstarted plan was declined.'}${budget}`;

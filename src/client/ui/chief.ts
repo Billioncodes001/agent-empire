@@ -95,14 +95,15 @@ export function chiefBrainSection() {
   return { el, dispose() { disposed = true; } };
 }
 
-/** The chief's proposed plan structure (roles, order, parallel), without prompts; the founder desk shows prompts in full. */
+/** The chief's proposed plan: roles, order, parallel, and every item's full prompt as text (review fix 2). */
 export function chiefPlanBlock(plan: ChiefPlan): HTMLElement {
   return h('section.chief-plan', { 'aria-label': 'Proposed by the chief' },
     h('p.chief-plan-head', {}, h('span.empire-tag', {}, `Model-backed · ${plan.model ?? 'model'} · proposals only`), plan.costLabel ? h('small', {}, ` ${plan.costLabel}`) : null),
     plan.summary ? h('p.chief-summary', {}, plan.summary) : null,
     h('ol.chief-items', {}, ...(plan.items ?? []).map((it) => h('li', {},
       h('strong', {}, it.title),
-      h('span.chief-meta', {}, `${ROLE_LABEL[it.role]} · ${PHASE_LABEL[it.phase]}${it.parallel ? ' · parallel with the item before' : ''}${it.dependsOn.length ? ` · after item ${it.dependsOn.join(' & ')}` : ' · starts first'}`)))),
+      h('span.chief-meta', {}, `${ROLE_LABEL[it.role]} · ${PHASE_LABEL[it.phase]}${it.parallel ? ' · parallel with the item before' : ''}${it.dependsOn.length ? ` · after item ${it.dependsOn.join(' & ')}` : ' · starts first'}`),
+      it.prompt ? h('pre.chief-prompt', { tabindex: 0, 'aria-label': `Full prompt for ${it.title}` }, it.prompt) : null))),
     h('p.setting-note', {}, PLAN_NOTE));
 }
 
@@ -121,6 +122,9 @@ export function chiefReviewsBlock(reviews: ChiefReview[]): HTMLElement | null {
       r.evidence ? h('small', {}, `Based on: ${r.evidence}`) : null)),
     h('p.setting-note', {}, REVIEW_NOTE));
 }
+
+/** Review fix 2: a model-proposed plan may be approved here only when every item's full prompt is on screen. */
+export const promptsShown = (plan: ChiefPlan | undefined) => !!plan?.items?.length && plan.items.every((i) => typeof i.prompt === 'string' && i.prompt.length > 0);
 
 export const chiefPlanFor = (jobId: string) => store.chief?.plans.find((p) => p.jobId === jobId && p.status === 'proposed');
 export const chiefReviewsFor = (jobId: string) => store.chief?.reviews.filter((r) => r.jobId === jobId) ?? [];

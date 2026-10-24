@@ -47,6 +47,8 @@ export interface ChiefPlanItem {
   parallel: boolean;
   /** 1-based numbers of earlier items this one waits for (as the queue will enforce them). */
   dependsOn: number[];
+  /** Review fix 2: the full prompt exactly as queued (with its Role line), so every approval view can show it. */
+  prompt: string;
 }
 
 export interface ChiefPlan {

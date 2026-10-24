@@ -101,9 +101,10 @@ test('Telegram /plan proposes through the same brain; a failed plan is announced
   await brain.idle();
   const pending = bot.notifications!().find((n) => /Client plan/.test(n.text))!;
   assert.match(pending.text, /model-backed|Model-backed/);
-  assert.match(pending.text, /\/approve A1/);
+  assert.match(pending.text, /approve in the game or on the founder desk/i);
+  assert.doesNotMatch(pending.text, /\/approve A1/);
   const jobId = brain.state().plans[0].jobId!;
-  assert.match(bot.execute(`/job ${jobId}`, 'tg-4'), /Proposed by the chief .*\n1\. Build the API · Backend engineer\n2\. Test it · QA tester · after 1/);
+  assert.match(bot.execute(`/job ${jobId}`, 'tg-4'), /Proposed by the chief .*\n1\. Build the API · Backend engineer\nRole: Backend engineer\.\n\nBuild it with tests\.\n2\. Test it · QA tester · after 1/);
   answer = 'no json here';
   bot.execute('/plan Harbor | Audit | Review it', 'tg-5');
   await brain.idle();

@@ -502,7 +502,7 @@ export function approvalLine(item: Approval): string {
 export function approvalText(item: Approval): string {
   const by = item.kind === 'chief_proposal' ? `model-backed · ${item.proposal?.model ?? 'model'} · proposal only` : item.proposedBy ?? 'rule-based';
   const lines = [`Approval ${item.id} · ${APPROVAL_KIND_LABEL[item.kind]} · raised by ${EXECUTIVES[item.raisedBy].name} (${by})`, item.title, item.detail];
-  if (item.proposedBy) lines.push('The chief’s model proposed this plan. Read every item prompt on the founder desk before approving.');
+  if (item.proposedBy) lines.push('The chief’s model proposed this plan. Read every item prompt and approve it in the game inbox or on the founder desk; Telegram can only decline it.');
   if (item.proposal) lines.push(`${item.proposal.situation}: ${item.proposal.text}`, item.proposal.action ? `Approving also runs: ${item.proposal.action.label}` : 'Approving records your decision only.');
   if (item.estimate) lines.push(`Estimate (not a quote): ${fmtUsdRange(item.estimate.costUsd)}${item.estimate.calendarMs ? ` · ${fmtDurationRange(item.estimate.calendarMs)} calendar time` : ''}`);
   if (item.outreach) {
@@ -513,6 +513,6 @@ export function approvalText(item: Approval): string {
   }
   if (item.kind === 'budget_increase' && item.spentUsd !== undefined) lines.push(`Spend so far: ${money(item.spentUsd)} (${ACTUAL_SPEND_LABEL})${item.suggestedBudgetUsd !== undefined ? ` · suggested new budget ${money(item.suggestedBudgetUsd)}` : ''}`);
   if (item.tool) lines.push(`Tool: ${item.tool.name} · ${item.tool.url} · licence ${item.tool.licence}`, `Enables: ${item.tool.enables}`, `Risk: ${item.tool.risk}`, 'Approving records your decision only; nothing is installed.');
-  lines.push(approveHint(item.id));
+  lines.push(item.proposedBy ? `Review and approve in the game or on the founder desk. /reject ${item.id} declines.` : approveHint(item.id));
   return lines.join('\n');
 }

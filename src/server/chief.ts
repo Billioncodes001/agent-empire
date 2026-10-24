@@ -472,7 +472,7 @@ export class ChiefBrain {
     this.patchPlan(plan, {
       status: 'proposed', jobId: job.id, model: answer.model, costLabel: answer.costLabel, reason: undefined,
       ...(parsed.ok.summary ? { summary: parsed.ok.summary } : {}),
-      items: parsed.ok.items.map(({ prompt: _p, ...meta }) => meta),
+      items: parsed.ok.items.map((it, i) => ({ ...it, prompt: tasks[i].prompt })),
     });
   }
 
