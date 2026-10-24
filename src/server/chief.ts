@@ -546,7 +546,8 @@ export class ChiefBrain {
     this.patchPlan(plan, {
       status: 'proposed', jobId: job.id, model: answer.model, costLabel: answer.costLabel, reason: undefined,
       ...(parsed.ok.summary ? { summary: parsed.ok.summary } : {}),
-      items: parsed.ok.items.map((it, i) => ({ ...it, prompt: tasks[i].prompt })),
+      // Re-review fix 4: the prompts exactly as saved (and queued) on the job, e.g. with {{jobId}} resolved.
+      items: parsed.ok.items.map((it, i) => ({ ...it, prompt: job.items[i]?.prompt ?? tasks[i].prompt })),
     });
   }
 
