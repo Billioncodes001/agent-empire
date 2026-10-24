@@ -47,6 +47,7 @@ import { resolveCommand } from './workers.js';
 import { VoiceError, VoiceRuntime, type VoiceOptions } from './voice.js';
 import { routeChief, ruleBasedBriefing, type ChiefBriefingFn } from './chief-briefing.js';
 import { MAX_AUDIO_BYTES, MAX_CHIEF_TEXT } from '../shared/voice.js';
+import { ProductError, Products, perHourFromEnv, type GhRunner } from './products.js';
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -204,6 +205,8 @@ export interface ServerRuntime {
   engines?: { providerKeys?: () => ProviderKeys; resolve?: (cmd: string) => string | null; exec?: Exec; ollamaUrl?: string; totalMem?: () => number; env?: () => Record<string, string> };
   /** FREE-02: the chief's model client. Tests and previews inject a fake; nothing real is called in them. */
   chief?: { chat?: ChatFn; timeoutMs?: number; probe?: () => Promise<{ running: boolean; models: string[] }> };
+  /** FREE-06: a fake gh, products folder, creation limit and clock for tests and fixtures (never a real GitHub write). */
+  products?: { gh?: GhRunner; productsDir?: string; perHour?: number; now?: () => number };
 }
 export async function startServer(cfg: Config, runtime: ServerRuntime = {}) {
   const releaseHost = acquireHostLock(cfg.dataDir);
@@ -330,6 +333,20 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     (text, level) => broadcast({ t: 'toast', text, level }),
   );
 
+  // FREE-06: one repository per product. The office repository is the built-in default product.
+  const productUsage = (id: string) => {
+    const pid = id === 'office' ? undefined : id;
+    return {
+      workers: workers ? workers.list().filter((w) => w.productId === pid).length : 0,
+      openTasks: queue ? queue.state().tasks.filter((t) => t.status !== 'done' && t.productId === pid).length : 0,
+    };
+  };
+  const products = new Products({
+    dataDir: cfg.dataDir, officeDir: cfg.dir, officeName: project.name,
+    productsDir: runtime.products?.productsDir ?? (process.env.AGENT_EMPIRE_PRODUCTS_DIR || undefined),
+    perHour: runtime.products?.perHour ?? perHourFromEnv(), gh: runtime.products?.gh, now: runtime.products?.now, usage: productUsage,
+  });
+
   workers = new WorkerManager(
     cfg.dir,
     cfg.dataDir,
@@ -375,6 +392,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
       // A custom `--agent` command (not `claude`) is the operator's own choice for Claude-path spawns: no gate there.
       gate: (requested) => customAgent && (!requested || requested.id === 'claude-code') ? { engine: requested ?? accounts.spawnDefault() } : accounts.gate(requested),
     },
+    (productId) => products.dir(productId),
   );
 
   startupCleanup.push(() => workers.shutdown());
@@ -399,6 +417,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     beforeSeat: () => { if (queue) ledger.recordTaskCosts(taskCostObservations(queue.state().tasks, workers.list())); },
     // Side-effect free, and free for non-client tasks.
     taskHold: task => (task.jobKey?.startsWith('consultancy:') ? consultancy?.holdReason(task) : undefined),
+    product: (id) => (products.has(id) ? { name: products.name(id), maxWorkers: products.maxWorkers(id) } : { error: products.problem(id) }),
   }, runtime.requireExecutionSetup);
   // Saved appointment flags are historical until worker/queue evidence has been reconciled.
   startupCleanup.push(() => queue.shutdown());
@@ -413,13 +432,14 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   consultancy = new Consultancy(cfg.dataDir, {
     state: () => ({ ...queue.state(), storageError: queue.recoveryError }),
     // dependsOn carries LIFE-04's item order into the queue.
-    add: (prompt, by, title, issue, jobKey, dependsOn) => queue.add(prompt, by, title, issue, jobKey, dependsOn),
+    add: (prompt, by, title, issue, jobKey, dependsOn, options) => queue.add(prompt, by, title, issue, jobKey, dependsOn, options),
   }, () => { inbox?.reconcile(); research?.reconcile(); outreach?.reconcile(); chief?.reconcile(); publishOrg(); }, {
     estimate: (items) => estimateJob(items, historyFromTaskCosts(ledger.taskCosts(), phaseOfJobKey), { maxWorkers: queue.limit }),
     taskCost: (taskId) => ledger.taskCost(taskId),
     // Round 2 internal jobs: a research report (ORG-05) or campaign draft (ORG-04a) that was not accepted needs
     // attention, with the reason. Each owner answers only for its own jobs.
     itemIssue: (jobKey) => research?.issue(jobKey) ?? outreach?.itemIssue(jobKey),
+    productProblem: (id) => products.problem(id),
   });
   const office = consultancy;
   // ORG-03: the CEO approval inbox, reconciled from consultancy state and re-sent only when an item changes.
@@ -849,6 +869,12 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
           let body: unknown;
           try { body = JSON.parse(await readBody(req, 16_000)); } catch { return send(res, 400, { error: 'Expected a JSON request.' }); }
           if (p === '/api/chief/settings') { const state = brain.updateSettings(body); publishChief(); return send(res, 200, state); }
+          if (p === '/api/chief/plans') {
+            // FREE-06: a plan may target a linked product; checked before any model call.
+            const pid = body && typeof body === 'object' ? (body as { productId?: unknown }).productId : undefined;
+            const bad = pid === undefined || pid === '' || pid === 'office' ? undefined : products.problem(pid);
+            if (bad) return send(res, 400, { error: bad });
+          }
           if (p === '/api/chief/plans') { const plan = brain.requestPlan(body, 'CEO', 'founder_desk'); publishChief(); return send(res, 202, plan); }
           return send(res, 404, { error: 'Unknown chief endpoint.' });
         } catch (error) {
@@ -936,6 +962,35 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
         } catch (error) {
           if (error instanceof OutreachError || error instanceof ConsultancyError) return send(res, error.status, { error: error.message });
           return send(res, 500, { error: 'Outreach could not complete this request.' });
+        }
+      }
+      if (p === '/api/products' || p.startsWith('/api/products/')) {
+        // FREE-06 products. Linking and creating are the signed-in CEO's explicit, same-origin actions; no model, chief,
+        // Telegram command or queue path reaches them. Creating needs the typed repository name and is throttled.
+        if (req.method !== 'GET' && !trusted()) return send(res, 403, { error: 'A same-origin Origin header is required' });
+        try {
+          if (p === '/api/products' && req.method === 'GET') return send(res, 200, products.state());
+          let body: unknown = {};
+          if (req.method === 'POST' || req.method === 'PUT') {
+            try { const raw = await readBody(req, 8_000); body = raw.trim() ? JSON.parse(raw) : {}; } catch { return send(res, 400, { error: 'Expected a JSON request.' }); }
+          }
+          if (p === '/api/products/link' && req.method === 'POST') {
+            const product = products.link(body, 'CEO');
+            broadcast({ t: 'toast', text: `📦 Linked the product ${product.name}`, level: 'info' });
+            return send(res, 200, { product, state: products.state() });
+          }
+          if (p === '/api/products/create' && req.method === 'POST') {
+            const product = await products.create(body, 'CEO');
+            broadcast({ t: 'toast', text: `📦 Created the product ${product.name} (${product.github ?? 'GitHub'}${product.private === false ? ', public' : ', private'})`, level: 'info' });
+            return send(res, 200, { product, state: products.state() });
+          }
+          const one = /^\/api\/products\/([a-z0-9-]{1,64})$/.exec(p);
+          if (one && req.method === 'PUT') return send(res, 200, { product: products.update(one[1], body), state: products.state() });
+          if (one && req.method === 'DELETE') { products.unlink(one[1]); return send(res, 200, { state: products.state() }); }
+          return send(res, 404, { error: 'Unknown products endpoint.' });
+        } catch (error) {
+          if (error instanceof ProductError) return send(res, error.status, { error: error.message });
+          return send(res, 500, { error: 'Products could not complete this request.' });
         }
       }
       if (p === '/api/engines' || p.startsWith('/api/engines/')) {
@@ -1322,7 +1377,11 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
         const login = kind === 'agent' && msg.login === true;
         const engine = login ? { id: 'claude-code' as const, auth: 'subscription' as const } : sanitizeEngine(msg.engine);
         if (kind === 'agent' && msg.engine !== undefined && !engine) { sendTo(c, { t: 'toast', text: 'Unknown worker engine.', level: 'warn' }); break; }
-        const hire = () => workers.spawn(str(msg.deskId, 32), who, login ? undefined : str(msg.prompt, 20000) || undefined, msg.worktree === true && !login, kind, false, sanitizeOutfit(msg.outfit), undefined, undefined, { engine, typeOnReady: login ? '/login' : undefined });
+        // FREE-06: the hire runs in the chosen product's repository (default: the office's).
+        const productId = kind === 'agent' && !login && typeof msg.productId === 'string' && msg.productId && msg.productId !== 'office' ? str(msg.productId, 64) : undefined;
+        const productProblem = productId ? products.problem(productId) : undefined;
+        if (productProblem) { sendTo(c, { t: 'toast', text: productProblem, level: 'warn' }); break; }
+        const hire = () => workers.spawn(str(msg.deskId, 32), who, login ? undefined : str(msg.prompt, 20000) || undefined, msg.worktree === true && !login, kind, false, sanitizeOutfit(msg.outfit), undefined, undefined, { engine, typeOnReady: login ? '/login' : undefined, ...(productId ? { productId, productName: products.name(productId) } : {}) });
         const done = (r: ReturnType<typeof hire>) => {
           if (typeof r === 'string') sendTo(c, { t: 'toast', text: r, level: 'warn' });
           else broadcast({ t: 'toast', text: kind === 'shell' ? `${who} opened a shell at a desk` : `${who} hired ${r.name}${r.prompt ? ' with a task' : ''}`, level: 'info' });
@@ -1412,7 +1471,8 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
       }
       case 'queue.add': {
         const issue = Number.isInteger(msg.issue) && (msg.issue as number) > 0 ? (msg.issue as number) : undefined;
-        const err = queue.add(str(msg.prompt, 20000), who, str(msg.title, 200), issue);
+        const productId = typeof msg.productId === 'string' && msg.productId && msg.productId !== 'office' ? str(msg.productId, 64) : undefined;
+        const err = productId ? queue.add(str(msg.prompt, 20000), who, str(msg.title, 200), issue, undefined, undefined, { productId }) : queue.add(str(msg.prompt, 20000), who, str(msg.title, 200), issue);
         if (err) sendTo(c, { t: 'toast', text: err, level: 'warn' });
         else broadcast({ t: 'toast', text: `📋 ${who} queued ${issue !== undefined ? `issue #${issue}` : 'a task'}`, level: 'info' });
         break;

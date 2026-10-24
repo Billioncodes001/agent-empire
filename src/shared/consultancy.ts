@@ -28,6 +28,8 @@ export interface ConsultancyCreateInput {
   title: string;
   brief: string;
   tasks?: ConsultancyTaskInput[];
+  /** FREE-06: the product (repository) every item runs in; absent = the office's own repository. */
+  productId?: string;
 }
 
 export interface ConsultancyItem {
@@ -74,6 +76,8 @@ export interface ConsultancyJob {
   actualSpendUsd?: number;
   /** Set when actual spend reached the approved budget; unstarted items are held. */
   budgetHold?: BudgetHold;
+  /** FREE-06: the product its items run in; absent = the office's own repository. */
+  productId?: string;
 }
 
 export interface ConsultancyApproveOptions {

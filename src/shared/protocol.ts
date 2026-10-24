@@ -43,8 +43,11 @@ export interface WorkerInfo {
   createdBy: string;
   createdAt: number;
   prompt?: string;
+  /** FREE-06: the product whose repository this worker runs in; absent = the office's own repository (product `office`). */
+  productId?: string;
+  productName?: string;
   /**
-   * Set when the worker runs in its own git worktree (path relative to the office dir). `from` is
+   * Set when the worker runs in its own git worktree (path relative to its product's repository, the office dir by default). `from` is
    * the branch the office was on when the worktree was cut, which its pull request targets.
    */
   worktree?: {
@@ -233,6 +236,9 @@ export interface QueueTask {
   blockedBy?: string[];
   /** The desk the task was seated at, so a task continuing it can prefer the same desk. */
   deskId?: string;
+  /** FREE-06: the product (repository) the task runs in; absent = the office's own repository. */
+  productId?: string;
+  productName?: string;
 }
 
 export interface QueueState {
@@ -454,7 +460,7 @@ export type ClientMsg =
   /** You reached out to use something; everyone else sees your character's arm do it. */
   | { t: 'act' }
   | { t: 'profile'; name: string; color: string; look: Look }
-  | { t: 'worker.spawn'; deskId: string; prompt?: string; worktree?: boolean; kind?: WorkerKind; outfit?: Outfit; engine?: WorkerEngine; /** Types `/login` (no Enter) once Claude is ready: the user completes sign-in. */ login?: boolean }
+  | { t: 'worker.spawn'; deskId: string; prompt?: string; worktree?: boolean; kind?: WorkerKind; outfit?: Outfit; engine?: WorkerEngine; /** FREE-06: run in this product's repository (default: the office's). */ productId?: string; /** Types `/login` (no Enter) once Claude is ready: the user completes sign-in. */ login?: boolean }
   | { t: 'worker.resume'; workerId: string }
   | { t: 'worker.kill'; workerId: string; cleanup?: WorktreeCleanup }
   /** Asks what the worker's worktree holds; answered with a `worker.worktree` message. */
@@ -469,7 +475,7 @@ export type ClientMsg =
   | { t: 'gh.refresh' }
   /** Merge a pull request; the answer comes back as gh.merged. */
   | { t: 'gh.merge'; number: number; method: GhMergeMethod; deleteBranch: boolean; auto?: boolean }
-  | { t: 'queue.add'; prompt: string; title?: string; issue?: number }
+  | { t: 'queue.add'; prompt: string; title?: string; issue?: number; /** FREE-06 */ productId?: string }
   | { t: 'queue.remove'; taskId: string }
   /** Move a queued task up (-1) or down (+1) the queue. */
   | { t: 'queue.move'; taskId: string; delta: number }
