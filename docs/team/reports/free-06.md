@@ -76,3 +76,16 @@ Registry persistence and old-save compatibility; job → product → worktree bi
 - GitHub App creation (higher limits, FREE_STACK §8 recommendation) is not implemented; the existing gh sign-in is used.
 - No HTTP-level test of `/api/products` (covered by the UI check through the real server, not by `npm test`).
 - The queue add form has no product chooser yet (the hire dialog and founder desk do; `queue.add` accepts `productId`).
+
+## Security review 1 (accept with fixes): fixes
+
+1. Product ids are never reused. Unlinked ids are kept in `products.json` (`retired`), and a new product with the same name gets a random suffix. Unlink is also refused while client jobs for the product are pending, or approved and unfinished, and while chief plans for it are queued or planning.
+2. `checkRepo` refuses a folder that is or contains the home folder, `/`, `/etc`, `/usr`, `/System`, `/var`, `/private` or the office data folder. Inside the data folder only repositories in the products folder are allowed. This also fixes a bug found while testing: with the default products folder (`<office>/.agent-office/products`), a created repository was refused as "inside the office repository" after GitHub had already made it.
+3. `create` stops before calling `gh repo create` when the throttle record cannot be saved.
+4. A worker of an unlinked product fails to launch with "its product is no longer linked"; there is no fallback folder.
+5. Spawning checks that the product folder is still a git top level (the link-time test), not only that it exists.
+6. A worker of an unlinked product is not attributed to the office folder for services; it owns nothing.
+
+Tests: 8 new in `tests/products.test.ts` and 2 HTTP tests in `tests/products-server.test.ts` (same-origin 403, error mapping, create through the server with a fake gh, throttle 429, unlink guard with an open job, chief plan with a product). Run against the pre-fix code (0950188), 7 fail: every fix test, plus the HTTP test (open-job guard). The symlink, nested/overlapping, cross-product continuity and chief-plan tests also pass there, because they cover behaviour that already existed.
+
+Merged `origin/codex/empire-world` (e792dee). The only conflict was `src/client/consultancy.css` (FREE-06 and FREE-10 both appended); both sides kept. `workers.ts`, `queue.ts`, `chief.ts` and `server.ts` merged without conflicts. After the merge: typecheck and build pass, npm test 850/850, products-ui-check 35/35 (the hire-dialog chooser is still SKIP, not visually verified), inbox-ui-check 47/47, mobile-ui-check 411/411.
