@@ -30,6 +30,9 @@ export function resolveTelegram(env: NodeJS.ProcessEnv, saved: SavedSettings, se
 }
 
 export function resolveEmail(env: NodeJS.ProcessEnv, saved: SavedSettings, secrets: SecretStore): Resolved<EmailConfig> {
+  // Review 5: a sender on its own cannot be combined with saved settings (never mixed), so it is reported, not ignored.
+  if (has(env, ['AGENT_EMPIRE_NOTIFY_FROM']) && !has(env, ['AGENT_EMPIRE_SMTP_URL', 'AGENT_EMPIRE_NOTIFY_EMAIL']))
+    return { source: 'env', error: 'AGENT_EMPIRE_NOTIFY_FROM is set on the host without AGENT_EMPIRE_SMTP_URL and AGENT_EMPIRE_NOTIFY_EMAIL. Set those too, or remove it: saved email settings are not used while it is set.' };
   if (has(env, ['AGENT_EMPIRE_SMTP_URL', 'AGENT_EMPIRE_NOTIFY_EMAIL'])) {
     try { const config = emailConfig(env); return config ? { source: 'env', config } : { source: 'off' }; }
     catch (error) { return { source: 'env', error: (error as Error).message }; }
@@ -85,12 +88,28 @@ export function resolveNtfy(env: NodeJS.ProcessEnv, saved: SavedSettings, secret
   return { source: 'saved', config: { server: serverOf(n.server), topic: n.topic, ...(token ? { token } : {}) } };
 }
 
-export interface HostBudget { usd?: number; pause: boolean; source?: 'cli' | 'env' }
+export interface HostBudget { usd?: number; pause: boolean; source?: 'cli' | 'env'; pauseSource?: 'cli' | 'env' }
+/** Amount and pause are each taken from the host when the host sets them (review 4), else from the saved settings. */
 export function resolveBudget(host: HostBudget, saved: SavedSettings): { source: Source; usd?: number; pause: boolean } {
   if (host.usd !== undefined) return { source: host.source ?? 'cli', usd: host.usd, pause: host.pause };
   const usd = saved.approvals.dailyBudgetUsd;
   if (usd === null) return { source: 'off', usd: undefined, pause: false };
-  return { source: 'saved', usd, pause: saved.approvals.pauseHiring };
+  return { source: 'saved', usd, pause: host.pauseSource ? host.pause : saved.approvals.pauseHiring };
+}
+
+const V4_PRIVATE = [/^127\./, /^10\./, /^192\.168\./, /^172\.(1[6-9]|2\d|3[01])\./, /^169\.254\./, /^0\./, /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./];
+/**
+ * Review 7: a notification target the host must not reach on a server install (loopback, private, link-local, CGNAT,
+ * unique-local IPv6, `localhost`/.local names). `allowLoopback` (the desktop) still refuses private and link-local
+ * networks. Host names are checked as written; DNS answers are not resolved here.
+ */
+export function refusedTarget(rawHost: string, allowLoopback: boolean): string | undefined {
+  const host = rawHost.replace(/^\[|\]$/g, '').toLowerCase();
+  const loopback = isLoopbackHost(host) || host.endsWith('.localhost');
+  if (loopback) return allowLoopback ? undefined : 'On a server install, notifications cannot go to this computer (loopback). Use the desktop app for a server on this computer.';
+  const privateNet = V4_PRIVATE.some((r) => r.test(host)) || /^f[cd][0-9a-f]{2}:/.test(host) || /^fe[89ab][0-9a-f]:/.test(host) || host === '::' || host.startsWith('::ffff:') || host.endsWith('.local') || host.endsWith('.internal');
+  if (privateNet) return 'Notifications cannot go to a private, link-local or internal network address.';
+  return undefined;
 }
 
 /** Errors from a channel transport: `signIn` pauses the notifier; `permanent` gives up that one message. */
@@ -114,7 +133,8 @@ export function ntfyTransport(cfg: NtfyConfig, fetchImpl: typeof fetch = fetch):
           body: JSON.stringify({ topic: cfg.topic, title: m.subject.slice(0, 250), message: m.text.slice(0, 4000), tags: ['office'] }),
         });
       } catch { throw new ChannelError('ntfy connection failed; check the server address and connectivity.'); }
-      await res.arrayBuffer().catch(() => undefined);
+      // Review 6: the body is never read (it could be endless); only the status matters.
+      await res.body?.cancel().catch(() => undefined);
       if (res.ok) return;
       const error = new ChannelError(`ntfy answered HTTP ${res.status}`);
       if (res.status === 401 || res.status === 403) error.signIn = true;

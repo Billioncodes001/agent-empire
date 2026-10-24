@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
-import {mkdtempSync,readFileSync,statSync,writeFileSync,rmSync} from 'node:fs';
+import {mkdirSync,mkdtempSync,readFileSync,statSync,writeFileSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 const {createVault}=createRequire(import.meta.url)('../desktop/credential-vault.cjs');
@@ -42,5 +42,32 @@ test('FREE-08: notification secrets live in the same vault and leave it only as 
   s.delete('telegramToken');assert.equal(s.names().telegramToken,false);
   assert.equal(vault.read().anthropicKey,'test-anthropic','removing a notification secret keeps the API keys');
   assert.throws(()=>vault.remove('anthropicKey'));
+ }finally{rmSync(dir,{recursive:true,force:true});}
+});
+test('FREE-08 review 12: keys:save (vault.save) applies the server’s format checks to notification secrets',()=>{
+ const dir=mkdtempSync(path.join(tmpdir(),'empire-vault-test-')),file=path.join(dir,'vault');
+ try{
+  const vault=createVault(file,fakeCrypto);
+  assert.throws(()=>vault.save({telegramToken:'not-a-bot-token'}),/Invalid credential value/);
+  assert.throws(()=>vault.save({ntfyToken:'short'}),/Invalid credential value/);
+  assert.equal(vault.notifySecrets().names().telegramToken,false);
+  vault.save({telegramToken:'123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',ntfyToken:'tk_valid_token_1',smtpPassword:'any one line'});
+  assert.deepEqual(vault.notifySecrets().names(),{telegramToken:true,ntfyToken:true,smtpPassword:true});
+ }finally{rmSync(dir,{recursive:true,force:true});}
+});
+test('FREE-08 review 1: the desktop local host delivers notifications (notify.start) without other background services',async()=>{
+ const {startLocalHost}=createRequire(import.meta.url)('../desktop/local-host.cjs');
+ const dir=mkdtempSync(path.join(tmpdir(),'empire-localhost-test-')),runtimeDir=path.join(dir,'runtime'),project=path.join(dir,'project');
+ try{
+  mkdirSync(path.join(runtimeDir,'server/server'),{recursive:true});
+  writeFileSync(path.join(runtimeDir,'server/server/config.js'),'export function loadConfig(){return {port:0};}\n');
+  writeFileSync(path.join(runtimeDir,'server/server/server.js'),'export async function startServer(config,runtime){globalThis.__empireRuntime=runtime;return {server:{address:()=>({port:4999})},shutdown(){},workers:{list:()=>[]}};}\n');
+  const secrets={describe:'vault',names:()=>({telegramToken:false,ntfyToken:false,smtpPassword:false}),get:()=>undefined,set(){},delete(){}};
+  await startLocalHost({project,runtimeDir,credentials:()=>({}),secrets});
+  const runtime=(globalThis as any).__empireRuntime;
+  assert.equal(runtime.backgroundServices,false,'other background services stay off');
+  assert.equal(runtime.notify.secrets,secrets);
+  assert.equal(runtime.notify.start,true,'notification channels deliver on the desktop');
+  assert.equal(runtime.notify.allowLocalTargets,true,'a self-hosted ntfy on this computer is allowed');
  }finally{rmSync(dir,{recursive:true,force:true});}
 });

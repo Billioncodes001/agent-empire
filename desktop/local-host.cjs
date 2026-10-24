@@ -24,7 +24,9 @@ async function startLocalHost({project, runtimeDir, credentials, secrets, port:p
     // FREE-01: sealed keys reach only their own engine's workers (env scrub); the panel sees names, never values.
     engines:{providerKeys:()=>{try{const c=credentials();return {ANTHROPIC_API_KEY:c.anthropicKey,OPENAI_API_KEY:c.openaiKey,OPENROUTER_API_KEY:c.openrouterKey,GEMINI_API_KEY:c.geminiKey,GROQ_API_KEY:c.groqKey};}catch{return {};}}},
     // FREE-08: onboarding's notification secrets go to the same OS credential vault; the page only sees "present".
-    ...(secrets?{notify:{secrets}}:{})});
+    // Review 1: the desktop keeps its other background services off, but its notification channels deliver (start), and
+    // ntfy/SMTP on this computer (loopback) are allowed for self-hosting.
+    ...(secrets?{notify:{secrets,start:true,allowLocalTargets:true}}:{})});
   const port=host.server.address().port;config.port=port;
   return {origin:`http://127.0.0.1:${port}`,password,shutdown:host.shutdown,project,port,hasLocalWorkers:()=>host.workers.list().some(w=>w.processState==='running'||w.processState==='unknown')};
 }

@@ -4,6 +4,8 @@ const {randomUUID} = require('node:crypto');
 const FIELDS = ['anthropicKey', 'githubToken', 'openaiKey', 'openrouterKey', 'geminiKey', 'groqKey', 'telegramToken', 'ntfyToken', 'smtpPassword'];
 /** FREE-08 notification secrets, set from the game's onboarding through the local host (validated there first). */
 const NOTIFY = ['telegramToken', 'ntfyToken', 'smtpPassword'];
+/** Review 12: the same format checks as the server (src/server/secrets.ts invalidSecret), for keys:save too. */
+const NOTIFY_SHAPE = { telegramToken: /^\d{5,20}:[A-Za-z0-9_-]{20,}$/, ntfyToken: /^[A-Za-z0-9_-]{8,200}$/, smtpPassword: /^[^\r\n\0]{1,1024}$/ };
 /** FREE-01 opt-in free hosted keys: saved only after the user confirms each provider's data-use terms (main.cjs). */
 const HOSTED = ['openrouterKey', 'geminiKey', 'groqKey'];
 function createVault(file, encryption) {
@@ -32,6 +34,7 @@ function createVault(file, encryption) {
     for (const k of FIELDS) {
       if (input[k] === undefined || input[k] === '') continue;
       if (typeof input[k] !== 'string' || input[k].length > 4096 || /[\r\n\0]/.test(input[k])) throw new Error('Invalid credential value.');
+      if (NOTIFY.includes(k) && !NOTIFY_SHAPE[k].test(input[k].trim())) throw new Error('Invalid credential value.');
       value[k] = input[k].trim();
     }
     write(value);

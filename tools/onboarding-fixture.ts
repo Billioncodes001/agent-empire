@@ -55,7 +55,8 @@ async function fakeSmtp(hits: string[]) {
 export async function onboardingFixture(mode: 'new' | 'legacy', founded: () => boolean) {
   const dir = mkdtempSync(path.join(tmpdir(), 'empire-onboarding-fixture-'));
   const secrets = new FileSecretStore(dir);
-  const service = new OnboardingService(dir, secrets, { legacy: mode === 'legacy' });
+  // The fixture stands for the desktop app: its fake servers listen on loopback.
+  const service = new OnboardingService(dir, secrets, { legacy: mode === 'legacy', allowLocalTargets: true });
   const hits: string[] = [];
   const tg = await fakeHttp('telegram', hits);
   const ntfy = await fakeHttp('ntfy', hits);

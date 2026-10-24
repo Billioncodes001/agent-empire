@@ -3,13 +3,14 @@
  *
  * The host only ever reports them as present or not; no endpoint returns a value. The desktop app passes a store backed
  * by its operating-system credential vault (Electron safeStorage, as for API keys). On a server install the store is
- * an AES-256-GCM file whose key sits in a separate owner-only file: it keeps secrets out of backups of the save,
- * screenshots and git, but anyone who can read this account's files can read both. That is said in the UI.
+ * an AES-256-GCM file whose key sits in a separate owner-only file next to it: it keeps secrets out of screenshots, logs
+ * and copies of settings.json, but a backup of the whole folder holds both, and anyone who can read this account's files
+ * can read both. That is said in the UI.
  *
  * Never a Claude credential: there is no name for one (FREE_PLAN rule 3).
  */
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, linkSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { SECRET_NAMES, type SecretName } from '../shared/onboarding.js';
 
@@ -20,6 +21,8 @@ export interface SecretStore {
   delete(name: SecretName): void;
   /** Plain words for the UI: where and how the values are kept. */
   readonly describe: string;
+  /** Why saved secrets cannot be read right now (review 8), so the UI never shows a broken store as "not saved". */
+  error?(): string | undefined;
 }
 
 const TELEGRAM_TOKEN = /^\d{5,20}:[A-Za-z0-9_-]{20,}$/;
@@ -38,7 +41,7 @@ export function invalidSecret(name: SecretName, value: unknown): string | undefi
 const none = (): Record<SecretName, boolean> => ({ telegramToken: false, ntfyToken: false, smtpPassword: false });
 
 export class FileSecretStore implements SecretStore {
-  readonly describe = 'Saved on the office host, encrypted at rest with a key in a separate owner-only file. Anyone who can read this computer account’s files could read them; on the desktop app the operating system’s credential store is used instead.';
+  readonly describe = 'Saved on the office host, encrypted, with the key in a separate owner-only file beside it. That keeps them out of screenshots, logs and copies of settings.json, but a backup of the whole folder includes both, and anyone who can read this computer account’s files could read them. The desktop app uses the operating system’s credential store instead.';
   private readonly file: string;
   private readonly keyFile: string;
 
@@ -49,14 +52,22 @@ export class FileSecretStore implements SecretStore {
 
   private key(create: boolean): Buffer | undefined {
     if (existsSync(this.keyFile)) {
+      // Review 9: a key file someone loosened is tightened back to owner-only before use.
+      if ((statSync(this.keyFile).mode & 0o077) !== 0) chmodSync(this.keyFile, 0o600);
       const k = Buffer.from(readFileSync(this.keyFile, 'utf8').trim(), 'base64');
       if (k.length !== 32) throw new Error('Saved secrets could not be opened (their key file is damaged). Nothing was changed.');
       return k;
     }
     if (!create) return undefined;
     mkdirSync(this.dataDir, { recursive: true, mode: 0o700 });
+    // Written whole to a temporary file, then linked into place: a crash never leaves an empty key, and a concurrent
+    // creator's key is never replaced (the link fails when one exists, and that key is used instead).
     const k = randomBytes(32);
-    writeFileSync(this.keyFile, k.toString('base64'), { mode: 0o600, flag: 'wx' });
+    const temp = `${this.keyFile}.${randomBytes(6).toString('hex')}.tmp`;
+    try {
+      writeFileSync(temp, k.toString('base64'), { mode: 0o600, flag: 'wx' });
+      try { linkSync(temp, this.keyFile); } catch { return this.key(false); }
+    } finally { if (existsSync(temp)) unlinkSync(temp); }
     return k;
   }
 
@@ -86,6 +97,10 @@ export class FileSecretStore implements SecretStore {
       writeFileSync(temp, JSON.stringify({ v: 1, iv: iv.toString('base64'), tag: c.getAuthTag().toString('base64'), data: data.toString('base64') }), { mode: 0o600, flag: 'wx' });
       renameSync(temp, this.file);
     } finally { if (existsSync(temp)) unlinkSync(temp); }
+  }
+
+  error(): string | undefined {
+    try { this.readAll(); return undefined; } catch (e) { return (e as Error).message; }
   }
 
   names(): Record<SecretName, boolean> {

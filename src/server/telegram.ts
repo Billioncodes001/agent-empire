@@ -94,6 +94,8 @@ export class TelegramBridge {
     void this.loop(this.generation);
   }
   stop() { this.running = false; this.generation++; clearTimeout(this.timer); this.controller.abort(); }
+  /** Resolves once no poll is in flight (review 11: callers wait after stop() before touching the checkpoint). */
+  async idle() { while (this.busy) await new Promise((r) => setTimeout(r, 10)); }
   private async loop(generation: number) {
     await this.tick();
     if (this.running && generation === this.generation && !this.storageError) this.timer = setTimeout(() => void this.loop(generation), this.error ? 15_000 : 1_000);

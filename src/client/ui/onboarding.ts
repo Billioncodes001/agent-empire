@@ -13,7 +13,7 @@ import { enginesApi } from './engines';
 import { chiefApi } from './chief';
 import {
   APPROVAL_RULES, CHANNEL_ENV, BUDGET_ENV, CLOUD_APPLIES, DEFAULT_NTFY_SERVER, ONBOARDING_STEPS, PROFILE_MAX, STEP_LABEL,
-  randomTopic, validateApprovals, validateNotifications, validateProfile,
+  executionOfferAnswered, randomTopic, validateApprovals, validateNotifications, validateProfile,
   type ChannelId, type ChannelView, type OnboardingStep, type OnboardingView, type SecretName,
 } from '../../shared/onboarding';
 import { engineKey, engineLabel } from '../../shared/engines';
@@ -86,6 +86,8 @@ export interface OnboardingHooks {
   signInToClaude: () => void;
   /** The existing execution setup ("Where agents run"). */
   openExecution: () => void;
+  /** The Workers step was answered or execution setup was opened from it: the separate execution offer is redundant. */
+  markExecutionOfferSeen?: () => void;
   cloud?: boolean;
 }
 
@@ -142,6 +144,7 @@ export function openOnboarding(hooks: OnboardingHooks, initial?: OnboardingView)
       if (result === 'done') await collect();
       const step = view.progress.current;
       view = await onboardingApi.progress({ action: 'step', step, result });
+      if (executionOfferAnswered(view.progress)) hooks.markExecutionOfferSeen?.();
       dirty = false;
       if (view.progress.status === 'done') doneScreen = true;
       render();
@@ -216,7 +219,7 @@ export function openOnboarding(hooks: OnboardingHooks, initial?: OnboardingView)
     const summary = h('div.ob-engines', { 'aria-live': 'polite' }, h('p.setting-note', {}, 'Checking what is installed on the office host…'));
     const linked = h('button.btn', { type: 'button', onclick: hooks.openLinkedAccounts }, 'Open Linked accounts…');
     const signIn = h('button.btn', { type: 'button', onclick: hooks.signInToClaude }, 'Sign in to Claude…');
-    const exec = h('button.btn', { type: 'button', onclick: hooks.openExecution }, 'Where agents run…');
+    const exec = h('button.btn', { type: 'button', onclick: () => { hooks.markExecutionOfferSeen?.(); hooks.openExecution(); } }, 'Where agents run…');
     enginesApi.state().then((st) => {
       const select = h('select', { 'aria-label': 'Default engine for new hires' }) as HTMLSelectElement;
       select.append(h('option', { value: 'auto' }, 'Automatic: premium when healthy, otherwise free'));

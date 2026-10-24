@@ -381,16 +381,18 @@ const onboardingHooks = () => ({
   openLinkedAccounts: () => { $('btn-settings').click(); setTimeout(() => document.querySelector('.linked-accounts')?.scrollIntoView({ block: 'start' }), 300); },
   signInToClaude: () => { closeAllModals(); signInToClaude(); },
   openExecution: openExecutionFromAnywhere,
+  markExecutionOfferSeen: markOfferSeen,
   cloud: !!cloudNet,
 });
 function offerExecutionWhenFree() {
   // Waits for character and founding to finish; retried whenever the last dialog closes.
   if (cloudNet || executionOfferChecked || !store.empire.setup.completed || modalOpen()) return;
-  // FREE-08: onboarding first (once per page load, only when the host offers it: new installs after founding). It
-  // contains "Where agents run", so the separate execution offer is then marked as seen.
+  // FREE-08: onboarding first (once per page load, only when the host offers it: new installs after founding). Its
+  // Workers step contains "Where agents run"; the execution offer is marked seen only once that step is answered (review
+  // 3), so closing onboarding early still brings the execution offer when the dialog closes.
   if (!onboardingOfferChecked) {
     onboardingOfferChecked = true;
-    void maybeOfferOnboarding(onboardingHooks()).then((shown) => { if (shown) markOfferSeen(); else offerExecutionWhenFree(); });
+    void maybeOfferOnboarding(onboardingHooks()).then((shown) => { if (!shown) offerExecutionWhenFree(); });
     return;
   }
   executionOfferChecked = true;

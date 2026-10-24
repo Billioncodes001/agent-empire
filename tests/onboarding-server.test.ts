@@ -72,7 +72,8 @@ async function boot(t: { after(fn: () => Promise<void> | void): void }, o: { roo
     ...(o.budget ? { budget: o.budget, budgetSource: 'cli' as const } : {}) };
   const workers: WorkerRuntime = { taskNaming: false, resolveCommand: () => '/fixture/claude', processExists: () => false, spawn: (() => { throw new Error('no worker may start'); }) as WorkerRuntime['spawn'] };
   const runtime: ServerRuntime = { publicDir: dataDir, backgroundServices: false, workers, outreach: false, engines: { providerKeys: () => ({}) },
-    notify: { env: o.env ?? {}, ...(o.telegramBase ? { telegramApiBase: o.telegramBase } : {}) } };
+    // Fake servers listen on loopback, which only the desktop (allowLocalTargets) may target.
+    notify: { env: o.env ?? {}, allowLocalTargets: true, ...(o.telegramBase ? { telegramApiBase: o.telegramBase } : {}) } };
   const running = await startServer(cfg, runtime);
   const port = (running.server.address() as { port: number }).port;
   const origin = `http://127.0.0.1:${port}`;
@@ -237,7 +238,10 @@ test('saved settings: test sends reach fake Telegram, ntfy and SMTP servers only
   assert.equal(status.ntfy.state, 'not_configured', 'tests and previews do not deliver approvals (backgroundServices off)');
   // Settings validation is strict: unknown keys and bad values are refused without changing anything.
   assert.equal((await f.api('settings', 'PUT', { approvals: { dailyBudgetUsd: -1 } })).status, 400);
-  assert.equal((await f.api('settings', 'PUT', { notifications: { ntfy: { server: 'http://192.168.1.9', topic: 'x' } } })).status, 200, 'saved, but reported');
-  const v = (await f.api('onboarding')).json;
-  assert.match(v.settings.channels.ntfy.error, /https/);
+  const lan = await f.api('settings', 'PUT', { notifications: { ntfy: { server: 'http://192.168.1.9', topic: 'x' } }, secrets: { ntfyToken: null } });
+  assert.equal(lan.status, 400, 'private network targets are refused even on the desktop');
+  assert.match(lan.json.error, /private/);
+  const moved = await f.api('settings', 'PUT', { notifications: { ntfy: { server: 'https://ntfy.sh' } } });
+  assert.equal(moved.status, 400, 'a saved ntfy token never follows a changed server');
+  assert.match(moved.json.error, /access token again/);
 });

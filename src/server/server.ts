@@ -218,7 +218,7 @@ export interface ServerRuntime {
    * FREE-08 onboarding: a test environment (instead of process.env), a secret store (the desktop's vault), and for tests
    * only a fake Telegram API base and fetch. `start` lets saved/env channels deliver even with backgroundServices off.
    */
-  notify?: { env?: NodeJS.ProcessEnv; secrets?: SecretStore; telegramApiBase?: string; fetch?: typeof fetch; start?: boolean };
+  notify?: { env?: NodeJS.ProcessEnv; secrets?: SecretStore; telegramApiBase?: string; fetch?: typeof fetch; start?: boolean; allowLocalTargets?: boolean };
 }
 export async function startServer(cfg: Config, runtime: ServerRuntime = {}) {
   const releaseHost = acquireHostLock(cfg.dataDir);
@@ -300,8 +300,8 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   const empire = new Empire(cfg.dataDir, state => { broadcast({ t: 'empire', state }); observeContinuity(); publishOrg(); });
   // FREE-08: onboarding and the settings it saves. An install already founded at its first start here is legacy.
   const secrets = runtime.notify?.secrets ?? new FileSecretStore(cfg.dataDir);
-  const onboarding = new OnboardingService(cfg.dataDir, secrets, { legacy: empire.state.setup.completed });
-  const hostBudget = { usd: cfg.budget, pause: cfg.budgetPause, source: cfg.budgetSource };
+  const onboarding = new OnboardingService(cfg.dataDir, secrets, { legacy: empire.state.setup.completed, allowLocalTargets: !!runtime.notify?.allowLocalTargets });
+  const hostBudget = { usd: cfg.budget, pause: cfg.budgetPause, source: cfg.budgetSource, pauseSource: cfg.budgetPauseSource };
 
   // --- Loopback-only endpoint that Claude Code hooks POST to --------------------------------
   const hookServer = http.createServer(async (req, res) => {
@@ -633,7 +633,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     try { if (JSON.parse(readFileSync(file, 'utf8'))?.binding === binding) return; } catch { /* unreadable: set aside too */ }
     renameSync(file, path.join(cfg.dataDir, `telegram.previous-${Date.now()}.json`));
   };
-  const applyChannels = (which: Set<ChannelId>, fromSettings = false) => {
+  const applyChannels = async (which: Set<ChannelId>, fromSettings = false) => {
     const saved = onboarding.settings();
     const fromName = saved.profile.name || undefined;
     if (which.has('email')) {
@@ -656,7 +656,10 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
       ntfy?.observe(desk.state().items);
     }
     if (which.has('telegram')) {
-      telegram?.stop(); telegram = undefined; telegramError = undefined;
+      const old = telegram;
+      old?.stop(); telegram = undefined; telegramError = undefined;
+      // Review 11: the old bridge's in-flight poll finishes before its checkpoint is moved or a new bridge starts.
+      if (old) await old.idle();
       let config: TelegramConfig | undefined;
       if (runtime.telegram === false) channelSource.telegram = { source: 'off' };
       else if (runtime.telegram) { channelSource.telegram = { source: 'runtime' }; config = runtime.telegram.config; }
@@ -675,8 +678,8 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
       }
     }
   };
-  applyChannels(new Set(['telegram', 'ntfy', 'email']));
-  const applySettings = (changed: Set<SettingsChange>) => {
+  void applyChannels(new Set(['telegram', 'ntfy', 'email'])); // nothing to wait for at start-up (no old bridge)
+  const applySettings = async (changed: Set<SettingsChange>) => {
     if (changed.has('budget') && hostBudget.usd === undefined) {
       const b = resolveBudget(hostBudget, onboarding.settings());
       ledger.setBudget({ budget: b.usd, pauseHiring: b.pause });
@@ -684,7 +687,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     const channels = new Set<ChannelId>();
     for (const c of ['telegram', 'ntfy', 'email'] as const) if (changed.has(c)) channels.add(c);
     if (changed.has('profile')) channels.add('email'); // the sender's display name
-    if (channels.size) applyChannels(channels, true);
+    if (channels.size) await applyChannels(channels, true);
   };
   const channelView = (id: ChannelId): ChannelView => {
     const { source, error } = channelSource[id];
@@ -713,7 +716,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
         channels: { telegram: channelView('telegram'), ntfy: channelView('ntfy'), email: channelView('email') },
         budget: resolveBudget(hostBudget, saved),
       },
-      ...(onboarding.storageError ? { storageError: onboarding.storageError } : {}),
+      ...((() => { const e = [onboarding.storageError, secrets.error?.()].filter(Boolean).join(' '); return e ? { storageError: e } : {}; })()),
     };
   };
   // "Send test" only ever goes to the configured endpoint, only when the CEO clicks, at most once per 5 s per channel.
@@ -1183,7 +1186,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
           let body: unknown;
           try { const raw = await readBody(req, 16_000); body = raw.trim() ? JSON.parse(raw) : {}; } catch { return send(res, 400, { error: 'Expected a JSON request.' }); }
           if (p === '/api/onboarding/progress' && req.method === 'POST') { onboarding.updateProgress(body); return send(res, 200, onboardingView()); }
-          if (p === '/api/settings' && req.method === 'PUT') { applySettings(onboarding.updateSettings(body)); return send(res, 200, onboardingView()); }
+          if (p === '/api/settings' && req.method === 'PUT') { await applySettings(onboarding.updateSettings(body)); return send(res, 200, onboardingView()); }
           const test = /^\/api\/settings\/test\/(telegram|ntfy|email)$/.exec(p);
           if (test && req.method === 'POST') {
             try { return send(res, 200, { ok: true, message: await testSend(test[1] as ChannelId) }); }

@@ -56,6 +56,14 @@ export function dismiss(p: OnboardingProgress, now: number): OnboardingProgress 
   return { ...p, status: p.status === 'done' ? 'done' : 'dismissed', updatedAt: now };
 }
 
+/**
+ * The Workers step contains "Where agents run", so the separate execution offer counts as answered only once that step
+ * was done or skipped (security review 3: merely opening onboarding must not hide it).
+ */
+export function executionOfferAnswered(p: OnboardingProgress): boolean {
+  return p.steps.engines !== 'pending';
+}
+
 /** From Settings: open again at the first step still pending (or the first step when all were answered). */
 export function reopen(p: OnboardingProgress, now: number): OnboardingProgress {
   const pending = ONBOARDING_STEPS.find((s) => p.steps[s] === 'pending');

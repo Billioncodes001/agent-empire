@@ -62,6 +62,15 @@ async function main() {
     const info0 = await fixtureInfo(base);
     check('fixture starts with nothing sent to the fake servers', info0.hits.length === 0, info0.hits.join(' | '));
 
+    // ---- Review 3: closing onboarding on step 1 keeps the execution offer ----
+    const early = await open(browser, base, { width: 1440, height: 900, touch: false });
+    await early.page.waitForSelector('.onboarding-modal', { timeout: 20_000 });
+    check('opening onboarding alone does not mark the execution offer seen', (await early.page.evaluate(() => localStorage.getItem('agent-empire.execution.offered'))) !== '1');
+    await modal(early.page).getByRole('button', { name: 'Finish later' }).click();
+    await early.page.waitForTimeout(600);
+    check('closing on step 1 keeps the execution offer for later', (await early.page.evaluate(() => localStorage.getItem('agent-empire.execution.offered'))) !== '1');
+    await early.context.close();
+
     // ---- Desktop 1440x900: first run after founding ----
     const d = await open(browser, base, { width: 1440, height: 900, touch: false });
     const p = d.page;
@@ -105,6 +114,7 @@ async function main() {
     await modal(p).getByRole('button', { name: 'Skip this step' }).click();
     await p.waitForTimeout(500);
     check('a step can be skipped', (await stepTitle(p)) === 'How the office reaches you' && (await modal(p).locator('.ob-step[data-state=skipped]').count()) === 1);
+    check('answering the Workers step marks the execution offer seen', (await p.evaluate(() => localStorage.getItem('agent-empire.execution.offered'))) === '1');
 
     // ---- Notifications ----
     const fx = await fixtureInfo(base);

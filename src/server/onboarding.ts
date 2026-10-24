@@ -10,6 +10,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { writeJsonAtomic } from './persistence.js';
 import { invalidSecret, type SecretStore } from './secrets.js';
+import { refusedTarget } from './notify.js';
 import {
   DEFAULT_SETTINGS, ONBOARDING_STEPS, SECRET_NAMES, advance, dismiss, goTo, initialProgress, isStep, reopen,
   validateApprovals, validateNotifications, validateProfile,
@@ -47,8 +48,12 @@ export class OnboardingService {
   private saved: SavedSettings = structuredClone(DEFAULT_SETTINGS);
   readonly storageError?: string;
 
-  constructor(dataDir: string, private readonly secrets: SecretStore, opts: { legacy: boolean; now?: () => number }) {
+  private readonly allowLocalTargets: boolean;
+
+  /** `allowLocalTargets`: the desktop app, where ntfy/SMTP on this computer (loopback) is a normal self-hosted setup. */
+  constructor(dataDir: string, private readonly secrets: SecretStore, opts: { legacy: boolean; now?: () => number; allowLocalTargets?: boolean }) {
     this.now = opts.now ?? Date.now;
+    this.allowLocalTargets = !!opts.allowLocalTargets;
     this.progressFile = path.join(dataDir, 'onboarding.json');
     this.settingsFile = path.join(dataDir, 'settings.json');
     const problems: string[] = [];
@@ -155,9 +160,39 @@ export class OnboardingService {
         secretOps.push([name, s[name] as string | null]);
       }
     }
-    try { for (const [name, value] of secretOps) value === null ? this.secrets.delete(name) : this.secrets.set(name, value); }
-    catch (error) { throw new OnboardingError(409, (error as Error).message); }
-    writeJsonAtomic(this.settingsFile, next);
+    // Review 7: where notifications may go from this host.
+    const nb = next.notifications, bb = before.notifications;
+    if (nb.ntfy.server && nb.ntfy.server !== bb.ntfy.server) {
+      let host = '';
+      try { host = new URL(nb.ntfy.server).hostname; } catch { /* validNtfyServer reports it */ }
+      const refused = host && refusedTarget(host, this.allowLocalTargets);
+      if (refused) throw new OnboardingError(400, `ntfy server: ${refused}`);
+    }
+    if (nb.email.host && nb.email.host !== bb.email.host) {
+      const refused = refusedTarget(nb.email.host, this.allowLocalTargets);
+      if (refused) throw new OnboardingError(400, `SMTP server: ${refused}`);
+    }
+    // Review 2: a stored token or password never follows a changed destination. It must be entered again (or removed)
+    // in the same request; otherwise nothing is saved.
+    const supplied = (n: SecretName) => secretOps.some(([name]) => name === n);
+    const present = this.secrets.names();
+    if (present.ntfyToken && !supplied('ntfyToken') && nb.ntfy.server !== bb.ntfy.server)
+      throw new OnboardingError(400, 'You changed the ntfy server. Enter its access token again (or remove the saved one) so it is never sent to a new server.');
+    if (present.smtpPassword && !supplied('smtpPassword') && (nb.email.host !== bb.email.host || nb.email.port !== bb.email.port || nb.email.security !== bb.email.security))
+      throw new OnboardingError(400, 'You changed the SMTP server, port or security. Enter the SMTP password again (or remove the saved one) so it is never sent to a new server.');
+    // Review 10: all-or-nothing. Earlier secret writes are undone when a later one, or settings.json, fails.
+    const undo: (() => void)[] = [];
+    try {
+      for (const [name, value] of secretOps) {
+        const previous = this.secrets.get(name);
+        if (value === null) this.secrets.delete(name); else this.secrets.set(name, value);
+        undo.push(() => { if (previous === undefined) this.secrets.delete(name); else this.secrets.set(name, previous); });
+      }
+      writeJsonAtomic(this.settingsFile, next);
+    } catch (error) {
+      for (const restore of undo.reverse()) { try { restore(); } catch { /* best effort; the store reports its own state */ } }
+      throw new OnboardingError(409, `Nothing was saved: ${(error as Error).message}`);
+    }
     this.saved = next;
     const changed = new Set<SettingsChange>();
     const diff = (a: unknown, b: unknown) => JSON.stringify(a) !== JSON.stringify(b);
