@@ -3,7 +3,7 @@
  * coordinator) validates with the shared rules; this view never changes credits itself. Prices are fictional city
  * credits, never provider spending.
  */
-import { GARAGE, PLOTS, VEHICLE_MODELS, freeBay, normalizeCity, type PlotId } from '../../shared/city';
+import { GARAGE, HELICOPTER, HELIPAD, PLOTS, VEHICLE_MODELS, freeBay, normalizeCity, type PlotId } from '../../shared/city';
 import type { EmpireAction } from '../../shared/empire';
 import { store } from '../state';
 import { h, openModal } from './dom';
@@ -22,12 +22,19 @@ export interface CityDialogDeps {
   send(action: EmpireAction): void;
   /** Apron slots the live sedan or the founder occupies right now. */
   blocked(): number[];
+  /** CITY-06: a vehicle driven or parked away from the garage this session (it cannot be moved from the kiosk). */
+  away?(vehicleId: string): boolean;
+  /** Review 5: another car parked this session stands in this vehicle's bay. */
+  bayTaken?(vehicleId: string): boolean;
+  /** Current key labels, so the how-to copy follows remapped keys. */
+  keys?: { interact: string; jump: string; run: string };
 }
 
 export function openCityDialog(deps: CityDialogDeps, target: CityTarget) {
   const close = h('button.btn.close', { type: 'button', 'aria-label': 'Close' }, '✕');
   const body = h('div.body.city-dialog');
-  const title = target.kind === 'garage' ? GARAGE.name : PLOTS.find((p) => p.id === target.plot)!.name;
+  const title = target.kind === 'garage' ? GARAGE.name : target.kind === 'helipad' ? HELIPAD.name : PLOTS.find((p) => p.id === target.plot)!.name;
+  const keys = deps.keys ?? { interact: 'E', jump: 'Space', run: 'Left Shift' };
   const dialog = h('div.modal.ae-dark.city-modal', { role: 'dialog', 'aria-labelledby': 'city-dialog-title' }, h('header', {}, h('h2', { id: 'city-dialog-title' }, title), close), body);
   const button = (key: string, label: string, onclick: () => void, disabled = false) =>
     h('button.btn', { type: 'button', 'data-key': key, onclick, disabled }, label);
@@ -37,9 +44,9 @@ export function openCityDialog(deps: CityDialogDeps, target: CityTarget) {
   tracker ??= new PurchaseTracker(purchaseNonce, store.empire.city);
   const purchases = tracker;
   purchases.update(store.empire.city);
-  const purchase = (action: Omit<Extract<EmpireAction, { kind: 'buy-vehicle' }>, 'nonce'> | Omit<Extract<EmpireAction, { kind: 'buy-plot' }>, 'nonce'>) => {
+  const purchase = (action: Omit<Extract<EmpireAction, { kind: 'buy-vehicle' }>, 'nonce'> | Omit<Extract<EmpireAction, { kind: 'buy-plot' }>, 'nonce'> | Omit<Extract<EmpireAction, { kind: 'buy-helicopter' }>, 'nonce'>) => {
     if (purchases.pending) return;
-    const nonce = purchases.click(action.kind === 'buy-vehicle' ? `vehicle:${action.model}` : `plot:${action.plot}`);
+    const nonce = purchases.click(action.kind === 'buy-vehicle' ? `vehicle:${action.model}` : action.kind === 'buy-helicopter' ? 'helicopter' : `plot:${action.plot}`);
     deps.send({ ...action, nonce } as EmpireAction);
     // Cloud mode may answer minutes later and may not toast a refusal. Re-enabling Buy is safe: a further click on
     // the same target resends the same nonce, which the shared rules refuse once the first purchase is applied.
@@ -55,14 +62,19 @@ export function openCityDialog(deps: CityDialogDeps, target: CityTarget) {
     if (target.kind === 'garage') {
       const full = freeBay(city) < 0;
       rows.push(h('h3', {}, `Your vehicles · ${city.vehicles.length}/${GARAGE.bays.length} bays`));
-      rows.push(h('p.setting-note', {}, 'Bought vehicles are kept here: you can park them in a bay or bring them out to the kerb. Driving them is coming in a later update; today only your executive sedan can be driven.'));
+      rows.push(h('p.setting-note', {}, `Bought vehicles are kept here: park them in a bay or bring them out to the kerb. To drive one, walk to its driver's door and press ${keys.interact}. A car you leave elsewhere stays there until you reload, then returns to its bay or kerb slot.`));
       rows.push(city.vehicles.length
         ? h('ul.city-list', {}, ...city.vehicles.map((v) => {
             const model = VEHICLE_MODELS.find((m) => m.id === v.model)!;
-            return h('li', {}, h('span', {}, `${model.name} · ${v.apron === undefined ? `bay ${v.bay + 1}` : `outside, kerb slot ${v.apron + 1}`}`),
-              v.apron === undefined
+            const away = deps.away?.(v.id) ?? false;
+            return h('li', {}, h('span', {}, `${model.name} · ${away ? 'parked away from the garage' : v.apron === undefined ? `bay ${v.bay + 1}` : `outside, kerb slot ${v.apron + 1}`}`),
+              away
+                ? button(`away-${v.id}`, 'Drive it back first', () => {}, true)
+                : v.apron === undefined
                 ? button(`out-${v.id}`, 'Bring out', () => deps.send({ kind: 'vehicle-spawn', vehicle: v.id, blocked: deps.blocked() }))
-                : button(`store-${v.id}`, 'Store in bay', () => deps.send({ kind: 'vehicle-store', vehicle: v.id })));
+                : deps.bayTaken?.(v.id)
+                  ? button(`store-${v.id}`, 'Bay taken · move the car parked there', () => {}, true)
+                  : button(`store-${v.id}`, 'Store in bay', () => deps.send({ kind: 'vehicle-store', vehicle: v.id })));
           }))
         : h('p', {}, 'No vehicles in the garage yet.'));
       rows.push(h('h3', {}, 'Buy a vehicle'));
@@ -70,6 +82,15 @@ export function openCityDialog(deps: CityDialogDeps, target: CityTarget) {
       rows.push(h('ul.city-list', {}, ...VEHICLE_MODELS.map((m) =>
         h('li', {}, h('span', {}, `${m.name} · ${m.cost.toLocaleString('en-US')} cr`),
           button(`buy-${m.id}`, full ? 'Garage full' : pendingNow() ? 'Buying…' : 'Buy', () => purchase({ kind: 'buy-vehicle', model: m.id }), pendingNow() || full || !state.setup.completed || state.funds < m.cost)))));
+    } else if (target.kind === 'helipad') {
+      rows.push(h('p', {}, state.city?.helicopter
+        ? `Your ${HELICOPTER.name.toLowerCase()} is ready. Walk to the pilot's door and press ${keys.interact}.`
+        : `The ${HELICOPTER.name.toLowerCase()} costs ${HELICOPTER.cost.toLocaleString('en-US')} city credits and is kept on this rooftop pad.`));
+      rows.push(h('p.setting-note', {}, `Flying: ${keys.jump} climbs, ${keys.run} descends, the movement keys fly forward and back and turn. Land on this pad or at street level, then press ${keys.interact} to step out. On a touch screen use the joystick with Up and Down.`));
+      if (!state.city?.helicopter) {
+        if (!state.setup.completed) rows.push(h('p.setting-note', {}, 'Complete founding setup before buying the helicopter.'));
+        rows.push(button('buy-helicopter', pendingNow() ? 'Buying…' : `Buy helicopter · ${HELICOPTER.cost.toLocaleString('en-US')} cr`, () => purchase({ kind: 'buy-helicopter' }), pendingNow() || !state.setup.completed || state.funds < HELICOPTER.cost));
+      }
     } else {
       const plot = PLOTS.find((p) => p.id === target.plot)!;
       const owned = city.plots.includes(plot.id as PlotId);

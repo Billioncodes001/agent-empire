@@ -56,3 +56,12 @@ test('review 6: the asset tool refuses symlinks, escaping paths and oversized ar
   assert.throws(() => checkZipListing(`${head}-rw-a--     2.3 ntf      703 tx defN 26-Oct-10 11:35 License.txt\n?? unparseable entry ??\n`), /declares 2 entries but 1/);
   assert.throws(() => checkZipListing('-rw-a--     2.3 ntf      703 tx defN 26-Oct-10 11:35 License.txt\n'), /no entry count/);
 });
+
+test('CITY-06/08: every drivable model is a pinned Car Kit model, and the helicopter ships no downloaded files', async () => {
+  const { VEHICLE_MODELS } = await import('../src/shared/city');
+  for (const m of VEHICLE_MODELS) assert.ok(manifest.kits.vehicles.models[m.asset], `${m.asset} is not in the pinned Car Kit build`);
+  const shipped = readdirSync(dir);
+  assert.ok(!shipped.some((f) => /heli/i.test(f)), 'no helicopter asset file');
+  assert.ok(!sources.kits.helicopter, 'no helicopter source in the pinned pipeline');
+  assert.match(notices, /The pinned packs contain no helicopter, so the helicopter, the helipad and the garage staircase are original procedural geometry/);
+});
