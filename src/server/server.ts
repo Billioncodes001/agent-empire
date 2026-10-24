@@ -39,6 +39,7 @@ import { acquireHostLock } from './host-lock.js';
 import { ExecutionManager, ExecutionError, type ExecutionOptions } from './execution.js';
 import { ResearchDesk, ResearchError } from './research.js';
 import { ChiefBrain, ChiefError, chiefActions, defaultEvidence, gitDiffStat, type ChatFn } from './chief.js';
+import { LessonMemory, MemoryError } from './memory.js';
 import { readArtifact } from './artifacts.js';
 import { LinkedAccounts, envKeys, type Exec, type ProviderKeys } from './engines.js';
 import { DEFAULT_OLLAMA_URL, OllamaRuntime } from './ollama.js';
@@ -270,6 +271,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   let inbox: ApprovalInbox | undefined;
   let outreach: Outreach | undefined;
   let chief: ChiefBrain | undefined;
+  let memory: LessonMemory | undefined;
   let research: ResearchDesk | undefined;
   let observing = false;
   const storageError = () => [workers?.recoveryError, queue?.recoveryError, consultancy?.recoveryError].filter(Boolean).join(' ') || undefined;
@@ -499,7 +501,14 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     publishApprovals();
     publishOrg();
   };
+  // FREE-10: reviewed organizational memory. Proposals wait in the inbox; only approved lessons reach the chief's planner.
+  memory = new LessonMemory(cfg.dataDir, { jobExists: (id) => { try { return office.snapshot().jobs.some((j) => j.id === id); } catch { return false; } } });
+  const lessons = memory;
+  lessons.setInbox({ raise: (fields) => desk.raiseLesson(fields), resolve: (id, note) => desk.resolveLesson(id, note), get: (id) => desk.get(id) });
+  inbox.setLessons(lessons.actions());
+  lessons.reconcile();
   chief = new ChiefBrain(cfg.dataDir, {
+    memory: lessons,
     keys: providerKeys, ollamaUrl, chat: runtime.chief?.chat, timeoutMs: runtime.chief?.timeoutMs,
     // Review fix 5: the cached loopback Ollama check. An injected fake model (tests, previews) gets no real probe.
     probe: runtime.chief?.probe ?? (runtime.chief?.chat ? undefined : async () => { const o = await ollama.detect(); return { running: o.running, models: o.models.map((m) => m.name) }; }),
@@ -839,6 +848,31 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
         } catch (error) {
           if (error instanceof ConsultancyError) return send(res, error.status, { error: error.message });
           return send(res, 500, { error: 'Consultancy service could not complete this request.' });
+        }
+      }
+      if (p === '/api/memory' || p.startsWith('/api/memory/')) {
+        // FREE-10: list, export, add a CEO note, edit (re-approval) or retire. Approving happens only in the inbox.
+        if (req.method !== 'GET' && !trusted()) return send(res, 403, { error: 'A same-origin Origin header is required' });
+        try {
+          if (p === '/api/memory' && req.method === 'GET') return send(res, 200, lessons.state());
+          if (p === '/api/memory/export.md' && req.method === 'GET') {
+            res.writeHead(200, { 'content-type': 'text/markdown; charset=utf-8', 'cache-control': 'no-store', 'content-disposition': 'attachment; filename="agent-empire-memory.md"' });
+            return res.end(lessons.markdown());
+          }
+          if (req.method !== 'POST') return send(res, 404, { error: 'Unknown memory endpoint.' });
+          let body: unknown;
+          try { const raw = await readBody(req, 8_000); body = raw.trim() ? JSON.parse(raw) : {}; } catch { return send(res, 400, { error: 'Expected a JSON request.' }); }
+          if (p === '/api/memory/lessons') { const l = lessons.addNote(body, 'CEO'); publishApprovals(); return send(res, 201, l); }
+          const action = /^\/api\/memory\/lessons\/(L[1-9]\d{0,8})\/(edit|retire)$/.exec(p);
+          if (action) {
+            const l = action[2] === 'edit' ? lessons.edit(action[1], body, 'CEO') : lessons.retire(action[1], 'CEO', (body as { reason?: unknown } | null)?.reason);
+            publishApprovals();
+            return send(res, action[2] === 'edit' ? 201 : 200, l);
+          }
+          return send(res, 404, { error: 'Unknown memory endpoint.' });
+        } catch (error) {
+          if (error instanceof MemoryError) return send(res, error.status, { error: error.message });
+          return send(res, 500, { error: 'Organizational memory could not complete this request.' });
         }
       }
       if (p === '/api/chief' || p.startsWith('/api/chief/')) {
@@ -1543,7 +1577,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
 
   // Drop dead connections so ghosts don't linger in the office.
   empire.dispatchManagers(queue, 'Chief of staff');
-  const empireTimer = setInterval(() => { empire.tick(workers.list(), queue.state()); try { office.reconcile(); inbox?.reconcile(); research?.reconcile(); outreach?.reconcile(); chief?.reconcile(); } catch { /* Durable service exposes recovery errors through its snapshot. */ } }, 5000);
+  const empireTimer = setInterval(() => { empire.tick(workers.list(), queue.state()); try { office.reconcile(); inbox?.reconcile(); research?.reconcile(); outreach?.reconcile(); chief?.reconcile(); memory?.reconcile(); } catch { /* Durable service exposes recovery errors through its snapshot. */ } }, 5000);
   const heartbeat = setInterval(() => {
     for (const c of clients.values()) {
       if ((c.ws as any).isAlive === false) {
@@ -1587,5 +1621,5 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     hookServer.close();
   };
 
-  return { server, shutdown, workers, publicDir, hookPort, execution, consultancy: office, outreach: outreachService, inbox, chief: brain };
+  return { server, shutdown, workers, publicDir, hookPort, execution, consultancy: office, outreach: outreachService, inbox, chief: brain, memory: lessons };
 }

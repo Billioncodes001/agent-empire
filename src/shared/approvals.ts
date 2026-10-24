@@ -3,12 +3,29 @@
 
 import type { EstimateBasis, ExecutiveRole, Range } from './org.js';
 import type { OutreachExcluded } from './outreach.js';
+import type { LessonScope, LessonSource } from './memory.js';
 
 /**
  * `external_action` (ORG-04a): something leaves the Empire, e.g. a campaign send; approving acts on a frozen snapshot.
  * `tool_proposal` (ORG-05): a researched tool; approving only records the decision.
  */
-export type ApprovalKind = 'job_plan' | 'budget_increase' | 'external_action' | 'tool_proposal' | 'chief_proposal';
+export type ApprovalKind = 'job_plan' | 'budget_increase' | 'external_action' | 'tool_proposal' | 'chief_proposal' | 'lesson';
+
+/**
+ * FREE-10 `lesson`: a proposed organizational-memory lesson (decision only). Approving makes it planning context for the
+ * chief; declining retires it. Nothing else happens either way.
+ */
+export interface LessonApproval {
+  lessonId: string;
+  text: string;
+  scope: LessonScope;
+  scopeValue?: string;
+  source: LessonSource;
+  proposedBy: string;
+  /** An edit: the lesson it replaces once approved, and that lesson's current text. */
+  supersedes?: string;
+  supersedesText?: string;
+}
 
 /**
  * FREE-02 `chief_proposal`: the chief's model suggests how to unblock stalled work. Deciding records the decision; an
@@ -79,6 +96,8 @@ export interface Approval {
   outreach?: OutreachApproval;
   /** FREE-02 chief_proposal: the chief's suggestion and its optional one-click action. */
   proposal?: ChiefProposal;
+  /** FREE-10 lesson: the proposed lesson, its scope and provenance. */
+  lesson?: LessonApproval;
   /** FREE-02 job_plan: set when the chief's model proposed the plan, e.g. "Model-backed · gpt-oss:20b · proposals only". */
   proposedBy?: string;
 }
@@ -100,6 +119,7 @@ export const APPROVAL_KIND_LABEL: Record<ApprovalKind, string> = {
   external_action: 'Campaign send',
   tool_proposal: 'Tool proposal',
   chief_proposal: 'Chief proposal',
+  lesson: 'Lesson',
 };
 
 export const MAX_APPROVAL_BUDGET_USD = 100_000;
