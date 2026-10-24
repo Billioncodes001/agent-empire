@@ -81,6 +81,11 @@ interface StoredFile {
   reviews: ChiefReview[];
   stalls: ChiefStall[];
   nextPlan: number;
+  /**
+   * Review fix 3: every review and stall key ever queued. Never trimmed (the kept records are), so a trimmed record can
+   * never be reviewed or proposed again and spend again. About 60 bytes per finished item.
+   */
+  seen: string[];
 }
 
 // ---- Validation -----------------------------------------------------------------------------------------------------
@@ -336,12 +341,13 @@ export class ChiefBrain {
   private pending = 0;
   private readonly now: () => number;
   private readonly chatFn: ChatFn;
+  private seen = new Set<string>();
 
   constructor(dataDir: string, private readonly ports: ChiefPorts) {
     this.file = path.join(dataDir, FILE);
     this.now = ports.now ?? Date.now;
     this.chatFn = ports.chat ?? llmChat;
-    this.data = { version: 1, settings: { ...DEFAULT_CHIEF_SETTINGS }, spend: { day: dayOf(this.now()), usd: 0 }, plans: [], reviews: [], stalls: [], nextPlan: 1 };
+    this.data = { version: 1, settings: { ...DEFAULT_CHIEF_SETTINGS }, spend: { day: dayOf(this.now()), usd: 0 }, plans: [], reviews: [], stalls: [], nextPlan: 1, seen: [] };
     this.restore();
   }
 
@@ -499,7 +505,9 @@ export class ChiefBrain {
           const task = item.queueTaskId ? queue.tasks.find((t) => t.id === item.queueTaskId) : undefined;
           if (!task || task.status !== 'done' || task.outcome !== 'done' || (task.finishedAt ?? 0) < since) continue;
           const key = `${job.id}:${item.id}:${task.id}:${task.attempt ?? 1}`;
-          if (this.data.reviews.some((r) => r.key === key)) continue;
+          // A full call queue defers the review to a later pass instead of dropping it.
+          if (this.seen.has(key) || this.pending >= MAX_PENDING_CALLS) continue;
+          this.markSeen(key);
           const review: ChiefReview = { key, jobId: job.id, itemId: item.id, itemTitle: item.title, taskId: task.id, status: 'queued', at: this.now() };
           this.data.reviews.push(review);
           const evidence = this.evidenceFor(task, item);
@@ -547,7 +555,8 @@ export class ChiefBrain {
   }
 
   private stall(kind: StallKind, key: string, job: ConsultancyJob, facts: string, action?: NonNullable<Approval['proposal']>['action']): boolean {
-    if (this.data.stalls.some((s) => s.key === key)) return false;
+    if (this.seen.has(key) || this.pending >= MAX_PENDING_CALLS) return false;
+    this.markSeen(key);
     const stall: ChiefStall = { key, kind, jobId: job.id, status: 'queued', at: this.now() };
     this.data.stalls.push(stall);
     if (!this.enqueue(() => this.runStall(key, job, facts, action))) Object.assign(stall, { status: 'needs_attention', reason: 'The chief had too many requests waiting.' });
@@ -638,6 +647,11 @@ export class ChiefBrain {
 
   // ---- Storage ----
 
+  private markSeen(key: string) {
+    this.seen.add(key);
+    this.data.seen.push(key);
+  }
+
   private trim() {
     const keep = <T extends { status: string }>(list: T[], max: number, busy: string[]) => {
       if (list.length <= max) return list;
@@ -676,7 +690,9 @@ export class ChiefBrain {
       for (const s of raw.stalls) if (s.status === 'queued' || s.status === 'thinking') Object.assign(s, { status: 'needs_attention', reason: 'The server restarted before this proposal finished.' });
       this.data = { version: 1, settings, ...(Number.isSafeInteger(raw.enabledAt) ? { enabledAt: raw.enabledAt } : {}),
         spend: raw.spend && typeof raw.spend.day === 'string' && Number.isFinite(raw.spend.usd) ? raw.spend : { day: dayOf(at), usd: 0 },
-        plans: raw.plans, reviews: raw.reviews, stalls: raw.stalls, nextPlan: raw.nextPlan };
+        plans: raw.plans, reviews: raw.reviews, stalls: raw.stalls, nextPlan: raw.nextPlan,
+        seen: [...new Set([...(Array.isArray(raw.seen) ? raw.seen.filter((k): k is string => typeof k === 'string') : []), ...raw.reviews.map((r) => r.key), ...raw.stalls.map((s) => s.key)])] };
+      this.seen = new Set(this.data.seen);
     } catch (error) {
       this.storageError = `Cannot restore chief.json; preserve the file and recover a valid backup. ${(error as Error).message}`;
     }
