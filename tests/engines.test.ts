@@ -83,7 +83,7 @@ test('Qwen Code: launch with model, hooks posted to /hooks/qwen map to status; s
   try {
     const w = m.spawn('desk-1', 'Owner', 'add tests', false, 'agent', false, undefined, undefined, undefined, { engine: { id: 'qwen-code', auth: 'local', model: 'gpt-oss:20b' } }) as WorkerInfo;
     assert.equal(spawned[0].file, '/fixture/qwen');
-    assert.deepEqual(spawned[0].args, ['--model', 'gpt-oss:20b', '-i', 'add tests']);
+    assert.deepEqual(spawned[0].args, ['--model', 'gpt-oss:20b', '--prompt-interactive=add tests']);
     const env = spawned[0].env;
     assert.equal(env.QWEN_CODE_SYSTEM_SETTINGS_PATH, path.join(dir, 'qwen-system-settings.json'));
     assert.equal(env.OPENAI_BASE_URL, 'http://127.0.0.1:11434/v1');

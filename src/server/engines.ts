@@ -64,7 +64,10 @@ export interface LaunchSpec {
  *   (https://learn.chatgpt.com/docs/config-file/config-reference, `oss_provider`); `-m` picks the model.
  */
 export function launchSpec(engine: WorkerEngine, prompt: string | undefined): LaunchSpec {
-  if (engine.id === 'qwen-code') return { cmd: 'qwen', args: ['--model', engine.model ?? '', ...(prompt ? ['-i', prompt] : [])], hooks: 'qwen' };
+  // One argv element, `--prompt-interactive=<prompt>`: Qwen Code parses its CLI with yargs (inherited from Gemini CLI's
+  // packages/cli/src/config/config.ts), and yargs takes everything after `=` as the value, so a prompt such as `--yolo`
+  // or `--approval-mode=yolo` can never become an option (https://github.com/yargs/yargs-parser#readme).
+  if (engine.id === 'qwen-code') return { cmd: 'qwen', args: ['--model', engine.model ?? '', ...(prompt ? [`--prompt-interactive=${prompt}`] : [])], hooks: 'qwen' };
   if (engine.id === 'codex') {
     const local = engine.auth === 'local' ? ['--oss', '-c', 'oss_provider="ollama"', '-m', engine.model ?? ''] : [];
     return { cmd: 'codex', args: [...local, ...(prompt ? ['--', prompt] : [])], hooks: 'none' };
