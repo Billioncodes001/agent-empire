@@ -41,7 +41,7 @@ The brief is untrusted, and `claude -p` is an agent with tools. A reliably tool-
 | --- | --- |
 | typecheck, build | pass |
 | `npm test` | all pass. New: `tests/chief.test.ts` (19) and `tests/chief-server.test.ts` (2). They use a fake model (valid, malformed ×6, injection ×5, oversized, timeout), with `fetch` stubbed to throw so a real call would fail the test. They cover the budget cap and reset, that a review never auto-accepts, idempotent proposals and requests, the 409 on a stale action, rule-based fallback, restart, and Telegram `/plan` |
-| `tools/chief-ui-check.ts` (fixtures 4850/4851, fake model) | 36/36 at 1440x900 and 874x402, reduced motion, no console errors |
+| `tools/chief-ui-check.ts` (fixtures 4850/4851, fake model) | 36/36 (38/38 after review fixes) at 1440x900 and 874x402, reduced motion, no console errors |
 | inbox-ui-check / org-ui-check | 47/47, 30/30 |
 | mobile-ui-check | **409–410/411**. Only "full deflection runs" (touch-stick speed) fails, at a different viewport each run (667, 874 or 1024). It's a timing flake under host load and doesn't touch the files changed here; a re-run on an idle host is needed |
 
@@ -62,3 +62,38 @@ each at 1440x900 and 874x402. Unrelated regenerated screenshots were reverted. N
 - Worker transcript summaries aren't available, so reviews say so.
 - Premium cost is an estimate from the price the user enters.
 - The founder desk polls `/api/chief`. Telegram notices depend on the existing poller.
+
+## Review fixes (security review 2026-10-24: accept with fixes)
+
+The failing-before tests are in `tests/chief-review-fixes.test.ts`: 6 tests, all failing on the reviewed code. They were committed first, and each fix has its own commit.
+
+1. **Invisible characters.** Model-written titles, prompts, summaries, review text and proposals refuse:
+   - format characters (zero-width, bidi overrides and isolates, soft hyphen);
+   - Unicode tags (U+E0000–E007F);
+   - line and paragraph separators;
+   - private-use and unassigned code points;
+   - every control character except newline and tab.
+2. **Prompts at the point of approval.** The public plan now carries each item's full queued prompt.
+   - The game inbox shows them as scrollable text. It offers no approve button for a model-proposed plan whose prompts aren't loaded.
+   - **Telegram refuses `/approve` for model-proposed plans**, both by inbox id and by job id, and points to the game or the founder desk. `/reject` still works.
+   - `/job` shows shortened prompts.
+   - The Telegram notice no longer suggests `/approve`.
+   - The founder desk already showed every prompt.
+3. **No repeated paid reviews.** Review and stall keys go into a never-trimmed `seen` list in `chief.json`, which is rebuilt from records on restore. A full call queue now defers a review to a later pass instead of dropping it. Tested with 201 finished items: exactly 201 calls, and none after a restart.
+4. **Usage-less paid answers** are charged the worst case. The worst case now counts 1 token per 2 ASCII characters and 1 per non-ASCII character. A failed paid call is charged the worst case (tested).
+5. **"Model-backed" only when usable.** The free brain needs a cached Ollama check (refreshed every 30 s) showing Ollama running and the model downloaded. A failed call makes it not ready, so the chief falls back to Rule-based, until a successful call or a healthy check. For premium, the hold lasts until a successful call, 10 minutes or a settings save. A retry request is still accepted. Tests and previews that inject a fake model get no real probe.
+6. **Heuristic screen.**
+   - A bare `.env` now matches (`.env.example` doesn't).
+   - Added verbs: include, commit, cat, echo, expose, copy, and "log the/it".
+   - Token matching needs a qualifier (auth, API, session…), so design tokens don't match.
+   - CHIEF.md, this report and the code comments call it a heuristic, not a guarantee.
+
+**Re-run:**
+
+| Check | Result |
+| --- | --- |
+| typecheck, build | pass |
+| `npm test` | 777/777 |
+| chief-ui-check | **38/38**. Adds the inbox showing all 4 full prompts, and screenshot `04b-inbox-plan-prompts-*` |
+| inbox-ui-check / org-ui-check | 47/47, 30/30 |
+| mobile-ui-check | **410/411**. The failure is "667x375 full deflection runs" (touch-stick timing). All my other fixtures were stopped, but the host wasn't idle: other sessions held the load average at 40–43, so this still isn't an idle-host result |

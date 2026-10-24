@@ -92,6 +92,11 @@ async function game(browser: Browser, size: Size, tag: string) {
     await pick('Northstar Studio');
     const plan = flat(await modal.locator('.inbox-detail').innerText());
     check(`${tag}: inbox plan is tagged model-backed with roles and order`, /Model-backed · gpt-oss:20b · proposals only/i.test(plan) && /Backend engineer/i.test(plan) && /parallel with the item before/i.test(plan) && /Estimate \(not a quote\)/i.test(plan), plan.slice(0, 200));
+    // Review fix 2: every item's full prompt is on screen where the plan is approved.
+    const prompts = await modal.locator('.inbox-detail pre.chief-prompt').allInnerTexts();
+    check(`${tag}: the inbox shows all 4 full item prompts before approval`, prompts.length === 4 && prompts.every((p) => /^Role: /.test(p) && /Synthetic fixture\.$/.test(p.trim())), String(prompts.length));
+    await modal.locator('.inbox-detail pre.chief-prompt').first().scrollIntoViewIfNeeded();
+    await page.screenshot({ path: resolve(out, `04b-inbox-plan-prompts-${tag}.jpg`), quality: 82 });
     check(`${tag}: approving the plan is still the CEO's decision`, (await modal.locator('.inbox-actions .btn.primary', { hasText: 'Approve plan…' }).count()) === 1);
     await page.screenshot({ path: resolve(out, `04-inbox-proposed-plan-${tag}.jpg`), quality: 82 });
     await pick('repeated failures');
