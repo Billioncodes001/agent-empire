@@ -67,13 +67,15 @@ export interface ArchitectPorts {
   onChange?: () => void;
   /** Tests only: the JSON writer (defaults to the atomic writer), to simulate a full disk at a precise point. */
   writeJson?: (file: string, value: unknown) => void;
+  /** Final review 1: process-monotonic milliseconds (defaults to performance.now()); tests inject one. */
+  monotonic?: () => number;
 }
 
 /**
  * Review 4: spend per period (never one overwritten scalar), the latest clock reading seen and the last paid call, so a
  * clock moved back or a time-zone change cannot reset a tally or allow a second paid run inside 24 hours.
  */
-interface Spend { days: Record<string, number>; months: Record<string, number>; maxSeenAt: number; lastPaidAt?: number; /** Re-review 2: when the clock was first seen behind the mark, and its last reading since. */ behindSince?: number; behindLast?: number }
+interface Spend { days: Record<string, number>; months: Record<string, number>; maxSeenAt: number; lastPaidAt?: number; /** Re-review 2: when the clock was first seen behind the mark, and its last reading since. */ behindSince?: number; behindLast?: number; /** Final review 1: the trusted time (never decreases) and paid calls on that timeline, the last 30 trusted days. */ trustedAt?: number; paid?: { at: number; usd: number }[] }
 interface StoredFile { version: 1; settings: ArchitectSettings; spend: Spend; lastRunDay?: string; nextRun: number; nextChange: number; expiredChange: number; runs: RunRecord[] }
 
 /** Re-review 3: 23 h, not 24, so a once-a-day run started by a one-minute tick never creeps later (and DST days fit). */
@@ -259,11 +261,44 @@ export class ArchitectService {
     this.writeJson = ports.writeJson ?? writeJsonAtomic;
     this.data = { version: 1, settings: { ...DEFAULT_ARCHITECT_SETTINGS }, spend: { days: {}, months: {}, maxSeenAt: this.now() }, nextRun: 1, nextChange: 1, expiredChange: 0, runs: [] };
     this.restore();
-    if (this.reconciled) this.save();
+    // Final review 1: the trusted timeline starts from the persisted trusted time; a restart may raise it by at most
+    // 36 h of wall-clock difference and never lowers it. In-process it advances only by monotonic time.
+    this.monoFn = ports.monotonic ?? (() => performance.now());
+    const prevTrust = this.data.spend.trustedAt, wall = this.now();
+    this.trustBase = prevTrust === undefined ? wall : Math.max(prevTrust, Math.min(wall, prevTrust + MAX_RAISE_MS));
+    this.monoBase = this.lastMono = this.monoFn();
+    if (this.reconciled) {
+      // Final review 2: a run finished on restore gets its journal entry and daily summary, as a normal run does.
+      for (const r of this.reconciledApplied) {
+        try { this.journal = recordRun(this.ensureJournal(), { day: r.day, runId: r.id, engine: r.engine, engineLabel: r.engineLabel, costLabel: r.costLabel, changes: r.changes, note: 'Finished on restart' }); this.saveJournal(); } catch { /* best-effort memory */ }
+        this.raiseSummary(r);
+      }
+      this.save();
+    }
     // Review extra: a paid run cut off by a restart keeps its worst-case charge; the owner is told once.
     for (const r of this.data.runs) if (r.status === 'interrupted' && r.costUsd > 0 && !r.approvalId) { this.raiseSummary(r); this.save(); }
   }
   private get blocked(): string | undefined { return this.restoreError ?? this.storageError; }
+  private readonly monoFn: () => number;
+  private trustBase: number;
+  private monoBase: number;
+  private lastMono: number;
+  private reconciledApplied: RunRecord[] = [];
+  /** Final review 1: trusted time — never decreases, immune to wall-clock jumps inside a process. */
+  private trustNow(): number {
+    this.lastMono = Math.max(this.lastMono, this.monoFn());
+    return this.trustBase + (this.lastMono - this.monoBase);
+  }
+  private paidLog(): { at: number; usd: number }[] {
+    const cutoff = this.trustNow() - 30 * DAY_MS;
+    return (this.data.spend.paid ?? []).filter((p) => p.at >= cutoff);
+  }
+  private spentRolling(): number { return round(this.paidLog().reduce((s, p) => s + p.usd, 0)); }
+  /** Trusted milliseconds since the last paid call, or Infinity. */
+  private sinceLastPaid(): number {
+    const last = this.paidLog().at(-1);
+    return last === undefined ? Infinity : this.trustNow() - last.at;
+  }
 
   // ---- Views ----
 
@@ -276,6 +311,7 @@ export class ArchitectService {
     const s = this.data.settings;
     if (this.spentToday() >= s.dailyCapUsd) return `Paused: today's estimated premium spend ${money(this.spentToday())} reached the ${money(s.dailyCapUsd)} daily cap. It resumes tomorrow, or raise the cap.`;
     if (this.spentMonth() >= s.monthlyCapUsd) return `Paused: this month's estimated premium spend ${money(this.spentMonth())} reached the ${money(s.monthlyCapUsd)} monthly cap. It resumes next month, or raise the cap.`;
+    if (this.spentRolling() >= s.monthlyCapUsd) return `Paused: estimated premium spend over the last 30 days (${money(this.spentRolling())}) reached the ${money(s.monthlyCapUsd)} monthly cap. It resumes as older calls age out, or raise the cap.`;
     return undefined;
   }
 
@@ -314,8 +350,8 @@ export class ArchitectService {
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), s.runHour).getTime();
     const slot = this.data.lastRunDay === dayOf(this.now()) ? new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, s.runHour).getTime() : Math.max(today, this.now());
     // Re-review 2: honest about the minimum gap a scheduled premium run waits for (never about a clock problem: those days run rule-based).
-    const paid = this.data.spend.lastPaidAt;
-    return s.engine === 'premium' && this.engineStatus().ready && paid !== undefined && paid <= this.now() ? Math.max(slot, paid + PAID_GAP_MS) : slot;
+    const wait = PAID_GAP_MS - this.sinceLastPaid();
+    return s.engine === 'premium' && this.engineStatus().ready && wait > 0 ? Math.max(slot, this.now() + wait) : slot;
   }
 
   state(): ArchitectState {
@@ -393,7 +429,7 @@ export class ArchitectService {
     // Review 4: a scheduled premium run waits for the minimum gap since the last paid call (minutes at most, at the set
     // hour), instead of spending its day on rule-based growth. Re-review 2: a clock behind its mark never waits: that
     // day grows with rule-based growth and the engine status says why.
-    const gap = this.data.spend.lastPaidAt === undefined ? Infinity : this.now() - this.data.spend.lastPaidAt;
+    const gap = this.sinceLastPaid();
     if (s.engine === 'premium' && this.engineStatus().ready && gap >= 0 && gap < PAID_GAP_MS) return false;
     return true;
   }
@@ -408,15 +444,14 @@ export class ArchitectService {
   private paidGapProblem(): string | undefined {
     const behind = this.clockBehind();
     if (behind) return behind;
-    const sp = this.data.spend;
-    if (sp.lastPaidAt !== undefined && this.now() - sp.lastPaidAt < PAID_GAP_MS) return 'A paid run happened less than 23 hours ago; at most one paid run a day, whatever the local date.';
+    if (this.sinceLastPaid() < PAID_GAP_MS) return 'A paid run happened less than 23 hours ago (by this server’s own running time); at most one paid run a day, whatever the clock or local date says.';
     return undefined;
   }
 
   /**
    * Re-review 2: one clock reading. The mark rises by at most 36 h per reading, so a single wrong future reading cannot
    * block paid runs for long; and once the clock has read consistently behind the mark for 72 h, the mark was the
-   * glitch: it is reset to now (a paid call made under the wrong time counts as at least 72 h old). Spend tallies are per
+   * glitch: it is reset to now. Paid-call spacing uses the trusted timeline, which never moves back. Tallies are per
    * period, so a reset never erases them.
    */
   private observeClock() {
@@ -429,8 +464,9 @@ export class ArchitectService {
     if (sp.behindSince === undefined || now < (sp.behindLast ?? now) - CLOCK_SLACK_MS) sp.behindSince = now;
     sp.behindLast = now;
     if (now - sp.behindSince >= TRUST_AFTER_MS) {
+      // Final review 1: the reset moves only the wall-clock mark. Paid-call spacing and the 30-day tally live on the
+      // trusted timeline, which a reset never moves backwards.
       sp.maxSeenAt = now;
-      if (sp.lastPaidAt !== undefined && sp.lastPaidAt > now - TRUST_AFTER_MS) sp.lastPaidAt = now - TRUST_AFTER_MS;
       delete sp.behindSince;
       delete sp.behindLast;
       this.save();
@@ -522,6 +558,7 @@ export class ArchitectService {
           record.worstUsd = worst;
           if (clockProblem) { callable = false; fallback(clockProblem); }
           else if (this.spentToday() + worst > s.dailyCapUsd) { callable = false; fallback(`Premium paused: this run could cost up to ${money(worst)}, which would pass today's ${money(s.dailyCapUsd)} daily cap (${money(this.spentToday())} used).`); }
+          else if (this.spentRolling() + worst > s.monthlyCapUsd) { callable = false; fallback(`Premium paused: this run could cost up to ${money(worst)}, which would pass the ${money(s.monthlyCapUsd)} monthly cap over the last 30 days (${money(this.spentRolling())} used, counted by this server's own running time).`); }
           else if (this.spentMonth() + worst > s.monthlyCapUsd) { callable = false; fallback(`Premium paused: this run could cost up to ${money(worst)}, which would pass this month's ${money(s.monthlyCapUsd)} monthly cap (${money(this.spentMonth())} used).`); }
           else {
             // Charged before the call, so a crash or restart mid-call never under-counts.
@@ -529,6 +566,8 @@ export class ArchitectService {
             const before = structuredClone(this.data.spend);
             this.addSpend(worst);
             this.data.spend.lastPaidAt = this.now();
+            // Final review 1: the paid call on the trusted timeline (spacing and the 30-day tally), the last 30 days kept.
+            this.data.spend.paid = [...this.paidLog(), { at: this.trustNow(), usd: worst }];
             Object.assign(record, { costUsd: worst, costLabel: `≈ US$${worst.toFixed(4)} (worst-case estimate)` });
             if (!this.save()) {
               this.data.spend = before;
@@ -548,7 +587,7 @@ export class ArchitectService {
             record.engineLabel = engine === 'premium' ? this.engineStatus().label : `Free · ${result.model || c.freeModel} on this computer (Ollama) · US$0`;
             if (engine === 'premium') {
               const reported = result.usage.input + result.usage.output > 0 && result.cost.usd !== null ? round(result.cost.usd) : undefined;
-              if (reported !== undefined) { this.addSpend(reported - worst); Object.assign(record, { costUsd: reported, costLabel: `≈ US$${reported.toFixed(4)} (estimate)` }); }
+              if (reported !== undefined) { this.addSpend(reported - worst); const entry = this.data.spend.paid?.at(-1); if (entry) entry.usd = reported; Object.assign(record, { costUsd: reported, costLabel: `≈ US$${reported.toFixed(4)} (estimate)` }); }
               else record.costLabel = `≈ US$${worst.toFixed(4)} (worst-case estimate; no usage reported)`;
               this.save();
             } else record.costLabel = 'US$0 · local model';
@@ -739,7 +778,7 @@ export class ArchitectService {
    */
   private save(): boolean {
     if (this.restoreError) return false;
-    try { mkdirSync(this.dir, { recursive: true }); this.writeJson(this.files.state, this.data); return true; }
+    try { mkdirSync(this.dir, { recursive: true }); this.data.spend.trustedAt = this.trustNow(); this.writeJson(this.files.state, this.data); return true; }
     catch (error) {
       this.storageError ??= `The architect's state could not be saved; preserve world/architect.json, repair storage and restart. ${(error as Error).message}`;
       return false;
@@ -785,10 +824,20 @@ export class ArchitectService {
         reason: r.costUsd > 0 ? `The run was interrupted by a server restart during its model call. The worst-case estimate ${money(r.costUsd)} stays charged. Nothing more is done today.` : 'The run was interrupted by a server restart. Nothing more is done today.',
       });
       // Re-review 4: a run cut off between its undo record and the world write is finished or undone, by revision.
+      // Final review 2: by content as well as revision. "Applied" needs every change's after-record in the world (and a
+      // removed addition gone); "interrupted" needs the world exactly as before (no after-record, every before-record
+      // back). Anything else refuses the file.
+      const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+      const has = (rec: unknown) => isObj(rec) && this.worldDoc.additions.some((x) => same(x, rec));
+      const exists = (id: string) => this.worldDoc.additions.some((x) => x.id === id);
       for (const r of runs) if (r.status === 'applying') {
-        if (this.worldDoc.revision === r.worldRevision) Object.assign(r, { status: 'applied', finishedAt: at });
-        else if (this.worldDoc.revision === (r.worldRevision ?? 0) - 1) Object.assign(r, { status: 'interrupted', changes: [], finishedAt: at, reason: 'The server stopped before the world was changed. Nothing changed today.' });
-        else throw new Error(`run ${r.id} was applying world revision ${r.worldRevision} but the world is at ${this.worldDoc.revision}`);
+        const applied = r.changes.every((c) => (c.op === 'remove' ? !exists(c.additionId) : has(c.after)));
+        const untouched = r.changes.every((c) => (c.op === 'place' ? !exists(c.additionId) : has(c.before)));
+        if (this.worldDoc.revision === r.worldRevision && applied) {
+          Object.assign(r, { status: 'applied', finishedAt: at });
+          this.reconciledApplied.push(r);
+        } else if (this.worldDoc.revision === (r.worldRevision ?? 0) - 1 && untouched) Object.assign(r, { status: 'interrupted', changes: [], finishedAt: at, reason: 'The server stopped before the world was changed. Nothing changed today.' });
+        else throw new Error(`run ${r.id} was applying world revision ${r.worldRevision}, but the world (revision ${this.worldDoc.revision}) matches neither the finished nor the untouched state`);
         delete r.worldRevision;
         this.reconciled = true;
       }
@@ -812,8 +861,9 @@ function restoreSpend(raw: unknown, at: number): Spend {
   if (typeof raw.day === 'string' && num(raw.usd) && typeof raw.month === 'string' && num(raw.monthUsd)) {
     return { days: { [raw.day]: raw.usd }, months: { [raw.month]: raw.monthUsd }, maxSeenAt: at };
   }
-  for (const k of ['lastPaidAt', 'behindSince', 'behindLast']) if (raw[k] !== undefined && !num(raw[k])) throw new Error('spend is invalid');
+  for (const k of ['lastPaidAt', 'behindSince', 'behindLast', 'trustedAt']) if (raw[k] !== undefined && !num(raw[k])) throw new Error('spend is invalid');
+  if (raw.paid !== undefined && (!Array.isArray(raw.paid) || raw.paid.length > 400 || raw.paid.some((p) => !isObj(p) || !num(p.at) || !num(p.usd)))) throw new Error('spend is invalid');
   if (!num(raw.maxSeenAt)) throw new Error('spend is invalid');
-  return { days: map(raw.days), months: map(raw.months), maxSeenAt: raw.maxSeenAt, ...(raw.lastPaidAt !== undefined ? { lastPaidAt: raw.lastPaidAt as number } : {}), ...(raw.behindSince !== undefined ? { behindSince: raw.behindSince as number, behindLast: (raw.behindLast ?? raw.behindSince) as number } : {}) };
+  return { days: map(raw.days), months: map(raw.months), maxSeenAt: raw.maxSeenAt, ...(raw.lastPaidAt !== undefined ? { lastPaidAt: raw.lastPaidAt as number } : {}), ...(raw.behindSince !== undefined ? { behindSince: raw.behindSince as number, behindLast: (raw.behindLast ?? raw.behindSince) as number } : {}), ...(raw.trustedAt !== undefined ? { trustedAt: raw.trustedAt as number } : {}), ...(raw.paid !== undefined ? { paid: (raw.paid as { at: number; usd: number }[]).map((p) => ({ at: p.at, usd: p.usd })) } : {}) };
 }
 

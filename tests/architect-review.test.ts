@@ -173,7 +173,8 @@ test('review 4: never two paid runs within 23 hours (re-review 3: 23, so the dai
   const clock = { t: local(9, 25, 3) };
   const { chat, calls } = counting();
   try {
-    const a = make(dir, clock, { chat });
+    // Final review 1: real time passes with the clock here (paid calls are spaced by monotonic time).
+    const a = make(dir, clock, { chat, monotonic: () => clock.t });
     a.updateSettings({ enabled: true, engine: 'premium', monthlyCapUsd: 1 });
     await a.runNow('CEO');
     clock.t = local(9, 26, 1); // a new local day, 22 hours later

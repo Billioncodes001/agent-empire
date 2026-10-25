@@ -55,12 +55,15 @@ test('re-review 2: a forward clock glitch at boot never stops the daily run; sta
   const clock = { t: local(2027, 9, 25, 3) }; // wrongly a year ahead at first boot
   const { chat, calls } = counting();
   try {
-    const a = make(dir, () => clock.t, { chat });
+    // Final review 1: the process's monotonic time is real elapsed time (the boot reading was a year ahead).
+    const real = { t: local(2026, 9, 25, 3) };
+    const a = make(dir, () => clock.t, { chat, monotonic: () => real.t });
     a.updateSettings({ enabled: true, engine: 'premium', monthlyCapUsd: 10, dailyCapUsd: 1 });
     await a.tick();
     const engines: string[] = [];
     for (let d = 0; d < 30; d++) {
       clock.t = local(2026, 9, 26 + d, 4);
+      real.t = clock.t; // the corrected clock is real time
       if (d === 0) {
         const s = a.state();
         assert.equal(s.engine.ready, false, 'the engine does not claim ready while the clock is behind');
@@ -83,7 +86,7 @@ test('re-review 3: with one-minute ticks the scheduled premium run starts at the
   const dir = tmp();
   const clock = { t: local(2026, 9, 1, 3, 0) + 20_000 };
   try {
-    const a = make(dir, () => (clock.t += 1), { chat: counting().chat });
+    const a = make(dir, () => (clock.t += 1), { chat: counting().chat, monotonic: () => clock.t });
     a.updateSettings({ enabled: true, engine: 'premium', dailyCapUsd: 1, monthlyCapUsd: 10 });
     const starts: number[] = [];
     const base = clock.t;
