@@ -112,6 +112,11 @@ export function openModal(content: HTMLElement, opts: { escCloses?: boolean; onC
     } else if (!e.shiftKey && active === last) {
       e.preventDefault();
       first.focus();
+    } else {
+      // Safari's default Tab skips buttons, so the last natively tabbable field (not `last`) can hand focus to the
+      // page or the browser. Wrap it back once the browser has moved focus (DEVTEST-02, WebKit).
+      const back = e.shiftKey ? last : first;
+      setTimeout(() => { if (!closed && stack[stack.length - 1] === modal && !content.contains(document.activeElement)) back.focus(); }, 0);
     }
   };
   const modal: Modal = {
