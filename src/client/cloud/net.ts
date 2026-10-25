@@ -230,7 +230,7 @@ export class CloudNet extends Net {
     this.emit({ t: 'queue', state: toQueue(state) });
     this.emit({ t: 'usage', state: toUsage(state, this.now()) });
     // FREE-07: the inbox, executives and research the coordinator recorded, in the shapes the server sends.
-    this.emit({ t: 'approvals', state: cloudApprovals(state.org, state.meta.revision) });
+    this.emit({ t: 'approvals', state: cloudApprovals(state.org, state.meta.revision, state.orgError ? `Your organization file could not be read (${state.orgError}). Decisions are refused until state/org.json is repaired; the rest of the Empire keeps running.` : undefined) });
     this.emit({ t: 'org', state: cloudExecutives(state, state.org, snapshot.readAt) });
     this.emit({ t: 'research', state: cloudResearch(state.org, state.jobs.jobs) });
   }

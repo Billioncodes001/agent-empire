@@ -23,7 +23,7 @@ import { advanceEconomy, applyEmpireAction, rewardAcceptedJob, settleCapMs, sync
 import { intentIdFromPath, parseIntent, sortIntents, IntentError, type CloudIntent } from './intents.js';
 import { DispatchFailure, ProvisionError, type ProviderAdapter, type ProviderObservation, type ProvisionResult } from './provider.js';
 import { SITES, type SiteId } from '../shared/empire.js';
-import { addResearch, ORG_FILE, cloudResearchPrompt, decideApproval, OrgRuleError, proposeLesson, recordResearch, researchDue, researchPath, researchTitle, retireLesson, type BranchFile } from './org.js';
+import { addResearch, checkOrg, ORG_FILE, cloudResearchPrompt, decideApproval, OrgRuleError, proposeLesson, recordResearch, researchDue, researchPath, researchTitle, retireLesson, type BranchFile } from './org.js';
 import { isMoneyEngine } from './actions-spec.js';
 import { DEFAULT_WORKER_MODEL, WORKER_ENVIRONMENT, workerModelLabel } from './worker-spec.js';
 import {
@@ -36,6 +36,8 @@ export interface TickContext { now: number; runId: string }
 
 /** FREE-07: at most this many research reports are read per run (read-only GitHub calls with the project token). */
 export const RESEARCH_READS_PER_TICK = 5;
+/** Intents that change state/org.json; their result must pass checkOrg before it is kept. */
+const ORG_INTENTS = new Set<string>(['approval_decision', 'lesson_propose', 'lesson_retire', 'research']);
 /**
  * Reads finished research reports from their task branches (read-only). A provider that cannot read branch files gives
  * `unsupported`; a failed read gives `unknown` and is retried next run. Never sends model text anywhere.
@@ -316,6 +318,11 @@ export function applyIntents(input: CloudState, files: IntentFile[], ctx: TickCo
     const scratch = clone(state);
     try {
       const { outcome } = applyOne(scratch, intent, ctx);
+      // FREE-07 review fix 1: an organization change is kept only if the result fits its budget and reads back.
+      if (ORG_INTENTS.has(intent.kind)) {
+        if (scratch.orgError) throw new IntentError('org_unreadable', `The organization file could not be read (${scratch.orgError}), so nothing was changed. Repair or remove state/org.json in the state repository.`);
+        try { checkOrg(scratch.org); } catch (error) { throw new IntentError(error instanceof OrgRuleError ? error.code : 'org_invalid', error instanceof Error ? error.message : 'The organization change was refused.'); }
+      }
       Object.assign(state, scratch);
       record(intent.id, outcome, intent.kind);
       outcomes.push({ path: item.path, id: intent.id, kind: intent.kind, outcome });
@@ -699,7 +706,7 @@ function stamp(state: CloudState, ctx: TickContext) {
 /** True when a run changed anything beyond the city clock (which may wait for the next commit). */
 function meaningful(state: CloudState, snapshot: StateSnapshot): boolean {
   const next = serializeState(state);
-  for (const file of [STATE_FILES.jobs, STATE_FILES.ledger, STATE_FILES.journal, STATE_FILES.processed, ORG_FILE]) if (next[file] !== snapshot.files[file]) return true;
+  for (const file of [STATE_FILES.jobs, STATE_FILES.ledger, STATE_FILES.journal, STATE_FILES.processed, ORG_FILE]) if (next[file] !== undefined && next[file] !== snapshot.files[file]) return true;
   const core = (text: string | undefined) => { if (!text) return ''; const { coordinator: _c, revision: _r, ...rest } = JSON.parse(text); return JSON.stringify(rest); };
   return core(next[STATE_FILES.meta]) !== core(snapshot.files[STATE_FILES.meta]);
 }
@@ -746,11 +753,22 @@ export async function runCoordinatorTick(deps: CoordinatorDeps): Promise<TickRep
     // against the session's current state. A commit retry reuses these results.
     observations ??= await observeSessions(collectObservations(state), deps.provider, state);
     state = recordObservations(state, observations, ctx1);
-    // FREE-07: read-only reads of finished research reports from their task branches, once per tick (reused on retry).
-    researchReads ??= await readResearchReports(researchDue(state.org, state.jobs.jobs), deps.provider, state);
-    recordResearch(state.org, state.jobs.jobs, researchReads, ctx1.now);
     const intents = applyIntents(state, intentFilesOf(snapshot), ctx1);
     state = intents.state;
+    // FREE-07 (review fix 2): research reports are imported AFTER intents, so decisions can always drain a full inbox,
+    // and nothing in an untrusted report can stop cancel, shutdown or the stops below. Reads are read-only and reused
+    // on a commit retry; any failure leaves the organization exactly as it was and is journaled.
+    if (!state.orgError) {
+      try {
+        researchReads ??= await readResearchReports(researchDue(state.org, state.jobs.jobs), deps.provider, state);
+        const org = clone(state.org);
+        recordResearch(org, state.jobs.jobs, researchReads, ctx1.now);
+        checkOrg(org);
+        state.org = org;
+      } catch (error) {
+        journal(state, ctx1, 'warning', `Research reports were not imported this run (${error instanceof Error ? error.message.slice(0, 160) : 'unexpected error'}).`);
+      }
+    }
     // Free control-plane calls, once per tick (a commit retry reuses the outcome), before dispatch planning.
     if (provisioningDue(state, ctx1.now)) {
       if (!provisionOutcome || provisionOutcome.key !== provisionKey(state)) provisionOutcome = await attemptProvisioning(state, deps.provider);

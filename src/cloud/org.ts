@@ -22,7 +22,7 @@ import { hasHiddenChars } from '../shared/text-safety.js';
 import type { CloudJob, CloudState } from './schema.js';
 
 export const ORG_FILE = 'state/org.json';
-export const ORG_LIMITS = { approvals: 400, decidedKept: 300, lessons: 500, research: 100, section: 4000, reason: 300, readAttempts: 5 } as const;
+export const ORG_LIMITS = { approvals: 400, decidedKept: 300, lessons: 500, research: 60, section: 2000, reason: 300, readAttempts: 5 } as const;
 /** Review fix 3: the serialized state/org.json never exceeds this (readers accept 4 MiB per state file). */
 export const ORG_MAX_BYTES = 3 * 1024 * 1024;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
@@ -44,6 +44,8 @@ export interface CloudResearch {
   /** Each section clipped to ORG_LIMITS.section characters to keep the state file small. */
   sections?: ResearchSections;
   importedAt?: number;
+  /** Review fix 4: reads that could not reach GitHub; after ORG_LIMITS.readAttempts the report needs attention. */
+  readAttempts?: number;
   tools: ToolProposal[];
 }
 export interface CloudOrg {
@@ -118,7 +120,8 @@ export function validateOrg(value: unknown): CloudOrg {
     if (a.decidedAt !== undefined) num(a.decidedAt, 'approval decision time');
     if (a.decidedBy !== undefined) text(a.decidedBy, 80, 'approval decider');
     if (a.note !== undefined) text(a.note, 300, 'approval note');
-    if (a.kind === 'tool_proposal') { if (a.lesson !== undefined) throw new OrgSchemaError('tool proposal with a lesson'); validateTool(a.tool, 'approval tool'); }
+    // Review fix 3: a tool proposal's details are stored once, in its report (the game hydrates the item from it).
+    if (a.kind === 'tool_proposal' && (a.lesson !== undefined || a.tool !== undefined)) throw new OrgSchemaError('a cloud tool proposal stores its tool in its report');
     if (a.kind === 'lesson') {
       if (a.tool !== undefined) throw new OrgSchemaError('lesson with a tool');
       const l = obj(a.lesson, ['lessonId', 'text', 'scope', 'scopeValue', 'source', 'proposedBy', 'supersedes', 'supersedesText', 'nonce'], 'approval lesson');
@@ -146,7 +149,8 @@ export function validateOrg(value: unknown): CloudOrg {
   }
   const jobs = new Set<string>();
   for (const item of o.research) {
-    const r = obj(item, ['jobId', 'question', 'askedAt', 'status', 'reason', 'feasibility', 'confidence', 'sources', 'sections', 'importedAt', 'tools'], 'research');
+    const r = obj(item, ['jobId', 'question', 'askedAt', 'status', 'reason', 'feasibility', 'confidence', 'sources', 'sections', 'importedAt', 'readAttempts', 'tools'], 'research');
+    if (r.readAttempts !== undefined && (!Number.isSafeInteger(r.readAttempts) || (r.readAttempts as number) < 0 || (r.readAttempts as number) > ORG_LIMITS.readAttempts)) throw new OrgSchemaError('invalid research read attempts');
     if (!UUID.test(String(r.jobId)) || jobs.has(String(r.jobId))) throw new OrgSchemaError('invalid research job');
     jobs.add(String(r.jobId));
     text(r.question, MAX_QUESTION, 'research question'); num(r.askedAt, 'research time');
@@ -253,7 +257,7 @@ export function decideApproval(org: CloudOrg, input: DecisionInput, ctx: OrgCtx)
     if (item.status === wanted) return 'duplicate';
     return refuse('already_decided', `${item.id} was already ${item.status === 'resolved' ? 'resolved' : item.status === 'approved' ? 'approved' : 'declined'}; nothing changed.`);
   }
-  if (approvalFingerprint(item) !== input.seen) refuse('stale_view', `${item.id} changed after you opened it, so nothing was decided. Open it again and review what it says now.`);
+  if (approvalFingerprint(hydrate(org, item)) !== input.seen) refuse('stale_view', `${item.id} changed after you opened it, so nothing was decided. Open it again and review what it says now.`);
   if (item.kind === 'lesson') {
     const l = org.lessons.find((x) => x.id === item.lesson?.lessonId);
     // FREE-10 guard: the item must have been raised for exactly this proposal (id, text, scope and nonce).
@@ -264,7 +268,7 @@ export function decideApproval(org: CloudOrg, input: DecisionInput, ctx: OrgCtx)
       if (old && old.status !== 'retired') retire(org, old, `Replaced by ${l!.id}`, ctx.now);
     } else Object.assign(l!, { status: 'retired', retiredReason: 'Declined by CEO', decidedAt: ctx.now, decidedBy: 'CEO' });
   } else if (item.kind === 'tool_proposal') {
-    const tool = org.research.flatMap((r) => r.tools).find((t) => t.approvalId === item.id && t.name === item.tool?.name && t.url === item.tool?.url);
+    const tool = org.research.find((r) => r.jobId === item.jobId)?.tools.find((t) => t.approvalId === item.id);
     if (!tool) refuse('tool_mismatch', `${item.id} no longer matches a research report, so nothing was decided.`);
     Object.assign(tool!, { decision: wanted, decidedAt: ctx.now, decidedBy: 'CEO' });
   } else refuse('not_in_cloud', 'That kind of item is not decided in cloud mode.');
@@ -301,13 +305,47 @@ export function addResearch(org: CloudOrg, jobId: string, question: string, now:
 
 /** Reports to read from their task branch this run: queued, and the job's turn has finished (awaiting or past review). */
 export function researchDue(org: CloudOrg, jobs: readonly CloudJob[]): { jobId: string; branch: string }[] {
-  return org.research.filter((r) => r.status === 'queued').flatMap((r) => {
+  // Review fix 4: reports with fewer failed reads go first, so a few stuck reports can't starve the rest.
+  return org.research.filter((r) => r.status === 'queued').sort((a, b) => (a.readAttempts ?? 0) - (b.readAttempts ?? 0) || a.askedAt - b.askedAt).flatMap((r) => {
     const job = jobs.find((j) => j.id === r.jobId);
     return job && ['awaiting_review', 'accepted', 'rejected'].includes(job.status) ? [{ jobId: r.jobId, branch: job.branch }] : [];
   });
 }
 
-export type BranchFile = { state: 'found'; text: string; bytes: number } | { state: 'missing' } | { state: 'unknown'; reason: string } | { state: 'unsupported' };
+export type BranchFile = { state: 'found'; text: string; bytes: number } | { state: 'missing' } | { state: 'refused'; reason: string } | { state: 'unknown'; reason: string } | { state: 'unsupported' };
+
+// ---------------------------------------------------------------- review fixes 1 and 3: always readable, always bounded
+
+export const orgBytes = (org: CloudOrg) => new TextEncoder().encode(JSON.stringify(org, null, 2) + '\n').length;
+
+/**
+ * Keeps state/org.json under ORG_MAX_BYTES: drops the oldest finished reports whose tools are all decided, then the
+ * oldest decided inbox items. Pending items, waiting lessons and queued reports are never dropped; if they alone are too
+ * big the change is refused (OrgRuleError), so the caller keeps the previous state.
+ */
+export function fitOrg(org: CloudOrg): void {
+  while (orgBytes(org) > ORG_MAX_BYTES) {
+    const report = org.research.filter((r) => r.status !== 'queued' && r.tools.every((t) => t.decision !== 'pending')).sort((a, b) => a.askedAt - b.askedAt)[0];
+    if (report) { org.research = org.research.filter((r) => r !== report); continue; }
+    const decided = org.approvals.filter((a) => a.status !== 'pending').sort((a, b) => (a.decidedAt ?? a.createdAt) - (b.decidedAt ?? b.createdAt)).slice(0, 10);
+    if (decided.length) { const drop = new Set(decided); org.approvals = org.approvals.filter((a) => !drop.has(a)); continue; }
+    refuse('org_full', 'The organization file is full of waiting items. Decide some inbox items first.');
+  }
+}
+
+/** The coordinator writes only what it can read back: the size budget, then the same validation readers apply. */
+export function checkOrg(org: CloudOrg): void {
+  fitOrg(org);
+  try { validateOrg(JSON.parse(JSON.stringify(org))); }
+  catch (error) { refuse('org_invalid', `The change would leave the organization unreadable (${error instanceof Error ? short(error.message, 120) : 'invalid'}), so it was not made.`); }
+}
+
+/** The inbox item as shown: a tool proposal gets its tool from its report (stored once). */
+export function hydrate(org: CloudOrg, item: Approval): Approval {
+  if (item.kind !== 'tool_proposal') return item;
+  const tool = org.research.find((r) => r.jobId === item.jobId)?.tools.find((t) => t.approvalId === item.id);
+  return tool ? { ...item, tool: { name: tool.name, url: tool.url, licence: tool.licence, enables: tool.enables, risk: tool.risk } } : item;
+}
 
 const clipSections = (s: ResearchSections): ResearchSections =>
   Object.fromEntries(Object.entries(s).map(([k, v]) => [k, v.length > ORG_LIMITS.section ? `${v.slice(0, ORG_LIMITS.section - 40)}\n… (shortened; full report on the task branch)` : v])) as unknown as ResearchSections;
@@ -317,30 +355,51 @@ const clipSections = (s: ResearchSections): ResearchSections =>
  * imported once; a refused report needs attention with the reason (ask again to retry). An unknown read is retried.
  */
 export function recordResearch(org: CloudOrg, jobs: readonly CloudJob[], reads: Record<string, BranchFile>, now: number): void {
-  for (const r of org.research) {
-    if (r.status !== 'queued') continue;
+  const attention = (r: CloudResearch, reason: string) => { Object.assign(r, { status: 'needs_attention', reason: short(reason, ORG_LIMITS.reason) }); delete r.readAttempts; };
+  for (const jobId of org.research.filter((x) => x.status === 'queued').map((x) => x.jobId)) {
+    const r = org.research.find((x) => x.jobId === jobId);
+    if (!r) continue; // dropped by the size budget while importing an earlier report
     const job = jobs.find((j) => j.id === r.jobId);
-    if (!job) { Object.assign(r, { status: 'needs_attention', reason: 'The research job is no longer in the job list, so its report was not read.' }); continue; }
-    if (['failed', 'cancelled'].includes(job.status)) { Object.assign(r, { status: 'needs_attention', reason: `The research job ${job.status === 'failed' ? 'failed' : 'was cancelled'} before a finished turn, so there is no report. Ask again to retry.` }); continue; }
+    if (!job) { attention(r, 'The research job is no longer in the job list, so its report was not read.'); continue; }
+    if (['failed', 'cancelled'].includes(job.status)) { attention(r, `The research job ${job.status === 'failed' ? 'failed' : 'was cancelled'} before a finished turn, so there is no report. Ask again to retry.`); continue; }
     const read = reads[r.jobId];
     if (!read) continue;
-    if (read.state === 'unknown') { r.reason = `The report could not be read yet (${short(read.reason, 160)}); the coordinator tries again next run.`; continue; }
-    if (read.state === 'unsupported') { Object.assign(r, { status: 'needs_attention', reason: 'This execution cannot read files from the task branch, so the report was not imported.' }); continue; }
-    if (read.state === 'missing') { Object.assign(r, { status: 'needs_attention', reason: `The worker did not commit ${researchPath(r.jobId)} to its branch. Ask again to retry.` }); continue; }
-    if (read.bytes > MAX_ARTIFACT_BYTES) { Object.assign(r, { status: 'needs_attention', reason: `The report is larger than ${MAX_ARTIFACT_BYTES / 1024} KB.` }); continue; }
+    if (read.state === 'unknown') {
+      // Review fix 4: network trouble is retried, but only a few times.
+      r.readAttempts = (r.readAttempts ?? 0) + 1;
+      if (r.readAttempts >= ORG_LIMITS.readAttempts) attention(r, `The coordinator tried ${r.readAttempts} times and could not read the report (${short(read.reason, 120)}). Ask again to retry.`);
+      else r.reason = `The report could not be read yet (${short(read.reason, 160)}); the coordinator tries again next run.`;
+      continue;
+    }
+    if (read.state === 'unsupported') { attention(r, 'This execution cannot read files from the task branch, so the report was not imported.'); continue; }
+    if (read.state === 'refused') { attention(r, `Report not accepted: ${read.reason}`); continue; }
+    if (read.state === 'missing') { attention(r, `The worker did not commit ${researchPath(r.jobId)} to its branch. Ask again to retry.`); continue; }
+    if (read.bytes > MAX_ARTIFACT_BYTES) { attention(r, `The report is larger than ${MAX_ARTIFACT_BYTES / 1024} KB.`); continue; }
     const parsed = parseResearchReport(parseArtifact(read.text));
-    if (!parsed.ok) { Object.assign(r, { status: 'needs_attention', reason: short(`Report not accepted: ${parsed.reason}`, ORG_LIMITS.reason) }); continue; }
-    delete r.reason;
-    Object.assign(r, { status: 'imported', feasibility: parsed.feasibility, confidence: parsed.confidence, sources: parsed.sources, sections: clipSections(parsed.sections), importedAt: now });
-    r.tools = parsed.tools.map((t) => ({ ...t, decision: 'pending' as const }));
-    for (const tool of r.tools) {
-      const item = raise(org, {
-        kind: 'tool_proposal', jobId: r.jobId, createdAt: now,
-        title: `Tool proposal: ${short(tool.name, 80)}`,
-        detail: short(`Sam · Research proposes it in the report on “${r.question}”. Approving records your decision only.`, 600),
-        tool: { name: tool.name, url: tool.url, licence: tool.licence, enables: tool.enables, risk: tool.risk },
-      });
-      tool.approvalId = item.id;
+    if (!parsed.ok) { attention(r, `Report not accepted: ${parsed.reason}`); continue; }
+    // Review fixes 1–3: import on a copy; keep it only if the result fits the budget and reads back. Otherwise the
+    // report needs attention with the reason and the previous organization stays as it was.
+    const before = JSON.stringify(org);
+    try {
+      delete r.reason; delete r.readAttempts;
+      Object.assign(r, { status: 'imported', feasibility: parsed.feasibility, confidence: parsed.confidence, sources: parsed.sources, sections: clipSections(parsed.sections), importedAt: now });
+      r.tools = parsed.tools.map((t) => ({ ...t, decision: 'pending' as const }));
+      for (const tool of r.tools) {
+        const item = raise(org, {
+          kind: 'tool_proposal', jobId: r.jobId, createdAt: now,
+          title: `Tool proposal: ${short(tool.name, 80)}`,
+          detail: short(`Sam · Research proposes it in the report on “${r.question}”. Approving records your decision only.`, 600),
+        });
+        tool.approvalId = item.id;
+      }
+      checkOrg(org);
+    } catch (error) {
+      Object.assign(org, JSON.parse(before));
+      const back = org.research.find((x) => x.jobId === jobId);
+      const why = error instanceof OrgRuleError && error.code === 'inbox_full'
+        ? `The inbox already has ${ORG_LIMITS.approvals} items, so this report's tool proposals could not be raised. Decide some inbox items, then ask again.`
+        : error instanceof OrgRuleError ? error.message : 'The report could not be recorded.';
+      if (back) attention(back, why);
     }
   }
 }
@@ -348,10 +407,10 @@ export function recordResearch(org: CloudOrg, jobs: readonly CloudJob[], reads: 
 // ---------------------------------------------------------------- views (the game)
 
 /** The inbox as the game reads it in cloud mode: pending first, then the 30 most recent decisions. */
-export function cloudApprovals(org: CloudOrg, revision: number): ApprovalsState {
+export function cloudApprovals(org: CloudOrg, revision: number, storageError?: string): ApprovalsState {
   const pending = org.approvals.filter((a) => a.status === 'pending').sort((a, b) => a.createdAt - b.createdAt);
   const decided = org.approvals.filter((a) => a.status !== 'pending').sort((a, b) => (b.decidedAt ?? 0) - (a.decidedAt ?? 0)).slice(0, 30);
-  return { schemaVersion: 1, revision, items: [...pending, ...decided], pending: pending.length };
+  return { schemaVersion: 1, revision, items: [...pending, ...decided].map((a) => hydrate(org, a)), pending: pending.length, ...(storageError ? { storageError } : {}) };
 }
 
 const reportStatus = (r: CloudResearch, job: CloudJob | undefined): ResearchReportSummary['status'] =>

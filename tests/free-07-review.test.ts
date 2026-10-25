@@ -92,6 +92,23 @@ test('review 2: with a full inbox, cancel and decisions in the same run are stil
   assert.ok(['cancelled'].includes(job(s2, 2).status) || job(s2, 2).stopRequested, 'the cancel took effect');
 });
 
+test('review 2: an unreadable org.json never stops the coordinator; cancel runs and the file is left as it was', async () => {
+  const provider = new FakeProvider();
+  const store = makeStore();
+  const h = harness(store, provider);
+  push(store, intent(1, { kind: 'new_job', job: { id: uuid(1), title: 'Work', prompt: 'Do work', configRevision: 0, confirmPaid: true } } as any));
+  await h.tick();
+  const broken = '{"schemaVersion":1,"nextApproval":1,"nextLesson":1,"approvals":[{"id":"A9","kind":"job_plan"}],"lessons":[],"research":[]}';
+  store.push([{ path: ORG_FILE, content: broken }], 'tampered org');
+  push(store, intent(2, { kind: 'cancel', jobId: uuid(1) } as any), intent(3, { kind: 'lesson_propose', lesson: { text: 'A lesson', scope: 'company' } } as any));
+  h.advance(60_000); await h.tick();
+  const state = await h.state();
+  assert.equal(lastOutcome(state, uuid(100_002)), 'applied', 'cancel still runs');
+  assert.equal(lastOutcome(state, uuid(100_003)), 'rejected', 'organization intents are refused while the file is unreadable');
+  assert.ok(state.orgError, 'the reason is kept for the game');
+  assert.equal(store.commits.at(-1)!.files[ORG_FILE], broken, 'the file is not overwritten');
+});
+
 // ---------------------------------------------------------------- 3. size bound
 
 test('review 3: the largest org the rules allow stays under the reader budget', () => {

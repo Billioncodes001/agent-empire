@@ -189,12 +189,13 @@ test('cloud research: paid confirmation, report imported from the task branch, t
   assert.equal(r.tools.length, 1);
   const tool = state.org.approvals.find((a) => a.kind === 'tool_proposal')!;
   assert.equal(tool.raisedBy, 'research');
-  assert.equal(tool.tool!.url, 'https://cal.com/');
+  assert.equal(cloudApprovals(state.org, 0).items.find((a) => a.id === tool.id)!.tool!.url, 'https://cal.com/', 'the game sees the tool, stored once in its report');
   assert.equal(cloudExecutives(state, state.org, h.now).executives.find((e) => e.role === 'research')!.attention, 1);
   const credits = state.empire.funds;
   const ledger = JSON.stringify(state.ledger);
 
-  push(h.store, decision(3, tool, 'approve'));
+  // The game decides on the item as shown (hydrated with its tool); that is what the fingerprint covers.
+  push(h.store, decision(3, cloudApprovals(state.org, 0).items.find((a) => a.id === tool.id)!, 'approve'));
   h.advance(60_000); await h.tick();
   state = await h.state();
   assert.equal(state.org.research[0].tools[0].decision, 'approved');
@@ -239,7 +240,10 @@ test('cloud org schema: an older snapshot without org.json loads; an empty org i
   raw.approvals[0].kind = 'job_plan';
   assert.throws(() => validateOrg(raw), /not raised in cloud mode/);
   const f = serializeState(initialCloudState(T0, { execution: EXECUTION }));
-  assert.throws(() => parseStateFiles({ ...f, [ORG_FILE]: JSON.stringify(raw) }, T0), /state\/org\.json/);
+  // Review fix: an unreadable org.json is quarantined (reason kept, file untouched), never fatal for the city or jobs.
+  const quarantined = parseStateFiles({ ...f, [ORG_FILE]: JSON.stringify(raw) }, T0).state;
+  assert.match(quarantined.orgError!, /state\/org\.json/);
+  assert.equal(serializeState(quarantined)[ORG_FILE], undefined);
 });
 
 // ---------------------------------------------------------------- matrix and shared rules

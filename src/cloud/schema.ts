@@ -249,6 +249,8 @@ export interface CloudState {
   archivedJobIds: CloudArchivedJobIds;
   /** FREE-07 organization: cloud inbox, lessons, research. */
   org: CloudOrg;
+  /** FREE-07 review: set when state/org.json could not be read; the file is then left untouched. */
+  orgError?: string;
 }
 
 export class SchemaError extends Error {
@@ -572,7 +574,8 @@ export function parseStateFiles(files: StateFiles, now: number): { state: CloudS
     if (text === undefined) throw new SchemaError(file, 'missing; the state repository is not initialized');
     try { raw[key] = JSON.parse(text); } catch { throw new SchemaError(file, 'invalid JSON'); }
   }
-  if (files[ORG_FILE] !== undefined) { try { raw.org = JSON.parse(files[ORG_FILE]); } catch { throw new SchemaError(ORG_FILE, 'invalid JSON'); } }
+  let orgParseError: string | undefined;
+  if (files[ORG_FILE] !== undefined) { try { raw.org = JSON.parse(files[ORG_FILE]); } catch { orgParseError = `${ORG_FILE}: invalid JSON`; } }
   const migrated: string[] = [];
   let version = (raw.meta as any)?.schemaVersion;
   if (!Number.isSafeInteger(version) || version < 1) throw new SchemaError(STATE_FILES.meta, 'missing schemaVersion');
@@ -584,12 +587,18 @@ export function parseStateFiles(files: StateFiles, now: number): { state: CloudS
   }
   const empire = migrateEmpire(raw.empire, now);
   if (empire.migrated) migrated.push('empire version 1→2');
+  // FREE-07 review: an unreadable org.json is quarantined, never fatal. The city, jobs, cancel and shutdown keep working;
+  // the file is left untouched (not overwritten), organization intents are refused, and the game shows the reason.
+  let org = emptyOrg();
+  let orgError: string | undefined;
+  if (orgParseError) orgError = orgParseError;
+  else if (raw.org !== undefined) { try { org = validateOrg(raw.org); } catch (e) { orgError = e instanceof OrgSchemaError ? e.message : 'invalid organization file'; } }
   return {
     state: {
       meta: validateMeta(raw.meta), empire: validateEmpire(empire.empire), jobs: validateJobs(raw.jobs), ledger: validateLedger(raw.ledger),
       journal: validateJournal(raw.journal), heartbeat: validateHeartbeat(raw.heartbeat), processed: validateProcessed(raw.processed),
       archivedJobIds: validateArchivedJobIds(raw.archivedJobIds),
-      org: (() => { try { return raw.org === undefined ? emptyOrg() : validateOrg(raw.org); } catch (e) { throw new SchemaError(ORG_FILE, e instanceof OrgSchemaError ? e.message.replace(`${ORG_FILE}: `, '') : 'invalid organization'); } })(),
+      org, ...(orgError ? { orgError } : {}),
     },
     migrated,
   };
@@ -609,6 +618,6 @@ export function serializeState(state: CloudState): StateFiles {
     [STATE_FILES.processed]: text(state.processed),
     [STATE_FILES.archivedJobIds]: JSON.stringify(state.archivedJobIds) + '\n',
     // FREE-07: an empty organization is not written, so an older Empire gains no commit until it uses one.
-    ...(isEmptyOrg(state.org) ? {} : { [ORG_FILE]: text(state.org) }),
+    ...(state.orgError || isEmptyOrg(state.org) ? {} : { [ORG_FILE]: text(state.org) }),
   };
 }
