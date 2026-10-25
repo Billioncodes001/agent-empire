@@ -746,7 +746,7 @@ export async function runCoordinatorTick(deps: CoordinatorDeps): Promise<TickRep
   let commits = 0;
 
   const phase1 = await updateWithRetry(deps.store, async snapshot => {
-    const parsed = parseStateFiles(stateFilesOf(snapshot), ctx1.now);
+    const parsed = parseStateFiles(stateFilesOf(snapshot), ctx1.now, snapshot.unreadableState);
     migrated = parsed.migrated;
     let state = reconcileStaleDispatches(parsed.state, ctx1);
     // Read-only provider calls run once per tick, before intents, so a review or cancel is judged
@@ -825,7 +825,7 @@ export async function runCoordinatorTick(deps: CoordinatorDeps): Promise<TickRep
   if (stopResults.length || dispatchResults.length || wantDisable) {
     try {
       const phase2 = await updateWithRetry(deps.store, snapshot => {
-        const { state: next } = receipts(parseStateFiles(stateFilesOf(snapshot), ctx2.now).state);
+        const { state: next } = receipts(parseStateFiles(stateFilesOf(snapshot), ctx2.now, snapshot.unreadableState).state);
         if (wantDisable && next.meta.lifecycle.status === 'shutdown' && next.meta.lifecycle.workflow === 'disable_requested') {
           if (workflowDisabled) { next.meta.lifecycle.workflow = 'disabled'; journal(next, ctx2, 'lifecycle', 'Coordinator workflow disabled. Start the Empire from the app to re-enable it.'); }
           else journal(next, ctx2, 'warning', 'The coordinator could not disable its own workflow. The app disables it with your GitHub sign-in; scheduled runs do nothing while shut down.');

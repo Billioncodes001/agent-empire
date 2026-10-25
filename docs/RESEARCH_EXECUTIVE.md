@@ -49,7 +49,11 @@ A report is rejected, and the item shows **Needs attention** with the reason, if
 - `feasibility` or `confidence` has an invalid value;
 - a section is missing or appears twice;
 - a Findings bullet has no source URL;
-- a tool has no https URL.
+- a tool has no https URL;
+- a tool's URL is longer than 500 characters (FREE-07: a deliberate cap, on your own server and in cloud mode alike, so a stored report always stays readable; a tool's home page never needs more);
+- the question, a section or a tool field contains characters that can hide or reorder text: bidi embeddings, overrides and isolates (U+202A–202E, U+2066–2069), Unicode tag characters, C0/C1 controls other than newline and tab, lone surrogates, or other invisible format characters such as a zero-width space. Real-world text stays accepted: emoji ZWJ sequences, the soft hyphen, ZWJ/ZWNJ between letters (Persian, Indic scripts) and emoji newer than the runtime's Unicode data.
+
+The same parser (`src/shared/research-report.ts`) runs on your own server and in the cloud coordinator.
 
 When you retry the task, the report is read again after the new attempt finishes. An accepted report is never re-imported.
 

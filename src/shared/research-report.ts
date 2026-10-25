@@ -7,7 +7,7 @@ import {
   type Confidence, type Feasibility, type ResearchSections, type ToolProposal,
 } from './research.js';
 
-import { hasHiddenChars } from './text-safety.js';
+import { hasDeceptiveChars } from './text-safety.js';
 
 const MAX_TOOLS = 10;
 /** FREE-07 review fix 1: the longest tool URL a report may propose. */
@@ -114,7 +114,7 @@ export function parseResearchReport(artifact: ArtifactResult): ParsedReport {
   }
 
   // FREE-07 review fix 5: a report is shown as text to the CEO; refuse invisible or control characters (newline and tab are fine).
-  if (hasHiddenChars(question) || Object.values(sections).some((s) => hasHiddenChars(s))) return { ok: false, reason: 'The report contains invisible or control characters.' };
+  if (hasDeceptiveChars(question) || Object.values(sections).some((s) => hasDeceptiveChars(s))) return { ok: false, reason: 'The report contains invisible or control characters.' };
   const tools = parseTools(sections.proposedTools);
   if (!Array.isArray(tools)) return tools;
   return { ok: true, question, feasibility: fm.feasibility as Feasibility, confidence: fm.confidence as Confidence, sections, sources: sources.size, tools };
@@ -148,7 +148,7 @@ function parseTools(text: string): ParsedTool[] | { ok: false; reason: string } 
     // FREE-07 review fix 1: stored URLs are bounded (a tool's home page needs no more), never clipped into another link.
     if (url.length > MAX_TOOL_URL) return { ok: false, reason: `Proposed tool "${clip(name, 60)}" has a URL longer than ${MAX_TOOL_URL} characters.` };
     // Review fix 5: text the CEO reads in the inbox must not hide characters.
-    if ([name, licence, enables, risk].some((v) => hasHiddenChars(v))) return { ok: false, reason: `Proposed tool row ${i + 1} contains invisible or control characters.` };
+    if ([name, licence, enables, risk].some((v) => hasDeceptiveChars(v))) return { ok: false, reason: `Proposed tool row ${i + 1} contains invisible or control characters.` };
     if (names.has(name.toLowerCase())) return { ok: false, reason: `Proposed tool "${clip(name, 60)}" is listed twice.` };
     names.add(name.toLowerCase());
     tools.push({ name: clip(name, 120), url, licence: clip(licence, 120), enables: clip(enables), risk: clip(risk) });

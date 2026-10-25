@@ -567,15 +567,16 @@ export function migrateEmpire(value: unknown, now: number): { empire: unknown; m
   return { empire, migrated: true };
 }
 
-export function parseStateFiles(files: StateFiles, now: number): { state: CloudState; migrated: string[] } {
+export function parseStateFiles(files: StateFiles, now: number, unreadable: Record<string, string> = {}): { state: CloudState; migrated: string[] } {
   const raw: Record<string, unknown> = {};
   for (const [key, file] of Object.entries(STATE_FILES)) {
     const text = files[file];
     if (text === undefined) throw new SchemaError(file, 'missing; the state repository is not initialized');
     try { raw[key] = JSON.parse(text); } catch { throw new SchemaError(file, 'invalid JSON'); }
   }
-  let orgParseError: string | undefined;
-  if (files[ORG_FILE] !== undefined) { try { raw.org = JSON.parse(files[ORG_FILE]); } catch { orgParseError = `${ORG_FILE}: invalid JSON`; } }
+  // FREE-07 re-review: the store reports an org.json it could not even fetch (not UTF-8, oversized) as unreadable.
+  let orgParseError: string | undefined = unreadable[ORG_FILE];
+  if (!orgParseError && files[ORG_FILE] !== undefined) { try { raw.org = JSON.parse(files[ORG_FILE]); } catch { orgParseError = `${ORG_FILE}: invalid JSON`; } }
   const migrated: string[] = [];
   let version = (raw.meta as any)?.schemaVersion;
   if (!Number.isSafeInteger(version) || version < 1) throw new SchemaError(STATE_FILES.meta, 'missing schemaVersion');

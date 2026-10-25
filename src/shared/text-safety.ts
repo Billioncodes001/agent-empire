@@ -36,4 +36,29 @@ export function unsafeReason(text: string): string | undefined {
   for (const [re, why] of rules) if (re.test(t)) return why;
   return undefined;
 }
-export const hasDeceptiveChars = (text: string) => hasHiddenChars(text); // stub for the failing-first run
+/** Always refused: bidi embeddings, overrides and isolates, tag characters, lone surrogates, and C0/C1 controls (not \n or \t). */
+const DECEPTIVE = /[‪-‮⁦-⁩\u{E0000}-\u{E007F}\p{Cs}]|[^\P{Cc}\n\t]/u;
+/** Other invisible format characters and separators (zero-width space, word joiner, BOM, LRM/RLM…), and private use. */
+const INVISIBLE = /[\p{Cf}\p{Zl}\p{Zp}\p{Co}]/u;
+/** What a ZWJ or ZWNJ may join: letters, digits, marks (incl. variation selectors), emoji, and unassigned code points. */
+const JOINABLE = /[\p{L}\p{N}\p{M}\p{Extended_Pictographic}\p{Emoji_Modifier}\p{Emoji_Component}\p{Cn}]/u;
+
+/**
+ * FREE-07 re-review: the screen for worker-written research reports (server and cloud). Narrower than hasHiddenChars,
+ * which still guards model-written plans and lessons: it accepts real-world text (emoji ZWJ sequences, the soft hyphen,
+ * Persian/Indic ZWNJ, emoji newer than this runtime's Unicode data) and refuses what can hide or reorder text.
+ */
+export function hasDeceptiveChars(text: string): boolean {
+  const cps = Array.from(text);
+  for (let i = 0; i < cps.length; i++) {
+    const c = cps[i];
+    if (DECEPTIVE.test(c)) return true;
+    if (c === '­') continue; // soft hyphen: a line-break hint
+    if (c === '‌' || c === '‍') {
+      if (i > 0 && i < cps.length - 1 && JOINABLE.test(cps[i - 1]) && JOINABLE.test(cps[i + 1])) continue;
+      return true;
+    }
+    if (INVISIBLE.test(c)) return true;
+  }
+  return false;
+}
