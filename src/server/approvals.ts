@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { APPROVAL_ID_RE, APPROVAL_KIND_LABEL, MAX_APPROVAL_BUDGET_USD, approveHint, type Approval, type ApprovalKind, type ApprovalsState, type ApprovalStatus } from '../shared/approvals.js';
+import { APPROVAL_ID_RE, APPROVAL_KIND_LABEL, MAX_APPROVAL_BUDGET_USD, RAISED_BY, approveHint, type Approval, type ApprovalKind, type ApprovalsState, type ApprovalStatus } from '../shared/approvals.js';
 import type { ConsultancyApproveOptions, ConsultancyJob, ConsultancySnapshot } from '../shared/consultancy.js';
 import { ACTUAL_SPEND_LABEL, EXECUTIVES, basisLabel, fmtDurationRange, fmtUsdRange, type ExecutiveRole } from '../shared/org.js';
 import { ConsultancyError } from './consultancy.js';
@@ -57,7 +57,7 @@ export class ApprovalError extends Error {
   }
 }
 
-const RAISED_BY: Record<ApprovalKind, ExecutiveRole> = { job_plan: 'chief_of_staff', budget_increase: 'finance', external_action: 'marketing_sales', tool_proposal: 'research', chief_proposal: 'chief_of_staff', lesson: 'chief_of_staff' };
+// RAISED_BY is shared with the cloud coordinator (src/shared/approvals.ts, FREE-07).
 
 /**
  * FREE-02: the owner of chief_proposal actions. `check` answers why the action no longer applies (the inbox answers 409

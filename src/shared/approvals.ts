@@ -129,6 +129,33 @@ export const APPROVAL_KIND_LABEL: Record<ApprovalKind, string> = {
 
 export const MAX_APPROVAL_BUDGET_USD = 100_000;
 
+/** Which executive raises each kind (server inbox and cloud coordinator alike). */
+export const RAISED_BY: Record<ApprovalKind, ExecutiveRole> = { job_plan: 'chief_of_staff', budget_increase: 'finance', external_action: 'marketing_sales', tool_proposal: 'research', chief_proposal: 'chief_of_staff', lesson: 'chief_of_staff' };
+
+/** 64-bit FNV-1a over UTF-16 code units, hex. Browser-safe and deterministic; not a security hash. */
+function fnv64(text: string): string {
+  let hash = 0xcbf29ce484222325n;
+  for (let i = 0; i < text.length; i++) { hash ^= BigInt(text.charCodeAt(i)); hash = (hash * 0x100000001b3n) & 0xffffffffffffffffn; }
+  return hash.toString(16).padStart(16, '0');
+}
+
+/**
+ * FREE-07: a fingerprint of everything the CEO is shown about a pending item and that a decision acts on (id, kind,
+ * title, detail, money, the tool, the lesson with its nonce, the chief's proposal, the campaign snapshot). A cloud
+ * decision carries the fingerprint of the item as displayed; the coordinator refuses it if the item changed since, so
+ * a decision can only ever apply to content the CEO saw. It guards against stale views, not forgery: anyone who could
+ * forge an intent can already write the state repository.
+ */
+export function approvalFingerprint(item: Approval): string {
+  const seen = {
+    id: item.id, kind: item.kind, title: item.title, detail: item.detail, jobId: item.jobId, createdAt: item.createdAt,
+    estimate: item.estimate ?? null, spentUsd: item.spentUsd ?? null, approvedBudgetUsd: item.approvedBudgetUsd ?? null,
+    tool: item.tool ?? null, lesson: item.lesson ?? null, proposal: item.proposal ?? null, outreach: item.outreach?.snapshotHash ?? null,
+  };
+  return fnv64(JSON.stringify(seen));
+}
+export const FINGERPRINT_RE = /^[a-f0-9]{16}$/;
+
 export const CLOUD_INBOX_NOTE = "The approval inbox isn't available in cloud mode yet.";
 
 /** How to act on an approval anywhere it is announced. */

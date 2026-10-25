@@ -164,7 +164,7 @@ async function run(browser: Browser, size: { width: number; height: number; touc
       await page.locator('#btn-inbox').evaluate((b) => (b as HTMLButtonElement).click()).catch(() => undefined);
       await modal.waitFor({ timeout: 3000 }).catch(() => undefined);
       const cloudText = (await modal.innerText().catch(() => '')).replace(/\s+/g, ' ');
-      check(`${tag}: cloud mode says the inbox is not available yet`, /The approval inbox isn't available in cloud mode yet\./.test(cloudText), cloudText.slice(0, 120));
+      check(`${tag}: cloud mode (FREE-07) shows the cloud inbox note and the kinds not raised there, with reasons`, /decided in the game; your coordinator applies/.test(cloudText) && /Not raised in cloud mode/.test(cloudText), cloudText.slice(0, 120));
       await page.waitForTimeout(450);
     await page.screenshot({ path: resolve(out, `06-inbox-cloud-${tag}.jpg`), quality: 82 });
       await page.keyboard.press('Escape');

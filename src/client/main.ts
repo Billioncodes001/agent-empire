@@ -136,7 +136,7 @@ office.group.add(executives.group);
 executives.sync(store.org);
 store.on('org', () => executives.sync(store.org));
 // ORG-03: the inbox tray on the founder's desk shows the real pending count (dashes when there is no inbox).
-const syncTray = () => office.inboxTray.setCount(store.cloud || !store.approvals ? null : store.approvals.pending);
+const syncTray = () => office.inboxTray.setCount(!store.approvals ? null : store.approvals.pending);
 store.on('approvals', syncTray);
 store.on('cloud', syncTray);
 syncTray();
@@ -973,7 +973,7 @@ function renderHint() {
   else if (target.kind === 'inbox') {
     const n = pendingApprovals();
     k += `${n}|${!!store.cloud}`;
-    parts = [h('span.title', {}, `📥 CEO inbox${n ? ` · ${n} waiting` : ''}`), store.cloud ? h('span', { style: 'opacity:.75;font-weight:600' }, 'Not in cloud mode yet') : '', key('E', 'Open inbox')];
+    parts = [h('span.title', {}, `📥 CEO inbox${n ? ` · ${n} waiting` : ''}`), store.cloud ? h('span', { style: 'opacity:.75;font-weight:600' }, 'Cloud · decided on the next coordinator run') : '', key('E', 'Open inbox')];
   }
   else if (target.kind === 'executive' && target.role) {
     const e = store.org?.executives.find((x) => x.role === target!.role);
@@ -1543,6 +1543,6 @@ if (saved?.look) {
 }
 
 // Debug handle for quick checks from the console / headless screenshots.
-(window as any).__office = { store, player, camera, workerViews, scene, net, renderer, me, remotes, settings, gallery, hanger, city, empireUI, life, office, executives, traversal };
+(window as any).__office = { store, player, camera, workerViews, scene, net, renderer, me, remotes, settings, gallery, hanger, city, empireUI, life, office, executives, traversal, orgUI: { openExecutiveCard, openInbox } };
 (window as any).__voice = voice;
 (window as any).__sound = sound;

@@ -1,6 +1,6 @@
 # CEO approval inbox
 
-The approval inbox collects every decision that waits for you, the CEO. It runs on your own server. It isn't available in cloud mode yet, and the game says so.
+The approval inbox collects every decision that waits for you, the CEO. It runs on your own server. In cloud mode (FREE-07) the game's inbox shows tool proposals from cloud research and the lessons you write, decided as intents your coordinator applies on its next run; client plans, budget increases, campaign sends and chief proposals are not raised there, and the inbox says why for each (see [team/reports/free-07.md](team/reports/free-07.md)).
 
 ## What lands in the inbox
 
