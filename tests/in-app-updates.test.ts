@@ -474,3 +474,23 @@ test('coordinator: the service commits only after the player accepts, using the 
   assert.equal(gh.files(full)[COORDINATOR_BUNDLE_PATH], bundle);
   assert.equal(svc.state.coordinator?.kind, 'current');
 });
+
+// Device testing (v1.0.0-beta.1, Android emulator): the beta build defaulted to the stable channel, which has no release
+// (releases/latest/download/channel-stable.json is 404 while every release is a pre-release), so "Check for updates" said
+// "You're up to date" and a beta player would never be offered beta.2. A pre-release build now defaults to beta.
+test('service: a pre-release build defaults to the beta channel and is offered the next beta; a saved choice wins', async () => {
+  const files: Record<string, { body: string }> = {};
+  files[RELEASES_API] = { body: listing([{ tag: 'v1.0.0-beta.2', prerelease: true }]) };
+  publish(files, 'beta', '1.0.0-beta.2', 'v1.0.0-beta.2');
+
+  const beta = new UpdateService({ bridge: fakeShell(files, { installedGame: '1.0.0-beta.1' }).bridge, storage: memory(), version: '1.0.0-beta.1' });
+  assert.equal(beta.state.channel, 'beta');
+  await beta.start();
+  beta.stop();
+  assert.equal(beta.state.offer?.game.kind, 'install', 'the next beta is offered');
+
+  const chosen = memory();
+  chosen.set('agent-empire.update.channel', 'stable');
+  assert.equal(new UpdateService({ bridge: null, storage: chosen, version: '1.0.0-beta.1' }).state.channel, 'stable', 'an explicit choice is kept');
+  assert.equal(new UpdateService({ bridge: null, storage: memory(), version: '1.0.0' }).state.channel, 'stable', 'a stable build stays on stable');
+});

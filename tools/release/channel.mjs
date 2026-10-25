@@ -34,7 +34,7 @@ import { fileURLToPath } from 'node:url';
 import { MANIFEST_NAME } from './package-game.mjs';
 import { checkFeed } from './package-windows-installer.mjs';
 import { MAC_ARCHS, NAMES, readBuildInfo } from './assets.mjs';
-import { parseVersion, readVersion, releaseChannel, ROOT, versionCode } from './version.mjs';
+import { parseVersion, readVersion, releaseChannel, ROOT, stableBridge, versionCode } from './version.mjs';
 
 export const COORDINATOR_NAME = NAMES.coordinator;
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -112,7 +112,7 @@ export function planRelease({ assetsDir, infoDir, version }) {
 export function buildChannel({ assetsDir, infoDir, version, channel, repo, publishedAt, notes, config, playPublished = false, root = ROOT }) {
   parseVersion(version);
   if (!['stable', 'beta'].includes(channel)) throw new Error(`Unknown channel ${channel}`);
-  if (channel === 'stable' && releaseChannel(version) !== 'stable') throw new Error(`${version} is a prerelease; it cannot go to the stable channel`);
+  if (channel === 'stable' && releaseChannel(version) !== 'stable' && !stableBridge(version)) throw new Error(`${version} is a prerelease; it cannot go to the stable channel`);
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error(`Repository must be owner/name, got "${repo}"`);
   if (Number.isNaN(Date.parse(publishedAt))) throw new Error(`publishedAt is not a date: ${publishedAt}`);
   const tag = `v${version}`;
@@ -187,7 +187,8 @@ export function generatedArrivals(names) {
 export function writeRelease({ assetsDir, infoDir, version, repo, publishedAt, notes, config, playPublished = false, root = ROOT }) {
   const arrived = generatedArrivals(readdirSync(assetsDir));
   if (arrived.length) throw new Error(arrived.map((n) => `${n} arrived with the build artifacts; only channel.mjs and the signing step create it`).join('; '));
-  const channels = releaseChannel(version) === 'stable' ? ['stable', 'beta'] : ['beta'];
+  // A stable release, or a 1.0.0 pre-release bridging the stable channel (version.mjs stableBridge), writes both files.
+  const channels = releaseChannel(version) === 'stable' || stableBridge(version) ? ['stable', 'beta'] : ['beta'];
   const written = [];
   let doc;
   for (const channel of channels) {

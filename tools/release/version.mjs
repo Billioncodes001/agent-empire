@@ -55,11 +55,24 @@ export function releaseChannel(version) {
   return parseVersion(version).pre ? 'beta' : 'stable';
 }
 
+/**
+ * Until the first stable release (1.0.0) exists, a 1.0.0 pre-release is also the stable channel's release: it publishes
+ * channel-stable.json and is GitHub's "latest" release (so not flagged pre-release). Installed v1.0.0-beta.1 apps default
+ * to the stable channel and read .../releases/latest/download/channel-stable.json; without this that URL is a 404 and
+ * they would never be offered an update (docs/team/reports/device-testing.md). Later pre-releases (1.0.1-beta.1, …)
+ * leave the stable channel to the real stable release.
+ */
+export function stableBridge(version) {
+  const v = parseVersion(version);
+  return Boolean(v.pre) && v.major === 1 && v.minor === 0 && v.patch === 0;
+}
+
 export function versionInfo(version) {
   const v = parseVersion(version);
   const code = versionCode(version);
   return {
     version: v.raw, tag: `v${v.raw}`, prerelease: Boolean(v.pre), channel: releaseChannel(version),
+    stableBridge: stableBridge(version), latest: !v.pre || stableBridge(version),
     androidVersionName: v.raw, androidVersionCode: code,
     iosMarketingVersion: `${v.major}.${v.minor}.${v.patch}`, iosBuildNumber: String(code),
   };
