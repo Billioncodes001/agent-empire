@@ -557,9 +557,9 @@ test('secret names: the game lists names only, has no way to take a value, and s
   assert.match(d.error ?? '', /Secrets: read/);
 });
 
-test('capability matrix: the brain and outreach work in cloud with their limits named; only budget increases are not raised', () => {
+test('capability matrix: the brain and outreach work in cloud with their limits named; only budget increases and architect summaries are not raised', () => {
   assert.deepEqual([...CLOUD_APPROVAL_KINDS].sort(), ['chief_proposal', 'external_action', 'job_plan', 'lesson', 'tool_proposal']);
-  assert.deepEqual(cloudMissingKinds().map((m) => m.kind), ['budget_increase']);
+  assert.deepEqual(cloudMissingKinds().map((m) => m.kind), ['budget_increase', 'architect_summary']);
   for (const f of ['chief_brain', 'outreach', 'job_plan', 'chief_proposal', 'external_action', 'memory'] as const) {
     assert.notEqual(ORG_CAPABILITIES[f].cloud, 'unavailable', f);
     if (ORG_CAPABILITIES[f].cloud !== 'works') assert.ok(ORG_CAPABILITIES[f].reason && cloudGapMessage(f).includes(ORG_CAPABILITIES[f].reason!), f);
