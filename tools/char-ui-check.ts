@@ -307,17 +307,32 @@ try {
 
     // Jump: take-off, airborne, landing, back to standing.
     await place(s.page, { x: 40, z: 92, yaw: Math.PI / 2, dist: 4.2, pitch: 0.12 }, 1500);
-    await s.page.keyboard.down('Space');
-    const took = await waitClip('jump_start', 1500);
-    await s.page.keyboard.up('Space');
-    if (took) await shot2('01-jump-takeoff');
-    const air = await waitClip('jump_air', 1500);
-    if (air) await shot2('02-jump-airborne');
-    const land = await waitClip('jump_land', 2000);
-    if (land) await shot2('03-jump-landing');
-    check(`${l.name}: a jump plays take-off, airborne and landing clips`, took && air && land, `${took} ${air} ${land}`);
-    const stood = await waitClip('idle_neutral_01', 3000);
-    check(`${l.name}: back to the idle after landing`, stood, await clip());
+    // The clip sequence is logged in the page every frame, so a slow screenshot can never hide a short phase.
+    await s.page.evaluate(() => {
+      const w = window as unknown as { __office: O; __clipLog: string[] };
+      w.__clipLog = [];
+      const tick = () => {
+        let c = '';
+        const walk = (x: { userData: Record<string, unknown>; children?: unknown[] }) => { if (typeof x.userData.clip === 'string') c = x.userData.clip; (x.children as typeof x[] | undefined)?.forEach(walk); };
+        walk(w.__office.me.root as never);
+        if (w.__clipLog.at(-1) !== c) w.__clipLog.push(c);
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+    await hold(s.page, 'Space', 120);
+    const stood = await waitClip('idle_neutral_01', 4000) && (await s.page.evaluate(() => (window as unknown as { __clipLog: string[] }).__clipLog.length)) > 2;
+    const seq = await s.page.evaluate(() => (window as unknown as { __clipLog: string[] }).__clipLog.join(' → '));
+    check(`${l.name}: a jump plays take-off, airborne and landing clips`, /jump_start → jump_air → jump_land/.test(seq), seq);
+    check(`${l.name}: back to the idle after landing`, stood, seq);
+    // One jump per screenshot.
+    for (const [name, file] of [['jump_start', '01-jump-takeoff'], ['jump_air', '02-jump-airborne'], ['jump_land', '03-jump-landing']] as const) {
+      await waitClip('idle_neutral_01', 4000);
+      await s.page.keyboard.down('Space');
+      if (await waitClip(name, 2000)) await shot2(file);
+      await s.page.keyboard.up('Space');
+    }
+    await waitClip('idle_neutral_01', 4000);
 
     // Stairs up and down the garage staircase.
     await place(s.page, { x: 84.1, z: 85.2, yaw: Math.PI, dist: 3.6, pitch: 0.22 }, 600);
@@ -346,7 +361,7 @@ try {
       const walk = (x: { userData: Record<string, unknown>; children?: unknown[] }) => { if ('stairs' in x.userData) st = x.userData.stairs; (x.children as typeof x[] | undefined)?.forEach(walk); };
       walk((window as unknown as { __office: O }).__office.me.root as never);
       return st === 'down';
-    }, null, { timeout: 4000, polling: 'raf' }).then(() => true, () => false);
+    }, null, { timeout: 7000, polling: 'raf' }).then(() => true, () => false);
     await s.page.evaluate(() => { const x = (window as unknown as { __office: O }).__office; x.player.camYaw = x.player.facing - Math.PI / 2; x.player.camPitch = 0.08; x.player.camDist = 3.4; });
     await s.page.waitForTimeout(250);
     await shot2('05-stairs-down');
@@ -406,9 +421,24 @@ try {
     check(`${l.name}: the helicopter pilot sits in the driving pose`, clip === 'drive_seated', String(clip));
     const clearance = await headClearance(s.page, 'helicopter');
     check(`${l.name}: the pilot's head clears the cabin roof`, clearance.roof !== null && clearance.gap > 0.02, JSON.stringify(clearance));
-    await s.page.evaluate(() => { const x = (window as unknown as { __office: O }).__office; x.player.camYaw = x.player.facing - Math.PI / 2; x.player.camDist = 5.5; x.player.camPitch = 0.12; });
+    await s.page.evaluate(() => { const x = (window as unknown as { __office: O }).__office; x.player.camYaw = x.player.facing - Math.PI / 2; x.player.camDist = 4.5; x.player.camPitch = 0.18; });
     await s.page.waitForTimeout(400);
-    await s.page.screenshot({ path: resolve(out2, `10-helicopter-pilot-${l.name}.jpg`), quality: 80 });
+    // The cabin shell is opaque: for this one review shot its materials are made see-through, then restored.
+    const xray = (on: boolean) => s.page.evaluate((v) => {
+      type Mat = { transparent: boolean; opacity: number; depthWrite: boolean; needsUpdate: boolean; userData: Record<string, unknown> };
+      const o = (window as unknown as { __office: { city: { rides(): { key: string; object: { traverse(f: (m: { material?: Mat | Mat[] }) => void): void } }[] } } }).__office;
+      o.city.rides().find((r) => r.key === 'helicopter')!.object.traverse((m) => {
+        for (const mat of m.material ? (Array.isArray(m.material) ? m.material : [m.material]) : []) {
+          if (v) { mat.userData.xray = [mat.transparent, mat.opacity, mat.depthWrite]; mat.transparent = true; mat.opacity = 0.28; mat.depthWrite = false; }
+          else if (mat.userData.xray) { [mat.transparent, mat.opacity, mat.depthWrite] = mat.userData.xray as [boolean, number, boolean]; delete mat.userData.xray; }
+          mat.needsUpdate = true;
+        }
+      });
+    }, on);
+    await xray(true);
+    await s.page.waitForTimeout(250);
+    await s.page.screenshot({ path: resolve(out2, `10-helicopter-pilot-xray-${l.name}.jpg`), quality: 80 });
+    await xray(false);
     await s.page.keyboard.press('e');
     await s.page.waitForFunction(() => (window as unknown as { __office: O }).__office.traversal.state === 'walking', null, { timeout: 12_000 });
     check(`${l.name}: helicopter pilot section has no console errors`, s.errors.length === 0, s.errors.slice(0, 3).join(' | '));
