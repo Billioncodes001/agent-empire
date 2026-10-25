@@ -80,7 +80,17 @@ const stage = path.join(work, 'dmg');
 rmSync(stage, { recursive: true, force: true }); mkdirSync(stage);
 run('ditto', [app, path.join(stage, 'Agent Empire.app')]);
 symlinkSync('/Applications', path.join(stage, 'Applications'));
-run('hdiutil', ['create', '-volname', 'Agent Empire', '-srcfolder', stage, '-ov', '-format', 'UDZO', dmg]);
+// hdiutil on hosted macOS runners intermittently fails "Resource busy" while background scanning holds the staged
+// folder; retry a few times with a pause instead of failing the release.
+for (let attempt = 1; ; attempt++) {
+  try { run('hdiutil', ['create', '-volname', 'Agent Empire', '-srcfolder', stage, '-ov', '-format', 'UDZO', dmg]); break; }
+  catch (error) {
+    if (attempt >= 5) throw error;
+    console.warn(`hdiutil create failed (attempt ${attempt} of 5); retrying in ${attempt * 10} s`);
+    rmSync(dmg, { force: true });
+    execFileSync('sleep', [String(attempt * 10)]);
+  }
+}
 if (signed) run('codesign', ['--sign', identity, ...(env.APPLE_KEYCHAIN ? ['--keychain', env.APPLE_KEYCHAIN] : []), '--timestamp', dmg]);
 for (const file of signed ? [zip, dmg] : [dmg]) {
   const sha = createHash('sha256').update(readFileSync(file)).digest('hex');
