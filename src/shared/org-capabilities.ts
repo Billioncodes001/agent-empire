@@ -20,7 +20,7 @@ export interface OrgCapability {
 }
 
 export type OrgFeature =
-  | 'inbox' | 'job_plan' | 'budget_increase' | 'external_action' | 'tool_proposal' | 'chief_proposal' | 'lesson'
+  | 'inbox' | 'job_plan' | 'budget_increase' | 'external_action' | 'tool_proposal' | 'chief_proposal' | 'lesson' | 'architect_summary'
   | 'executives' | 'chief_brain' | 'research' | 'outreach' | 'memory' | 'notifications' | 'founder_desk';
 
 export const ORG_CAPABILITIES: Record<OrgFeature, OrgCapability> = {
@@ -29,7 +29,7 @@ export const ORG_CAPABILITIES: Record<OrgFeature, OrgCapability> = {
     local: 'Every kind of item, decided in the game, on the founder desk or in Telegram.',
     cloud: 'partial',
     cloudSummary: 'Tool proposals and lessons are decided in the game; your coordinator applies each decision on its next run.',
-    reason: 'Client plans, budget increases, campaign sends and chief proposals are never raised in cloud mode (see each kind).',
+    reason: 'Client plans, budget increases, campaign sends, chief proposals and city architect summaries are never raised in cloud mode (see each kind).',
   },
   job_plan: {
     label: 'Client plans',
@@ -66,6 +66,13 @@ export const ORG_CAPABILITIES: Record<OrgFeature, OrgCapability> = {
     cloud: 'unavailable',
     cloudSummary: 'Not raised.',
     reason: 'Only the chief’s model writes them, and the chief has no model in cloud mode (see Chief’s planning brain).',
+  },
+  architect_summary: {
+    label: 'City architect summaries',
+    local: 'One per city architect run on a server install; keep the changes or revert that day.',
+    cloud: 'unavailable',
+    cloudSummary: 'Not raised: the city architect runs only on a server install.',
+    reason: 'The architect edits the city on your office host while you are away; cloud mode has no host to run it (see Settings › Let the city grow while you are away on a server install).',
   },
   lesson: {
     label: 'Lessons',
@@ -137,4 +144,4 @@ export function cloudGapMessage(feature: OrgFeature): string {
 
 /** Inbox kinds that never appear in cloud mode, each with its reason (the inbox lists them). */
 export const cloudMissingKinds = (): { kind: ApprovalKind; message: string }[] =>
-  (['job_plan', 'budget_increase', 'external_action', 'chief_proposal'] as const).map((kind) => ({ kind, message: cloudGapMessage(kind) }));
+  (['job_plan', 'budget_increase', 'external_action', 'chief_proposal', 'architect_summary'] as const).map((kind) => ({ kind, message: cloudGapMessage(kind) }));
