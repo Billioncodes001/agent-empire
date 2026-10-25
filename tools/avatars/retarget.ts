@@ -67,6 +67,8 @@ export interface ClipSpec {
   shift?: number;
   /** Plant each ankle where the source's is (scaled), default true. Off for seated clips whose feet the game places. */
   plant?: boolean;
+  /** Share (0–1) of the source's arm movement kept, relative to the standing idle (default: all of it). */
+  calm?: number;
   /** Sample rate before key reduction. */
   fps?: number;
 }
@@ -91,6 +93,8 @@ function facing(left: THREE.Object3D, right: THREE.Object3D): THREE.Vector3 {
   const r = right.getWorldPosition(new THREE.Vector3()).sub(left.getWorldPosition(new THREE.Vector3()));
   return new THREE.Vector3(0, 1, 0).cross(r).setY(0).normalize();
 }
+const ARM = /^Bip01_[LR]_(Clavicle|UpperArm|Forearm|Hand)$/;
+const IDENTITY = new THREE.Quaternion();
 /** Largest horizontal hip shift (m) kept from a source clip; anything beyond would be root travel. */
 export const MAX_SHIFT = 0.3;
 /** Moves the ankle to world point `goal` by bending thigh and calf (CCD), keeping the foot's world rotation. */
@@ -188,7 +192,10 @@ export function retarget(source: GLTF, sourceIdle: string, target: GLTF, targetI
       for (const b of dstOrder) {
         if (map[b.name]) {
           // World delta from the source reference, turned into the target's facing, applied to the target reference.
-          q.copy(R).multiply(sMap(b.name).getWorldQuaternion(parentQ)).multiply(sRefInv.get(b.name)!).multiply(Rinv).multiply(tRefWorld.get(b.name)!);
+          q.copy(R).multiply(sMap(b.name).getWorldQuaternion(parentQ)).multiply(sRefInv.get(b.name)!).multiply(Rinv);
+          // Calmer arms: only part of the source's arm swing is kept (business clothes, not a stunt).
+          if (spec.calm !== undefined && ARM.test(b.name)) q.copy(IDENTITY.clone().slerp(q, spec.calm));
+          q.multiply(tRefWorld.get(b.name)!);
           b.parent!.getWorldQuaternion(parentQ);
           b.quaternion.copy(parentQ.invert().multiply(q)).normalize();
         } else b.quaternion.copy(tRefLocal.get(b.name)!);

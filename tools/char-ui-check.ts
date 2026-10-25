@@ -13,6 +13,10 @@ const base = process.env.FIXTURE_URL || 'http://localhost:5071/';
 if (/:4610\b/.test(base)) throw new Error('Refusing the protected 4610 session; use the UI fixture.');
 const out = resolve(import.meta.dirname, '../docs/team/reports/char-01');
 mkdirSync(out, { recursive: true });
+/** CHAR-02 states (jump phases, stairs, car seat) are saved to their own folder. CHAR_ONLY=char02 runs only those. */
+const out2 = resolve(import.meta.dirname, '../docs/team/reports/char-02');
+mkdirSync(out2, { recursive: true });
+const only = process.env.CHAR_ONLY;
 
 const results: { name: string; ok: boolean; detail: string }[] = [];
 const check = (name: string, ok: boolean, detail = '') => {
@@ -80,13 +84,21 @@ const motion = (page: Page) => page.evaluate(() => {
   walk(x.me.root as never);
   return m;
 });
+/** CHAR-02: a value the founder's Human records in userData (clip, jump, stairs). */
+const humanData = (page: Page, key: string) => page.evaluate((k) => {
+  const x = (window as unknown as { __office: O }).__office;
+  let v: unknown;
+  const walk = (n: { userData: Record<string, unknown>; children?: unknown[] }) => { if (k in n.userData) v = n.userData[k]; (n.children as typeof n[] | undefined)?.forEach(walk); };
+  walk(x.me.root as never);
+  return v as string | null | undefined;
+}, key);
 const state = (page: Page) => o(page, (x) => ({ x: x.player.pos.x, y: x.player.pos.y, z: x.player.pos.z, speed: x.player.speed, driving: x.player.driving, traversal: x.traversal.state }));
 async function hold(page: Page, key: string, ms: number) { await page.keyboard.down(key); await page.waitForTimeout(ms); await page.keyboard.up(key); }
 
 const browser = await chromium.launch({ channel: 'chrome', headless: true, args: ['--enable-webgl', '--ignore-gpu-blocklist', '--use-angle=metal'] });
 try {
   // ---------------------------------------------------------------- A. Desktop 1440x900: collisions and animation audit
-  {
+  if (only !== "char02") {
     const s = await open(browser, { width: 1440, height: 900, touch: false, pad: true });
     await enterGame(s.page);
     // Shot 36: the sedan standing on the garage roof (the state the device tester reached). It must be solid up there.
@@ -177,7 +189,7 @@ try {
     { name: 'phone-667x375', width: 667, height: 375 },
     { name: 'tablet-1024x768', width: 1024, height: 768 },
   ];
-  for (const l of layouts) {
+  for (const l of only === "char02" ? [] : layouts) {
     const s = await open(browser, { width: l.width, height: l.height, touch: true, reducedMotion: l.name === 'phone-667x375', saveData: l.name === 'phone-667x375' });
     await enterGame(s.page);
     await place(s.page, { x: 40, z: 92, yaw: Math.PI / 2, dist: 4.6, pitch: 0.2 }, 1200);
@@ -221,7 +233,7 @@ try {
   }
 
   // ---------------------------------------------------------------- C. 375 px portrait asks to rotate
-  {
+  if (only !== "char02") {
     const s = await open(browser, { width: 375, height: 812, touch: true });
     await s.page.waitForTimeout(4000);
     const hint = await s.page.evaluate(() => { const e = document.querySelector('.rotate-hint'); return !!e && getComputedStyle(e).display !== 'none'; });
@@ -229,6 +241,115 @@ try {
     const overflow = await s.page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
     check('375x812: no horizontal overflow', !overflow);
     await shot(s.page, '14-portrait-rotate-375x812');
+    await s.context.close();
+  }
+  // ---------------------------------------------------------------- D. CHAR-02: CC0 clips at 1440x900 and 874x402
+  for (const l of [{ name: '1440x900', width: 1440, height: 900, touch: false }, { name: '874x402', width: 874, height: 402, touch: true }]) {
+    const s = await open(browser, { width: l.width, height: l.height, touch: l.touch });
+    const extraRequests: string[] = [];
+    s.page.on('response', (r) => { if (/clips-extra-(male|female)\.glb/.test(r.url())) extraRequests.push(`${r.status()} ${new URL(r.url()).pathname}`); });
+    await enterGame(s.page);
+    await s.page.waitForFunction(() => {
+      let ok = false;
+      const walk = (n: { userData: Record<string, unknown>; children?: unknown[] }) => { if (Array.isArray(n.userData.extraClips)) ok = true; (n.children as typeof n[] | undefined)?.forEach(walk); };
+      walk((window as unknown as { __office: O }).__office.me.root as never);
+      return ok;
+    }, null, { timeout: 30_000 });
+    check(`${l.name}: the founder's extra clips loaded lazily (one small file per body)`, extraRequests.length >= 1 && extraRequests.every((r) => r.startsWith('200')), extraRequests.join(', '));
+    const clip = () => humanData(s.page, 'clip');
+    const shot2 = (name: string) => s.page.screenshot({ path: resolve(out2, `${name}-${l.name}.jpg`), quality: 80 });
+    const waitClip = (name: string, timeout = 3000) => s.page.waitForFunction((n) => {
+      let c = '';
+      const walk = (x: { userData: Record<string, unknown>; children?: unknown[] }) => { if (typeof x.userData.clip === 'string') c = x.userData.clip; (x.children as typeof x[] | undefined)?.forEach(walk); };
+      walk((window as unknown as { __office: O }).__office.me.root as never);
+      return c === n;
+    }, name, { timeout, polling: 'raf' }).then(() => true, () => false);
+
+    // Jump: take-off, airborne, landing, back to standing.
+    await place(s.page, { x: 40, z: 92, yaw: Math.PI / 2, dist: 4.2, pitch: 0.12 }, 1500);
+    await s.page.keyboard.down('Space');
+    const took = await waitClip('jump_start', 1500);
+    await s.page.keyboard.up('Space');
+    if (took) await shot2('01-jump-takeoff');
+    const air = await waitClip('jump_air', 1500);
+    if (air) await shot2('02-jump-airborne');
+    const land = await waitClip('jump_land', 2000);
+    if (land) await shot2('03-jump-landing');
+    check(`${l.name}: a jump plays take-off, airborne and landing clips`, took && air && land, `${took} ${air} ${land}`);
+    const stood = await waitClip('idle_neutral_01', 3000);
+    check(`${l.name}: back to the idle after landing`, stood, await clip());
+
+    // Stairs up and down the garage staircase.
+    await place(s.page, { x: 84.1, z: 85.2, yaw: Math.PI, dist: 3.6, pitch: 0.22 }, 600);
+    await s.page.keyboard.down('ArrowUp');
+    const up = await s.page.waitForFunction(() => {
+      let st: unknown = null;
+      const walk = (x: { userData: Record<string, unknown>; children?: unknown[] }) => { if ('stairs' in x.userData) st = x.userData.stairs; (x.children as typeof x[] | undefined)?.forEach(walk); };
+      walk((window as unknown as { __office: O }).__office.me.root as never);
+      return st === 'up';
+    }, null, { timeout: 4000, polling: 'raf' }).then(() => true, () => false);
+    await s.page.evaluate(() => { const x = (window as unknown as { __office: O }).__office; x.player.camYaw = x.player.facing - Math.PI / 2; x.player.camPitch = 0.08; x.player.camDist = 3.4; });
+    await s.page.waitForTimeout(250);
+    await shot2('04-stairs-up');
+    check(`${l.name}: climbing the stairs is the stairs-up state on the stride clip`, up && (await clip()) === 'walk_neutral', `${up} ${await clip()}`);
+    await s.page.waitForTimeout(900);
+    await s.page.keyboard.up('ArrowUp');
+    await s.page.waitForTimeout(400);
+    // Turn round and walk down.
+    await s.page.evaluate(() => { const x = (window as unknown as { __office: O }).__office; x.player.facing += Math.PI; x.player.camYaw = x.player.facing - Math.PI; x.player.updateCamera(true); });
+    await s.page.keyboard.down('ArrowDown');
+    await s.page.waitForTimeout(150);
+    await s.page.keyboard.up('ArrowDown');
+    await s.page.keyboard.down('ArrowUp');
+    const down = await s.page.waitForFunction(() => {
+      let st: unknown = null;
+      const walk = (x: { userData: Record<string, unknown>; children?: unknown[] }) => { if ('stairs' in x.userData) st = x.userData.stairs; (x.children as typeof x[] | undefined)?.forEach(walk); };
+      walk((window as unknown as { __office: O }).__office.me.root as never);
+      return st === 'down';
+    }, null, { timeout: 4000, polling: 'raf' }).then(() => true, () => false);
+    await s.page.evaluate(() => { const x = (window as unknown as { __office: O }).__office; x.player.camYaw = x.player.facing - Math.PI / 2; x.player.camPitch = 0.08; x.player.camDist = 3.4; });
+    await s.page.waitForTimeout(250);
+    await shot2('05-stairs-down');
+    await s.page.keyboard.up('ArrowUp');
+    check(`${l.name}: walking down the stairs is the stairs-down state`, down, String(await humanData(s.page, 'stairs')));
+
+    // Car: get in (Rocketbox side sit), the CC0 driving seat, get out.
+    await place(s.page, { x: 3.2, z: 45.2, yaw: Math.PI / 2, dist: 5, pitch: 0.22 }, 900);
+    await s.page.keyboard.press('e');
+    await s.page.waitForTimeout(1700);
+    await shot2('06-car-get-in');
+    await s.page.waitForFunction(() => (window as unknown as { __office: O }).__office.traversal.state === 'driving', null, { timeout: 10_000 });
+    await s.page.waitForTimeout(700);
+    await s.page.evaluate(() => { const x = (window as unknown as { __office: O }).__office; x.player.camYaw = x.player.facing - Math.PI / 2; x.player.camDist = 3.4; x.player.camPitch = 0.28; });
+    await s.page.waitForTimeout(300);
+    await shot2('07-car-seat-driving');
+    check(`${l.name}: the car seat plays the driving pose`, (await clip()) === 'drive_seated', await clip());
+    await s.page.keyboard.press('e');
+    await s.page.waitForTimeout(900);
+    await shot2('08-car-get-out');
+    await s.page.waitForFunction(() => (window as unknown as { __office: O }).__office.traversal.state === 'walking', null, { timeout: 10_000 });
+    check(`${l.name}: console has no errors`, s.errors.length === 0, s.errors.slice(0, 3).join(' | '));
+    await s.context.close();
+  }
+
+  // ---------------------------------------------------------------- E. CHAR-02 reduced motion and Save-Data
+  for (const v of [{ name: 'reduced-motion', reducedMotion: true, saveData: false }, { name: 'save-data', reducedMotion: false, saveData: true }]) {
+    const s = await open(browser, { width: 874, height: 402, touch: true, reducedMotion: v.reducedMotion, saveData: v.saveData });
+    const extraRequests: string[] = [];
+    s.page.on('request', (r) => { if (/clips-extra-/.test(r.url())) extraRequests.push(r.url()); });
+    await enterGame(s.page);
+    await place(s.page, { x: 40, z: 92, yaw: Math.PI / 2, dist: 4.2, pitch: 0.12 }, 2500);
+    const seen = new Set<string>();
+    await s.page.keyboard.down('Space');
+    for (let i = 0; i < 40; i++) { seen.add(String(await humanData(s.page, 'clip'))); await s.page.waitForTimeout(30); }
+    await s.page.keyboard.up('Space');
+    if (v.reducedMotion) {
+      check('reduced motion: a jump keeps the calm held frame, no wide-armed clips', seen.has('airborne_flight') && ![...seen].some((c) => c.startsWith('jump_')), [...seen].join(','));
+      await s.page.screenshot({ path: resolve(out2, '09-jump-reduced-motion-874x402.jpg'), quality: 80 });
+    } else {
+      check('Save-Data: the extra clips are not downloaded and the jump falls back', extraRequests.length === 0 && seen.has('airborne_flight'), `${extraRequests.length} requests; ${[...seen].join(',')}`);
+    }
+    check(`${v.name}: console has no errors`, s.errors.length === 0, s.errors.slice(0, 3).join(' | '));
     await s.context.close();
   }
 } finally {
