@@ -52,7 +52,7 @@ export const ORG_CAPABILITIES: Record<OrgFeature, OrgCapability> = {
     local: 'Jordan raises the exact message and every recipient; approving sends it over SMTP.',
     cloud: 'unavailable',
     cloudSummary: 'Not raised: outreach does not run in cloud mode.',
-    reason: 'See Outreach.',
+    reason: 'A campaign send is email over your SMTP server, paced and capped per day; the cloud coordinator holds no SMTP password and runs only every 15–60 minutes (see Email outreach).',
   },
   tool_proposal: {
     label: 'Tool proposals',
