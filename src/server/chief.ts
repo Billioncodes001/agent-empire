@@ -43,6 +43,8 @@ import { MAX_EVIDENCE, extractJson, inputTokenBound, parseLessonDraft, parsePlan
 export { extractJson, inputTokenBound, parseLessonDraft, parsePlan, parseReview, parseStallProposal, planMessages, reviewMessages, stallMessages, type ParsedPlan, type ParsedReview };
 
 const FILE = 'chief.json';
+/** CITY-10 review 6: the architect spends from the same API key under its own, separate caps. */
+const ARCHITECT_CAP_NOTE = ' The city architect has its own premium cap on the same API key (Settings › City architect), counted separately.';
 const MAX_PENDING_CALLS = 12;
 const MAX_PLANS = 60;
 const MAX_REVIEWS = 200;
@@ -279,7 +281,7 @@ export class ChiefBrain {
     const spent = this.spentToday();
     const paused = spent >= s.dailyCapUsd;
     return { kind: 'premium', day, spentUsd: Math.round(spent * 1e4) / 1e4, capUsd: s.dailyCapUsd, paused,
-      note: paused ? `Paused at the daily cap (${money(s.dailyCapUsd)}). Estimated from your configured price; never city credits.` : `Estimated ${money(spent)} of ${money(s.dailyCapUsd)} today, from your configured price. Separate from city credits and worker spend.` };
+      note: `${paused ? `Paused at the daily cap (${money(s.dailyCapUsd)}). Estimated from your configured price; never city credits.` : `Estimated ${money(spent)} of ${money(s.dailyCapUsd)} today, from your configured price. Separate from city credits and worker spend.`}${ARCHITECT_CAP_NOTE}` };
   }
 
   state(): ChiefState {

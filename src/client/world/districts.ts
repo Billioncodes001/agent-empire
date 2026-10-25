@@ -312,7 +312,7 @@ export function buildDistricts(parent: THREE.Group) {
   const suffix = cityTextureSuffix();
   const loader = new GLTFLoader();
   const textureLoader = new THREE.TextureLoader();
-  Promise.all(KITS.map(async (kit) => {
+  const kitsLoaded: Promise<boolean> = Promise.all(KITS.map(async (kit) => {
     const [gltf, map] = await Promise.all([loader.loadAsync(`/models/city/${kit}.glb`), textureLoader.loadAsync(`/models/city/${kit}${suffix}.webp`)]);
     map.flipY = false;
     map.colorSpace = THREE.SRGBColorSpace;
@@ -332,7 +332,10 @@ export function buildDistricts(parent: THREE.Group) {
     instance(layout.placements);
     ready = true;
     placeGarageCars();
-  }, (e) => { failed = true; console.warn('City district kits unavailable', e); });
+    return true;
+  }, (e) => { failed = true; console.warn('City district kits unavailable', e); return false; });
+  /** CITY-10: an extra interaction hint (the architect's additions), asked when nothing of the district applies. */
+  let extraHint: ((p: THREE.Vector3) => string) | undefined;
 
   const near = (a: { x: number; z: number }, p: { x: number; z: number }, r: number) => Math.hypot(a.x - p.x, a.z - p.z) < r;
   return {
@@ -420,9 +423,13 @@ export function buildDistricts(parent: THREE.Group) {
         return city.plots.includes(plot.id) ? `${plot.name} · owned` : `${key} ${plot.name} · ${plot.cost.toLocaleString('en-US')} city credits`;
       }
       if (near(door, p, 5)) return `${GARAGE.name} · walk or drive through the roller door`;
-      return '';
+      return extraHint?.(p) ?? '';
     },
     footprint,
+    /** CITY-10: a loaded kit model (undefined until the kits are in), and whether they loaded. */
+    template: (kit: string, model: string) => templates.get(`${kit}/${model}`),
+    kitsLoaded,
+    setExtraHint(fn: (p: THREE.Vector3) => string) { extraHint = fn; },
   };
 }
 export type Districts = ReturnType<typeof buildDistricts>;
