@@ -6,7 +6,7 @@ import { normaliseHost } from '../endpoint';
 import type { AppPlatform } from '../native';
 
 export type LoginError =
-  | 'empty_host' | 'bad_host' | 'has_path' | 'https_required' | 'https_required_android' | 'empty_password'
+  | 'empty_host' | 'bad_host' | 'has_path' | 'https_required' | 'https_required_android' | 'https_required_android_debug' | 'empty_password'
   | 'unreachable' | 'not_empire' | 'wrong_password' | 'rate_limited' | 'too_many_devices' | 'server' | 'bad_response';
 
 export const LOGIN_MESSAGES: Record<LoginError, string> = {
@@ -14,6 +14,7 @@ export const LOGIN_MESSAGES: Record<LoginError, string> = {
   bad_host: 'That doesn’t look like a server address.',
   has_path: 'Enter only the server address, without a path, query or password.',
   https_required: 'The server must use HTTPS. Only this device’s own address (localhost) may use http.',
+  https_required_android_debug: 'Development builds of the Android app allow http only for 10.0.2.2, 127.0.0.1 and localhost. Use one of those or an https:// address.',
   https_required_android: 'Release builds of the Android app connect over HTTPS only, even to a server on this network or computer. Enter an https:// address.',
   empty_password: 'Enter the office password.',
   unreachable: 'Can’t reach that server. Check the address, your connection, and that its HTTPS certificate is valid.',
@@ -33,6 +34,8 @@ export class LoginFailure extends Error {
 }
 
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
+/** The debug Android shell's http hosts (ServerPolicy.DEBUG_HTTP_HOSTS). */
+const ANDROID_DEBUG_HTTP = new Set(['10.0.2.2', '127.0.0.1', 'localhost']);
 
 /** Who is asking: the shell's platform, and whether an Android shell is a debuggable build (window.AGENT_EMPIRE_APP.devBuild). */
 export interface AddressContext {
@@ -62,6 +65,7 @@ export function parseServerAddress(input: string, opts: AddressContext = {}): { 
   if (url.protocol === 'http:') {
     const android = opts.platform === 'android';
     if (android && !opts.devBuild) return { ok: false, error: 'https_required_android' };
+    if (android && !ANDROID_DEBUG_HTTP.has(url.hostname)) return { ok: false, error: LOOPBACK.has(url.hostname) ? 'https_required_android_debug' : 'https_required' };
     if (!LOOPBACK.has(url.hostname) && !(android && url.hostname === '10.0.2.2')) return { ok: false, error: 'https_required' };
   }
   const host = normaliseHost(url.origin);

@@ -323,6 +323,10 @@ test('server address: a release Android build says plainly that it needs HTTPS (
     assert.deepEqual(parseServerAddress(address, { platform: 'android' }), { ok: false, error: 'https_required_android' }, address);
   assert.deepEqual(parseServerAddress('https://city.example.com', { platform: 'android' }), { ok: true, host: 'https://city.example.com' });
   assert.deepEqual(parseServerAddress('http://localhost:4707', { platform: 'android', devBuild: true }), { ok: true, host: 'http://localhost:4707' }, 'debug builds keep their local test hosts');
+  // The debug shell's ServerPolicy allows http only for 10.0.2.2, 127.0.0.1 and localhost; [::1] gets its own message.
+  assert.deepEqual(parseServerAddress('http://[::1]:4707', { platform: 'android', devBuild: true }), { ok: false, error: 'https_required_android_debug' });
+  assert.match(new LoginFailure('https_required_android_debug').message, /10\.0\.2\.2, 127\.0\.0\.1 and localhost/);
+  assert.deepEqual(parseServerAddress('http://[::1]:4707'), { ok: true, host: 'http://[::1]:4707' }, 'browsers keep [::1]');
   const android = new LoginFailure('https_required_android').message;
   assert.match(android, /HTTPS/);
   assert.match(android, /release/i);
