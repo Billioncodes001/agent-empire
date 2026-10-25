@@ -239,7 +239,7 @@ test('move and remove: unknown ids and anchors are refused; ids are never reused
 test('undo one change and revert a run restore the exact previous world; a stale undo is refused', () => {
   const first = add(emptyWorld(), [
     { op: 'place', ...lotPlacement('flora/tree-round', 'harbour-works-yard'), reason: 'Shade' },
-    { op: 'place', ...lotPlacement('streets/light-square', 'harbour-works-yard', 8), reason: 'Light' },
+    { op: 'place', ...lotPlacement('streets/light-square', 'harbour-works-yard', 10), reason: 'Light' },
   ]);
   const second = add(first.doc, [{ op: 'move', id: 'W1', x: first.doc.additions[0].x + 4, z: first.doc.additions[0].z, yaw: 0, reason: 'Spread out' }], { ...META, runId: 'R2' });
   // Undo the place of W1 while the later move stands: refused.

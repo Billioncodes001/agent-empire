@@ -13,7 +13,7 @@ import { LESSON_DECISION_NOTE, SOURCE_LABEL, scopeText } from '../../shared/memo
 // a decision here is the same decision as on the founder desk or in Telegram.
 
 const usd = (n: number) => `$${n.toFixed(2)}`;
-const KIND_ICON: Record<Approval['kind'], string> = { job_plan: '📄', budget_increase: '💵', external_action: '✉️', tool_proposal: '🧰', chief_proposal: '🧭', lesson: '📘' };
+const KIND_ICON: Record<Approval['kind'], string> = { job_plan: '📄', budget_increase: '💵', external_action: '✉️', tool_proposal: '🧰', chief_proposal: '🧭', lesson: '📘', architect_summary: '🏗️' };
 
 /** FREE-02: who wrote it, honestly. Model-backed items are proposals; everything else is computed from real state. */
 function raisedTag(item: Approval): HTMLElement {
