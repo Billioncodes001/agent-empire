@@ -1,9 +1,10 @@
 // Packs the built game (dist/public) as the over-the-air game bundle (docs/team/RELEASE_PLAN.md, step 2):
 //   agent-empire-game-<version>.zip   deterministic: the same build always gives the same bytes
 //   game-manifest.json                version, sha256 and size of the zip, minShell, build commit
-// Sign the manifest afterwards: node tools/release/sign.mjs sign <out>/game-manifest.json
+// The manifest is an input to the channel builder (tools/release/channel.mjs), which copies its facts into the signed
+// channel file. It is not published: the release workflow writes it to release/build-info with --manifest-dir.
 //
-//   node tools/release/package-game.mjs [--dist dist/public] [--out release/assets] [--commit <sha>]
+//   node tools/release/package-game.mjs [--dist dist/public] [--out release/assets] [--manifest-dir <dir>] [--commit <sha>]
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -16,7 +17,7 @@ import { listFiles, readZip, zipDirectory } from './zip.mjs';
 export const MANIFEST_NAME = 'game-manifest.json';
 export const gameZipName = version => `agent-empire-game-${version}.zip`;
 
-export function packageGame({ dist, outDir, version, commit, minShell }) {
+export function packageGame({ dist, outDir, manifestDir = outDir, version, commit, minShell }) {
   parseVersion(version);
   parseVersion(minShell);
   if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error(`commit must be a full 40-character SHA, got "${commit}"`);
@@ -40,7 +41,8 @@ export function packageGame({ dist, outDir, version, commit, minShell }) {
     minShell,
     commit,
   };
-  const manifestPath = path.join(outDir, MANIFEST_NAME);
+  mkdirSync(manifestDir, { recursive: true });
+  const manifestPath = path.join(manifestDir, MANIFEST_NAME);
   writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
   return { zipPath: path.join(outDir, file), manifestPath, manifest };
 }
@@ -58,6 +60,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     const result = packageGame({
       dist: path.resolve(option(args, '--dist', path.join(ROOT, 'dist/public'))),
       outDir: path.resolve(option(args, '--out', path.join(ROOT, 'release/assets'))),
+      ...(option(args, '--manifest-dir', null) ? { manifestDir: path.resolve(option(args, '--manifest-dir', null)) } : {}),
       version: readVersion(), commit, minShell: config.minShell,
     });
     console.log(`${result.zipPath}\n  ${result.manifest.files} files, ${result.manifest.bytes} bytes, sha256 ${result.manifest.sha256}\n${result.manifestPath}`);

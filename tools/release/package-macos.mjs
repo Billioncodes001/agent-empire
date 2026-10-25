@@ -1,23 +1,28 @@
 // Packages the macOS desktop app for a release (run on a Mac after `npm run desktop:prepare`), for the host arch:
-//   <out>/Agent-Empire-<v>-macos-<arch>[-unsigned].zip   ditto zip (the Squirrel.Mac update payload)
-//   <out>/Agent-Empire-<v>-macos-<arch>[-unsigned].dmg   drag-to-Applications disk image
+//   <out>/Agent-Empire-Mac-<Apple-Silicon|Intel>.dmg          drag-to-Applications disk image, always
+//   <out>/Agent-Empire-Mac-<Apple-Silicon|Intel>-Update.zip   ditto zip, the Squirrel.Mac update payload: signed builds only
+//   <info>/macos-<arch>.json                                  build info {signed} for the channel builder (never published)
 //
 // Signing turns on when APPLE_SIGNING_IDENTITY names a Developer ID Application identity in the keychain
 // (optionally APPLE_KEYCHAIN). Signing requires notarization credentials, either APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD
 // + APPLE_TEAM_ID, or APPLE_API_KEY_PATH + APPLE_API_KEY_ID + APPLE_API_ISSUER; the app is then notarized and stapled.
-// Without an identity the app is ad-hoc/unsigned and the file names carry "-unsigned".
+// Without an identity the app is ad-hoc signed: Squirrel.Mac cannot update it, so no update zip is published and the
+// build info says signed: false (the release notes tell users about "Open Anyway").
 //
-//   node tools/release/package-macos.mjs [--out release/assets]
+//   node tools/release/package-macos.mjs [--out release/assets] [--info release/build-info]
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { ROOT } from './version.mjs';
+import { NAMES, writeBuildInfo } from './assets.mjs';
 
 if (process.platform !== 'darwin') throw new Error('package-macos.mjs runs on macOS only');
 const args = process.argv.slice(2);
 const outIndex = args.indexOf('--out');
 const outDir = path.resolve(outIndex >= 0 ? args[outIndex + 1] : path.join(ROOT, 'release/assets'));
+const infoIndex = args.indexOf('--info');
+const infoDir = path.resolve(infoIndex >= 0 ? args[infoIndex + 1] : path.join(ROOT, 'release/build-info'));
 const desktop = path.join(ROOT, 'desktop');
 if (!existsSync(path.join(desktop, 'runtime/public/index.html'))) throw new Error('Run `npm run desktop:prepare` first');
 const version = JSON.parse(readFileSync(path.join(desktop, 'package.json'), 'utf8')).version;
@@ -66,21 +71,21 @@ if (signed) {
 }
 
 mkdirSync(outDir, { recursive: true });
-const base = `Agent-Empire-${version}-macos-${arch}${signed ? '' : '-unsigned'}`;
-const zip = path.join(outDir, `${base}.zip`);
-const dmg = path.join(outDir, `${base}.dmg`);
+const zip = path.join(outDir, NAMES.macZip(arch));
+const dmg = path.join(outDir, NAMES.macDmg(arch));
 rmSync(zip, { force: true }); rmSync(dmg, { force: true });
 // ditto keeps symlinks, extended attributes and the stapled ticket intact (zip(1) can break framework signatures).
-run('ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', app, zip]);
+if (signed) run('ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', app, zip]);
 const stage = path.join(work, 'dmg');
 rmSync(stage, { recursive: true, force: true }); mkdirSync(stage);
 run('ditto', [app, path.join(stage, 'Agent Empire.app')]);
 symlinkSync('/Applications', path.join(stage, 'Applications'));
 run('hdiutil', ['create', '-volname', 'Agent Empire', '-srcfolder', stage, '-ov', '-format', 'UDZO', dmg]);
 if (signed) run('codesign', ['--sign', identity, ...(env.APPLE_KEYCHAIN ? ['--keychain', env.APPLE_KEYCHAIN] : []), '--timestamp', dmg]);
-for (const file of [zip, dmg]) {
+for (const file of signed ? [zip, dmg] : [dmg]) {
   const sha = createHash('sha256').update(readFileSync(file)).digest('hex');
   console.log(`${path.basename(file)}  sha256 ${sha}`);
 }
-writeFileSync(path.join(work, 'build-info.json'), JSON.stringify({ version, arch, signed, notarized: signed, zip: path.basename(zip), dmg: path.basename(dmg) }, null, 2) + '\n');
+writeFileSync(path.join(work, 'build-info.json'), JSON.stringify({ version, arch, signed, notarized: signed, zip: signed ? path.basename(zip) : null, dmg: path.basename(dmg) }, null, 2) + '\n');
+writeBuildInfo(infoDir, { platform: 'macos', arch, signed });
 if (!signed) console.log('UNSIGNED build: Gatekeeper will block it until the user allows it in System Settings; no in-place updates.');

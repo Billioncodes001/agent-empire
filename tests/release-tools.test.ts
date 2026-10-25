@@ -13,7 +13,8 @@ import {
 import { checkPinnedKey, checkReleaseTrust, devPrivateKey, pinnedKeys, privateKey, publicKeyBase64, signBytes, verifyBytes } from '../tools/release/sign.mjs';
 import { crc32, createZip, readZip } from '../tools/release/zip.mjs';
 import { packageGame } from '../tools/release/package-game.mjs';
-import { buildChannel, classifyAssets, coordinatorSchema, squirrelFeed } from '../tools/release/channel.mjs';
+import { buildChannel, checkPublished, coordinatorSchema, squirrelFeed, writeRelease } from '../tools/release/channel.mjs';
+import { NAMES, readBuildInfo, writeBuildInfo } from '../tools/release/assets.mjs';
 import { serviceAccountAssertion, uploadBundle } from '../tools/release/play-upload.mjs';
 import { checkFeed, nugetVersion, nupkgName, parseReleases, SQUIRREL_ID } from '../tools/release/package-windows-installer.mjs';
 import { createHash } from 'node:crypto';
@@ -331,61 +332,215 @@ test('the game bundle refuses fixture builds, missing pages and bad inputs', () 
   assert.throws(() => packageGame(ok), /fixture build/);
 });
 
-const V = '1.0.0-beta.1';
+const V = '1.0.0-beta.2';
 const CONFIG = { playListing: 'https://play.google.com/store/apps/details?id=com.agentempire.mobile', iosTestFlight: null, iosAppStore: null };
-function assetsDir(extra: string[]): string {
-  const out = temp('assets');
-  packageGame({ dist: fakeDist(), outDir: out, version: V, commit: COMMIT, minShell: '1.0.0-beta.1' });
-  writeFileSync(path.join(out, 'agent-empire-coordinator.mjs'), 'export const runCoordinatorTick = 1;');
-  for (const name of extra) writeFileSync(path.join(out, name), `binary ${name}`);
-  return out;
-}
-const channelArgs = (dir: string) => ({ assetsDir: dir, version: V, channel: 'beta', repo: 'Billioncodes001/agent-empire', publishedAt: '2026-10-02T12:00:00.000Z', notes: 'Notes', config: CONFIG, root: ROOT });
+const REPO = 'Billioncodes001/agent-empire';
+const DOWNLOAD = `https://github.com/${REPO}/releases/download/v${V}/`;
+/** The path segment every shipped reader (beta.1 client, desktop, Android, iOS) accepts in a release asset URL. */
+const SEGMENT = /^[A-Za-z0-9._+-]{1,128}$/;
 
-test('channel file for an unsigned beta follows the contract', () => {
-  const dir = assetsDir([`Agent-Empire-${V}-macos-arm64-unsigned.zip`, `Agent-Empire-${V}-macos-arm64-unsigned.dmg`, `Agent-Empire-${V}-macos-x64-unsigned.dmg`,
-    `Agent-Empire-${V}-windows-x64-unsigned.zip`, `Agent-Empire-${V}-android-debug-signed.apk`, 'unrelated.txt']);
-  const doc = buildChannel(channelArgs(dir));
-  assert.deepEqual(Object.keys(doc), ['schema', 'channel', 'version', 'tag', 'publishedAt', 'notes', 'releasePage', 'game', 'shell', 'coordinator', 'mandatory']);
-  assert.equal(doc.schema, 1);
-  assert.equal(doc.publishedAt, '2026-10-02T12:00:00Z');
-  const base = `https://github.com/Billioncodes001/agent-empire/releases/download/v${V}/`;
-  assert.equal(doc.game.url, `${base}agent-empire-game-${V}.zip`);
-  assert.equal(doc.game.minShell, '1.0.0-beta.1');
-  assert.equal(doc.game.manifestSig, `${base}game-manifest.json.sig`);
-  assert.equal(doc.shell.macos.auto, false);
-  assert.equal(doc.shell.macos.feed, null);
-  assert.equal(doc.shell.macos.downloads.arm64.signed, false);
-  assert.equal(doc.shell.macos.downloads.x64.zip, undefined);
-  assert.equal(doc.shell.windows.auto, false);
-  assert.equal(doc.shell.android.versionCode, 10000301);
-  assert.equal(doc.shell.android.url, `${base}Agent-Empire-${V}-android-debug-signed.apk`);
-  assert.match(doc.shell.android.sha256, /^[0-9a-f]{64}$/);
-  assert.equal(doc.shell.android.signed, false);
-  assert.equal(doc.shell.android.play, null);
-  assert.deepEqual(doc.shell.ios, { version: V, testflight: null, appStore: null });
-  assert.equal(doc.coordinator.url, `${base}agent-empire-coordinator.mjs`);
-  assert.equal(doc.coordinator.schema, coordinatorSchema(ROOT));
-  assert.equal(doc.mandatory, false);
-  // Deterministic for the same inputs.
-  assert.deepEqual(buildChannel(channelArgs(dir)), doc);
+interface Stage { version?: string; mac?: Partial<Record<'arm64' | 'x64', boolean>>; windows?: boolean; android?: boolean }
+/**
+ * A staged release as the workflow's assemble job sees it: release/assets (files that may be published) and
+ * release/build-info (each platform's signing state and the game manifest; never published).
+ */
+function stage({ version = V, mac = {}, windows, android }: Stage = {}): { assets: string; info: string } {
+  const assets = temp('assets');
+  const info = temp('info');
+  packageGame({ dist: fakeDist(), outDir: assets, manifestDir: info, version, commit: COMMIT, minShell: '1.0.0-beta.1' });
+  writeFileSync(path.join(assets, NAMES.coordinator), 'export const runCoordinatorTick = 1;');
+  for (const [arch, signed] of Object.entries(mac) as Array<['arm64' | 'x64', boolean]>) {
+    writeFileSync(path.join(assets, NAMES.macDmg(arch)), `dmg ${arch}`);
+    if (signed) writeFileSync(path.join(assets, NAMES.macZip(arch)), `zip ${arch}`);
+    writeBuildInfo(info, { platform: 'macos', arch, signed });
+  }
+  if (windows !== undefined) {
+    writeFileSync(path.join(assets, NAMES.windowsSetup), 'setup');
+    if (windows) {
+      const pkg = Buffer.from('nupkg bytes');
+      writeFileSync(path.join(assets, nupkgName(version)), pkg);
+      writeFileSync(path.join(assets, 'RELEASES'), `${createHash('sha1').update(pkg).digest('hex').toUpperCase()} ${nupkgName(version)} ${pkg.length}\r\n`);
+    }
+    writeBuildInfo(info, { platform: 'windows', arch: 'x64', signed: windows });
+  }
+  if (android !== undefined) {
+    writeFileSync(path.join(assets, NAMES.androidApk), 'apk');
+    writeBuildInfo(info, { platform: 'android', signed: android });
+  }
+  return { assets, info };
+}
+const releaseArgs = (s: { assets: string; info: string }, extra: Record<string, unknown> = {}) => ({
+  assetsDir: s.assets, infoDir: s.info, version: V, repo: REPO, publishedAt: '2026-10-26T12:00:00.000Z', notes: 'Notes', config: CONFIG, root: ROOT, ...extra,
+});
+const channelArgs = (s: { assets: string; info: string }, extra: Record<string, unknown> = {}) => ({ ...releaseArgs(s), channel: 'beta', ...extra });
+/** Writes the channel files and feeds, signs them with the development key, and returns the folder listing. */
+function publish(s: { assets: string; info: string }, extra: Record<string, unknown> = {}): string[] {
+  writeRelease(releaseArgs(s, extra));
+  for (const name of readdirSync(s.assets).filter(n => /^channel-\w+\.json$/.test(n)))
+    writeFileSync(path.join(s.assets, `${name}.sig`), signBytes(readFileSync(path.join(s.assets, name)), devPrivateKey()) + '\n');
+  return readdirSync(s.assets).sort();
+}
+const readJson = (file: string) => JSON.parse(readFileSync(file, 'utf8'));
+
+test('asset names: plain words for the files people download, version-free so latest/download links stay stable', () => {
+  assert.equal(NAMES.macDmg('arm64'), 'Agent-Empire-Mac-Apple-Silicon.dmg');
+  assert.equal(NAMES.macDmg('x64'), 'Agent-Empire-Mac-Intel.dmg');
+  assert.equal(NAMES.windowsSetup, 'Agent-Empire-Windows-Setup.exe');
+  assert.equal(NAMES.androidApk, 'Agent-Empire-Android.apk');
+  assert.equal(NAMES.macZip('arm64'), 'Agent-Empire-Mac-Apple-Silicon-Update.zip');
+  assert.equal(NAMES.macFeed('x64'), 'RELEASES-darwin-x64.json');
+  // Machine files keep the names installed beta.1 apps look for.
+  assert.equal(NAMES.coordinator, 'agent-empire-coordinator.mjs');
+  assert.equal(NAMES.channel('beta'), 'channel-beta.json');
+  assert.equal(nupkgName(V), 'AgentEmpire-1.0.0-beta002-full.nupkg');
+  const people = [NAMES.macDmg('arm64'), NAMES.macDmg('x64'), NAMES.windowsSetup, NAMES.androidApk];
+  for (const name of people) assert.doesNotMatch(name, /unsigned|debug|x64|arm64|\d/i, name);
+  const all = [...people, NAMES.macZip('arm64'), NAMES.macZip('x64'), NAMES.macFeed('arm64'), NAMES.macFeed('x64'), NAMES.coordinator, NAMES.game(V), nupkgName(V), 'RELEASES', NAMES.channel('beta'), NAMES.channel('stable')];
+  assert.equal(new Set(all.map(n => n.toLowerCase())).size, all.length, 'names are unique (case-insensitively)');
+  for (const name of all) assert.match(name, SEGMENT, `${name} must be a URL path segment every shipped reader accepts`);
 });
 
-test('signed macOS builds get auto updates and Squirrel feeds; Play link only after an upload', () => {
-  const dir = assetsDir([`Agent-Empire-${V}-macos-arm64.zip`, `Agent-Empire-${V}-macos-arm64.dmg`, `Agent-Empire-${V}-macos-x64.zip`,
-    `Agent-Empire-${V}-windows-x64.zip`, `Agent-Empire-${V}-android.apk`, `Agent-Empire-${V}-android.aab`]);
-  const doc = buildChannel({ ...channelArgs(dir), playPublished: true });
-  assert.equal(doc.shell.macos.auto, true);
-  assert.equal(doc.shell.macos.feed.arm64, `https://github.com/Billioncodes001/agent-empire/releases/download/v${V}/RELEASES-darwin-arm64.json`);
-  assert.equal(doc.shell.windows.downloads.x64.signed, true);
-  // A zip without the Squirrel installer and feed cannot update in place.
+test('build info records each platform build and refuses anything ambiguous', () => {
+  const info = temp('info');
+  writeBuildInfo(info, { platform: 'macos', arch: 'arm64', signed: false });
+  writeBuildInfo(info, { platform: 'windows', arch: 'x64', signed: true });
+  writeBuildInfo(info, { platform: 'android', signed: true });
+  assert.deepEqual(readBuildInfo(info), { macos: { arm64: { signed: false } }, windows: { signed: true }, android: { signed: true } });
+  assert.throws(() => writeBuildInfo(info, { platform: 'macos', signed: true } as never), /arch/);
+  assert.throws(() => writeBuildInfo(info, { platform: 'linux', signed: true } as never), /platform/);
+  assert.throws(() => writeBuildInfo(info, { platform: 'android', signed: 'yes' } as never), /signed/);
+  writeFileSync(path.join(info, 'android.json'), '{"platform":"android","signed":"maybe"}');
+  assert.throws(() => readBuildInfo(info), /signed/);
+  assert.deepEqual(readBuildInfo(temp('empty')), {});
+});
+
+test('unsigned beta: only the DMGs, the installer, the APK and the files installed apps read are published', () => {
+  const s = stage({ mac: { arm64: false, x64: false }, windows: false, android: true });
+  const listing = publish(s);
+  assert.deepEqual(listing, [
+    'Agent-Empire-Android.apk', 'Agent-Empire-Mac-Apple-Silicon.dmg', 'Agent-Empire-Mac-Intel.dmg', 'Agent-Empire-Windows-Setup.exe',
+    'agent-empire-coordinator.mjs', `agent-empire-game-${V}.zip`, 'channel-beta.json', 'channel-beta.json.sig',
+  ]);
+  assert.deepEqual(checkPublished(s.assets), []);
+  const doc = readJson(path.join(s.assets, 'channel-beta.json'));
+  assert.deepEqual(Object.keys(doc), ['schema', 'channel', 'version', 'tag', 'publishedAt', 'notes', 'releasePage', 'game', 'shell', 'coordinator', 'assets', 'mandatory']);
+  assert.equal(doc.publishedAt, '2026-10-26T12:00:00Z');
+  assert.deepEqual(Object.keys(doc.game), ['url', 'sha256', 'bytes', 'minShell', 'commit']);
+  assert.equal(doc.game.url, `${DOWNLOAD}agent-empire-game-${V}.zip`);
+  assert.equal(doc.game.commit, COMMIT);
+  assert.equal(doc.shell.macos.auto, false);
+  assert.equal(doc.shell.macos.feed, null);
+  assert.deepEqual(Object.keys(doc.shell.macos.downloads.arm64), ['dmg', 'signed']);
+  assert.equal(doc.shell.macos.downloads.arm64.dmg.url, `${DOWNLOAD}Agent-Empire-Mac-Apple-Silicon.dmg`);
+  assert.equal(doc.shell.macos.downloads.x64.signed, false);
   assert.equal(doc.shell.windows.auto, false);
   assert.equal(doc.shell.windows.feed, null);
+  assert.deepEqual(Object.keys(doc.shell.windows.downloads.x64), ['setup', 'signed']);
+  assert.equal(doc.shell.android.url, `${DOWNLOAD}Agent-Empire-Android.apk`);
   assert.equal(doc.shell.android.signed, true);
+  assert.equal(doc.shell.android.versionCode, 10000302);
+  assert.equal(doc.shell.android.play, null);
+  assert.deepEqual(doc.shell.ios, { version: V, testflight: null, appStore: null });
+  assert.equal(doc.coordinator.url, `${DOWNLOAD}agent-empire-coordinator.mjs`);
+  assert.equal(doc.coordinator.schema, coordinatorSchema(ROOT));
+  // The signed checksum list replaces SHA256SUMS: every published file except the channel files themselves.
+  assert.deepEqual(Object.keys(doc.assets).sort(), listing.filter(n => !n.startsWith('channel-')));
+  for (const [name, entry] of Object.entries(doc.assets) as Array<[string, { sha256: string; bytes: number }]>) {
+    const bytes = readFileSync(path.join(s.assets, name));
+    assert.deepEqual(entry, { sha256: createHash('sha256').update(bytes).digest('hex'), bytes: bytes.length }, name);
+  }
+  assert.equal(doc.mandatory, false);
+  assert.deepEqual(buildChannel(channelArgs(s)), doc, 'deterministic for the same inputs');
+});
+
+test('signed desktop builds add exactly the update payloads and feeds the updaters read', () => {
+  const s = stage({ mac: { arm64: true, x64: true }, windows: true, android: true });
+  const listing = publish(s, { playPublished: true });
+  assert.deepEqual(listing, [
+    'Agent-Empire-Android.apk', 'Agent-Empire-Mac-Apple-Silicon-Update.zip', 'Agent-Empire-Mac-Apple-Silicon.dmg', 'Agent-Empire-Mac-Intel-Update.zip',
+    'Agent-Empire-Mac-Intel.dmg', 'Agent-Empire-Windows-Setup.exe', nupkgName(V), 'RELEASES', 'RELEASES-darwin-arm64.json', 'RELEASES-darwin-x64.json',
+    'agent-empire-coordinator.mjs', `agent-empire-game-${V}.zip`, 'channel-beta.json', 'channel-beta.json.sig',
+  ]);
+  assert.deepEqual(checkPublished(s.assets), []);
+  const doc = readJson(path.join(s.assets, 'channel-beta.json'));
+  assert.equal(doc.shell.macos.auto, true);
+  assert.equal(doc.shell.macos.feed.arm64, `${DOWNLOAD}RELEASES-darwin-arm64.json`);
+  assert.equal(doc.shell.macos.downloads.arm64.zip.url, `${DOWNLOAD}Agent-Empire-Mac-Apple-Silicon-Update.zip`);
+  const feed = readJson(path.join(s.assets, 'RELEASES-darwin-arm64.json'));
+  assert.deepEqual(feed, squirrelFeed({ version: V, url: doc.shell.macos.downloads.arm64.zip.url, notes: 'Notes', publishedAt: doc.publishedAt }));
+  assert.equal(doc.assets['RELEASES-darwin-arm64.json'].sha256, createHash('sha256').update(readFileSync(path.join(s.assets, 'RELEASES-darwin-arm64.json'))).digest('hex'));
+  assert.equal(doc.shell.windows.auto, true);
+  assert.equal(doc.shell.windows.feed, `https://github.com/${REPO}/releases/download/v${V}`);
+  assert.equal(doc.shell.windows.downloads.x64.nupkg.url, `${DOWNLOAD}${nupkgName(V)}`);
   assert.equal(doc.shell.android.play, CONFIG.playListing);
-  const feed = squirrelFeed({ version: V, url: doc.shell.macos.downloads.arm64.zip.url, notes: 'n', publishedAt: doc.publishedAt });
-  assert.equal(feed.currentRelease, V);
-  assert.equal(feed.releases[0].updateTo.url, doc.shell.macos.downloads.arm64.zip.url);
+});
+
+test('a final release writes both channels; stable feeds follow latest/download, beta feeds the tag', () => {
+  const S = '1.0.0';
+  const s = stage({ version: S, mac: { arm64: true }, windows: true, android: true });
+  const listing = publish(s, { version: S });
+  assert.ok(listing.includes('channel-stable.json') && listing.includes('channel-stable.json.sig') && listing.includes('channel-beta.json.sig'));
+  assert.deepEqual(checkPublished(s.assets), []);
+  const stable = readJson(path.join(s.assets, 'channel-stable.json'));
+  const beta = readJson(path.join(s.assets, 'channel-beta.json'));
+  const repo = `https://github.com/${REPO}/releases`;
+  assert.equal(stable.shell.windows.feed, `${repo}/latest/download`);
+  assert.equal(beta.shell.windows.feed, `${repo}/download/v${S}`);
+  assert.equal(stable.shell.macos.feed.arm64, `${repo}/latest/download/RELEASES-darwin-arm64.json`);
+  assert.equal(beta.shell.macos.feed.arm64, `${repo}/download/v${S}/RELEASES-darwin-arm64.json`);
+  assert.equal(stable.shell.windows.downloads.x64.nupkg.url, `${repo}/download/v${S}/AgentEmpire-1.0.0-full.nupkg`);
+  assert.deepEqual(stable.assets, beta.assets);
+});
+
+test('the channel builder refuses a staging folder that would publish the wrong files', () => {
+  const ok = () => stage({ mac: { arm64: false }, windows: false, android: true });
+  // An unsigned macOS zip or Windows feed has no reader: refuse rather than publish it.
+  const macZip = ok(); writeFileSync(path.join(macZip.assets, NAMES.macZip('arm64')), 'zip');
+  assert.throws(() => buildChannel(channelArgs(macZip)), /no updater reads it/);
+  const winFeed = ok(); writeFileSync(path.join(winFeed.assets, nupkgName(V)), 'pkg');
+  assert.throws(() => buildChannel(channelArgs(winFeed)), /no updater reads it/);
+  // A signed build must carry its update payload.
+  const signedNoZip = stage({ mac: { arm64: true } });
+  execFileSync('rm', [path.join(signedNoZip.assets, NAMES.macZip('arm64'))]);
+  assert.throws(() => buildChannel(channelArgs(signedNoZip)), /Agent-Empire-Mac-Apple-Silicon-Update\.zip is missing/);
+  const signedNoFeed = stage({ windows: true });
+  execFileSync('rm', [path.join(signedNoFeed.assets, 'RELEASES')]);
+  assert.throws(() => buildChannel(channelArgs(signedNoFeed)), /RELEASES is missing/);
+  // A platform file without its build info (signing state unknown), or build info without the file.
+  const noInfo = ok(); writeFileSync(path.join(noInfo.assets, NAMES.macDmg('x64')), 'dmg');
+  assert.throws(() => buildChannel(channelArgs(noInfo)), /Agent-Empire-Mac-Intel\.dmg has no build info/);
+  const noFile = ok(); execFileSync('rm', [path.join(noFile.assets, NAMES.androidApk)]);
+  assert.throws(() => buildChannel(channelArgs(noFile)), /Agent-Empire-Android\.apk is missing/);
+  // Anything unplanned (an old-style name, a stray file, SHA256SUMS) is never published.
+  for (const stray of [`Agent-Empire-${V}-windows-x64-unsigned.zip`, 'SHA256SUMS', 'game-manifest.json', `Agent-Empire-${V}-android.aab`]) {
+    const s = ok(); writeFileSync(path.join(s.assets, stray), 'x');
+    assert.throws(() => buildChannel(channelArgs(s)), new RegExp(`${stray.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} is not a release asset`));
+  }
+  const base = ok();
+  assert.throws(() => buildChannel(channelArgs(base, { channel: 'stable' })), /prerelease/);
+  assert.throws(() => buildChannel(channelArgs(base, { channel: 'nightly' })), /Unknown channel/);
+  assert.throws(() => buildChannel(channelArgs(base, { repo: 'https://evil.example/x' })), /owner\/name/);
+  assert.throws(() => buildChannel(channelArgs(base, { version: '1.0.0-beta.3' })), /agent-empire-game-1\.0\.0-beta\.3\.zip/);
+  const swapped = ok(); writeFileSync(path.join(swapped.assets, NAMES.game(V)), 'swapped');
+  assert.throws(() => buildChannel(channelArgs(swapped)), /does not describe/);
+  const noCoordinator = ok(); execFileSync('rm', [path.join(noCoordinator.assets, NAMES.coordinator)]);
+  assert.throws(() => buildChannel(channelArgs(noCoordinator)), /agent-empire-coordinator\.mjs/);
+});
+
+test('checkPublished: the folder holds exactly the files the signed channel lists, byte for byte', () => {
+  const extra = stage({ android: true }); publish(extra);
+  writeFileSync(path.join(extra.assets, 'SHA256SUMS'), 'x');
+  assert.match(checkPublished(extra.assets).join('\n'), /SHA256SUMS is not listed in channel-beta\.json/);
+  const missing = stage({ android: true }); publish(missing);
+  execFileSync('rm', [path.join(missing.assets, NAMES.androidApk)]);
+  assert.match(checkPublished(missing.assets).join('\n'), /Agent-Empire-Android\.apk is listed in channel-beta\.json but missing/);
+  const tampered = stage({ android: true }); publish(tampered);
+  writeFileSync(path.join(tampered.assets, NAMES.androidApk), 'other apk');
+  assert.match(checkPublished(tampered.assets).join('\n'), /Agent-Empire-Android\.apk does not match its sha256/);
+  const unsigned = stage({ android: true }); publish(unsigned);
+  execFileSync('rm', [path.join(unsigned.assets, 'channel-beta.json.sig')]);
+  assert.match(checkPublished(unsigned.assets).join('\n'), /channel-beta\.json\.sig is missing/);
+  assert.match(checkPublished(temp('none')).join('\n'), /channel-beta\.json is missing/);
 });
 
 test('Squirrel.Windows: NuGet versions sort like ours, and the RELEASES feed must match the package', () => {
@@ -398,62 +553,20 @@ test('Squirrel.Windows: NuGet versions sort like ours, and the RELEASES feed mus
   const ordered = ['1.0.0-alpha.3', '1.0.0-beta.2', '1.0.0-beta.10', '1.0.0-beta.199', '1.0.0-rc.1'].map(v => nugetVersion(v).split('-')[1]);
   assert.deepEqual([...ordered].sort(), ordered);
   assert.throws(() => parseReleases('nonsense'), /Malformed/);
+  const W = '1.0.0-beta.1';
   const dir = temp('feed');
   const pkg = Buffer.from('nupkg bytes');
-  writeFileSync(path.join(dir, nupkgName(V)), pkg);
+  writeFileSync(path.join(dir, nupkgName(W)), pkg);
   const sha1 = createHash('sha1').update(pkg).digest('hex').toUpperCase();
-  writeFileSync(path.join(dir, 'RELEASES'), `\uFEFF${sha1} ${nupkgName(V)} ${pkg.length}\r\n`);
-  assert.deepEqual(parseReleases(readFileSync(path.join(dir, 'RELEASES'), 'utf8')), [{ sha1, file: nupkgName(V), size: pkg.length }]);
-  assert.deepEqual(checkFeed(dir, V), []);
+  writeFileSync(path.join(dir, 'RELEASES'), `\uFEFF${sha1} ${nupkgName(W)} ${pkg.length}\r\n`);
+  assert.deepEqual(parseReleases(readFileSync(path.join(dir, 'RELEASES'), 'utf8')), [{ sha1, file: nupkgName(W), size: pkg.length }]);
+  assert.deepEqual(checkFeed(dir, W), []);
   assert.match(checkFeed(dir, '1.0.0-beta.2').join('\n'), /should list only AgentEmpire-1\.0\.0-beta002-full\.nupkg/);
-  writeFileSync(path.join(dir, nupkgName(V)), 'tampered!!!');
-  assert.match(checkFeed(dir, V).join('\n'), /SHA1 does not match/);
-  assert.deepEqual(checkFeed(temp('nofeed'), V), ['RELEASES is missing']);
+  writeFileSync(path.join(dir, nupkgName(W)), 'tampered!!!');
+  assert.match(checkFeed(dir, W).join('\n'), /SHA1 does not match/);
+  assert.deepEqual(checkFeed(temp('nofeed'), W), ['RELEASES is missing']);
 });
 
-test('desktop update feeds: Squirrel.Windows folder and Squirrel.Mac JSON, latest/download for stable, per tag for beta', () => {
-  const S = '1.0.0';
-  const dir = temp('stable');
-  packageGame({ dist: fakeDist(), outDir: dir, version: S, commit: COMMIT, minShell: '1.0.0-beta.1' });
-  writeFileSync(path.join(dir, 'agent-empire-coordinator.mjs'), 'export const runCoordinatorTick = 1;');
-  for (const name of [`Agent-Empire-${S}-macos-arm64.zip`, `Agent-Empire-${S}-windows-x64.zip`, `Agent-Empire-${S}-windows-x64-Setup.exe`, nupkgName(S), 'RELEASES'])
-    writeFileSync(path.join(dir, name), name);
-  const args = { ...channelArgs(dir), version: S };
-  const stable = buildChannel({ ...args, channel: 'stable' });
-  const beta = buildChannel({ ...args, channel: 'beta' });
-  const repo = 'https://github.com/Billioncodes001/agent-empire/releases';
-  assert.equal(stable.shell.windows.auto, true);
-  assert.equal(stable.shell.windows.feed, `${repo}/latest/download`);
-  assert.equal(beta.shell.windows.feed, `${repo}/download/v${S}`);
-  assert.equal(stable.shell.macos.feed.arm64, `${repo}/latest/download/RELEASES-darwin-arm64.json`);
-  assert.equal(beta.shell.macos.feed.arm64, `${repo}/download/v${S}/RELEASES-darwin-arm64.json`);
-  assert.equal(stable.shell.windows.downloads.x64.setup.name, `Agent-Empire-${S}-windows-x64-Setup.exe`);
-  assert.equal(stable.shell.windows.downloads.x64.nupkg.url, `${repo}/download/v${S}/AgentEmpire-1.0.0-full.nupkg`);
-  // Unsigned installer: the feed exists but in-place updates stay off.
-  const unsigned = assetsDir([`Agent-Empire-${V}-windows-x64-unsigned.zip`, `Agent-Empire-${V}-windows-x64-Setup-unsigned.exe`, nupkgName(V), 'RELEASES']);
-  const doc = buildChannel(channelArgs(unsigned));
-  assert.equal(doc.shell.windows.auto, false);
-  assert.equal(doc.shell.windows.downloads.x64.signed, false);
-  assert.equal(doc.shell.windows.feed, `${repo}/download/v${V}`);
-  // An installer without its RELEASES feed is a download only.
-  const noFeed = assetsDir([`Agent-Empire-${V}-windows-x64-Setup.exe`]);
-  assert.equal(buildChannel(channelArgs(noFeed)).shell.windows.feed, null);
-});
-
-test('channel builder refuses inconsistent inputs', () => {
-  const dir = assetsDir([]);
-  assert.throws(() => buildChannel({ ...channelArgs(dir), channel: 'stable' }), /prerelease/);
-  assert.throws(() => buildChannel({ ...channelArgs(dir), channel: 'nightly' }), /Unknown channel/);
-  assert.throws(() => buildChannel({ ...channelArgs(dir), repo: 'https://evil.example/x' }), /owner\/name/);
-  assert.throws(() => buildChannel({ ...channelArgs(dir), version: '1.0.0-beta.2' }), /must contain agent-empire-game-1\.0\.0-beta\.2\.zip/);
-  writeFileSync(path.join(dir, `agent-empire-game-${V}.zip`), 'swapped');
-  assert.throws(() => buildChannel(channelArgs(dir)), /does not describe/);
-  const noCoordinator = assetsDir([]);
-  execFileSync('rm', [path.join(noCoordinator, 'agent-empire-coordinator.mjs')]);
-  assert.throws(() => buildChannel(channelArgs(noCoordinator)), /agent-empire-coordinator\.mjs/);
-  assert.throws(() => classifyAssets([`Agent-Empire-${V}-android.apk`, `Agent-Empire-${V}-android-debug-signed.apk`], V), /More than one Android APK/);
-  assert.equal(classifyAssets([`Agent-Empire-1.0.0-beta.10-android.apk`], V).android, null);
-});
 
 test('Play upload: RS256 service-account assertion and the edit/upload/track/commit sequence', async () => {
   const { privateKey: key, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -528,7 +641,7 @@ const RELEASE_ENV_ON_TAG = "    environment: ${{ needs.verify.outputs.release ==
 test('signing secrets: only jobs in the release environment, only on tag runs, never on a dry run', () => {
   const jobs = workflowJobs();
   const releaseOnly = (j: { header: string }) => /\n {4}if: needs\.verify\.outputs\.release == 'true'\n/.test(j.header) && /\n {4}environment: release\n/.test(j.header);
-  assert.deepEqual(jobs.filter(j => j.job.includes('secrets.')).map(j => j.name), ['game', 'desktop-macos', 'desktop-windows', 'android', 'ios', 'assemble', 'play']);
+  assert.deepEqual(jobs.filter(j => j.job.includes('secrets.')).map(j => j.name), ['desktop-macos', 'desktop-windows', 'android', 'ios', 'assemble', 'play']);
   for (const j of jobs) {
     const env = j.header.split('\n').filter(line => line.startsWith('    environment:'));
     if (!j.job.includes('secrets.')) {
@@ -554,7 +667,9 @@ test('signing secrets: only jobs in the release environment, only on tag runs, n
 
 test('dry runs sign with --dev; production signing only on tag runs; Play waits for verified signatures', () => {
   const jobs = workflowJobs();
-  for (const name of ['game', 'assemble']) {
+  // The channel files are the only signed release files (the game manifest is no longer published).
+  assert.doesNotMatch(jobs.find(x => x.name === 'game')!.job, /sign\.mjs sign|secrets\./);
+  for (const name of ['assemble']) {
     const j = jobs.find(x => x.name === name)!;
     const signs = j.steps.filter(st => /sign\.mjs sign /.test(st));
     assert.equal(signs.length, 2, name);
@@ -572,8 +687,37 @@ test('dry runs sign with --dev; production signing only on tag runs; Play waits 
   }
   const play = jobs.find(x => x.name === 'play')!;
   assert.match(play.header, /\n {4}needs: \[verify, assemble\]\n/);
-  assert.match(play.job, /name: release-bundle/);
-  assert.match(play.job, /sha256sum -c -/);
+  // The App Bundle is never a release asset: Play takes it from its own workflow artifact, checked against its sha256.
+  assert.match(play.job, /name: play-bundle/);
+  assert.match(play.job, /sha256sum -c Agent-Empire-Android\.aab\.sha256/);
+  assert.doesNotMatch(play.job, /release-bundle|SHA256SUMS/);
   assert.doesNotMatch(jobs.find(x => x.name === 'assemble')!.header, /play/);
   assert.equal(jobs.find(x => x.name === 'verify')!.job.includes('secrets.'), false);
+});
+
+test('release workflow: publishes the planned names only; signing state travels as build info, never in a file name', () => {
+  const text = readFileSync(path.join(ROOT, '.github/workflows/release.yml'), 'utf8');
+  const jobs = workflowJobs();
+  const job = (name: string) => jobs.find(j => j.name === name)!.job;
+  for (const gone of [/SHA256SUMS/, /-unsigned/, /debug-signed\.apk/, /windows-x64/, /macos-(arm64|x64)/, /zip\.mjs "\$APP_DIR"/, /game-manifest\.json\.sig/, /--label/])
+    assert.doesNotMatch(text, gone, String(gone));
+  // Each platform job stages release/assets (publishable) and release/build-info (signing state, game manifest).
+  for (const name of ['game', 'desktop-macos', 'desktop-windows', 'android']) {
+    assert.match(job(name), /name: release-[\w${}. -]+\n {10}path: \|\n {12}release\/assets\n {12}release\/build-info\n/, name);
+  }
+  assert.match(job('game'), /package-game\.mjs --out release\/assets --manifest-dir release\/build-info/);
+  assert.match(job('desktop-macos'), /package-macos\.mjs --out release\/assets --info release\/build-info/);
+  assert.match(job('desktop-windows'), /package-windows-installer\.mjs --app "\$APP_DIR" --out release\/assets --info release\/build-info --signed "\${WINDOWS_SIGNED:-false}"/);
+  assert.ok(job('desktop-windows').includes(`release\\assets\\${NAMES.windowsSetup}`), 'Azure signs the installer by its published name');
+  assert.ok(job('android').includes(`"release/assets/${NAMES.androidApk}"`));
+  assert.match(job('android'), /assets\.mjs build-info --out release\/build-info --platform android --signed "\$HAS_ANDROID_KEYSTORE"/);
+  // The signed AAB goes to Play through its own artifact; it is never staged in release/assets.
+  assert.ok(job('android').includes(`release/play/${NAMES.androidAab}`));
+  assert.match(job('android'), /name: play-bundle/);
+  assert.doesNotMatch(job('android'), /release\/assets\/[^\n]*\.aab/);
+  // assemble builds the channel from both folders and proves the published folder is exactly what the channel lists.
+  assert.match(job('assemble'), /pattern: release-\*\n {10}path: release\n {10}merge-multiple: true/);
+  assert.match(job('assemble'), /channel\.mjs --assets release\/assets --info release\/build-info/);
+  assert.match(job('assemble'), /channel\.mjs check-publish --assets release\/assets/);
+  assert.match(job('publish'), /release\/assets\/\*/);
 });
