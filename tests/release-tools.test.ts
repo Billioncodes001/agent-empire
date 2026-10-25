@@ -133,6 +133,16 @@ test('sync writes every target, check names drift, and other content is untouche
   assert.match(checkVersion(root)[0], /package\.json: Invalid version/);
 });
 
+test('tag rule: versions only move forward, so a late 1.0.0 pre-release cannot take over "latest" through the bridge', () => {
+  const existing = ['v0.1.99', 'v1.0.0-beta.1', 'not-a-version', 'vbogus'];
+  assert.deepEqual(checkTag('v1.0.0-beta.2', '1.0.0-beta.2', existing), [], 'newer than every release tag');
+  assert.deepEqual(checkTag('v1.0.0-beta.2', '1.0.0-beta.2', [...existing, 'v1.0.0-beta.2']), [], 'its own tag is ignored');
+  const late = checkTag('v1.0.0-beta.9', '1.0.0-beta.9', [...existing, 'v1.0.0']);
+  assert.equal(late.length, 1);
+  assert.match(late[0], /not newer than existing release tag\(s\) v1\.0\.0/);
+  assert.equal(checkTag('v1.0.0-beta.1', '1.0.0-beta.1', ['v1.0.0-rc.1']).length, 1, 'rc.1 is newer than beta.1');
+});
+
 test('tag rule: the tag is exactly v<version> and its commit is on main', () => {
   assert.deepEqual(checkTag('v1.0.0-beta.1', '1.0.0-beta.1'), []);
   assert.deepEqual(checkTag('refs/tags/v1.0.0-beta.1', '1.0.0-beta.1'), []);

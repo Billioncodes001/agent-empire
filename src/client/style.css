@@ -337,6 +337,8 @@ button, [role="button"] { -webkit-user-select: none; user-select: none; -webkit-
 .svc-title { font-weight: 900; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .svc-meta { font-size: 12px; font-weight: 700; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .svc-port { font: 800 14px ui-monospace, Menlo, monospace; }
+/* Service rows are role="button", but their command, branch and port stay copyable by hand. */
+.svc-title, .svc-meta, .svc-port { -webkit-user-select: text; user-select: text; }
 .svc-list .btn { padding: 3px 10px; font-size: 13px; text-decoration: none; color: inherit; }
 .svc-empty { text-align: center; padding: 18px 8px; border: 3px dashed var(--muted); border-radius: 14px; }
 .svc-empty p { margin: 0; font-weight: 800; }

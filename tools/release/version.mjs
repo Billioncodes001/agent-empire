@@ -179,13 +179,27 @@ export function checkVersion(root = ROOT) {
   return problems;
 }
 
-/** Problems with a release tag for `version`: the tag must be exactly v<version>. */
-export function checkTag(tag, version) {
+/**
+ * Problems with a release tag for `version`: the tag must be exactly v<version>, and newer than every other release
+ * tag. Versions only move forward; otherwise a late 1.0.0-beta.N after 1.0.0 would take over GitHub's "latest" release
+ * through the stable bridge.
+ */
+export function checkTag(tag, version, existingTags = []) {
   const problems = [];
   const name = String(tag).replace(/^refs\/tags\//, '');
   try { parseVersion(version); } catch (error) { problems.push(error.message); return problems; }
   if (name !== `v${version}`) problems.push(`Tag ${name} does not match package.json version ${version} (expected v${version})`);
+  const newer = existingTags.map(String).filter((t) => t !== name && t.startsWith('v')).filter((t) => {
+    try { return compareVersions(t.slice(1), version) >= 0; } catch { return false; }
+  });
+  if (newer.length) problems.push(`Version ${version} is not newer than existing release tag(s) ${newer.join(', ')}; versions only move forward`);
   return problems;
+}
+
+/** The repository's v* tags (the release workflow checks out full history and tags). */
+export function releaseTags(cwd = ROOT) {
+  try { return execFileSync('git', ['tag', '--list', 'v*'], { cwd, encoding: 'utf8' }).split('\n').filter(Boolean); }
+  catch { return []; }
 }
 
 /** True when `sha` is reachable from `mainRef` (the tagged commit is on main). */
@@ -226,7 +240,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     } else if (command === 'tag-check') {
       const tag = args[0];
       if (!tag) fail(['usage: version.mjs tag-check <tag> [--sha <commit>] [--main <ref>]']);
-      const problems = checkTag(tag, readVersion());
+      const problems = checkTag(tag, readVersion(), releaseTags());
       const sha = option(args, '--sha', 'HEAD');
       const main = option(args, '--main', 'origin/main');
       if (!isOnMain(sha, main)) problems.push(`Commit ${sha} is not on ${main}; releases are tagged on main only`);
