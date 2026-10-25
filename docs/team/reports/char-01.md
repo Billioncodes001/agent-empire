@@ -65,3 +65,117 @@ Sources: the coordinator brief (owner feedback from the Android emulator, `claud
 4. Touch Run, contextual Use, gamepad.
 5. Animation fixes and any new clips.
 6. `tools/char-ui-check.ts` with screenshots in `docs/team/reports/char-01/`, then perf and the full checks.
+
+## Owner updates during the task
+
+- **Keep the current characters.** No new bodies were designed; the `business-*.glb` bodies and their materials are unchanged. Human Generator, Higgsfield and Meshy were not used.
+- **Mixamo is available but not used.** Adobe allows Mixamo animations in games but not their redistribution as standalone animation files. A clips GLB committed to a public MIT repository is a downloadable standalone animation file, so shipping Mixamo clips here would conflict with those terms. Nothing was downloaded. Every fix below uses the existing Microsoft Rocketbox clips (MIT, already pinned) plus procedural layers.
+
+## Audit findings
+
+The audit ran on the shipped bodies (tests on the CPU) and in the fixture (char-ui-check, screenshots below).
+
+| State | Finding | Fix |
+| --- | --- | --- |
+| Object interaction (shot 36) | D1–D3 confirmed: the sedan collider stayed at street level whatever the car's height; every collider was standable; a teleport while driving dragged the car along. A car cannot climb the staircase: tests drive the sedan and all four kit cars into it from three directions, at both speeds, while steering. | Fixes 1–4 below |
+| Run | Feet slid. Clips played at `speed / 3.8` for every body, but the recorded run strides are 2.35–2.95 m/s, so at 4.3 m/s up to 40 % of the ground speed was slide. | Fix 5 |
+| Walk | Small slide (recorded walk strides are 1.06–1.39 m/s against a fixed 1.45). | Fix 5 |
+| Turning from rest | Any change of direction from standing (e.g. Down) spun the idle pose about 180° in about 0.2 s. | Fix 6 |
+| Stairs | The root followed the eased step height, but the leading foot sank into the tread. | Fix 7 |
+| Walk/run blend, start/stop, jump/landing | Correct. Hysteresis 2.3/2.7 m/s, phase-matched cross-fade, held flight frame with tuck, landing dip with planted feet. Existing LIFE-01 tests still pass. | — |
+| Car entry/exit, driving | Correct: walk to the door, hand on the handle, door swings, side sit-down clip with foot IK through the aperture, hands on the wheel, feet on the pedals (shots 07–10). | — |
+| Helicopter, desks, typing, amenities | No defect found. Existing CITY-06/08 and LIFE checks pass. No new screenshots this round. | — |
+| T-poses, wrong clips | None seen in any state the check visits (motion names asserted). | — |
+
+## Fixes
+
+1. **Vehicle colliders at the vehicle's own height** (`vehicleBox`, `sedanCollider` in `world/district-layout.ts`). Used by the sedan (`city.ts`), bought cars and the helicopter (`districts.ts`). Deferred colliders and `slotClear` are unchanged.
+2. **Vehicles are never a floor, and are solid at every height to a walker.** In `player.ts`:
+   - `Collider.vehicle` makes the blocker treat the body as a column;
+   - `groundAt` and `ceilingAt` ignore vehicles;
+   - the walker never steps up onto a vehicle.
+
+   **Props are not landing pads.** In the air, a walker passes only over what is no higher than a step above where they left the floor (`launchY`). Stairs still work because they are climbed on foot, and helicopter flight is unaffected.
+3. **Push-out.** A walker found inside a vehicle's footprint steps to the nearest clear side at the same floor height (`pushOutOfVehicles`).
+4. **Stairs and teleports.**
+   - Garage stair colliders are `walkOnly`, a wall to any car at any height.
+   - `PlayerController.teleport()` is refused while driving, flying or scripted.
+   - "Go to desk" now says "Park and step out first" instead of carrying the car; the reconnect spawn uses `teleport` too.
+5. **Stride rate per body.** `strideSpeed()` measures each body's recorded walk and run foot speed once at load and caches it per avatar. Clips play at `speed / stride`, with cadence capped at 1.6× so a run never looks frantic. Run slide falls from up to 40 % to at most 13 % (female bodies at the cap); male bodies and walking have none.
+6. **Turn on the spot.** Above 2.5 rad/s with no ground speed, the feet step (a slow walk cycle) instead of the idle spinning (`locomotionClip(speed, previous, turnRate)`).
+7. **Light foot IK on stairs** (`Human.groundFeet`):
+   - two floor probes a frame, for the founder only;
+   - third person only, and not on the Low preset or in vehicles;
+   - lifts a foot that would sink into a tread, seeding a knee bend first.
+
+## Controls per device
+
+| Device | Move | Run | Jump / climb | Descend | Use (enter, board, exit) | View | Map | Chat / menu |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Keyboard (remappable) | arrows | Shift | Space | Shift in flight | E | N | G | T / Menu |
+| Touch (phone, tablet) | stick | **Run** lock (Fast in a car; hidden in flight) | Jump / Up | Down (flight only) | **Use**, labelled Enter / Board / Exit by context | View | minimap, Menu | Menu |
+| Gamepad (new, feature-detected) | left stick or d-pad (full deflection runs) | B or LT | A | B or LT in flight | X | Y | Back | Start |
+
+The pad drives `PlayerController.setAction`, so remapped keys keep working. Pads are ignored while a window is open or text is being typed. The right stick orbits (third person) or looks (first person).
+
+Touch styles live in `src/client/ui/touch-controls.css`, not `style.css`. All touch buttons are at least 44 px and labelled, with `aria-pressed` on Run and reduced motion respected.
+
+## Screenshots (`docs/team/reports/char-01/`)
+
+| # | Shot |
+| --- | --- |
+| 01 | Sedan on the garage roof is solid: the founder stops at its tail on the deck |
+| 02–05 | Idle, walk, run, jump apex (1440×900) |
+| 06 | Feet on the garage stair treads |
+| 07–10 | Sedan: hand on the door handle, sitting down, driving (boarded and driven with the gamepad), stepping out |
+| 11 | Run lock with a small stick push at 874×402, 667×375 (reduced motion and Save-Data) and 1024×768 |
+| 12–13 | Use reads Enter at the door; Exit and Fast while driving (each touch layout) |
+| 14 | 375×812 portrait rotate screen |
+
+## Performance (FREE-09 method)
+
+`CITY_UI_ONLY=perf` from this branch's `city-ui-check`, against two fixtures:
+
+- base `e93c63a`, exported to a scratch folder (port 5072);
+- this branch (port 5071).
+
+Same viewpoints, headless Chrome on ANGLE/Metal, Medium preset. Mean frame time in ms (`char-01/perf-*.json`):
+
+| View | Desktop 1440×900 | Phone 874×402 |
+| --- | --- | --- |
+| Founding street | 4.62 → 5.10 | 4.55 → 4.24 |
+| Business street | 3.72 → 3.88 | 3.35 → 3.16 |
+| Aerial | 5.59 → 5.53 | 5.65 → 5.25 |
+| Helipad | 7.01 → 7.08 | 6.92 → 5.78 |
+
+Draw calls and triangles are identical, and every phone view is faster than base (run-to-run noise), so the phone stays well inside the +1.5 ms budget. The worst desktop difference is +0.48 ms with identical draw calls. Measured headless, not on a device.
+
+## Assets and licences
+
+No new assets. No downloads. No Higgsfield, Meshy or Mixamo credits or files. THIRD_PARTY_NOTICES.md is unchanged: the clips are still the pinned Rocketbox MIT set.
+
+## Tests and checks
+
+- New tests:
+  - `tests/char-01.test.ts` (12): collisions, stairs, teleport, turn in place, touch Run mapping, gamepad mapping. Committed red at `6f1a8ed`.
+  - `tests/char-01-anim.test.ts` (11): stride rate per shipped body, stair foot IK.
+- typecheck: pass
+- `npm test`: 1011 tests, 1010 pass, 1 skipped (actionlint), 0 fail
+- build: pass
+- `char-ui-check`: 42/42 (port 5071)
+- `city-ui-check`:
+  - FREE-09 part: 23/23 (fresh fixture, 5073)
+  - rides part: 25/25 (fresh fixture, 5074)
+- `mobile-ui-check`: 411/411 (5075)
+- `outfit-ui-check`: 29/29 (5076)
+- `life04-ui-check` (waiting): 20/20 (5077)
+
+Screenshots regenerated by other checks were reverted, and no untracked files were left. Only ports 5071–5077 were used, each fixture stopped by its own task id. 4610, Pixel and `.agent-office` were not touched.
+
+## Not done or not verified
+
+- **Real devices.** All evidence is headless Chrome with touch emulation and a scripted gamepad. Nothing was run on an Android, iOS or desktop-app device, and no real controller was tested.
+- **How the sedan reached the roof on Android.** The only route found in code is a teleport while driving, now refused. The device tester's report should confirm it.
+- **New clips.** Rocketbox has start/stop and 90° turn clips, but they carry root rotation and forward travel that would fight the controller. The procedural turn step and stride matching gave the visible gain without them. There are no jump, stair or car-seat clips upstream.
+- **Helicopter and desk states** were not re-screenshotted this round (no changes there; their checks pass).
+- **Foot IK when descending stairs.** The trailing foot can float slightly while the body eases down a step; only sinking feet are corrected.
