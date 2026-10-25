@@ -94,7 +94,7 @@ export function architectSection() {
       h('p.setting-note', {}, `The world holds ${s.world.additions.length} of at most 48 additions. In the city they say “Built by the city architect”; they are never agent work. `, h('a', { href: '/api/architect/journal.md', download: 'city-architect-journal.md' }, 'Download the journal')),
     );
   };
-  const apply = (s: ArchitectState) => { store.architect = s; paint(s); };
+  const apply = (s: ArchitectState) => { store.architect = s; store.emit('architect'); };
   const load = () => {
     if (store.cloud) { status.textContent = CLOUD_ARCHITECT_NOTE; return; }
     architectApi.state().then(paint, (e) => { if (!disposed) status.textContent = `The city architect is not available on this host: ${e.message}`; });
@@ -121,7 +121,7 @@ export function architectFacts(item: Approval): HTMLElement {
       const live = changes.find((x) => x.id === c.id);
       const undone = !!live?.undone || !!run?.reverted;
       return h('li', { 'data-undone': String(undone) }, h('span', {}, h('strong', {}, c.label), h('small', {}, c.reason)),
-        undone ? h('span.architect-undone', {}, 'undone') : live ? h('button.btn', { type: 'button', 'aria-label': `Undo ${c.label}`, onclick: () => architectApi.undo(c.id).then((s) => { store.architect = s; toast(`Undid ${c.id}`, 'info'); }, (e) => toast(e.message, 'warn')) }, 'Undo') : h('span.architect-undone', {}, 'past the 30-day undo window'));
+        undone ? h('span.architect-undone', {}, 'undone') : live ? h('button.btn', { type: 'button', 'aria-label': `Undo ${c.label}`, onclick: () => architectApi.undo(c.id).then((s) => { store.architect = s; store.emit('architect'); toast(`Undid ${c.id}`, 'info'); }, (e) => toast(e.message, 'warn')) }, 'Undo') : h('span.architect-undone', {}, 'past the 30-day undo window'));
     })) : 'None')),
     h('div', {}, h('dt', {}, 'Keep changes'), h('dd', {}, 'records that you saw them; they are already in the city')),
     h('div', {}, h('dt', {}, 'Revert this day'), h('dd', {}, 'undoes every change above that is not undone yet')));

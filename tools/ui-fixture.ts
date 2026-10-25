@@ -31,6 +31,9 @@ import { ChiefBrain, ChiefError, chiefActions } from '../src/server/chief.js';
 import { LessonMemory } from '../src/server/memory.js';
 import { fixtureChat } from './chief-fixture.js';
 import { onboardingFixture } from './onboarding-fixture.js';
+import { ArchitectError, ArchitectService } from '../src/server/architect.js';
+import { WORLD_CAPS, applyChanges, emptyWorld } from '../src/shared/world.js';
+import { generateGrowth } from '../src/shared/world-generator.js';
 
 /**
  * ORG-03: a real approval inbox over a real consultancy journal in a throwaway temp directory, with a fake queue that
@@ -369,6 +372,61 @@ const controls = `<!doctype html><html lang="en"><meta charset="utf-8"><title>Ag
 ${scenarios.map(s => `<button type="button" data-scenario="${s}">${s}</button>`).join('')}<p role="status" id="status"></p>
 <script>for(const b of document.querySelectorAll('button'))b.onclick=async()=>{const r=await fetch('/__fixture/scenario/'+b.dataset.scenario,{method:'POST'});document.querySelector('#status').textContent=await r.text()};fetch('/__fixture/state').then(r=>r.text()).then(t=>document.querySelector('#status').textContent=t)</script></html>`;
 const mime: Record<string,string> = { '.html':'text/html', '.js':'text/javascript', '.css':'text/css', '.json':'application/json', '.png':'image/png', '.jpg':'image/jpeg', '.webp':'image/webp', '.svg':'image/svg+xml', '.glb':'model/gltf-binary', '.hdr':'application/octet-stream', '.mp3':'audio/mpeg', '.wav':'audio/wav', '.ogg':'audio/ogg', '.woff2':'font/woff2' };
+/**
+ * CITY-10 (FIXTURE_ARCHITECT=1): a real ArchitectService over the throwaway directory, as an own-server host. It starts
+ * off; rule-based growth runs on "Run now" (no model, no network). FIXTURE_ARCHITECT=max seeds a world with as many
+ * additions as the rules allow (for the perf method), then turns the architect on. FIXTURE_ARCHITECT_FAKE=premium uses a
+ * fake premium model instead (US$0.0042 reported per call; nothing is billed).
+ */
+let architect: ArchitectService | undefined;
+const architectMode = process.env.FIXTURE_ARCHITECT;
+if (architectMode === '1' || architectMode === 'max') {
+  if (architectMode === 'max') {
+    let doc = emptyWorld();
+    for (let i = 0; i < 400 && doc.additions.length < WORLD_CAPS.total; i++) {
+      const r = applyChanges(doc, generateGrowth(doc, { seed: `fixture-max-${i}`, maxChanges: 5, avoid: [], density: { business: 0.2, harbour: 0.2 } }), { day: '2026-10-24', runId: `R${i + 1}`, engine: 'rules', at: Date.now(), maxChanges: 5 });
+      if ('ok' in r) doc = r.ok.doc;
+    }
+    mkdirSync(resolve(inboxDir, 'world'), { recursive: true });
+    writeFileSync(resolve(inboxDir, 'world', 'additions.json'), JSON.stringify(doc));
+    console.log(`architect fixture: seeded ${doc.additions.length} additions (cap ${WORLD_CAPS.total})`);
+  }
+  const fakePremium = process.env.FIXTURE_ARCHITECT_FAKE === 'premium';
+  const service: ArchitectService = new ArchitectService(inboxDir, {
+    host: 'server', keys: () => (fakePremium ? { ANTHROPIC_API_KEY: 'fixture-not-a-key' } : {}),
+    chiefSettings: () => ({ mode: 'off', freeModel: 'gpt-oss:20b', premiumProvider: 'anthropic', premiumModel: fakePremium ? 'fixture-model' : '', dailyCapUsd: 2, ...(fakePremium ? { premiumPrice: [3, 15] as [number, number] } : {}) }),
+    chat: async (p) => ({ text: '{"changes": []}', model: p.model, usage: { input: 1200, output: 200 }, cost: { usd: 0.0042, kind: 'paid-estimate', label: '≈ US$0.0042 (estimate)' } }),
+    probe: async () => ({ running: false, models: [] }),
+    inbox: { raise: (f) => inbox!.raiseArchitect(f), resolve: (id, note) => inbox!.resolveArchitect(id, note) },
+    onChange: () => { for (const ws of sockets.clients) { send(ws, { t: 'architect', state: service.state() }); send(ws, { t: 'approvals', state: inbox!.state() }); } },
+  });
+  architect = service;
+  inbox!.setArchitect({ revert: (runId, actor) => service.revertRun(runId, actor) });
+  if (architectMode === 'max') service.updateSettings({ enabled: true });
+}
+async function architectRoute(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse, path: string) {
+  const a = architect!;
+  try {
+    if (path === '/api/architect' && req.method === 'GET') return json(res, 200, a.state());
+    if (path === '/api/architect/journal.md' && req.method === 'GET') { res.writeHead(200, { 'content-type': 'text/markdown; charset=utf-8' }); return res.end(a.journalMarkdown()); }
+    if (req.method !== 'POST') return json(res, 404, { error: 'Unknown architect endpoint.' });
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    const body = JSON.parse(raw || '{}') as Record<string, unknown>;
+    let out: unknown;
+    if (path === '/api/architect/settings') out = a.updateSettings(body);
+    else if (path === '/api/architect/run') out = await a.runNow('Fixture CEO');
+    else if (path === '/api/architect/undo') out = a.undo(body.changeId, 'Fixture CEO');
+    else if (path === '/api/architect/revert') out = { note: a.revertRun(body.runId, 'Fixture CEO'), state: a.state() };
+    else if (path === '/api/architect/avoid') out = a.addAvoid(body);
+    else if (path === '/api/architect/avoid/remove') out = a.removeAvoid(body.id);
+    else return json(res, 404, { error: 'Unknown architect endpoint.' });
+    for (const ws of sockets.clients) { send(ws, { t: 'architect', state: a.state() }); send(ws, { t: 'approvals', state: inbox!.state() }); }
+    return json(res, path === '/api/architect/run' ? 202 : 200, out);
+  } catch (error) {
+    return json(res, error instanceof ArchitectError ? error.status : 400, { error: (error as Error).message });
+  }
+}
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url || '/', `http://localhost:${port}`);
   res.setHeader('Cache-Control', 'no-store');
@@ -451,6 +509,7 @@ const server = createServer(async (req, res) => {
     let raw = ''; for await (const chunk of req) raw += chunk;
     try { return json(res, 200, chief.updateSettings(JSON.parse(raw || '{}'))); } catch (error) { return json(res, error instanceof ChiefError ? error.status : 400, { error: (error as Error).message }); }
   }
+  if (architect && (url.pathname === '/api/architect' || url.pathname.startsWith('/api/architect/'))) return architectRoute(req, res, url.pathname);
   if (url.pathname === '/api/approvals' && req.method === 'GET') return json(res, 200, inbox!.state());
   if (url.pathname === '/api/research' && req.method === 'GET') return json(res, 200, research!.state());
   const reportRoute = /^\/api\/research\/reports\/([a-zA-Z0-9_-]{1,80})$/.exec(url.pathname);
@@ -502,7 +561,7 @@ sockets.on('connection', ws => {
   const zero = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, cost: 0, calls: 0 };
   send(ws, { t: 'welcome', you: 'fixture-ceo', peers: [], workers: [worker, ...jobWorkers], project: { name: 'UI fixture · synthetic data', dir: '[isolated fixture]', agentCmd: 'disabled' },
     issues: empty, pulls: empty, ice: [], chat: [], invites: false, version: 'fixture', upgrade: { available: false, phase: 'idle' },
-    services: { items: [], port }, decor: [], usage: { total: zero, today: zero, day: '2026-09-27', pauseHiring: false }, queue: { tasks, maxWorkers: jobWorkers.length ? 3 : 1 }, org: fixtureOrg(state, [worker, ...jobWorkers], tasks), approvals: inbox!.state(), research: research!.state(), ...(chief ? { chief: chief.state() } : {}) });
+    services: { items: [], port }, decor: [], usage: { total: zero, today: zero, day: '2026-09-27', pauseHiring: false }, queue: { tasks, maxWorkers: jobWorkers.length ? 3 : 1 }, org: fixtureOrg(state, [worker, ...jobWorkers], tasks), approvals: inbox!.state(), research: research!.state(), ...(chief ? { chief: chief.state() } : {}), ...(architect ? { architect: architect.state() } : {}) });
   publish(ws);
   ws.on('message', raw => {
     let msg: any; try { msg = JSON.parse(raw.toString()); } catch { return; }

@@ -1,0 +1,100 @@
+{
+  "base": "http://localhost:5142/",
+  "results": [
+    {
+      "name": "fixture architect starts off and empty",
+      "ok": true,
+      "detail": "{\"enabled\":false,\"paused\":false,\"engine\":\"rules\",\"runHour\":3,\"maxChangesPerRun\":3,\"dailyCapUsd\":0.05,\"monthlyCapUsd\":1}"
+    },
+    {
+      "name": "no additions are drawn without the architect",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "Settings names the feature and says it is off",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "turning it on by keyboard saves the setting",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "Run now applied rule-based changes (at most 3), US$0",
+      "ok": true,
+      "detail": "3 changes, US$0 · rule-based"
+    },
+    {
+      "name": "the game renders every addition the host reports",
+      "ok": true,
+      "detail": "{\"rendered\":3,\"skipped\":0,\"invalid\":\"\",\"revision\":1}"
+    },
+    {
+      "name": "a second run the same day is refused",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "walking up shows \"Built by the city architect\"",
+      "ok": true,
+      "detail": "Built by the city architect · 2026-10-25 · A street lamp so the Meridian north-east verge is lit at night"
+    },
+    {
+      "name": "Low quality keeps only buildings",
+      "ok": true,
+      "detail": "0 vs 0"
+    },
+    {
+      "name": "Save-Data keeps only buildings",
+      "ok": true,
+      "detail": "0 vs 0"
+    },
+    {
+      "name": "no console errors with Save-Data",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "phone Settings has no horizontal overflow",
+      "ok": true,
+      "detail": "0px"
+    },
+    {
+      "name": "phone inbox shows the change list with Undo buttons",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "no console errors on the phone",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "375 px Settings has no horizontal overflow",
+      "ok": true,
+      "detail": "{\"over\":0,\"page\":0}"
+    },
+    {
+      "name": "inbox summary: City architect tag, engine, cost, Keep and Revert actions",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "undo removed exactly one addition and became an avoid-rule",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "Revert this day removed the rest of the day",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "no console errors on desktop",
+      "ok": true,
+      "detail": ""
+    }
+  ]
+}

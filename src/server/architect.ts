@@ -448,7 +448,7 @@ export class ArchitectService {
   private raiseSummary(record: RunRecord) {
     if (!this.ports.inbox) return;
     const n = record.changes.length;
-    const detail = record.status === 'applied' ? `${n} change${n === 1 ? '' : 's'} to the city on ${record.day} · ${record.engineLabel} · ${record.costLabel}. Applied automatically; undo any change or revert the day.`
+    const detail = record.status === 'applied' ? `${n} change${n === 1 ? '' : 's'} to the city on ${record.day} · ${record.engineLabel}${record.costUsd ? ` · ${record.costLabel}` : ''}. Applied automatically; undo any change or revert the day.`
       : record.status === 'no_changes' ? `No changes on ${record.day}: nothing needed doing. ${record.engineLabel} · ${record.costLabel}.`
         : `Nothing changed on ${record.day}. ${(record.reason ?? '').slice(0, 220)}`;
     const architect: ArchitectSummary = {

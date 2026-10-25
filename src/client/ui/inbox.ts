@@ -344,7 +344,7 @@ export function openInbox(focusId?: string) {
     storageNote.hidden = !state.storageError;
     // Re-draw the detail only when what it shows changed, so a broadcast never steals focus from the budget input.
     const current = state.items.find((i) => i.id === selected);
-    const key = JSON.stringify([current, confirming, busy, error, current?.kind === 'job_plan' ? [chiefPlanFor(current.jobId), chiefReviewsFor(current.jobId)] : null]);
+    const key = JSON.stringify([current, confirming, busy, error, current?.kind === 'job_plan' ? [chiefPlanFor(current.jobId), chiefReviewsFor(current.jobId)] : current?.kind === 'architect_summary' ? store.architect?.runs.find((r) => r.id === current.architect?.runId) ?? null : null]);
     if (key !== detailKey || !detail.firstChild) { detailKey = key; renderDetail(current); }
   };
 
@@ -355,7 +355,7 @@ export function openInbox(focusId?: string) {
       h('footer', {}, h('p.setting-note', {}, 'Plans come from Alex, budget increases from Priya, campaign sends from Jordan, tool proposals from Sam. Items tagged Model-backed were written by the chief’s model and are proposals; the rest are rule-based monitors of real jobs, spend, outreach and worker reports. Telegram: /approvals.'))),
     { onClose: () => offs.forEach((off) => off()) },
   );
-  const offs = (['approvals', 'cloud', 'chief'] as const).map((topic) => store.on(topic, render));
+  const offs = (['approvals', 'cloud', 'chief', 'architect'] as const).map((topic) => store.on(topic, render));
   close.addEventListener('click', () => modal.close());
   render();
   if (focusId && store.approvals?.items.some((i) => i.id === focusId)) select(focusId);
