@@ -22,7 +22,9 @@ import { hasHiddenChars } from '../shared/text-safety.js';
 import type { CloudJob, CloudState } from './schema.js';
 
 export const ORG_FILE = 'state/org.json';
-export const ORG_LIMITS = { approvals: 400, decidedKept: 300, lessons: 500, research: 100, section: 4000, reason: 300 } as const;
+export const ORG_LIMITS = { approvals: 400, decidedKept: 300, lessons: 500, research: 100, section: 4000, reason: 300, readAttempts: 5 } as const;
+/** Review fix 3: the serialized state/org.json never exceeds this (readers accept 4 MiB per state file). */
+export const ORG_MAX_BYTES = 3 * 1024 * 1024;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const LESSON_ID = /^L[1-9]\d{0,8}$/;
 const NONCE = /^[a-f0-9]{16}$/;
