@@ -76,7 +76,7 @@ export const isSuppressed = (o: CloudOutreach, email: string) => { const h = sup
 
 // ---------------------------------------------------------------- intent checks
 
-const ONE_LINE_UNSAFE = /[\u0000-\u001f\u007f-\u009f  ]/;
+const ONE_LINE_UNSAFE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
 export function checkOutreachSettings(raw: Record<string, unknown>): Omit<OutreachSettings, 'acknowledgedAt'> {
   const extra = Object.keys(raw).find((k) => !['from', 'fromName', 'address', 'dailyCap', 'perRunCap'].includes(k));
   if (extra) refuse('invalid_intent', `Unexpected intent field "${extra.slice(0, 40)}".`);

@@ -26,7 +26,7 @@ export interface SendJobDeps {
   retry?: RetryOptions;
   log?: (line: string) => void;
 }
-const HEADER_UNSAFE = /[\u0000-\u001f\u007f-\u009f  ]/;
+const HEADER_UNSAFE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
 
 export async function runSendJob(deps: SendJobDeps): Promise<{ sent: number; failed: number; refused: number; uncertain: number; skipped?: string }> {
   const log = deps.log ?? (() => {});

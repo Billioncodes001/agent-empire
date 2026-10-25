@@ -16,6 +16,8 @@ import type { ExecutionConfig, ExecutionTask } from '../shared/execution.js';
 import { COMMIT, PROVIDER_ID, TASK_ID, validateConfig } from '../server/execution-validation.js';
 import { DEFAULT_WORKER_MODEL, isWorkerModel, WORKER_ENVIRONMENT, type WorkerModel } from './worker-spec.js';
 import { emptyOrg, isEmptyOrg, ORG_FILE, OrgSchemaError, validateOrg, type CloudOrg } from './org.js';
+import { BRAIN_FILE, BrainSchemaError, emptyBrain, isEmptyBrain, validateBrain, type CloudBrain } from './brain.js';
+import { OUTREACH_FILE, OutreachSchemaError, emptyOutreach, isEmptyOutreach, validateOutreach, type CloudOutreach } from './outreach.js';
 import { ActionsSettingsError, isCloudEngine, RUN_CAPS, validateActionsSettings, type ActionsSettings, type CloudEngine } from './actions-spec.js';
 
 export const CLOUD_SCHEMA_VERSION = 1;
@@ -40,7 +42,7 @@ export const STATE_FILES = {
  * lessons, research; src/cloud/org.ts) is optional: a snapshot written before FREE-07 has none and reads as an empty
  * organization, and the file is written only once it is non-empty.
  */
-export const OPTIONAL_STATE_FILES: readonly string[] = [ORG_FILE];
+export const OPTIONAL_STATE_FILES: readonly string[] = [ORG_FILE, BRAIN_FILE, OUTREACH_FILE];
 export const STATE_PATHS: readonly string[] = [...Object.values(STATE_FILES), ...OPTIONAL_STATE_FILES];
 export const INTENT_DIR = 'intents/';
 export const INTENT_PATH = /^intents\/([A-Za-z0-9._-]{1,80})\.json$/;
@@ -255,6 +257,12 @@ export interface CloudState {
   org: CloudOrg;
   /** FREE-07 review: set when state/org.json could not be read; the file is then left untouched. */
   orgError?: string;
+  /** FREE-11: the chief's planning brain (settings, spend log, requests). */
+  brain: CloudBrain;
+  brainError?: string;
+  /** FREE-12: outreach (sender, leads, hashed opt-outs, campaigns). */
+  outreach: CloudOutreach;
+  outreachError?: string;
 }
 
 export class SchemaError extends Error {
@@ -292,7 +300,7 @@ export function initialCloudState(now: number, options: { limits?: CloudLimits; 
     heartbeat: { schemaVersion: 1 },
     processed: { schemaVersion: 1, entries: [] },
     archivedJobIds: { schemaVersion: 1, ids: [] },
-    org: emptyOrg(),
+    org: emptyOrg(), brain: emptyBrain(), outreach: emptyOutreach(),
   };
 }
 
@@ -572,6 +580,15 @@ export function migrateEmpire(value: unknown, now: number): { empire: unknown; m
 }
 
 export function parseStateFiles(files: StateFiles, now: number, unreadable: Record<string, string> = {}): { state: CloudState; migrated: string[] } {
+  // FREE-11/12: like org.json, an unreadable brain or outreach file is quarantined (left untouched, its intents refused).
+  const optional = <T, K extends 'brain' | 'outreach'>(file: string, empty: () => T, validate: (v: unknown) => T, Err: new (m: string) => Error, key: K) => {
+    let error: string | undefined = unreadable[file];
+    let value = empty();
+    if (!error && files[file] !== undefined) {
+      try { value = validate(JSON.parse(files[file])); } catch (e) { error = e instanceof Err ? e.message : `${file}: invalid JSON`; }
+    }
+    return { [key]: value, ...(error ? { [`${key}Error`]: error } : {}) } as Record<K, T> & Partial<Record<`${K}Error`, string>>;
+  };
   const raw: Record<string, unknown> = {};
   for (const [key, file] of Object.entries(STATE_FILES)) {
     const text = files[file];
@@ -604,6 +621,8 @@ export function parseStateFiles(files: StateFiles, now: number, unreadable: Reco
       journal: validateJournal(raw.journal), heartbeat: validateHeartbeat(raw.heartbeat), processed: validateProcessed(raw.processed),
       archivedJobIds: validateArchivedJobIds(raw.archivedJobIds),
       org, ...(orgError ? { orgError } : {}),
+      ...optional(BRAIN_FILE, emptyBrain, validateBrain, BrainSchemaError, 'brain'),
+      ...optional(OUTREACH_FILE, emptyOutreach, validateOutreach, OutreachSchemaError, 'outreach'),
     },
     migrated,
   };
@@ -624,5 +643,7 @@ export function serializeState(state: CloudState): StateFiles {
     [STATE_FILES.archivedJobIds]: JSON.stringify(state.archivedJobIds) + '\n',
     // FREE-07: an empty organization is not written, so an older Empire gains no commit until it uses one.
     ...(state.orgError || isEmptyOrg(state.org) ? {} : { [ORG_FILE]: text(state.org) }),
+    ...(state.brainError || isEmptyBrain(state.brain) ? {} : { [BRAIN_FILE]: text(state.brain) }),
+    ...(state.outreachError || isEmptyOutreach(state.outreach) ? {} : { [OUTREACH_FILE]: text(state.outreach) }),
   };
 }

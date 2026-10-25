@@ -133,7 +133,7 @@ export const ORG_CAPABILITIES: Record<OrgFeature, OrgCapability> = {
 };
 
 /** The approval kinds a cloud coordinator raises. Every other kind is refused by the cloud schema. */
-export const CLOUD_APPROVAL_KINDS: readonly ApprovalKind[] = ['tool_proposal', 'lesson'];
+export const CLOUD_APPROVAL_KINDS: readonly ApprovalKind[] = ['tool_proposal', 'lesson', 'job_plan', 'chief_proposal', 'external_action'];
 
 /** The one message the game shows where a feature (or part of one) can't run in cloud mode. */
 export function cloudGapMessage(feature: OrgFeature): string {

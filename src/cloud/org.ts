@@ -68,6 +68,42 @@ const refuse = (code: string, message: string): never => { throw new OrgRuleErro
 
 // ---------------------------------------------------------------- validation
 
+const PLAN_ITEM_KEYS = ['title', 'prompt', 'phase', 'role', 'parallel', 'dependsOn'];
+/** FREE-11/12: the fields each new cloud kind may carry, checked strictly (and only on that kind). */
+function validateNewKinds(a: Rec) {
+  const only = (field: string, kind: string) => { if (a[field] !== undefined && a.kind !== kind) throw new OrgSchemaError(`${field} on a ${String(a.kind).slice(0, 30)} item`); };
+  only('plan', 'job_plan'); only('proposal', 'chief_proposal'); only('outreach', 'external_action');
+  if (a.proposedBy !== undefined && (a.kind !== 'job_plan' || typeof a.proposedBy !== 'string' || a.proposedBy.length > 200)) throw new OrgSchemaError('invalid proposedBy');
+  if (a.kind === 'job_plan') {
+    const p = obj(a.plan, ['requestId', 'client', 'title', 'summary', 'items', 'lessons', 'citedLessons', 'costLabel'], 'plan');
+    text(p.requestId, 80, 'plan'); text(p.title, 200, 'plan title'); text(p.costLabel, 200, 'plan cost');
+    if (p.client !== undefined) text(p.client, 120, 'plan client');
+    if (p.summary !== undefined) text(p.summary, 400, 'plan summary');
+    if (!Array.isArray(p.items) || !p.items.length || p.items.length > 8) throw new OrgSchemaError('invalid plan items');
+    for (const it of p.items) {
+      const x = obj(it, PLAN_ITEM_KEYS, 'plan item');
+      text(x.title, 120, 'plan item title'); text(x.prompt, 2000, 'plan item prompt'); text(x.phase, 40, 'plan item'); text(x.role, 40, 'plan item');
+      if (typeof x.parallel !== 'boolean' || !Array.isArray(x.dependsOn) || x.dependsOn.some((d) => !Number.isSafeInteger(d))) throw new OrgSchemaError('invalid plan item');
+      if (hasHiddenChars(String(x.title)) || hasHiddenChars(String(x.prompt))) throw new OrgSchemaError('a plan item has hidden characters');
+    }
+    if (p.lessons !== undefined) { if (!Array.isArray(p.lessons) || p.lessons.length > 20) throw new OrgSchemaError('invalid plan lessons'); for (const l of p.lessons) { const x = obj(l, ['id', 'text'], 'plan lesson'); text(x.id, 12, 'plan lesson'); text(x.text, 600, 'plan lesson'); } }
+    if (p.citedLessons !== undefined && (!Array.isArray(p.citedLessons) || p.citedLessons.some((c) => typeof c !== 'string' || !(p.lessons as { id: string }[] | undefined)?.some((l) => l.id === c)))) throw new OrgSchemaError('a plan cites a lesson it was not given');
+  }
+  if (a.kind === 'chief_proposal') {
+    const p = obj(a.proposal, ['situation', 'text', 'model'], 'proposal');
+    text(p.situation, 300, 'proposal'); text(p.text, 1200, 'proposal'); text(p.model, 100, 'proposal');
+  }
+  if (a.kind === 'external_action') {
+    const o = obj(a.outreach, ['campaignId', 'snapshotHash', 'channel', 'from', 'dailyCap', 'intervalSec', 'perRun', 'samples', 'recipients', 'excluded', 'draftedBy'], 'campaign send');
+    text(o.campaignId, 12, 'campaign'); if (!/^[a-f0-9]{64}$/.test(String(o.snapshotHash)) || o.channel !== 'email') throw new OrgSchemaError('invalid campaign send');
+    text(o.from, 254, 'campaign sender'); text(o.draftedBy, 80, 'campaign'); num(o.dailyCap, 'campaign cap'); num(o.intervalSec, 'campaign interval'); if (o.perRun !== undefined) num(o.perRun, 'campaign cap');
+    if (!Array.isArray(o.recipients) || o.recipients.length > 500 || o.recipients.some((r) => typeof r !== 'string' || r.length > 254)) throw new OrgSchemaError('invalid campaign recipients');
+    if (!Array.isArray(o.samples) || o.samples.length > 2) throw new OrgSchemaError('invalid campaign samples');
+    for (const sm of o.samples) { const x = obj(sm, ['to', 'subject', 'text'], 'campaign sample'); text(x.to, 254, 'sample'); text(x.subject, 300, 'sample'); text(x.text, 25_000, 'sample'); }
+    const e = obj(o.excluded, ['suppressed', 'invalid', 'unconfirmed'], 'excluded'); for (const k of Object.keys(e)) num(e[k], 'excluded');
+  }
+}
+
 export class OrgSchemaError extends Error {
   constructor(message: string) { super(`${ORG_FILE}: ${message}`); this.name = 'OrgSchemaError'; }
 }
@@ -110,7 +146,8 @@ export function validateOrg(value: unknown): CloudOrg {
   if (!Array.isArray(o.research) || o.research.length > ORG_LIMITS.research) throw new OrgSchemaError('invalid research');
   const ids = new Set<string>();
   for (const item of o.approvals) {
-    const a = obj(item, ['id', 'kind', 'raisedBy', 'title', 'detail', 'jobId', 'createdAt', 'status', 'decidedAt', 'decidedBy', 'note', 'tool', 'lesson'], 'approval');
+    const a = obj(item, ['id', 'kind', 'raisedBy', 'title', 'detail', 'jobId', 'createdAt', 'status', 'decidedAt', 'decidedBy', 'note', 'tool', 'lesson', 'proposedBy', 'plan', 'proposal', 'outreach'], 'approval');
+    validateNewKinds(a);
     if (!APPROVAL_ID_RE.test(String(a.id)) || ids.has(String(a.id)) || Number(String(a.id).slice(1)) >= (o.nextApproval as number)) throw new OrgSchemaError('invalid approval id');
     ids.add(String(a.id));
     if (!CLOUD_APPROVAL_KINDS.includes(a.kind as never)) throw new OrgSchemaError(`approval kind ${String(a.kind).slice(0, 40)} is not raised in cloud mode`);
@@ -272,7 +309,9 @@ export function decideApproval(org: CloudOrg, input: DecisionInput, ctx: OrgCtx)
     const tool = org.research.find((r) => r.jobId === item.jobId)?.tools.find((t) => t.approvalId === item.id);
     if (!tool) refuse('tool_mismatch', `${item.id} no longer matches a research report, so nothing was decided.`);
     Object.assign(tool!, { decision: wanted, decidedAt: ctx.now, decidedBy: 'CEO' });
-  } else refuse('not_in_cloud', 'That kind of item is not decided in cloud mode.');
+  } else if (item.kind !== 'job_plan' && item.kind !== 'chief_proposal' && item.kind !== 'external_action') refuse('not_in_cloud', 'That kind of item is not decided in cloud mode.');
+  // FREE-11: a plan or chief proposal records the decision only. FREE-12: a campaign send is checked against its
+  // snapshot by the coordinator before this, and starts sending after it (src/cloud/outreach.ts).
   Object.assign(item, { status: wanted, decidedAt: ctx.now, decidedBy: 'CEO' });
   return 'applied';
 }
