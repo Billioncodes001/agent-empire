@@ -175,7 +175,7 @@ const resizeWatch = typeof ResizeObserver !== 'undefined' ? new ResizeObserver((
  */
 export function placeToasts() {
   const box = document.getElementById('toasts');
-  if (!box) return;
+  if (!box?.dataset || !box.style) return; // test doubles of #toasts are bare elements
   const top = stack[stack.length - 1];
   if (watched !== (top?.el ?? null)) {
     if (watched) resizeWatch?.unobserve(watched);
