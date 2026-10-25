@@ -1,4 +1,6 @@
-import { APPROVAL_KIND_LABEL, CLOUD_INBOX_NOTE, MAX_APPROVAL_BUDGET_USD, approveHint, type Approval } from '../../shared/approvals';
+import { APPROVAL_KIND_LABEL, MAX_APPROVAL_BUDGET_USD, approvalFingerprint, approveHint, type Approval } from '../../shared/approvals';
+import { ORG_CAPABILITIES, cloudMissingKinds } from '../../shared/org-capabilities';
+import { activeCloudNet } from '../cloud/active';
 import { ACTUAL_SPEND_LABEL, EXECUTIVES, basisLabel, defaultApprovedBudget, fmtDurationRange, fmtUsdRange } from '../../shared/org';
 import { apiFetch } from '../endpoint';
 import { TOOL_DECISION_NOTE } from '../../shared/research';
@@ -57,7 +59,16 @@ function chiefBlocks(item: Approval): HTMLElement[] {
   return [plan ? chiefPlanBlock(plan) : null, reviews].filter((x): x is HTMLElement => !!x);
 }
 
-export const pendingApprovals = () => (store.cloud ? 0 : store.approvals?.pending ?? 0);
+export const pendingApprovals = () => store.approvals?.pending ?? 0;
+
+/** FREE-07: a cloud decision this device sent that the coordinator has not applied yet. */
+const sentDecision = (item: Approval) => store.cloud?.sent.find((s) => s.kind === 'approval_decision' && s.ref === item.id);
+/** FREE-07: the inbox kinds cloud mode never raises, each with its specific reason (from the capability matrix). */
+function cloudGaps(): HTMLElement {
+  return h('details.inbox-cloud-gaps', {},
+    h('summary', {}, 'Not raised in cloud mode'),
+    h('ul', {}, ...cloudMissingKinds().map((m) => h('li', { 'data-gap': m.kind }, m.message))));
+}
 
 function ago(at: number): string {
   const min = Math.max(0, Math.round((Date.now() - at) / 60_000));
@@ -144,6 +155,14 @@ function itemRow(item: Approval, selected: boolean, onSelect: () => void): HTMLE
 }
 
 async function decide(item: Approval, action: 'approve' | 'reject', budgetUsd?: number): Promise<Approval> {
+  if (store.cloud) {
+    // FREE-07: an intent naming the item exactly as shown; the coordinator refuses it if the item changed meanwhile.
+    const net = activeCloudNet();
+    if (!net) throw new Error('Cloud mode is not connected on this device yet.');
+    const id = await net.submit({ kind: 'approval_decision', approvalId: item.id, decision: action, seen: approvalFingerprint(item) }, `${action === 'approve' ? 'Approve' : 'Decline'} ${item.id}`);
+    if (!id) throw new Error('The decision was not sent; nothing changed. Try again.');
+    return item;
+  }
   const res = await apiFetch(`/api/approvals/${encodeURIComponent(item.id)}/${action}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -182,7 +201,7 @@ export function openInbox(focusId?: string) {
 
   const renderDetail = (item: Approval | undefined) => {
     if (!item) {
-      detail.replaceChildren(h('p.inbox-empty', {}, store.approvals?.pending ? 'Choose an item to review it.' : 'Nothing is waiting for you. New plans and budget increases appear here, on the founder desk and in Telegram.'));
+      detail.replaceChildren(h('p.inbox-empty', {}, store.approvals?.pending ? 'Choose an item to review it.' : (store.cloud ? 'Nothing is waiting for you. Tool proposals from cloud research and lessons you write appear here.' : 'Nothing is waiting for you. New plans and budget increases appear here, on the founder desk and in Telegram.')));
       return;
     }
     const back = h('button.btn.inbox-back', { type: 'button', onclick: () => { body.dataset.view = 'list'; render(); list.querySelector<HTMLElement>(`[data-approval="${CSS.escape(item.id)}"]`)?.focus(); } }, '← All items');
@@ -206,6 +225,12 @@ export function openInbox(focusId?: string) {
       return;
     }
     if (reopen) head.push(decidedLine!, h('p.setting-note', {}, 'The job is still held. You can still approve the increase.'));
+    const sent = sentDecision(item);
+    if (sent) {
+      // FREE-07: decided on this device; the coordinator applies it on its next run. No second decision meanwhile.
+      detail.replaceChildren(...head, h('p.inbox-decided.inbox-sent', { 'data-status': 'sent', role: 'status' }, `${sent.label}: sent to your coordinator. It applies the decision on its next run, usually within a few minutes, and refuses it if this item changed.`));
+      return;
+    }
     if (item.kind === 'external_action') {
       const n = item.outreach?.recipients.length ?? 0;
       const runSend = async (action: 'approve' | 'reject') => {
@@ -303,16 +328,13 @@ export function openInbox(focusId?: string) {
       confirm || h('div.inbox-actions', {},
         h('button.btn.primary', { type: 'button', disabled: busy, onclick: () => ask('approve') }, lessonItem ? 'Approve lesson…' : chiefItem ? (item.proposal?.action ? 'Approve & retry…' : 'Approve proposal…') : tool ? 'Approve proposal…' : item.kind === 'budget_increase' ? 'Approve increase…' : 'Approve plan…'),
         reopen ? null : h('button.btn', { type: 'button', disabled: busy, onclick: () => ask('reject') }, chiefItem ? 'Dismiss…' : 'Decline…')),
-      h('p.setting-note', {}, approveHint(item.id)),
+      h('p.setting-note', {}, store.cloud ? 'Your coordinator applies this on its next run, usually within a few minutes. Telegram and the founder desk are not available in cloud mode.' : approveHint(item.id)),
     );
   };
 
   const render = () => {
-    if (store.cloud) {
-      body.replaceChildren(h('p.inbox-empty.inbox-cloud', {}, CLOUD_INBOX_NOTE));
-      count.textContent = '';
-      return;
-    }
+    // FREE-07: in cloud mode the inbox is the coordinator's (tool proposals and lessons); the other kinds say why not.
+    if (store.cloud && !side.querySelector('.inbox-cloud-gaps')) side.append(h('p.setting-note.inbox-cloud-note', {}, ORG_CAPABILITIES.inbox.cloudSummary), cloudGaps());
     const state = store.approvals;
     if (!state) {
       body.replaceChildren(h('p.inbox-empty', {}, 'This server has not reported an approval inbox yet. Update the office host to use it.'));
@@ -336,7 +358,7 @@ export function openInbox(focusId?: string) {
     storageNote.hidden = !state.storageError;
     // Re-draw the detail only when what it shows changed, so a broadcast never steals focus from the budget input.
     const current = state.items.find((i) => i.id === selected);
-    const key = JSON.stringify([current, confirming, busy, error, current?.kind === 'job_plan' ? [chiefPlanFor(current.jobId), chiefReviewsFor(current.jobId)] : null]);
+    const key = JSON.stringify([current, confirming, busy, error, !!(current && sentDecision(current)), current?.kind === 'job_plan' ? [chiefPlanFor(current.jobId), chiefReviewsFor(current.jobId)] : null]);
     if (key !== detailKey || !detail.firstChild) { detailKey = key; renderDetail(current); }
   };
 
@@ -344,7 +366,7 @@ export function openInbox(focusId?: string) {
     h('div.modal.inbox-modal', { role: 'dialog', 'aria-labelledby': 'inbox-title' },
       h('header', {}, h('div.inbox-heading', {}, h('small.empire-eyebrow', {}, 'CEO desk · Approval inbox'), h('h2', { id: 'inbox-title' }, 'Waiting for you ', count)), close),
       body,
-      h('footer', {}, h('p.setting-note', {}, 'Plans come from Alex, budget increases from Priya, campaign sends from Jordan, tool proposals from Sam. Items tagged Model-backed were written by the chief’s model and are proposals; the rest are rule-based monitors of real jobs, spend, outreach and worker reports. Telegram: /approvals.'))),
+      h('footer', {}, h('p.setting-note', {}, store.cloud ? 'Cloud mode: tool proposals come from Sam’s research reports and lessons from you. Everything here was recorded by your coordinator in your state repository; nothing is live.' : 'Plans come from Alex, budget increases from Priya, campaign sends from Jordan, tool proposals from Sam. Items tagged Model-backed were written by the chief’s model and are proposals; the rest are rule-based monitors of real jobs, spend, outreach and worker reports. Telegram: /approvals.'))),
     { onClose: () => offs.forEach((off) => off()) },
   );
   const offs = (['approvals', 'cloud', 'chief'] as const).map((topic) => store.on(topic, render));

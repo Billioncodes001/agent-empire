@@ -8,6 +8,8 @@ export interface SentIntent {
   at: number;
   /** The job a review / cancel / new job intent is about. */
   jobId?: string;
+  /** FREE-07: the inbox item (A3) or lesson (L2) an organization intent is about. */
+  ref?: string;
 }
 
 /** Everything the game knows about the cloud Empire. Shown with its age; never presented as live. */
