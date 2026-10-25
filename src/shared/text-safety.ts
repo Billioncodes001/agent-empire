@@ -36,3 +36,4 @@ export function unsafeReason(text: string): string | undefined {
   for (const [re, why] of rules) if (re.test(t)) return why;
   return undefined;
 }
+export const hasDeceptiveChars = (text: string) => hasHiddenChars(text); // stub for the failing-first run
