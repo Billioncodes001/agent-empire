@@ -92,6 +92,46 @@ const humanData = (page: Page, key: string) => page.evaluate((k) => {
   walk(x.me.root as never);
   return v as string | null | undefined;
 }, key);
+/**
+ * CHAR-02 review: vertical clearance above the founder's skull inside a ride. A ray straight up from the head bone is
+ * tested against every triangle of the ride's meshes (world space); `roof` is the lowest surface above the head and
+ * `gap` the room left above the top of the skull (head bone + 0.12 m). Rotors and glass count as roof.
+ */
+const headClearance = (page: Page, key: string) => page.evaluate((k) => {
+  type M = { isMesh?: boolean; matrixWorld: { elements: number[] }; geometry?: { index: { array: ArrayLike<number> } | null; attributes: { position: { count: number; getX(i: number): number; getY(i: number): number; getZ(i: number): number } } }; children: M[]; updateMatrixWorld(f: boolean): void };
+  const o = (window as unknown as { __office: { me: { root: unknown }; city: { rides(): { key: string; object: M }[] } } }).__office;
+  let head: { getWorldPosition(v: unknown): { x: number; y: number; z: number }; position: { clone(): unknown } } | null = null;
+  const find = (n: { name?: string; children?: unknown[] }) => { if (n.name === 'Bip01_Head') head = n as never; (n.children as typeof n[] | undefined)?.forEach(find); };
+  find(o.me.root as never);
+  const ride = o.city.rides().find((r) => r.key === k);
+  if (!head || !ride) return { roof: null, gap: -1, head: null };
+  const h = (head as { getWorldPosition(v: unknown): { x: number; y: number; z: number }; position: { clone(): unknown } }).getWorldPosition((head as { position: { clone(): unknown } }).position.clone());
+  ride.object.updateMatrixWorld(true);
+  let roof: number | null = null;
+  const tx = (e: number[], x: number, y: number, z: number) => [e[0] * x + e[4] * y + e[8] * z + e[12], e[1] * x + e[5] * y + e[9] * z + e[13], e[2] * x + e[6] * y + e[10] * z + e[14]];
+  const visit = (m: M) => {
+    if (m.isMesh && m.geometry) {
+      const p = m.geometry.attributes.position, e = m.matrixWorld.elements, idx = m.geometry.index?.array;
+      const n = idx ? idx.length : p.count;
+      const v = (i: number) => { const j = idx ? idx[i] : i; return tx(e, p.getX(j), p.getY(j), p.getZ(j)); };
+      for (let i = 0; i + 2 < n; i += 3) {
+        const a = v(i), b = v(i + 1), c = v(i + 2);
+        const d = (b[2] - c[2]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[2] - c[2]);
+        if (Math.abs(d) < 1e-9) continue;
+        const w1 = ((b[2] - c[2]) * (h.x - c[0]) + (c[0] - b[0]) * (h.z - c[2])) / d;
+        const w2 = ((c[2] - a[2]) * (h.x - c[0]) + (a[0] - c[0]) * (h.z - c[2])) / d;
+        const w3 = 1 - w1 - w2;
+        if (w1 < 0 || w2 < 0 || w3 < 0) continue;
+        const y = w1 * a[1] + w2 * b[1] + w3 * c[1];
+        if (y > h.y && (roof === null || y < roof)) roof = y;
+      }
+    }
+    m.children.forEach(visit);
+  };
+  visit(ride.object);
+  const r = roof as number | null;
+  return { roof: r === null ? null : Math.round(r * 1000) / 1000, gap: r === null ? -1 : Math.round((r - h.y - 0.12) * 1000) / 1000, head: Math.round(h.y * 1000) / 1000 };
+}, key);
 const state = (page: Page) => o(page, (x) => ({ x: x.player.pos.x, y: x.player.pos.y, z: x.player.pos.z, speed: x.player.speed, driving: x.player.driving, traversal: x.traversal.state }));
 async function hold(page: Page, key: string, ms: number) { await page.keyboard.down(key); await page.waitForTimeout(ms); await page.keyboard.up(key); }
 
@@ -324,11 +364,54 @@ try {
     await s.page.waitForTimeout(300);
     await shot2('07-car-seat-driving');
     check(`${l.name}: the car seat plays the driving pose`, (await clip()) === 'drive_seated', await clip());
+    // The sedan cabin predates CHAR-02 (the chair sit reached the roofline too); its clearance is reported, not gated.
+    const rideKey = await s.page.evaluate(() => (window as unknown as { __office: { player: { ride: { id: string } } } }).__office.player.ride.id);
+    console.log(`INFO  ${l.name}: sedan (${rideKey}) driver head clearance ${JSON.stringify(await headClearance(s.page, rideKey))}`);
     await s.page.keyboard.press('e');
     await s.page.waitForTimeout(900);
     await shot2('08-car-get-out');
     await s.page.waitForFunction(() => (window as unknown as { __office: O }).__office.traversal.state === 'walking', null, { timeout: 10_000 });
     check(`${l.name}: console has no errors`, s.errors.length === 0, s.errors.slice(0, 3).join(' | '));
+    await s.context.close();
+  }
+
+  // ---------------------------------------------------------------- F. CHAR-02: the helicopter pilot seat
+  for (const l of [{ name: '1440x900', width: 1440, height: 900, touch: false }, { name: '874x402', width: 874, height: 402, touch: true }]) {
+    const s = await open(browser, { width: l.width, height: l.height, touch: l.touch });
+    await enterGame(s.page);
+    await s.page.waitForFunction(() => {
+      let ok = false;
+      const walk = (n: { userData: Record<string, unknown>; children?: unknown[] }) => { if (Array.isArray(n.userData.extraClips)) ok = true; (n.children as typeof n[] | undefined)?.forEach(walk); };
+      walk((window as unknown as { __office: O }).__office.me.root as never);
+      return ok;
+    }, null, { timeout: 30_000 });
+    // Buy the helicopter once per fixture (fictional city credits; the fixture server applies it).
+    const owned = await s.page.evaluate(() => !!(window as unknown as { __office: { store: { empire: { city?: { helicopter?: boolean } } } } }).__office.store.empire.city?.helicopter);
+    if (!owned) await s.page.evaluate(() => (window as unknown as { __office: { net: { send(m: unknown): void } } }).__office.net.send({ t: 'empire.action', action: { kind: 'buy-helicopter', nonce: 'char02-heli-1' } }));
+    await s.page.waitForFunction(() => !!(window as unknown as { __office: { store: { empire: { city?: { helicopter?: boolean } } } } }).__office.store.empire.city?.helicopter, null, { timeout: 8000 });
+    await s.page.waitForTimeout(800);
+    // Stand at the pilot's door (the walk there is covered by city-ui-check rides) and board.
+    await s.page.evaluate(() => {
+      const o = (window as unknown as { __office: O & { city: { rides(): { key: string; spec: { door: number[] }; object: { position: V3; rotation: { y: number } } }[] } } }).__office;
+      const r = o.city.rides().find((x) => x.key === 'helicopter')!;
+      const d = r.spec.door, a = r.object.rotation.y, c = Math.cos(a), sn = Math.sin(a);
+      o.player.pos.set(r.object.position.x + d[0] * c + d[2] * sn, r.object.position.y, r.object.position.z - d[0] * sn + d[2] * c);
+      o.player.updateCamera(true);
+    });
+    await s.page.waitForTimeout(500);
+    await s.page.keyboard.press('e');
+    await s.page.waitForFunction(() => (window as unknown as { __office: O }).__office.traversal.state === 'flying', null, { timeout: 12_000 });
+    await s.page.waitForTimeout(1200);
+    const clip = await humanData(s.page, 'clip');
+    check(`${l.name}: the helicopter pilot sits in the driving pose`, clip === 'drive_seated', String(clip));
+    const clearance = await headClearance(s.page, 'helicopter');
+    check(`${l.name}: the pilot's head clears the cabin roof`, clearance.roof !== null && clearance.gap > 0.02, JSON.stringify(clearance));
+    await s.page.evaluate(() => { const x = (window as unknown as { __office: O }).__office; x.player.camYaw = x.player.facing - Math.PI / 2; x.player.camDist = 5.5; x.player.camPitch = 0.12; });
+    await s.page.waitForTimeout(400);
+    await s.page.screenshot({ path: resolve(out2, `10-helicopter-pilot-${l.name}.jpg`), quality: 80 });
+    await s.page.keyboard.press('e');
+    await s.page.waitForFunction(() => (window as unknown as { __office: O }).__office.traversal.state === 'walking', null, { timeout: 12_000 });
+    check(`${l.name}: helicopter pilot section has no console errors`, s.errors.length === 0, s.errors.slice(0, 3).join(' | '));
     await s.context.close();
   }
 
