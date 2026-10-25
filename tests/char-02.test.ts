@@ -6,13 +6,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
-import { jumpPhase, selectMotion, stairsState, EXTRA_CLIPS, type MotionInput } from '../src/client/world/anim-state';
+import { jumpPhase, landWithClip, selectMotion, stairsState, EXTRA_CLIPS, type MotionInput } from '../src/client/world/anim-state';
 
 const ALL = new Set(['idle_neutral_01', 'walk_neutral', 'run_neutral', 'sit_chair_idle_neutral_01', 'sit_down_chair_01', 'airborne_flight', ...EXTRA_CLIPS]);
 const BASE = new Set(['idle_neutral_01', 'walk_neutral', 'run_neutral', 'sit_chair_idle_neutral_01', 'airborne_flight']);
 const input = (o: Partial<MotionInput> = {}, clips = ALL): MotionInput => ({
   speed: 0, previous: 'idle_neutral_01', turnRate: 0, seated: false, driving: false, transition: null,
-  jump: null, stairs: null, reducedMotion: false, has: (n) => clips.has(n), ...o,
+  jump: null, landClip: false, stairs: null, reducedMotion: false, has: (n) => clips.has(n), ...o,
 });
 
 // ---- Jump phases ------------------------------------------------------------------------------------------------
@@ -28,15 +28,25 @@ test('jump phases: a rising take-off, then airborne, then a landing after a real
 test('jump clips: take-off, airborne and landing use the CC0 clips', () => {
   assert.equal(selectMotion(input({ jump: 'takeoff' })), 'jump_start');
   assert.equal(selectMotion(input({ jump: 'air', previous: 'jump_start' })), 'jump_air');
-  assert.equal(selectMotion(input({ jump: 'land', previous: 'jump_air' })), 'jump_land');
+  assert.equal(selectMotion(input({ jump: 'land', landClip: true, previous: 'jump_air' })), 'jump_land');
   // Moving off a landing returns to the stride straight away instead of finishing a standing crouch.
-  assert.equal(selectMotion(input({ jump: 'land', speed: 3, previous: 'jump_air' })), 'run_neutral');
+  assert.equal(selectMotion(input({ jump: 'land', landClip: true, speed: 3, previous: 'jump_air' })), 'run_neutral');
+});
+
+test('review: a landing plays the clip only when touchdown chose it (hard, standing still, clip present, motion allowed)', () => {
+  // A soft landing (a ledge caught on the way down) is the procedural dip, never a cut-off crouch on top of it.
+  assert.equal(selectMotion(input({ jump: 'land', landClip: false })), 'idle_neutral_01');
+  assert.equal(landWithClip({ touchdownVy: -6.4, speed: 0, reducedMotion: false, has: () => true }), true);
+  assert.equal(landWithClip({ touchdownVy: -2.2, speed: 0, reducedMotion: false, has: () => true }), false, 'soft landing: dip');
+  assert.equal(landWithClip({ touchdownVy: -6.4, speed: 3, reducedMotion: false, has: () => true }), false, 'landing on the move: dip');
+  assert.equal(landWithClip({ touchdownVy: -6.4, speed: 0, reducedMotion: true, has: () => true }), false, 'reduced motion: dip');
+  assert.equal(landWithClip({ touchdownVy: -6.4, speed: 0, reducedMotion: false, has: () => false }), false, 'no clip: dip');
 });
 
 test('jump clips fall back to the held run-flight frame and the procedural dip when missing', () => {
   assert.equal(selectMotion(input({ jump: 'takeoff' }, BASE)), 'airborne_flight');
   assert.equal(selectMotion(input({ jump: 'air' }, BASE)), 'airborne_flight');
-  assert.equal(selectMotion(input({ jump: 'land' }, BASE)), 'idle_neutral_01');
+  assert.equal(selectMotion(input({ jump: 'land', landClip: true }, BASE)), 'idle_neutral_01');
   // And without even the flight action (a bare body), locomotion never breaks.
   assert.equal(selectMotion(input({ jump: 'air', speed: 2 }, new Set(['idle_neutral_01', 'walk_neutral']))), 'walk_neutral');
 });
@@ -44,7 +54,7 @@ test('jump clips fall back to the held run-flight frame and the procedural dip w
 test('reduced motion keeps the calm CHAR-01 jump (held frame, small dip), never the wide-armed clips', () => {
   assert.equal(selectMotion(input({ jump: 'takeoff', reducedMotion: true })), 'airborne_flight');
   assert.equal(selectMotion(input({ jump: 'air', reducedMotion: true })), 'airborne_flight');
-  assert.equal(selectMotion(input({ jump: 'land', reducedMotion: true })), 'idle_neutral_01');
+  assert.equal(selectMotion(input({ jump: 'land', landClip: true, reducedMotion: true })), 'idle_neutral_01');
 });
 
 // ---- Stairs -----------------------------------------------------------------------------------------------------

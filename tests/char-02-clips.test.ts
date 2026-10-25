@@ -1,6 +1,6 @@
 /**
  * CHAR-02: the retargeted CC0 clips on every shipped body: finite, in place, planted feet through the landing,
- * no T-pose, a seated driving pose, and the build is reproducible from the pinned inputs' outputs.
+ * no T-pose and a seated driving pose; and the state machine driving a real body (jump, landings, stairs, seat).
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -150,6 +150,38 @@ test('CHAR-02: landing feet stay planted while the crouch plays', async () => {
   }
   assert.equal(h.root.userData.clip, 'jump_land');
   assert.ok(worst < 0.04, `feet stay on the floor (${worst.toFixed(3)} m)`);
+});
+
+/** Review probe: the player's jump onto a floor at `ledge` m (caught on the way down), ground speed per frame after. */
+function landOn(h: Awaited<ReturnType<typeof body>>, ledge: number, airSpeed: number, after: (k: number) => number) {
+  const dt = 1 / 60, clips: string[] = [];
+  for (let i = 0; i < 30; i++) h.human.update(dt, 0);
+  const pelvis = () => h.at('bip01pelvis').y - h.root.position.y;
+  const rest = pelvis();
+  let y = 0, vy = 6.4, landed = -1, low = 9;
+  for (let i = 0; i < 150; i++) {
+    if (landed < 0) { vy -= 18 * dt; y += vy * dt; if (vy < 0 && y <= ledge) { y = ledge; landed = i; } }
+    h.root.position.y = y;
+    h.human.setAirborne(landed < 0);
+    h.human.update(dt, landed < 0 ? airSpeed : after(i - landed));
+    const clip = String(h.root.userData.clip);
+    if (landed >= 0) low = Math.min(low, pelvis());
+    if (clips.at(-1) !== clip) clips.push(clip);
+  }
+  return { clips, drop: rest - low };
+}
+
+test('review: jumping onto a 1 m ledge is a soft landing: the CHAR-01 dip, no cut-off landing clip', async () => {
+  const { clips, drop } = landOn(await body('business-m02', true), 1, 0, () => 0);
+  assert.ok(!clips.includes('jump_land'), clips.join(' → '));
+  assert.ok(drop > 0.02 && drop < 0.1, `a small dip, not a crouch (${drop.toFixed(3)} m)`);
+});
+
+test('review: landing at a run keeps the dip and stride; stopping afterwards never crouches late', async () => {
+  const { clips, drop } = landOn(await body('business-m02', true), 0, 3, (k) => (k < 15 ? 3 : 0));
+  assert.ok(!clips.includes('jump_land'), clips.join(' → '));
+  assert.ok(drop > 0.02 && drop < 0.1, `the procedural dip plays on the move (${drop.toFixed(3)} m)`);
+  assert.equal(clips.at(-1), 'idle_neutral_01');
 });
 
 test('CHAR-02: climbing and descending stairs is a stairs state on the stride clip, with a lean', async () => {
