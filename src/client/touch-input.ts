@@ -45,6 +45,16 @@ export function stickActions(dx: number, dy: number, radius: number, prev: Stick
   };
 }
 
+export type TouchMode = 'walk' | 'drive' | 'fly';
+/**
+ * CHAR-01: the movement actions the touch controls hold. The Run button (`runLock`) runs, or accelerates in a car,
+ * at any stick deflection; in flight the run action means descend, so only the Down button holds it there.
+ */
+export function touchMoves(stick: StickActions, runLock: boolean, mode: TouchMode): StickActions {
+  const moving = stick.forward || stick.backward || stick.left || stick.right;
+  return { ...stick, run: mode !== 'fly' && moving && (stick.run || runLock) };
+}
+
 /** The knob offset, clamped inside the base. */
 export function knobOffset(dx: number, dy: number, radius: number): { x: number; y: number } {
   const len = Math.hypot(dx, dy);

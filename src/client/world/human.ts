@@ -104,9 +104,11 @@ const LANDING_TIME = 0.3;
 const ANKLE = 0.1;
 const FLIGHT = 'airborne_flight';
 
+/** CHAR-01: turning on the spot faster than this (rad/s) steps the feet with a slow walk instead of spinning the idle. */
+export const TURN_STEP = 2.5;
 /** Which recorded clip a grounded, standing body plays at this speed, with hysteresis between walk and run. */
-export function locomotionClip(speed: number, previous: string): 'idle_neutral_01' | 'walk_neutral' | 'run_neutral' {
-  if (speed <= 0.08) return 'idle_neutral_01';
+export function locomotionClip(speed: number, previous: string, turnRate = 0): 'idle_neutral_01' | 'walk_neutral' | 'run_neutral' {
+  if (speed <= 0.08) return Math.abs(turnRate) > TURN_STEP ? 'walk_neutral' : 'idle_neutral_01';
   return (previous === 'run_neutral' ? speed > RUN_EXIT : speed > RUN_ENTER) ? 'run_neutral' : 'walk_neutral';
 }
 

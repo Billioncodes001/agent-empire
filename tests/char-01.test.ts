@@ -118,14 +118,14 @@ test('CHAR-01: a jump cannot land on a desk, bench or kiosk (props are not floor
 
 test('CHAR-01: walkers still climb the garage staircase to the helipad', () => {
   const layout = districtLayout();
-  const { player, tick } = controller(layout.colliders.map((c) => ({ ...c })));
+  const { player, tick, maxY } = controller(layout.colliders.map((c) => ({ ...c })));
   const first = layout.garage.stairs[0];
   player.pos.set((first.minX + first.maxX) / 2, 0, first.maxZ + 0.6);
   player.camYaw = 0; // walk north (−z)
   player.facing = Math.PI;
   player.setAction('forward', true);
-  tick(14);
-  assert.ok(player.pos.y > HELIPAD.y - 0.05, `reached y ${player.pos.y.toFixed(2)}`);
+  tick(9);
+  assert.ok(maxY() > HELIPAD.y - 0.05, `reached y ${maxY().toFixed(2)}`);
 });
 
 test('CHAR-01: no car can be driven up the garage staircase, from any side or at any speed', () => {

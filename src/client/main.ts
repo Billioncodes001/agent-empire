@@ -422,7 +422,7 @@ net.onMessage((msg) => {
     case 'welcome': {
       const mine = store.peers.get(store.you);
       if (firstWelcome && mine) {
-        player.pos.set(mine.x, 0, mine.z);
+        player.teleport(mine.x, 0, mine.z);
         firstWelcome = false;
       }
       if (voice.inVoice || voice.sharing) net.send({ t: 'voice', voice: voice.inVoice, muted: voice.muted, sharing: voice.sharing });
@@ -756,10 +756,11 @@ function pullRequestFor(w: WorkerInfo) {
 function goToDesk(deskId: string) {
   const desk = DESK_BY_ID.get(deskId);
   if (!desk) return;
+  // CHAR-01: a teleport would carry the driven car or helicopter with the founder.
+  if (player.driving || player.scripted) return toast('Park and step out first, then go to the desk.', 'info');
   closeAllModals();
   const spot = deskSeat(desk, 2.4);
-  player.pos.set(spot.x, 0, spot.z);
-  player.vy = 0;
+  player.teleport(spot.x, 0, spot.z);
   player.facing = Math.atan2(desk.x - spot.x, desk.z - spot.z);
   player.camYaw = player.facing - Math.PI;
   player.lookPitch = -0.2;

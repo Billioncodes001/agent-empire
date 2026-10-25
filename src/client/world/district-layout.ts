@@ -10,7 +10,7 @@ import { vehicleOverlaps } from '../vehicle';
 export type Kit = 'commercial' | 'industrial' | 'streets' | 'vehicles';
 export interface Placement { kit: Kit; model: string; x: number; z: number; yaw: number; scale: number; district: DistrictId; furniture: boolean }
 export interface Rect { x: number; z: number; w: number; d: number }
-export interface Box { minX: number; maxX: number; minZ: number; maxZ: number; top: number; bottom?: number }
+export interface Box { minX: number; maxX: number; minZ: number; maxZ: number; top: number; bottom?: number; vehicle?: boolean; walkOnly?: boolean }
 
 const SCALE: Record<Kit, number> = { commercial: 9, industrial: 9, streets: 7, vehicles: 1.8 };
 const kits = manifest.kits as unknown as Record<Kit, { models: Record<string, { min: number[]; max: number[] }> }>;
@@ -122,8 +122,8 @@ function garageBoxes() {
   // pavement to a landing level with the roof; rails along the roof edges keep walkers up there, with an opening at the
   // north-east corner beside the landing. Every step rises less than the 0.3 m a walker steps up.
   const steps = 22, rise = HELIPAD.y / steps, tread = 0.5, foot = z1 - 0.4 + steps * tread - 11; // bottom step at z ≈ 84.1
-  const stairs: Box[] = Array.from({ length: steps }, (_, i) => ({ minX: x1 + 0.25, maxX: x1 + 1.95, minZ: foot - (i + 1) * tread, maxZ: foot - i * tread, top: (i + 1) * rise }));
-  stairs.push({ minX: x1, maxX: x1 + 1.95, minZ: foot - steps * tread - 2.4, maxZ: foot - steps * tread, top: HELIPAD.y });
+  const stairs: Box[] = Array.from({ length: steps }, (_, i) => ({ minX: x1 + 0.25, maxX: x1 + 1.95, minZ: foot - (i + 1) * tread, maxZ: foot - i * tread, top: (i + 1) * rise, walkOnly: true }));
+  stairs.push({ minX: x1, maxX: x1 + 1.95, minZ: foot - steps * tread - 2.4, maxZ: foot - steps * tread, top: HELIPAD.y, walkOnly: true });
   const y = HELIPAD.y, rail = (minX: number, maxX: number, minZ: number, maxZ: number): Box => ({ minX, maxX, minZ, maxZ, bottom: y, top: y + 1.05 });
   const rails = [rail(x0, x1 - 1.8, z0, z0 + 0.25), rail(x1 - 0.25, x1, z0 + 2.2, z1), rail(x0, x1, z1 - 0.25, z1), rail(x0, x0 + 0.25, z0, z1)];
   const helipadKiosk: Box = { minX: HELIPAD.kiosk.x - 0.6, maxX: HELIPAD.kiosk.x + 0.6, minZ: HELIPAD.kiosk.z - 0.9, maxZ: HELIPAD.kiosk.z - 0.3, bottom: y, top: y + 1.1 };
@@ -187,6 +187,21 @@ export function poseBox(p: Pose, half: { w: number; l: number }, height: number,
   const c = Math.abs(Math.cos(p.yaw)), s = Math.abs(Math.sin(p.yaw));
   const hx = c * half.w + s * half.l, hz = s * half.w + c * half.l;
   return { minX: p.x - hx, maxX: p.x + hx, minZ: p.z - hz, maxZ: p.z + hz, bottom, top: bottom + height };
+}
+/**
+ * CHAR-01: a vehicle's collider at its own base height (a car parked on the garage roof is solid up there, not at the
+ * street below), marked as a vehicle so walkers never stand on it or step onto it.
+ */
+export function vehicleBox(p: Pose, half: { w: number; l: number }, height: number, bottom = 0): Box {
+  return { ...poseBox(p, half, height, bottom), vehicle: true };
+}
+/** The executive sedan's collision body (slightly inside its 1.07 × 2.36 m shell, as before CHAR-01). */
+export const SEDAN_BODY = { w: 1.03, l: 2.35 };
+/** The sedan's collider for this frame: at its own height, and not solid while the founder drives it. */
+export function sedanCollider(car: { position: { x: number; y: number; z: number }; rotation: { y: number } }, driven: boolean): Box {
+  const box = vehicleBox({ x: car.position.x, z: car.position.z, yaw: car.rotation.y }, SEDAN_BODY, 1.55, car.position.y);
+  if (driven) box.top = box.bottom!;
+  return box;
 }
 /**
  * CITY-06: where a bought vehicle stands. A pose from this session (where the founder parked it) wins; otherwise the
