@@ -2,7 +2,7 @@
 
 GitHub is where releases come from. Pushing a version tag on `main` makes `.github/workflows/release.yml` build the game bundle, cloud coordinator, macOS, Windows, Android and iOS apps, and publish a GitHub Release with a signed update channel file. Installed apps read that file to offer **Update available**. The design and channel contract are in `docs/team/RELEASE_PLAN.md`.
 
-Every signing step switches on by itself once its GitHub secrets exist. Without them the platform still builds, but unsigned, and the file name says so (`-unsigned`, `-debug-signed`). Only `GAME_SIGNING_KEY` and its pinned public key are needed before the first tagged release.
+Every signing step switches on by itself once its GitHub secrets exist. Without them the platform still builds, but unsigned. File names never carry the signing state: each platform job records it as build info, the signed channel file carries it (`signed`, `auto`), and the release notes tell users (see "Release notes"). Only `GAME_SIGNING_KEY` and its pinned public key are needed before the first tagged release.
 
 ## Cutting a release
 
@@ -15,7 +15,7 @@ Every signing step switches on by itself once its GitHub secrets exist. Without 
 
    Versions are `X.Y.Z` or `X.Y.Z-(alpha|beta|rc).N`. Any prerelease goes to the beta channel and is marked pre-release on GitHub. Versions only move forward. Android `versionCode` and the iOS build number are derived from the version (`1.0.0-beta.2` = 10000302), so a version can only be uploaded to Play or TestFlight once.
 
-2. **Optional release notes:** `docs/release-notes/<version>.md`, for example `docs/release-notes/1.0.0-beta.2.md`. The text goes into the channel file the apps show, and becomes the GitHub release notes. Without the file, the apps show "Agent Empire <version>" and GitHub generates notes.
+2. **Release notes:** `docs/release-notes/<version>.md`, for example `docs/release-notes/1.0.0-beta.2.md`. The text goes into the channel file the apps show (first 4000 characters), and becomes the GitHub release notes. Without the file, the apps show "Agent Empire <version>" and GitHub generates notes. Follow "Release notes" below: it must end with one install line per platform.
 
 3. **Commit, open a PR to `main`, and merge it.** Releases are tagged on `main` only.
 
@@ -28,7 +28,7 @@ Every signing step switches on by itself once its GitHub secrets exist. Without 
    git push origin v1.0.0-beta.2
    ```
 
-5. **Watch the workflow:** GitHub, then Actions, then Release. When it passes, the release appears under Releases with every asset and `SHA256SUMS`.
+5. **Watch the workflow:** GitHub, then Actions, then Release. When it passes, the release appears under Releases with the files listed in "What each release contains" (8 for a release with unsigned desktop builds).
 
 The workflow fails before building anything when:
 
@@ -48,12 +48,12 @@ git tag -d v1.0.0-beta.2
 
 Then tag the new `main` commit again. If the run had already uploaded to Google Play or TestFlight, those stores keep the build number. In that case, bump the version (`1.0.0-beta.3`) instead of reusing it.
 
-**Dry run:** go to Actions, then Release, then **Run workflow**, on any branch. Everything builds and is attached to the run as artifacts. `release-bundle` holds what would be published. Nothing is published or uploaded to the stores.
+**Dry run:** go to Actions, then Release, then **Run workflow**, on any branch. Everything builds and is attached to the run as artifacts. `release-bundle` holds exactly what would be published (the `assemble` log lists it). Nothing is published or uploaded to the stores.
 
 A dry run never joins the `release` environment, so it can never read a signing secret. It always signs with the public development key (`--dev`, untrusted) and builds unsigned macOS and Windows apps and a debug-signed Android APK. This is deliberate: code on an unreviewed branch must never be able to mint production signatures.
 
 **Approvals:** on a tag run, each job that signs or publishes waits for the owner's approval of the `release` environment. Approve from the run page with **Review deployments**. Approval comes in three batches:
-1. the builds (game, macOS ×2, Windows, Android, iOS);
+1. the builds (macOS ×2, Windows, Android, iOS; the game job holds no secret and needs no approval);
 2. `assemble` (the channel files);
 3. `publish` and `play` together.
 
@@ -100,7 +100,7 @@ Together these mean:
 
 ## One-time setup: the update signing key (required)
 
-Every app checks the signature on the channel file and game manifest against a public key built into the app.
+Every app checks the signature on the channel file against a public key built into the app. The channel file carries the sha256 of the game bundle and of every other published file, so it is the only file that needs a signature.
 
 **Status: done.** The owner generated the key offline and it was pinned on 2026-10-08 (REL-07, [report](team/reports/rel-07-pin-key.md)). The public key is `rIRaOVUyoolaIritW/W8zMW7kGymgcjvg7uXhHtTqPk=` (raw Ed25519, base64). It is in `src/shared/release-key.ts` and in every file listed in `tools/release/config.json` → `pinnedKeyFiles`. The owner stores the private key as the `release` environment secret `GAME_SIGNING_KEY` with `~/AgentEmpire-credentials/setup-github-release.sh`, and keeps an offline backup. GitHub secrets cannot be read back. If the key is lost, installed apps stop accepting updates until users install a new native build.
 
@@ -131,7 +131,7 @@ Signing secrets and the Azure variables go in the **`release` environment** (abo
 
 | Name | Kind | Unlocks | Where it comes from |
 |---|---|---|---|
-| `GAME_SIGNING_KEY` | `release` env secret | **Required for any tagged release.** Signs `game-manifest.json` and `channel-*.json` | `node tools/release/generate-signing-key.mjs` (above) |
+| `GAME_SIGNING_KEY` | `release` env secret | **Required for any tagged release.** Signs `channel-*.json` | `node tools/release/generate-signing-key.mjs` (above) |
 | `APPLE_DEVELOPER_ID_CERT_P12` | `release` env secret | macOS Developer ID signing (with notarization below). Signed macOS builds also get in-place updates (`auto: true` and Squirrel feeds) | base64 of a **Developer ID Application** certificate exported as .p12 (see Apple below) |
 | `APPLE_DEVELOPER_ID_CERT_PASSWORD` | `release` env secret | (with the above) | the password you chose when exporting the .p12 |
 | `APPLE_ID` | `release` env secret | macOS notarization with an Apple ID | your Apple Developer account email |
@@ -147,7 +147,7 @@ Signing secrets and the Azure variables go in the **`release` environment** (abo
 | `WINDOWS_CERT_PASSWORD` | `release` env secret | (with the above) | its .pfx password |
 | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` | `release` env secrets | Windows signing with Azure Artifact Signing (formerly Trusted Signing). Used when no .pfx is set | an Entra app registration granted **Artifact Signing Certificate Profile Signer** on the signing account |
 | `AZURE_SIGNING_ENDPOINT`, `AZURE_SIGNING_ACCOUNT`, `AZURE_SIGNING_PROFILE` | `release` env variables | (with the above) | the account's region endpoint (for example `https://eus.codesigning.azure.net/`), account name and certificate profile name |
-| `ANDROID_KEYSTORE_B64` | `release` env secret | upload-key signed APK and Play App Bundle (AAB). Without it, the APK is labelled `-debug-signed` and no AAB is published | base64 of the upload keystore (command below) |
+| `ANDROID_KEYSTORE_B64` | `release` env secret | upload-key signed APK and Play App Bundle (AAB). Without it, the APK is debug-signed (the channel file says `signed: false`; say so in the notes) and there is no AAB for Play | base64 of the upload keystore (command below) |
 | `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` | `release` env secrets | (with the above) | the values used when creating the keystore |
 | `PLAY_SERVICE_ACCOUNT_JSON` | `release` env secret | upload of the AAB to the Play **internal** track (also needs the keystore) | Google Cloud service account JSON key (see Google Play below) |
 | `PLAY_LISTED` | repository variable, optional | `true` once the Play listing is public. Channel files then link Android users to Play | — |
@@ -186,7 +186,7 @@ Choose one of these:
   3. Create an app registration with a client secret and give it the signer role on the account.
   4. Set the three `AZURE_*` secrets and the three `AZURE_SIGNING_*` variables.
 
-The release ships a Squirrel.Windows installer (`…-Setup.exe`), its update package (`AgentEmpire-<version>-full.nupkg`) and the `RELEASES` feed index. These are built with `electron-winstaller` and signed with the same certificate, or by Azure. Once signed, installed apps update in place through Electron's built-in updater. The feed is `https://github.com/<owner>/<repo>/releases/latest/download` for stable and `…/releases/download/<tag>` for beta. Unsigned builds still ship the installer, but the apps only prompt and open the download page.
+The release ships the Squirrel.Windows installer `Agent-Empire-Windows-Setup.exe`, built with `electron-winstaller` and signed with the same certificate, or by Azure. A signed build also ships its update package (`AgentEmpire-<nugetVersion>-full.nupkg`, a name installed apps check) and the `RELEASES` feed index, and installed apps then update in place: the shell downloads the package named in the signed channel, checks its sha256 and hands Squirrel a local feed. The feed is `https://github.com/<owner>/<repo>/releases/latest/download` for stable and `…/releases/download/<tag>` for beta. An unsigned build ships the installer only, and the apps prompt and open the download page.
 
 ### Android and Google Play
 
@@ -203,7 +203,7 @@ The release ships a Squirrel.Windows installer (`…-Setup.exe`), its update pac
 
 2. **Play Console:**
    1. Create the app `com.agentempire.mobile` and enable **Play App Signing**. Google then keeps the app signing key, and this keystore is your upload key.
-   2. Upload the first AAB by hand on the Internal testing track. The first upload must come from the Console; take the AAB from a release run or its `release-android` artifact.
+   2. Upload the first AAB by hand on the Internal testing track. The first upload must come from the Console; take `Agent-Empire-Android.aab` from a tag run's `play-bundle` artifact (the AAB is never a release asset).
 3. **Service account:**
    1. In Google Cloud Console, enable the **Google Play Android Developer API**.
    2. Create a service account and add a JSON key → `gh secret set PLAY_SERVICE_ACCOUNT_JSON --env release < key.json`.
@@ -214,20 +214,42 @@ Sideloaded installs use the APK from the GitHub Release, and its sha256 is in th
 
 ## What each release contains
 
-| Asset | Notes |
-|---|---|
-| `agent-empire-game-<v>.zip`, `game-manifest.json`, `game-manifest.json.sig` | over-the-air game bundle (deterministic zip of `dist/public`) and its signed manifest |
-| `agent-empire-coordinator.mjs` | cloud coordinator. A state repository gets it only when its user accepts the prompt |
-| `Agent-Empire-<v>-macos-<arm64\|x64>[-unsigned].dmg` / `.zip` | the zip is the in-place update payload |
-| `RELEASES-darwin-<arch>.json` | Squirrel.Mac feed (Electron's static `RELEASES.json` format; `serverType: 'json'`). Only for signed and notarized builds. Stable apps read `…/releases/latest/download/RELEASES-darwin-<arch>.json` |
-| `Agent-Empire-<v>-windows-x64-Setup[-unsigned].exe` | per-user installer (Squirrel.Windows) |
-| `AgentEmpire-<nugetVersion>-full.nupkg`, `RELEASES` | Squirrel.Windows update feed. Electron's autoUpdater reads `<release download URL>/RELEASES` |
-| `Agent-Empire-<v>-windows-x64[-unsigned].zip` | portable app folder |
-| `Agent-Empire-<v>-android[-debug-signed].apk`, `Agent-Empire-<v>-android.aab` | the AAB is only published when signed with the upload key |
-| `channel-beta.json(.sig)`, plus `channel-stable.json(.sig)` for final releases | the update channel the apps read |
-| `SHA256SUMS` | checksums of every asset |
+Names come from `tools/release/assets.mjs`. Files people download have plain names with no version, architecture code or signing label, so a stable release can be linked forever as `https://github.com/Billioncodes001/agent-empire/releases/latest/download/<name>` (GitHub's "latest" skips pre-releases). The version is in the release title and tag. Every file below has a reader; `assemble` refuses anything else (`channel.mjs` plan, then `channel.mjs check-publish`).
 
-The iOS app is not a release asset. It goes to TestFlight. Every run also builds an iOS simulator app, available as the `ios-simulator-app` artifact.
+| Asset | Who needs it | Published |
+|---|---|---|
+| `Agent-Empire-Mac-Apple-Silicon.dmg`, `Agent-Empire-Mac-Intel.dmg` | people (Mac) | always |
+| `Agent-Empire-Windows-Setup.exe` | people (Windows; per-user Squirrel.Windows installer) | always |
+| `Agent-Empire-Android.apk` | people (Android), and sideloaded apps updating themselves (url + sha256 from the channel) | always |
+| `agent-empire-game-<v>.zip` | every app's over-the-air game update (url + sha256 from the channel) | always |
+| `agent-empire-coordinator.mjs` | cloud mode: a state repository gets it only when its user accepts the prompt | always |
+| `channel-beta.json`, `channel-beta.json.sig` | every installed app (the beta.1 apps find releases by these two names); also the signed checksum list (`assets`: sha256 and size of every other file) | always |
+| `channel-stable.json`, `.sig` | stable apps (`…/releases/latest/download/channel-stable.json`) | final releases |
+| `Agent-Empire-Mac-Apple-Silicon-Update.zip`, `Agent-Empire-Mac-Intel-Update.zip` | Squirrel.Mac in-place update payload | signed and notarized macOS only |
+| `RELEASES-darwin-arm64.json`, `RELEASES-darwin-x64.json` | Squirrel.Mac feed (Electron's static `RELEASES.json`; stable apps accept only this name under `latest/download`) | signed and notarized macOS only |
+| `AgentEmpire-<nugetVersion>-full.nupkg`, `RELEASES` | Squirrel.Windows update package (the installed shell accepts only this name) and feed index | signed Windows only |
+
+So a release with unsigned desktop builds has **8 files**; with signed macOS and Windows it has 14 (15 with `channel-stable` on a final release, 16 with its signature).
+
+Not published: the Play App Bundle (`play-bundle` workflow artifact, uploaded to Play by the `play` job), the game manifest and build info (inputs to the channel file), `SHA256SUMS` (the signed channel lists every checksum, and GitHub shows each asset's sha256 on the release page). The iOS app goes to TestFlight; every run also builds an iOS simulator app, available as the `ios-simulator-app` artifact.
+
+**Verifying a download by hand:** `jq -r '.assets["Agent-Empire-Android.apk"].sha256' channel-beta.json` gives the expected sha256; check the channel file itself with `node tools/release/sign.mjs verify channel-beta.json`.
+
+## Release notes
+
+`docs/release-notes/<version>.md` is shown in the apps and on the release page. Keep it short and end it with this block, one line per platform, naming the files as published and saying plainly what is not signed (change the wording when a platform becomes signed):
+
+```md
+**Installing**
+- Mac: download `Agent-Empire-Mac-Apple-Silicon.dmg` (M1 or newer) or `Agent-Empire-Mac-Intel.dmg` (older Intel Macs), open it and drag Agent Empire to Applications. Not signed by Apple yet: the first time, open System Settings › Privacy & Security and choose Open Anyway.
+- Windows: download and run `Agent-Empire-Windows-Setup.exe`. Not code-signed yet: if Windows warns you, choose More info › Run anyway.
+- Android: download `Agent-Empire-Android.apk` on your phone and open it (allow installing from your browser when asked). The app tells you when an update is ready.
+- iPhone and iPad: open your office address in Safari and choose Share › Add to Home Screen.
+
+Installed apps update themselves: the game updates in place, and the app tells you when a new download is ready.
+```
+
+If the Android build is debug-signed (no upload key on the tag run), say so on the Android line: it cannot update or be updated by the normal build. Obtainium users who set an APK filter for 1.0.0-beta.1 (`^Agent-Empire-[0-9][^/]*-android\.apk$`) must change it to `^Agent-Empire-Android\.apk$` (mention this in the 1.0.0-beta.2 notes).
 
 ## Local commands
 
@@ -235,7 +257,9 @@ The iOS app is not a release asset. It goes to TestFlight. Every run also builds
 npm run version:check                          # versions in sync
 node tools/release/version.mjs info            # derived values (versionCode, iOS build number, channel)
 npm run build && npm run build:cloud
-npm run release:game                           # release/assets/agent-empire-game-<v>.zip + game-manifest.json
-node tools/release/sign.mjs sign --dev release/assets/game-manifest.json   # development signature (untrusted)
-node tools/release/sign.mjs verify release/assets/game-manifest.json --public-key <base64>
+npm run release:game -- --manifest-dir release/build-info   # release/assets/agent-empire-game-<v>.zip + build-info/game-manifest.json
+node tools/release/assets.mjs build-info --out release/build-info --platform android --signed false   # one per platform build
+node tools/release/channel.mjs --assets release/assets --info release/build-info
+node tools/release/sign.mjs sign --dev release/assets/channel-*.json   # development signature (untrusted)
+node tools/release/channel.mjs check-publish --assets release/assets   # exactly the planned files, checksums match
 ```

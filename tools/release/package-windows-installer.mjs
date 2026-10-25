@@ -1,36 +1,25 @@
 // Builds the Squirrel.Windows installer and update feed for the packaged Windows app (run on Windows, after
 // `node tools/prepare-desktop.mjs --platform=win32 --arch=x64 --skip-archive` and any exe signing):
-//   <out>/Agent-Empire-<v>-windows-x64-Setup[-unsigned].exe   per-user installer (Squirrel Setup.exe)
-//   <out>/AgentEmpire-<nugetVersion>-full.nupkg                 full update package
-//   <out>/RELEASES                                              Squirrel feed index ("SHA1 file size" per line)
-// Electron's built-in autoUpdater on Windows reads <feed>/RELEASES and then downloads <feed>/<nupkg>, so publishing
-// these three files as release assets makes the release download URL a Squirrel feed (docs/team/RELEASE_PLAN.md).
+//   <out>/Agent-Empire-Windows-Setup.exe           per-user installer (Squirrel Setup.exe), always
+//   <out>/AgentEmpire-<nugetVersion>-full.nupkg     full update package      } signed builds only: the shell installs
+//   <out>/RELEASES                                  Squirrel feed index       } in place only from a signed release
+//   <info>/windows-x64.json                         build info {signed} for the channel builder (never published)
+// An unsigned build publishes the installer alone: no installed app reads the package of an unsigned release
+// (channel.mjs sets auto: false, and desktop/main.cjs only fetches the nupkg when auto is true).
 //
 // Signing: when WINDOWS_SIGN_PARAMS is set (signtool arguments, e.g. /f "cert.pfx" /p "…" /fd sha256 /tr … /td sha256),
 // Squirrel signs Setup.exe and the executables in the package with them.
 //
-//   node tools/release/package-windows-installer.mjs --app "release/windows/Agent Empire-win32-x64" --out release/assets [--label -unsigned]
+//   node tools/release/package-windows-installer.mjs --app "release/windows/Agent Empire-win32-x64" --out release/assets --info release/build-info --signed true|false
 import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseVersion, readVersion, ROOT } from './version.mjs';
+import { readVersion, ROOT } from './version.mjs';
+import { NAMES, nugetVersion, nupkgName, SQUIRREL_ID, writeBuildInfo } from './assets.mjs';
 
-/** Squirrel package id: no spaces; also the install folder under %LocalAppData%. Never change it after a release. */
-export const SQUIRREL_ID = 'AgentEmpire';
-
-/**
- * The NuGet (SemVer 1) version Squirrel uses. NuGet 2 compares prerelease labels as strings, so the number is
- * zero-padded to keep beta.2 < beta.10: 1.0.0-beta.2 -> 1.0.0-beta002, 1.0.0 -> 1.0.0.
- */
-export function nugetVersion(version) {
-  const v = parseVersion(version);
-  const core = `${v.major}.${v.minor}.${v.patch}`;
-  return v.pre ? `${core}-${v.pre.tag}${String(v.pre.n).padStart(3, '0')}` : core;
-}
-
-export const nupkgName = version => `${SQUIRREL_ID}-${nugetVersion(version)}-full.nupkg`;
+export { nugetVersion, nupkgName, SQUIRREL_ID };
 
 /** Parses a Squirrel RELEASES file into { sha1, file, size } entries. */
 export function parseReleases(text) {
@@ -72,8 +61,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     if (process.platform !== 'win32') throw new Error('Squirrel.Windows installers are built on Windows');
     const appDirectory = path.resolve(option(args, '--app', path.join(ROOT, 'release/windows/Agent Empire-win32-x64')));
     const outDir = path.resolve(option(args, '--out', path.join(ROOT, 'release/assets')));
-    const label = option(args, '--label', '');
-    if (!['', '-unsigned'].includes(label)) throw new Error('--label must be empty or -unsigned');
+    const signedArg = option(args, '--signed', null);
+    if (!['true', 'false'].includes(signedArg)) throw new Error('--signed must be true or false');
+    const signed = signedArg === 'true';
+    const infoDir = path.resolve(option(args, '--info', path.join(ROOT, 'release/build-info')));
     const version = readVersion();
     if (!existsSync(path.join(appDirectory, 'Agent Empire.exe'))) throw new Error(`${appDirectory} has no Agent Empire.exe`);
     const work = path.join(ROOT, 'release/squirrel');
@@ -81,7 +72,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     const require = createRequire(path.join(ROOT, 'desktop/package.json'));
     const { createWindowsInstaller } = require('electron-winstaller');
     const signWithParams = process.env.WINDOWS_SIGN_PARAMS || undefined;
-    const setupExe = `Agent-Empire-${version}-windows-x64-Setup${label}.exe`;
+    const setupExe = NAMES.windowsSetup;
     await createWindowsInstaller({
       appDirectory, outputDirectory: work, name: SQUIRREL_ID, exe: 'Agent Empire.exe', title: 'Agent Empire', productName: 'Agent Empire',
       authors: 'Agent Empire', owners: 'Agent Empire', description: 'Agent Empire desktop', version: nugetVersion(version),
@@ -91,10 +82,12 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     if (!existsSync(path.join(work, setupExe))) problems.push(`${setupExe} was not produced (found ${readdirSync(work).join(', ')})`);
     if (problems.length) throw new Error(problems.join('; '));
     mkdirSync(outDir, { recursive: true });
-    for (const name of [setupExe, nupkgName(version), 'RELEASES']) {
+    for (const name of signed ? [setupExe, nupkgName(version), 'RELEASES'] : [setupExe]) {
       copyFileSync(path.join(work, name), path.join(outDir, name));
       console.log(`${name}  ${statSync(path.join(outDir, name)).size} bytes`);
     }
+    writeBuildInfo(infoDir, { platform: 'windows', arch: 'x64', signed });
+    if (!signed) console.log('Unsigned build: only the installer is published (no in-place updates).');
     if (!signWithParams) console.log('Squirrel installer is not signed by this step (unsigned, or signed afterwards by Azure Artifact Signing).');
   } catch (error) { console.error(`error: ${error.message}`); process.exit(1); }
 }
