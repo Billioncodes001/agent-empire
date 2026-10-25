@@ -349,9 +349,8 @@ export class ArchitectService {
     const now = new Date(this.now());
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), s.runHour).getTime();
     const slot = this.data.lastRunDay === dayOf(this.now()) ? new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, s.runHour).getTime() : Math.max(today, this.now());
-    // Re-review 2: honest about the minimum gap a scheduled premium run waits for (never about a clock problem: those days run rule-based).
-    const wait = PAID_GAP_MS - this.sinceLastPaid();
-    return s.engine === 'premium' && this.engineStatus().ready && wait > 0 ? Math.max(slot, this.now() + wait) : slot;
+    // Last review 1: the run always happens at its slot (a blocked paid call falls back to rule-based growth).
+    return slot;
   }
 
   state(): ArchitectState {
@@ -426,11 +425,9 @@ export class ArchitectService {
     const s = this.data.settings;
     if (!this.available().ok || this.blocked || !s.enabled || s.paused || this.running) return false;
     if (new Date(this.now()).getHours() < s.runHour || this.data.lastRunDay === dayOf(this.now())) return false;
-    // Review 4: a scheduled premium run waits for the minimum gap since the last paid call (minutes at most, at the set
-    // hour), instead of spending its day on rule-based growth. Re-review 2: a clock behind its mark never waits: that
-    // day grows with rule-based growth and the engine status says why.
-    const gap = this.sinceLastPaid();
-    if (s.engine === 'premium' && this.engineStatus().ready && gap >= 0 && gap < PAID_GAP_MS) return false;
+    // Last review 1: never skip or delay a day for the paid-call gap. Monotonic time stops while a host sleeps, so a wait
+    // could skip whole days; when the gap (or the clock) blocks a paid call, run() grows the day rule-based (US$0) and
+    // says why.
     return true;
   }
 
@@ -831,8 +828,13 @@ export class ArchitectService {
       const has = (rec: unknown) => isObj(rec) && this.worldDoc.additions.some((x) => same(x, rec));
       const exists = (id: string) => this.worldDoc.additions.some((x) => x.id === id);
       for (const r of runs) if (r.status === 'applying') {
-        const applied = r.changes.every((c) => (c.op === 'remove' ? !exists(c.additionId) : has(c.after)));
-        const untouched = r.changes.every((c) => (c.op === 'place' ? !exists(c.additionId) : has(c.before)));
+        // Last review 2: per addition, its first change's "before" and its last change's "after" (a run may touch one
+        // addition more than once, e.g. move it twice).
+        const ids = [...new Set(r.changes.map((c) => c.additionId))];
+        const firstOf = (id: string) => r.changes.find((c) => c.additionId === id)!;
+        const lastOf = (id: string) => r.changes.filter((c) => c.additionId === id).at(-1)!;
+        const applied = ids.every((id) => { const c = lastOf(id); return c.op === 'remove' ? !exists(id) : has(c.after); });
+        const untouched = ids.every((id) => { const c = firstOf(id); return c.op === 'place' ? !exists(id) : has(c.before); });
         if (this.worldDoc.revision === r.worldRevision && applied) {
           Object.assign(r, { status: 'applied', finishedAt: at });
           this.reconciledApplied.push(r);
