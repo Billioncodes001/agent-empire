@@ -113,6 +113,17 @@ Regression tests in `tests/architect-rereview.test.ts` (13, from the reviewer's 
 
 The earlier review test for the minimum gap now expects the 23-hour wording (coordinator's choice). Rechecked: typecheck, build, `npm test` 1,094 (1,093 pass, 1 skipped), architect-ui-check 19/19 plus max 4/4, city-ui-check 23/23, rides 25/25, mobile 411/411, inbox 47/47, onboarding 60/60, chief 38/38.
 
+## Final review (approved at `0d7e3cf`) and the two last fixes
+
+Regression tests in `tests/architect-final.test.ts` (10, from the reviewer's c10c probe), committed red at `078c0d2`; fixes at `20e3307`.
+
+| # | Finding | Fix |
+| --- | --- | --- |
+| 1 | A thrashing clock could book repeated paid runs (the 72 h reset), also against earlier months | Paid calls live on a **trusted timeline**: a persisted time that never decreases, advanced in-process only by monotonic time (`performance.now()`). A restart may raise it by at most 36 h of wall-clock difference and never lowers it. Paid calls need 23 h of trusted time between them. A persisted log of paid calls over the last 30 trusted days also enforces the monthly cap, so booking to a new or old calendar month can't multiply it. The 72 h reset moves only the wall-clock mark and never the paid timeline. In the reviewer's thrash scenario (6 cycles) there is now 1 paid call, not 6; restarts with the clock moved back 1, 5 or 40 days make no second call. Rule-based growth is unaffected |
+| 2 | A matching revision with different content was accepted as applied | Reconcile checks content. "Applied" needs every change's after-record exactly in `additions.json` (and removed additions gone); "interrupted" needs the world exactly as before. Anything else refuses the file (preserved). A run finished on restore records its journal entry and raises its daily summary, as a normal run does. A restore fuzz (39 fields × 10 odd values) produces no exception other than `ArchitectError` |
+
+Three earlier multi-day tests now inject a monotonic clock that models real elapsed time; without it, no real time passes in a test and paid calls are rightly refused. Rechecked: typecheck, build, `npm test` 1,104 (1,103 pass, 1 skipped), architect-ui-check 19/19 plus max 4/4, inbox-ui-check 47/47.
+
 ## Deferred / not verified
 
 - **Onboarding step**: deferred by the coordinator until devtest-02 merges.
