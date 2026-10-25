@@ -203,8 +203,8 @@ test('brain: if the pre-charge commit fails, no call is made', async () => {
 
 test('brain: daily and rolling 30-day caps refuse a call whose worst case would pass them', async () => {
   const r = rig({ answers: [PLAN, PLAN, PLAN, PLAN] });
-  // A tiny daily cap: the second plan's worst case no longer fits today.
-  push(r.store, premium(1, { dailyCapCents: 3, monthlyCapCents: 4 }), planReq(2));
+  // A small daily cap (6 cents): one plan's worst case (about 4.8 cents at $3/$15 per million tokens) fits, two don't.
+  push(r.store, premium(1, { dailyCapCents: 6, monthlyCapCents: 8 }), planReq(2));
   await r.tick();
   assert.equal(r.brain.calls.length, 1);
   push(r.store, planReq(3, 'Another brief with more words in it.'));

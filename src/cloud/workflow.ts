@@ -81,9 +81,34 @@ jobs:
           GITHUB_TOKEN: \${{ github.token }}
           ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: \${{ secrets.OPENAI_API_KEY }}
+          # FREE-11: optional free-tier keys for the chief's brain (opt-in; the CEO accepts the provider's terms first).
+          OPENROUTER_API_KEY: \${{ secrets.OPENROUTER_API_KEY }}
+          GEMINI_API_KEY: \${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: \${{ secrets.GROQ_API_KEY }}
           PROJECT_GITHUB_TOKEN: \${{ secrets.PROJECT_GITHUB_TOKEN }}
           AGENT_EMPIRE_STATE_BRANCH: \${{ github.event.repository.default_branch || github.ref_name }}
           AGENT_EMPIRE_WORKFLOW: ${WORKFLOW_FILE}
           AGENT_EMPIRE_SELF_DISABLE: '${selfDisable ? 'true' : 'false'}'
+
+  # FREE-12: approved outreach email, sent on a fresh runner that holds only the SMTP secret. It runs no model and no
+  # agent code: it sends exactly the messages the tick job claimed for this run, rechecks each one, and records a receipt.
+  send:
+    needs: tick
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@${PINNED_ACTIONS.checkout.sha} # ${PINNED_ACTIONS.checkout.version}
+        with:
+          persist-credentials: false
+          sparse-checkout: coordinator
+      - uses: actions/setup-node@${PINNED_ACTIONS.setupNode.sha} # ${PINNED_ACTIONS.setupNode.version}
+        with:
+          node-version: '${node}'
+      - name: Send approved outreach email
+        run: node ${COORDINATOR_BUNDLE_PATH} send
+        env:
+          GITHUB_TOKEN: \${{ github.token }}
+          AGENT_EMPIRE_SMTP_URL: \${{ secrets.AGENT_EMPIRE_SMTP_URL }}
+          AGENT_EMPIRE_STATE_BRANCH: \${{ github.event.repository.default_branch || github.ref_name }}
 `;
 }

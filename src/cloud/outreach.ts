@@ -313,6 +313,7 @@ export function consumeReceipts(o: CloudOutreach, files: { path: string; content
       const c = o.campaigns.find((k) => k.id === x.campaignId);
       const s = c?.sends?.[x.index];
       if (!c || !s || s.status !== 'claimed' || s.runId !== r.runId) continue;
+      if (c.note?.startsWith('Waiting:')) c.note = 'Sending: the last run’s send job reported its results.';
       c.sends![x.index] = { status: x.status === 'refused' ? 'failed' : x.status, runId: r.runId, at: r.at, ...(x.error ? { error: short(clean(x.error, 200), 200) } : {}) };
       if (c.snapshot) c.snapshot.recipients[x.index] = null;
     }
@@ -349,7 +350,7 @@ export function claimSends(o: CloudOutreach, org: CloudOrg, ctx: { now: number; 
       budget--; used++; claimed++;
     });
     const left = c.sends.filter((x) => x.status === 'pending').length;
-    if (left && budget <= 0) c.note = short(`${plural(left, 'message')} still to send. ${deliveryEstimate(left, s, 0).text}`, OUTREACH_LIMITS.note);
+    if (left && budget <= 0 && !c.note?.startsWith('Waiting:')) c.note = short(`${plural(left, 'message')} still to send. ${deliveryEstimate(left, s, 0).text}`, OUTREACH_LIMITS.note);
     settleDone(c);
   }
   if (removed.size) scrubOrgAddresses(org, removed, ctx.now, 'A recipient opted out.');
