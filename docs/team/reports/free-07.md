@@ -118,6 +118,49 @@ All are in [free-07/](free-07/), at 1440x900 and 874x402:
 - `*-06-research-report.jpg`: a report imported from the task branch.
 - `*-07-research-confirm.jpg`: the paid confirmation for a cloud research question.
 
+## Security review fixes (on 76f3c133, "changes requested")
+
+The review found that money, approvals and allow-lists were sound, but that one untrusted report or an inbox backlog could permanently wedge the coordinator, including cancel and shutdown. `origin/codex/empire-world` (beta.2, #52/#53) was merged first, without conflicts. The tests are in `tests/free-07-review.test.ts`. They were committed first (a2c764d), and 9 of the 10 failed there. The tenth, prototype-pollution keys, already passed: it is kept as a regression guard.
+
+- **1, long tool URL:** the shared parser refuses a tool URL longer than 500 characters, with a reason. The server gets the same rule.
+  - Every organization change is kept only if `checkOrg` passes: the size budget, then the readers' own `validateOrg` on the serialized result. This covers report imports and every organization intent.
+  - A report that fails it needs attention with the reason, and the organization stays exactly as it was.
+  - An end-to-end test shows the committed `org.json` reads back.
+- **2, full inbox:** reports are imported after intents, so a decision can always drain the backlog.
+  - The import runs on a copy inside a `try`. A refusal such as a full inbox marks only that report needs-attention ("decide some inbox items, then ask again"). A failure of any other kind is journaled and changes nothing.
+  - Cancel, shutdown and the stops are never blocked.
+  - An unreadable `org.json` (corrupt, hand-edited or foreign) is quarantined, not fatal:
+    - the file is left untouched;
+    - the reason is kept (`orgError`) and shown as the inbox's storage error;
+    - organization intents are refused;
+    - jobs, cancel and the city keep running.
+- **3, size bound:** `org.json` is held under 3 MiB (`ORG_MAX_BYTES`; readers accept 4 MiB). `fitOrg` drops the oldest finished, fully decided reports, then the oldest decided items. Pending items, waiting lessons and queued reports are never dropped; if they alone are too big, the change is refused.
+  - A tool's details are now stored once, in its report. The inbox item is filled in from the report for display and for the fingerprint.
+  - The limits were lowered: 60 reports, 2,000 characters per section.
+  - A test builds the largest case the rules allow and checks it against the budget.
+- **4, branch reads:** a folder, symlink, submodule, oversized file, non-content response, bad base64 or invalid UTF-8 is a final refusal (needs attention), never retried.
+  - Network failures are retried at most 5 times.
+  - Reports with fewer failed reads go first, so a few stuck reports can't starve the rest.
+  - `readTaskBranchFile` has its own tests: branch and path patterns, 404, folder, symlink, size, invalid UTF-8 and a valid read.
+- **5, hidden characters:** a report whose question, sections or tool fields contain invisible or control characters is refused, with a reason. This is in the shared parser, so it applies to the server too.
+- **6, more tests:** prototype-pollution keys (`__proto__`, `constructor`) in `org.json` are refused; `research_full` rolls back the queued job, so nothing is reserved or dispatched.
+
+After the fixes:
+
+| Check | Result |
+| --- | --- |
+| Typecheck | Clean |
+| `npm test` | 1051 of 1052 pass, 0 fail (1 existing skip) |
+| `build`, `build:cloud` | OK |
+| `cloud-org-ui-check` | 50/50 |
+| `cloud-ui-check` | 171/171 |
+| `inbox-ui-check` | 47/47 |
+| `chief-ui-check` | 38/38 |
+| `memory-ui-check` | 38/38 |
+| `mobile-ui-check` | 411/411 |
+
+The ports, process stops and screenshot reverts followed the same rules as before.
+
 ## Deferred / not verified
 
 - **No real GitHub run.** The contents-API read (`GET /repos/{o}/{r}/contents/{path}?ref=<branch>`) follows GitHub's documented API: the `type: file` field, the size, the base64 content and the 404 behaviour. It has only been exercised through fakes. A first real run should ask one research question and check the import.
