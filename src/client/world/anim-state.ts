@@ -50,6 +50,18 @@ export function stairsState(previous: Stairs, speed: number, vy: number): Stairs
   return null;
 }
 
+/** Touchdown faster than this (m/s) is a real jump or fall; slower (a ledge caught on the way down, a hop) dips. */
+export const LAND_CLIP_VY = 2.5;
+/** At or below this ground speed (m/s) a body counts as standing still when it lands. */
+export const LAND_STILL = 0.5;
+/**
+ * Decided once, at touchdown: the recorded landing crouch plays only after a hard touchdown, standing still, with the
+ * clip present and motion allowed. Every other landing is the CHAR-01 procedural dip, so the two never stack.
+ */
+export function landWithClip(s: { touchdownVy: number; speed: number; reducedMotion: boolean; has(name: string): boolean }): boolean {
+  return -s.touchdownVy > LAND_CLIP_VY && s.speed <= LAND_STILL && !s.reducedMotion && s.has('jump_land');
+}
+
 export interface MotionInput {
   speed: number;
   previous: string;
@@ -59,6 +71,8 @@ export interface MotionInput {
   /** A scripted transition clip (sitting down at a desk or into a car) pinned by its caller. */
   transition: string | null;
   jump: JumpPhase;
+  /** This landing was decided at touchdown to play the clip (landWithClip). */
+  landClip: boolean;
   stairs: Stairs;
   reducedMotion: boolean;
   /** Whether this body has an action for the clip (extra clips arrive late or not at all). */
@@ -78,7 +92,7 @@ export function selectMotion(s: MotionInput): string {
     return s.has(clip) ? clip : ground();
   }
   // A landing crouch plays standing still; moving on returns to the stride at once.
-  if (s.jump === 'land' && extra && s.speed <= 0.5 && s.has('jump_land')) return 'jump_land';
+  if (s.jump === 'land' && s.landClip && extra && s.speed <= LAND_STILL && s.has('jump_land')) return 'jump_land';
   // No stair clip exists in the free libraries: the stride plays, with a lean layer and foot IK (Human).
   return ground();
 }
