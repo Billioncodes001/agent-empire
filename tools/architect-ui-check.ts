@@ -76,6 +76,28 @@ const openInboxItem = async (page: Page) => {
 };
 
 const browser = await chromium.launch({ channel: 'chrome', headless: true, args: ['--enable-webgl', '--ignore-gpu-blocklist', '--use-angle=metal'] });
+// ARCH_UI_ONLY=max (against FIXTURE_ARCHITECT=max): the fully grown world, desktop and phone, for the report.
+if (process.env.ARCH_UI_ONLY === 'max') {
+  try {
+    for (const [label, size] of [['1440x900', { width: 1440, height: 900, touch: false }], ['phone-874x402', { width: 874, height: 402, touch: true }]] as const) {
+      const m = await open(browser, size);
+      await m.page.waitForFunction(() => (window as any).__office.city.architect.stats.rendered > 0, null, { timeout: 15_000 });
+      const st = await stats(m.page);
+      const host = (await api(m.page, '/api/architect')).json;
+      check(`max world rendered in full (${label})`, st.rendered === host.world.additions.length && st.skipped === 0, JSON.stringify(st));
+      await place(m.page, { x: 112, z: 158, yaw: Math.PI * 0.85, view: 'third', dist: 30, pitch: 0.55 }, 2000);
+      await m.page.screenshot({ path: resolve(out, `12-max-harbour-${label}.jpg`), quality: 82 });
+      await place(m.page, { x: 74, z: 42, yaw: Math.PI * 0.8, view: 'third', dist: 26, pitch: 0.5 }, 2000);
+      await m.page.screenshot({ path: resolve(out, `13-max-meridian-${label}.jpg`), quality: 82 });
+      check(`no console errors with the max world (${label})`, m.errors.length === 0, m.errors.join(' | '));
+      await m.context.close();
+    }
+  } finally { await browser.close(); }
+  writeFileSync(resolve(out, 'checks-max.json'), `${JSON.stringify({ base, results }, null, 2)}\n`);
+  const bad = results.filter((r) => !r.ok);
+  console.log(`\n${results.length - bad.length}/${results.length} checks passed`);
+  process.exit(bad.length ? 1 : 0);
+}
 try {
   // ---- Desktop: before, enable, run, after, hint ----
   const d = await open(browser, { width: 1440, height: 900, touch: false });
