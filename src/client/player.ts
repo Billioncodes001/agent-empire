@@ -13,6 +13,10 @@ const RADIUS = 0.32;
 const HEIGHT = 1.7;
 /** The tallest ledge you walk up (or down) without jumping, like a stair. */
 const STEP = 0.3;
+/** CHAR-01 review 2: a vehicle stops a walker up to this far above its roof (a jump peaks at about 1.14 m). */
+const VEHICLE_REACH = 1.2;
+/** Review 4: the foot probe radius for foot IK (a sole, not the body). */
+const FOOT_RADIUS = 0.05;
 const WALK = 1.65;
 const RUN = 4.3;
 const JUMP_V = 6.4;
@@ -31,6 +35,8 @@ export class PlayerController {
   speed = 0;
   scripted = false;
   grounded = true;
+  /** CHAR-01: floor height where the walker last stood, for what a jump may pass over. */
+  launchY = 0;
   /** Heading of the camera. You look along (-sin, -cos) of it on the XZ plane. */
   camYaw = Math.PI * 0.15;
   camPitch = 0.16;
@@ -49,6 +55,8 @@ export class PlayerController {
    */
   onClick: ((ndc: THREE.Vector2) => void) | null = null;
   private keys = new Set<string>();
+  /** CHAR-01 review 6: keys physically held on the keyboard, so releasing a touch or pad action never drops them. */
+  private physical = new Set<string>();
   private drag: { x: number; y: number; moved: number; id?: number } | null = null;
   /** Set when this browser won't lock the pointer; first person falls back to drag-to-look. */
   private lockFailed = false;
@@ -81,9 +89,10 @@ export class PlayerController {
     window.addEventListener('keydown', (e) => {
       if (!this.enabled || isTyping(e) || e.metaKey || e.ctrlKey || e.altKey) return;
       this.keys.add(e.code);
+      this.physical.add(e.code);
       if (Object.values(this.bindings).includes(e.code)) e.preventDefault();
     });
-    window.addEventListener('keyup', (e) => this.keys.delete(e.code));
+    window.addEventListener('keyup', (e) => { this.keys.delete(e.code); this.physical.delete(e.code); });
     window.addEventListener('blur', () => this.clearKeys());
 
     dom.addEventListener('pointerdown', (e) => {
@@ -192,8 +201,9 @@ export class PlayerController {
   }
 
   setAction(action: Action, pressed: boolean) {
-    if (pressed && this.enabled) this.keys.add(this.bindings[action]);
-    else this.keys.delete(this.bindings[action]);
+    const code = this.bindings[action];
+    if (pressed && this.enabled) this.keys.add(code);
+    else if (!this.physical.has(code)) this.keys.delete(code);
   }
 
   get flying() { return this.driving && this.ride.kind === 'helicopter'; }
@@ -203,6 +213,7 @@ export class PlayerController {
 
   clearKeys() {
     this.keys.clear();
+    this.physical.clear();
     this.walkVelocity.set(0, 0);
     this.moveChord = '';
     this.turnTarget = null;
@@ -229,6 +240,17 @@ export class PlayerController {
       this.lockPending = false;
       this.lockFailed = true;
     }
+  }
+
+  /** CHAR-01: camera from a gamepad's right stick (radians): looks around in first person, orbits in third. */
+  lookBy(dx: number, dy: number) {
+    if (!this.enabled) return;
+    if (this.view === 'first') { this.look(dx, dy); return; }
+    this.camYaw -= dx;
+    this.moveYaw -= dx;
+    this.orbitGrace = 1.2;
+    this.followPending = false;
+    this.camPitch = THREE.MathUtils.clamp(this.camPitch + dy * 0.8, 0.05, 1.3);
   }
 
   private look(dx: number, dy: number) {
@@ -335,6 +357,7 @@ export class PlayerController {
       }
     }
 
+    if (!this.driving) this.pushOutOfVehicles();
     const ground = groundAt(this.colliders, this.pos.x, this.pos.z, this.pos.y);
     const jump = this.enabled && k.has(this.bindings.jump) && !this.driving && this.grounded;
     if (jump) {
@@ -354,6 +377,7 @@ export class PlayerController {
     } else if (this.pos.y > ground + 0.02) {
       this.grounded = false;
     }
+    if (this.grounded) this.launchY = this.pos.y;
     const ceiling = ceilingAt(this.colliders, this.pos.x, this.pos.z, this.pos.y);
     if (this.pos.y + HEIGHT > ceiling) {
       this.pos.y = Math.max(ground, ceiling - HEIGHT);
@@ -457,6 +481,9 @@ export class PlayerController {
     this.camera.lookAt(target);
   }
 
+  /** CHAR-01: the floor at a world point for feet near `y` (vehicles are never a floor). */
+  floorAt = (x: number, z: number, y: number) => groundAt(this.colliders, x, z, y, FOOT_RADIUS);
+
   /** Unit vector the character is facing, on the XZ plane. */
   forward(): THREE.Vector2 {
     return new THREE.Vector2(Math.sin(this.facing), Math.cos(this.facing));
@@ -467,13 +494,69 @@ export class PlayerController {
     let hit: Collider | null = null;
     // A vehicle is at least as tall as a person (the sedan keeps the original 1.7 m clearance).
     const tall = this.driving ? Math.max(HEIGHT, this.ride.height) : HEIGHT;
+    // CHAR-01: in the air a walker only passes over what is no higher than a step above where they left the floor,
+    // so a jump never lands on a desk, bench, kiosk or car.
+    const reach = this.grounded || this.driving ? Infinity : this.launchY + STEP + 0.02;
     for (const c of this.colliders) {
-      // Stood on top of it, or passing beneath it.
-      if (y >= c.top - 0.05 || y + tall <= (c.bottom ?? 0)) continue;
+      const bottom = c.bottom ?? 0;
+      if (c.top <= bottom || y + tall <= bottom) continue;
+      // A vehicle is a solid column to a walker, and walker-only stairs are a wall to a car, at every height.
+      // Review 1: the helicopter flies over the stairs. Review 2: a vehicle is a column only up to a jump's reach
+      // above its roof, so a walker on the helipad deck or the stairs is never stopped by a car parked below.
+      const column = this.driving ? !!c.walkOnly && !this.flying : !!c.vehicle && y < c.top + VEHICLE_REACH;
+      // Review 5: a walker who could not be pushed out of a car may walk out of it (never frozen).
+      if (column && !this.driving && touches(c, this.pos.x, this.pos.z, RADIUS)) continue;
+      // Stood on top of it (a floor you are allowed to be on), or passing beneath it.
+      if (!column && y >= c.top - 0.05 && c.top <= reach) continue;
       if (!(this.driving ? vehicleOverlaps(x, z, this.facing, c, this.ride.half) : touches(c, x, z, RADIUS))) continue;
+      if (column) return c;
       if (!hit || c.top > hit.top) hit = c;
     }
     return hit;
+  }
+
+  /**
+   * CHAR-01: moves the founder somewhere else ("Go to desk", a reconnect). Refused while driving, flying or in a
+   * scripted transition: the driven ride follows the controller, so a teleport would carry the car with it.
+   */
+  teleport(x: number, y: number, z: number): boolean {
+    if (this.driving || this.scripted) return false;
+    this.pos.set(x, y, z);
+    this.vy = 0;
+    this.grounded = true;
+    this.launchY = y;
+    this.stepOffset = 0;
+    this.walkVelocity.set(0, 0);
+    return true;
+  }
+
+  /**
+   * CHAR-01: a walker found inside a vehicle (a collider that turned solid around them, a script) steps out to the
+   * nearest side where there is room, at the same floor height. Allocation-free on the common no-overlap path.
+   */
+  private pushOutOfVehicles() {
+    const p = this.pos;
+    for (const c of this.colliders) {
+      if (!c.vehicle || c.top <= (c.bottom ?? 0) || p.y + HEIGHT <= (c.bottom ?? 0) || p.y >= c.top + VEHICLE_REACH || !touches(c, p.x, p.z, RADIUS)) continue;
+      const m = RADIUS + 0.02;
+      const bounds = p.z >= CITY.minZ ? CITY : FLOOR;
+      const exits = [
+        { x: c.minX - m, z: p.z, d: p.x - c.minX },
+        { x: c.maxX + m, z: p.z, d: c.maxX - p.x },
+        { x: p.x, z: c.minZ - m, d: p.z - c.minZ },
+        { x: p.x, z: c.maxZ + m, d: c.maxZ - p.z },
+      ].sort((a, b) => a.d - b.d);
+      for (const e of exits) {
+        // Review 5: inside the city or office bounds, with floor at the same height (never off a deck's edge).
+        if (e.x < bounds.minX + RADIUS || e.x > bounds.maxX - RADIUS || e.z < bounds.minZ + RADIUS || e.z > bounds.maxZ - RADIUS) continue;
+        if (Math.abs(groundAt(this.colliders, e.x, e.z, p.y + 0.05, FOOT_RADIUS) - p.y) > 0.05) continue;
+        if (this.blocker(e.x, e.z, p.y)) continue;
+        p.x = e.x;
+        p.z = e.z;
+        this.walkVelocity.set(0, 0);
+        break;
+      }
+    }
   }
 
   private tryMove(x: number, z: number) {
@@ -490,7 +573,7 @@ export class PlayerController {
       return;
     }
     // A stair: step up onto it if there's room there.
-    if (this.driving) return;
+    if (this.driving || hit.vehicle) return;
     const up = hit.top - this.pos.y;
     if (!this.grounded || up > STEP || this.blocker(x, z, hit.top) || this.pos.y + HEIGHT + up > ceilingAt(this.colliders, x, z, this.pos.y)) return;
     this.pos.set(x, hit.top, z);
@@ -506,11 +589,11 @@ function touches(c: Collider, x: number, z: number, r: number): boolean {
 }
 
 /** The floor under someone standing at (x, z) with their feet at `y`: the highest top they're on or above. */
-export function groundAt(colliders: Collider[], x: number, z: number, y: number): number {
+export function groundAt(colliders: Collider[], x: number, z: number, y: number, radius = RADIUS): number {
   let g = 0;
   for (const c of colliders) {
-    if (c.top > 50 || y < c.top - 0.1 || c.top <= g) continue;
-    if (touches(c, x, z, RADIUS)) g = c.top;
+    if (c.top > 50 || y < c.top - 0.1 || c.top <= g || c.vehicle || c.top <= (c.bottom ?? 0)) continue;
+    if (touches(c, x, z, radius)) g = c.top;
   }
   return g;
 }
@@ -520,7 +603,7 @@ function ceilingAt(colliders: Collider[], x: number, z: number, y: number): numb
   let top = Infinity;
   for (const c of colliders) {
     const b = c.bottom ?? 0;
-    if (b <= y + 0.1 || b >= top) continue;
+    if (b <= y + 0.1 || b >= top || c.vehicle || c.top <= b) continue;
     if (touches(c, x, z, RADIUS)) top = b;
   }
   return top;

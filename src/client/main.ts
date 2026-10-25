@@ -70,6 +70,7 @@ import { cloudSession, forgetSavedSnapshots } from './cloud/session';
 import { CloudNet } from './cloud/net';
 import { installCloudChrome, mountCloudStrip, openCloudPanel } from './cloud/ui';
 import { native } from './native';
+import { mountGamepad } from './gamepad';
 import { hiringPaused, renderUsage, usageLabel, usageTitle } from './ui/usage';
 
 // ---- Renderer & scene ---------------------------------------------------------------------------
@@ -346,6 +347,17 @@ const life = new OfficeLife(office, {
   detail: () => settings.quality !== 'low',
   onTyping: (id, typing) => { const w = store.workers.get(id), d = w && DESK_BY_ID.get(w.deskId); if (d) sound.setTyping(id, d.x, d.z, typing); },
 });
+// CHAR-01: a gamepad drives the same actions as the keyboard (feature-detected; idle until a pad connects).
+const gamepad = mountGamepad({
+  player,
+  interact: () => { if (!traversal.interactCar() && !cityInteract() && !empireUI.interact()) use(target, 'E'); },
+  changeView: () => changeView(),
+  openMap: () => empireUI.openMap(),
+  openMenu: () => document.getElementById('btn-menu')?.click(),
+  blocked: () => modalOpen() || player.scripted || isTyping(),
+  flying: () => player.flying,
+});
+
 let firstWelcome = true;
 let foundingOpened = false;
 /** The server version this page was loaded with. */
@@ -423,7 +435,7 @@ net.onMessage((msg) => {
     case 'welcome': {
       const mine = store.peers.get(store.you);
       if (firstWelcome && mine) {
-        player.pos.set(mine.x, 0, mine.z);
+        player.teleport(mine.x, 0, mine.z);
         firstWelcome = false;
       }
       if (voice.inVoice || voice.sharing) net.send({ t: 'voice', voice: voice.inVoice, muted: voice.muted, sharing: voice.sharing });
@@ -757,10 +769,11 @@ function pullRequestFor(w: WorkerInfo) {
 function goToDesk(deskId: string) {
   const desk = DESK_BY_ID.get(deskId);
   if (!desk) return;
+  // CHAR-01: a teleport would carry the driven car or helicopter with the founder.
+  if (player.driving || player.scripted) return toast('Park and step out first, then go to the desk.', 'info');
   closeAllModals();
   const spot = deskSeat(desk, 2.4);
-  player.pos.set(spot.x, 0, spot.z);
-  player.vy = 0;
+  player.teleport(spot.x, 0, spot.z);
   player.facing = Math.atan2(desk.x - spot.x, desk.z - spot.z);
   player.camYaw = player.facing - Math.PI;
   player.lookPitch = -0.2;
@@ -1398,6 +1411,8 @@ function frame(ts?: number) {
     r.cabinView?.(cabin && r === activeRide);
   }
   empireUI.touch.setMode(player.flying ? 'fly' : player.driving ? 'drive' : 'walk');
+  empireUI.touch.setUse(tower.active ? 'Use' : traversal.useLabel());
+  gamepad.update(dt);
   sound.environment(outside);
   sound.vehicle(player.flying ? player.flight.audio() : player.vehicle, player.driving, (activeRide?.object ?? city.car).position, player.view === 'first');
   canvas.dataset.audio = sound.recordings;
@@ -1416,6 +1431,8 @@ function frame(ts?: number) {
   me.root.position.y += player.stepOffset;
   me.root.rotation.y = player.facing;
   me.update(dt,t,player.moving&&player.grounded,!player.grounded,player.speed);
+  // CHAR-01: feet stay on stair treads (not on Low, not in a vehicle or a scripted transition).
+  if (player.grounded && !player.driving && !player.scripted && settings.quality !== 'low' && player.view === 'third') me.groundFeet(player.floorAt);
   traversal.placeDriver();
   me.setVoiceLevel(voice.inVoice ? voice.localLevel : 0);
   const firstPerson = player.view === 'first';
