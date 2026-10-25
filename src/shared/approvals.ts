@@ -9,7 +9,7 @@ import type { LessonScope, LessonSource } from './memory.js';
  * `external_action` (ORG-04a): something leaves the Empire, e.g. a campaign send; approving acts on a frozen snapshot.
  * `tool_proposal` (ORG-05): a researched tool; approving only records the decision.
  */
-export type ApprovalKind = 'job_plan' | 'budget_increase' | 'external_action' | 'tool_proposal' | 'chief_proposal' | 'lesson';
+export type ApprovalKind = 'job_plan' | 'budget_increase' | 'external_action' | 'tool_proposal' | 'chief_proposal' | 'lesson' | 'architect_summary';
 
 /**
  * FREE-10 `lesson`: a proposed organizational-memory lesson (decision only). Approving makes it planning context for the
@@ -30,6 +30,22 @@ export interface LessonApproval {
    * the exact proposal (id, text, scope and nonce) it was raised for.
    */
   nonce?: string;
+}
+
+/**
+ * CITY-10 `architect_summary`: one per city architect run. The changes were already applied (data only, reversible).
+ * Approving ("Keep changes") records the acknowledgement; declining ("Revert this day") undoes every change of the run.
+ */
+export interface ArchitectSummary {
+  runId: string;
+  day: string;
+  engine: 'rules' | 'free' | 'premium';
+  engineLabel: string;
+  costLabel: string;
+  status: string;
+  reason?: string;
+  note?: string;
+  changes: { id: string; op: 'place' | 'move' | 'remove'; label: string; reason: string; repair: boolean }[];
 }
 
 /**
@@ -101,6 +117,8 @@ export interface Approval {
   outreach?: OutreachApproval;
   /** FREE-02 chief_proposal: the chief's suggestion and its optional one-click action. */
   proposal?: ChiefProposal;
+  /** CITY-10 architect_summary: the run's changes. Keep records it; declining reverts that day. */
+  architect?: ArchitectSummary;
   /** FREE-10 lesson: the proposed lesson, its scope and provenance. */
   lesson?: LessonApproval;
   /** FREE-02 job_plan: set when the chief's model proposed the plan, e.g. "Model-backed · gpt-oss:20b · proposals only". */
@@ -125,12 +143,13 @@ export const APPROVAL_KIND_LABEL: Record<ApprovalKind, string> = {
   tool_proposal: 'Tool proposal',
   chief_proposal: 'Chief proposal',
   lesson: 'Lesson',
+  architect_summary: 'City architect',
 };
 
 export const MAX_APPROVAL_BUDGET_USD = 100_000;
 
 /** Which executive raises each kind (server inbox and cloud coordinator alike). */
-export const RAISED_BY: Record<ApprovalKind, ExecutiveRole> = { job_plan: 'chief_of_staff', budget_increase: 'finance', external_action: 'marketing_sales', tool_proposal: 'research', chief_proposal: 'chief_of_staff', lesson: 'chief_of_staff' };
+export const RAISED_BY: Record<ApprovalKind, ExecutiveRole> = { job_plan: 'chief_of_staff', budget_increase: 'finance', external_action: 'marketing_sales', tool_proposal: 'research', chief_proposal: 'chief_of_staff', lesson: 'chief_of_staff', architect_summary: 'chief_of_staff' };
 
 /** 64-bit FNV-1a over UTF-16 code units, hex. Browser-safe and deterministic; not a security hash. */
 function fnv64(text: string): string {
