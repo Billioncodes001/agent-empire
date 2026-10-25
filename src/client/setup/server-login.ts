@@ -3,9 +3,10 @@
  * No cookies, no cache, and redirects are refused, so a password never goes to another host.
  */
 import { normaliseHost } from '../endpoint';
+import type { AppPlatform } from '../native';
 
 export type LoginError =
-  | 'empty_host' | 'bad_host' | 'has_path' | 'https_required' | 'empty_password'
+  | 'empty_host' | 'bad_host' | 'has_path' | 'https_required' | 'https_required_android' | 'empty_password'
   | 'unreachable' | 'not_empire' | 'wrong_password' | 'rate_limited' | 'too_many_devices' | 'server' | 'bad_response';
 
 export const LOGIN_MESSAGES: Record<LoginError, string> = {
@@ -13,6 +14,7 @@ export const LOGIN_MESSAGES: Record<LoginError, string> = {
   bad_host: 'That doesn’t look like a server address.',
   has_path: 'Enter only the server address, without a path, query or password.',
   https_required: 'The server must use HTTPS. Only this device’s own address (localhost) may use http.',
+  https_required_android: 'Release builds of the Android app connect over HTTPS only, even to a server on this network or computer. Enter an https:// address.',
   empty_password: 'Enter the office password.',
   unreachable: 'Can’t reach that server. Check the address, your connection, and that its HTTPS certificate is valid.',
   not_empire: 'That server didn’t answer like an Agent Empire server. Check the address and that it runs a current version.',
@@ -32,12 +34,19 @@ export class LoginFailure extends Error {
 
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
 
+/** Who is asking: the shell's platform, and whether an Android shell is a debuggable build (window.AGENT_EMPIRE_APP.devBuild). */
+export interface AddressContext {
+  platform?: AppPlatform | null;
+  devBuild?: boolean;
+}
+
 /**
- * "city.example.com" means https. Plain http is accepted only for this device's loopback address, and in the Android
- * app also for 10.0.2.2, the emulator's alias for the host computer's loopback. The shell stays the authority: a
- * release Android build refuses cleartext and won't store that address, a debug build allows it for local testing.
+ * "city.example.com" means https. Plain http is accepted only for this device's loopback address. The Android shell is
+ * stricter and stays the authority: a release build refuses cleartext to every host (its network config and
+ * ServerPolicy), so the page says so up front instead of letting the request fail as "unreachable". A debug build
+ * allows its local test hosts, including 10.0.2.2, the emulator's alias for the host computer's loopback.
  */
-export function parseServerAddress(input: string, opts: { androidEmulator?: boolean } = {}): { ok: true; host: string } | { ok: false; error: LoginError } {
+export function parseServerAddress(input: string, opts: AddressContext = {}): { ok: true; host: string } | { ok: false; error: LoginError } {
   let text = input.trim();
   if (!text) return { ok: false, error: 'empty_host' };
   if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) text = `https://${text}`;
@@ -50,7 +59,11 @@ export function parseServerAddress(input: string, opts: { androidEmulator?: bool
   if (url.protocol !== 'https:' && url.protocol !== 'http:') return { ok: false, error: 'bad_host' };
   if (url.username || url.password || url.search || url.hash || (url.pathname !== '/' && url.pathname !== '')) return { ok: false, error: 'has_path' };
   if (!url.hostname || !/^[a-z0-9.[\]:-]+$/i.test(url.hostname)) return { ok: false, error: 'bad_host' };
-  if (url.protocol === 'http:' && !LOOPBACK.has(url.hostname) && !(opts.androidEmulator && url.hostname === '10.0.2.2')) return { ok: false, error: 'https_required' };
+  if (url.protocol === 'http:') {
+    const android = opts.platform === 'android';
+    if (android && !opts.devBuild) return { ok: false, error: 'https_required_android' };
+    if (!LOOPBACK.has(url.hostname) && !(android && url.hostname === '10.0.2.2')) return { ok: false, error: 'https_required' };
+  }
   const host = normaliseHost(url.origin);
   return host ? { ok: true, host } : { ok: false, error: 'bad_host' };
 }
@@ -75,11 +88,11 @@ async function send(fetchImpl: typeof fetch, url: string, init: RequestInit, tim
 
 /** Probes GET /api/health, then signs this device in. Throws LoginFailure with a plain message. */
 export async function signInToServer(
-  opts: { host: string; password: string; deviceName: string; androidEmulator?: boolean },
+  opts: { host: string; password: string; deviceName: string } & AddressContext,
   fetchImpl: typeof fetch = fetch,
   timeoutMs = 15_000,
 ): Promise<ServerSession> {
-  const parsed = parseServerAddress(opts.host, { androidEmulator: opts.androidEmulator });
+  const parsed = parseServerAddress(opts.host, opts);
   if (!parsed.ok) throw new LoginFailure(parsed.error);
   if (!opts.password) throw new LoginFailure('empty_password');
   const host = parsed.host;

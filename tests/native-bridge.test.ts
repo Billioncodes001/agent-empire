@@ -92,6 +92,10 @@ test('bridge: Android posts one JSON string to empireAndroid; desktop posts to e
 test('bridge: shell info is validated', () => {
   assert.deepEqual(parseShellInfo({ platform: 'ios', mode: 'cloud', deviceName: ' Ana’s iPhone ', signedOut: 'user', token: 'ignored' }), { platform: 'ios', mode: 'cloud', deviceName: 'Ana’s iPhone', signedOut: 'user' });
   assert.deepEqual(parseShellInfo({ platform: 'ios', mode: 'nope', signedOut: 'x' }), { platform: 'ios' });
+  assert.deepEqual(parseShellInfo({ platform: 'android', devBuild: true }), { platform: 'android', devBuild: true }, 'a debuggable Android build says so');
+  assert.deepEqual(parseShellInfo({ platform: 'android' }), { platform: 'android' }, 'no flag (the released beta.1 APK included) means a release build');
+  assert.deepEqual(parseShellInfo({ platform: 'android', devBuild: 'true' }), { platform: 'android' });
+  assert.deepEqual(parseShellInfo({ platform: 'ios', devBuild: true }), { platform: 'ios' }, 'only Android uses the flag');
   assert.equal(parseShellInfo({ platform: 'web' }), null);
   assert.equal(parseShellInfo(null), null);
 });

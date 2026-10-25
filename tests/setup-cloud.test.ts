@@ -309,13 +309,33 @@ test('server address: bare hosts mean https, http only for loopback, no paths or
   assert.deepEqual(parseServerAddress('http://localhost:4707'), { ok: true, host: 'http://localhost:4707' });
   assert.deepEqual(parseServerAddress('http://city.example.com'), { ok: false, error: 'https_required' });
   assert.deepEqual(parseServerAddress('http://10.0.2.2:4713'), { ok: false, error: 'https_required' }, 'the emulator alias only in the Android app');
-  assert.deepEqual(parseServerAddress('http://10.0.2.2:4713', { androidEmulator: true }), { ok: true, host: 'http://10.0.2.2:4713' });
-  assert.deepEqual(parseServerAddress('http://10.0.2.3:4713', { androidEmulator: true }), { ok: false, error: 'https_required' });
+  assert.deepEqual(parseServerAddress('http://10.0.2.2:4713', { platform: 'android', devBuild: true }), { ok: true, host: 'http://10.0.2.2:4713' });
+  assert.deepEqual(parseServerAddress('http://10.0.2.3:4713', { platform: 'android', devBuild: true }), { ok: false, error: 'https_required' });
   assert.deepEqual(parseServerAddress('http://localhost.evil.com'), { ok: false, error: 'https_required' });
   assert.deepEqual(parseServerAddress('https://city.example.com/office'), { ok: false, error: 'has_path' });
   assert.deepEqual(parseServerAddress('https://u:p@city.example.com'), { ok: false, error: 'has_path' });
   assert.deepEqual(parseServerAddress('ftp://city.example.com'), { ok: false, error: 'bad_host' });
   assert.deepEqual(parseServerAddress('  '), { ok: false, error: 'empty_host' });
+});
+
+test('server address: a release Android build says plainly that it needs HTTPS (no http at all, not even loopback)', () => {
+  for (const address of ['http://10.0.2.2:4713', 'http://localhost:4707', 'http://127.0.0.1:4707', 'http://city.example.com'])
+    assert.deepEqual(parseServerAddress(address, { platform: 'android' }), { ok: false, error: 'https_required_android' }, address);
+  assert.deepEqual(parseServerAddress('https://city.example.com', { platform: 'android' }), { ok: true, host: 'https://city.example.com' });
+  assert.deepEqual(parseServerAddress('http://localhost:4707', { platform: 'android', devBuild: true }), { ok: true, host: 'http://localhost:4707' }, 'debug builds keep their local test hosts');
+  const android = new LoginFailure('https_required_android').message;
+  assert.match(android, /HTTPS/);
+  assert.match(android, /release/i);
+  assert.doesNotMatch(android, /localhost\) may use http|unreachable|certificate/i, 'never the generic loopback hint or an "unreachable" message');
+  // The generic hint stays where it is true: browsers, iOS and desktop allow http for this device's own loopback address.
+  assert.match(new LoginFailure('https_required').message, /localhost/);
+  for (const platform of ['ios', 'desktop', null] as const) assert.deepEqual(parseServerAddress('http://localhost:4707', { platform }), { ok: true, host: 'http://localhost:4707' });
+});
+
+test('server sign-in: a release Android build refuses an http address before any request, with the HTTPS message', async () => {
+  const { fetchImpl, calls } = fakeServer(() => new Response('{}', { status: 200 }));
+  await assert.rejects(signInToServer({ host: 'http://10.0.2.2:5041', password: 'pw', deviceName: 'Pixel', platform: 'android' }, fetchImpl), (e: unknown) => e instanceof LoginFailure && e.code === 'https_required_android');
+  assert.equal(calls.length, 0, 'never probed, so never reported as unreachable');
 });
 
 function fakeServer(login: (body: Record<string, unknown>) => Response, health = () => new Response('{"ok":true}', { status: 200 })) {

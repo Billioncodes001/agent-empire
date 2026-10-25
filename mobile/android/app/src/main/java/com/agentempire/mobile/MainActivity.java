@@ -275,6 +275,8 @@ public final class MainActivity extends Activity implements NativeBridge.Host {
             config.put("platform", "android");
             config.put("appVersion", VERSION);
             config.put("bridge", NativeBridge.NAME);
+            // Lets the setup page tell a release build (HTTPS only) from a debug build (local http test hosts).
+            if (debuggable) config.put("devBuild", true);
             // Same fields as the iOS shell: device name, stored mode, a valid server session (APP-02 compatible: the
             // current client talks to that server with its device token), and a one-shot sign-out reason.
             String reason = signedOutReason;
