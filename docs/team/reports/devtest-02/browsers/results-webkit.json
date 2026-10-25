@@ -1,0 +1,252 @@
+{
+  "versions": {
+    "webkit": "26.6"
+  },
+  "results": [
+    {
+      "name": "webkit 1440x900 sign-in page renders a password field, no horizontal overflow",
+      "ok": true,
+      "detail": "{\"pw\":true,\"overflow\":0}"
+    },
+    {
+      "name": "webkit 1440x900 sign-in: no console errors",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "webkit 1440x900 game boots",
+      "ok": true,
+      "detail": "ready"
+    },
+    {
+      "name": "webkit 1440x900 onboarding is offered on a new install",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "webkit 1440x900 onboarding: initial focus is inside the dialog, not on a step tab",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "webkit 1440x900 onboarding: Tab stays inside the dialog",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "webkit 1440x900 onboarding fits the viewport",
+      "ok": true,
+      "detail": "{\"doc\":0,\"right\":-310,\"bottom\":-146}"
+    },
+    {
+      "name": "webkit 1440x900 HUD shows (top bar, Settings, city canvas)",
+      "ok": true,
+      "detail": "{\"hud\":true,\"settings\":true,\"canvas\":true}"
+    },
+    {
+      "name": "webkit 1440x900 the city renders (canvas is not blank)",
+      "ok": true,
+      "detail": "141 colour buckets"
+    },
+    {
+      "name": "webkit 1440x900 Settings opens",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "webkit 1440x900 Settings: focus inside, fits the width",
+      "ok": true,
+      "detail": "{\"focus\":true,\"right\":-440,\"doc\":0}"
+    },
+    {
+      "name": "webkit 1440x900 game: no console errors",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "webkit 1440x900 founder desk renders without horizontal overflow",
+      "ok": true,
+      "detail": "{\"text\":2850,\"overflow\":0}"
+    },
+    {
+      "name": "webkit 1440x900 founder desk: no console errors",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "webkit 1024x768 sign-in page renders a password field, no horizontal overflow",
+      "ok": true,
+      "detail": "{\"pw\":true,\"overflow\":0}"
+    },
+    {
+      "name": "webkit 1024x768 sign-in: no console errors",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "webkit 1024x768 game boots",
+      "ok": true,
+      "detail": "ready"
+    },
+    {
+      "name": "webkit 1024x768 onboarding is offered on a new install",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "webkit 1024x768 onboarding: initial focus is inside the dialog, not on a step tab",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "webkit 1024x768 onboarding: Tab stays inside the dialog",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "webkit 1024x768 onboarding fits the viewport",
+      "ok": true,
+      "detail": "{\"doc\":0,\"right\":-102,\"bottom\":-75}"
+    },
+    {
+      "name": "webkit 1024x768 HUD shows (top bar, Settings, city canvas)",
+      "ok": true,
+      "detail": "{\"hud\":true,\"settings\":true,\"canvas\":true}"
+    },
+    {
+      "name": "webkit 1024x768 the city renders (canvas is not blank)",
+      "ok": true,
+      "detail": "153 colour buckets"
+    },
+    {
+      "name": "webkit 1024x768 Settings opens",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "webkit 1024x768 Settings: focus inside, fits the width",
+      "ok": true,
+      "detail": "{\"focus\":true,\"right\":-232,\"doc\":0}"
+    },
+    {
+      "name": "webkit 1024x768 game: no console errors",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "webkit 1024x768 founder desk renders without horizontal overflow",
+      "ok": true,
+      "detail": "{\"text\":2850,\"overflow\":0}"
+    },
+    {
+      "name": "webkit 1024x768 founder desk: no console errors",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "webkit 874x402 sign-in page renders a password field, no horizontal overflow",
+      "ok": true,
+      "detail": "{\"pw\":true,\"overflow\":0}"
+    },
+    {
+      "name": "webkit 874x402 sign-in: no console errors",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "webkit 874x402 game boots",
+      "ok": true,
+      "detail": "ready"
+    },
+    {
+      "name": "webkit 874x402 onboarding is offered on a new install",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "webkit 874x402 onboarding: initial focus is inside the dialog, not on a step tab",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "webkit 874x402 onboarding: Tab stays inside the dialog",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "webkit 874x402 onboarding fits the viewport",
+      "ok": true,
+      "detail": "{\"doc\":0,\"right\":-8,\"bottom\":0}"
+    },
+    {
+      "name": "webkit 874x402 HUD shows (top bar, Settings, city canvas)",
+      "ok": true,
+      "detail": "{\"hud\":true,\"settings\":true,\"canvas\":true}"
+    },
+    {
+      "name": "webkit 874x402 the city renders (canvas is not blank)",
+      "ok": true,
+      "detail": "150 colour buckets"
+    },
+    {
+      "name": "webkit 874x402 Settings opens",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "webkit 874x402 Settings: focus inside, fits the width",
+      "ok": true,
+      "detail": "{\"focus\":true,\"right\":-157,\"doc\":0}"
+    },
+    {
+      "name": "webkit 874x402 game: no console errors",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "webkit 874x402 founder desk renders without horizontal overflow",
+      "ok": true,
+      "detail": "{\"text\":2850,\"overflow\":0}"
+    },
+    {
+      "name": "webkit 874x402 founder desk: no console errors",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "webkit 375x812 sign-in page renders a password field, no horizontal overflow",
+      "ok": true,
+      "detail": "{\"pw\":true,\"overflow\":0}"
+    },
+    {
+      "name": "webkit 375x812 sign-in: no console errors",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "webkit 375x812 game boots",
+      "ok": true,
+      "detail": "ready"
+    },
+    {
+      "name": "webkit 375x812 portrait shows the rotate screen",
+      "ok": true,
+      "detail": "{\"w\":375,\"h\":812}"
+    },
+    {
+      "name": "webkit 375x812 game: no console errors",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "webkit reduced motion + Save-Data: boots, dialog transitions off, no video",
+      "ok": true,
+      "detail": "{\"boot\":\"ready\",\"reduced\":true,\"saveData\":true,\"anim\":\"none\",\"videos\":0}"
+    },
+    {
+      "name": "webkit reduced motion + Save-Data: no console errors",
+      "ok": true,
+      "detail": ""
+    }
+  ]
+}
