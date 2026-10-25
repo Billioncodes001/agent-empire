@@ -9,6 +9,10 @@ import { TASK_ID, validateSubmit } from '../server/execution-validation.js';
 import { INTENT_PATH, validateExecution, validateLimits, validateProvisionRepository, type CloudExecution, type CloudLimits } from './schema.js';
 import type { ExecutionConfig } from '../shared/execution.js';
 import { isWorkerModel, type WorkerModel } from './worker-spec.js';
+import { APPROVAL_ID_RE, FINGERPRINT_RE } from '../shared/approvals.js';
+import { checkLesson } from '../shared/lesson-rules.js';
+import type { LessonScope } from '../shared/memory.js';
+import { checkQuestion } from './org.js';
 
 export const MAX_INTENT_BYTES = 64 * 1024;
 
@@ -28,9 +32,19 @@ export type CloudIntent = IntentBase & (
   /** Ask the coordinator to find or create the Anthropic agent and environment for this project (free; no session). */
   | { kind: 'provision'; repository: ExecutionConfig['repository']; model?: WorkerModel; configRevision: number }
   | { kind: 'empire_action'; action: EmpireAction }
+  /**
+   * FREE-07: decide a cloud inbox item (tool proposal or lesson). `seen` is the approvalFingerprint of the item as the
+   * CEO was shown it; the coordinator refuses the decision if the item changed. Neither kind moves money.
+   */
+  | { kind: 'approval_decision'; approvalId: string; decision: 'approve' | 'reject'; seen: string }
+  /** FREE-07: a CEO lesson (or an edit of an approved one, `supersedes`), proposed into the inbox. */
+  | { kind: 'lesson_propose'; lesson: { text: string; scope: LessonScope; scopeValue?: string; supersedes?: string; source?: { kind: 'job' | 'research'; ref: string } } }
+  | { kind: 'lesson_retire'; lessonId: string }
+  /** FREE-07: a research question as paid cloud work; `job` carries the same paid confirmation as `new_job`. */
+  | { kind: 'research'; question: string; job: { id: string; configRevision: number; confirmPaid: true } }
 );
 export type IntentKind = CloudIntent['kind'];
-export const INTENT_KINDS: readonly IntentKind[] = ['new_job', 'review', 'cancel', 'resolve_uncertain', 'shutdown', 'start', 'limits', 'configure', 'provision', 'empire_action'];
+export const INTENT_KINDS: readonly IntentKind[] = ['new_job', 'review', 'cancel', 'resolve_uncertain', 'shutdown', 'start', 'limits', 'configure', 'provision', 'empire_action', 'approval_decision', 'lesson_propose', 'lesson_retire', 'research'];
 
 export class IntentError extends Error {
   constructor(readonly code: string, message: string) { super(message); this.name = 'IntentError'; }
@@ -65,7 +79,7 @@ export function parseIntent(path: string, text: string): CloudIntent {
   if (text.length > MAX_INTENT_BYTES) throw bad('Intent file is larger than 64 KiB.');
   let value: unknown;
   try { value = JSON.parse(text); } catch { throw bad('Intent file is not valid JSON.'); }
-  const base = rec(value, ['schemaVersion', 'id', 'createdAt', 'kind', 'job', 'jobId', 'decision', 'note', 'resolution', 'sessionId', 'limits', 'configRevision', 'execution', 'repository', 'model', 'action']);
+  const base = rec(value, ['schemaVersion', 'id', 'createdAt', 'kind', 'job', 'jobId', 'decision', 'note', 'resolution', 'sessionId', 'limits', 'configRevision', 'execution', 'repository', 'model', 'action', 'approvalId', 'seen', 'lesson', 'lessonId', 'question']);
   if (base.schemaVersion !== 1) throw bad('Unsupported intent schemaVersion.');
   if (typeof base.id !== 'string' || !TASK_ID.test(base.id)) throw bad('Intent id must be a UUID.');
   if (base.id.toLowerCase() !== fileId.toLowerCase()) throw bad('Intent id does not match its file name.');
@@ -138,6 +152,42 @@ export function parseIntent(path: string, text: string): CloudIntent {
       else if (action.kind === 'buy-helicopter') rec(action, ['kind', 'nonce']);
       else rec(action, ['kind']);
       return { ...common, kind: 'empire_action', action: JSON.parse(JSON.stringify(action)) as EmpireAction };
+    }
+    case 'approval_decision': {
+      allow(['approvalId', 'decision', 'seen']);
+      if (typeof base.approvalId !== 'string' || !APPROVAL_ID_RE.test(base.approvalId)) throw bad('approvalId must look like A3.');
+      if (base.decision !== 'approve' && base.decision !== 'reject') throw bad('An inbox decision must be approve or reject.');
+      if (typeof base.seen !== 'string' || !FINGERPRINT_RE.test(base.seen)) throw bad('An inbox decision must name the item as you saw it (seen).');
+      return { ...common, kind: 'approval_decision', approvalId: base.approvalId, decision: base.decision, seen: base.seen };
+    }
+    case 'lesson_propose': {
+      allow(['lesson']);
+      const l = rec(base.lesson, ['text', 'scope', 'scopeValue', 'supersedes', 'source']);
+      const checked = checkLesson({ text: l.text, scope: l.scope, scopeValue: l.scopeValue }, 'ceo');
+      if ('error' in checked) throw bad(`Lesson refused: ${checked.error}.`);
+      if (l.supersedes !== undefined && (typeof l.supersedes !== 'string' || !/^L[1-9]\d{0,8}$/.test(l.supersedes))) throw bad('supersedes must name a lesson like L3.');
+      let source: { kind: 'job' | 'research'; ref: string } | undefined;
+      if (l.source !== undefined) {
+        const s = rec(l.source, ['kind', 'ref']);
+        if ((s.kind !== 'job' && s.kind !== 'research') || typeof s.ref !== 'string' || !TASK_ID.test(s.ref)) throw bad('A lesson source is a cloud job or research report id.');
+        source = { kind: s.kind, ref: s.ref.toLowerCase() };
+      }
+      return { ...common, kind: 'lesson_propose', lesson: { text: checked.ok.text, scope: checked.ok.scope, ...(checked.ok.scopeValue ? { scopeValue: checked.ok.scopeValue } : {}), ...(l.supersedes ? { supersedes: l.supersedes as string } : {}), ...(source ? { source } : {}) } };
+    }
+    case 'lesson_retire':
+      allow(['lessonId']);
+      if (typeof base.lessonId !== 'string' || !/^L[1-9]\d{0,8}$/.test(base.lessonId)) throw bad('lessonId must look like L3.');
+      return { ...common, kind: 'lesson_retire', lessonId: base.lessonId };
+    case 'research': {
+      allow(['question', 'job']);
+      let question: string;
+      try { question = checkQuestion(base.question); } catch (error) { throw bad(error instanceof Error ? error.message : 'Invalid question.'); }
+      const job = rec(base.job, ['id', 'configRevision', 'confirmPaid']);
+      let submit;
+      // The same paid confirmation as new_job: UUID id, current configRevision, confirmPaid: true.
+      try { submit = validateSubmit({ id: job.id, prompt: question, configRevision: job.configRevision, confirmPaid: job.confirmPaid }); }
+      catch (error) { throw bad(error instanceof ExecutionError ? error.message : 'Invalid research job.', error instanceof ExecutionError ? error.code : 'invalid_intent'); }
+      return { ...common, kind: 'research', question, job: { id: submit.id, configRevision: submit.configRevision, confirmPaid: true } };
     }
     default: throw bad('Unknown intent kind.');
   }

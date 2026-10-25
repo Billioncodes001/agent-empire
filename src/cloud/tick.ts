@@ -22,7 +22,8 @@
 import { advanceEconomy, applyEmpireAction, rewardAcceptedJob, settleCapMs, syncManagers, syncWorkforce } from './economy.js';
 import { intentIdFromPath, parseIntent, sortIntents, IntentError, type CloudIntent } from './intents.js';
 import { DispatchFailure, ProvisionError, type ProviderAdapter, type ProviderObservation, type ProvisionResult } from './provider.js';
-import { SITES } from '../shared/empire.js';
+import { SITES, type SiteId } from '../shared/empire.js';
+import { addResearch, ORG_FILE, cloudResearchPrompt, decideApproval, OrgRuleError, proposeLesson, recordResearch, researchDue, researchPath, researchTitle, retireLesson, type BranchFile } from './org.js';
 import { isMoneyEngine } from './actions-spec.js';
 import { DEFAULT_WORKER_MODEL, WORKER_ENVIRONMENT, workerModelLabel } from './worker-spec.js';
 import {
@@ -32,6 +33,24 @@ import {
 import { updateWithRetry, type FileChange, type RetryOptions, type StateSnapshot, type StateStore, type WorkflowControl } from './store.js';
 
 export interface TickContext { now: number; runId: string }
+
+/** FREE-07: at most this many research reports are read per run (read-only GitHub calls with the project token). */
+export const RESEARCH_READS_PER_TICK = 5;
+/**
+ * Reads finished research reports from their task branches (read-only). A provider that cannot read branch files gives
+ * `unsupported`; a failed read gives `unknown` and is retried next run. Never sends model text anywhere.
+ */
+export async function readResearchReports(due: { jobId: string; branch: string }[], provider: ProviderAdapter, state: CloudState): Promise<Record<string, BranchFile>> {
+  const out: Record<string, BranchFile> = {};
+  for (const item of due.slice(0, RESEARCH_READS_PER_TICK)) {
+    const job = state.jobs.jobs.find(j => j.id === item.jobId);
+    const execution = state.meta.execution;
+    if (!job || !execution || !provider.readBranchFile) { out[item.jobId] = { state: 'unsupported' }; continue; }
+    try { out[item.jobId] = await provider.readBranchFile({ ...execution, repository: clone(job.repository) } as typeof execution, item.branch, researchPath(item.jobId)); }
+    catch { out[item.jobId] = { state: 'unknown', reason: 'GitHub could not be read with the project token' }; }
+  }
+  return out;
+}
 export const HEARTBEAT_MS = 60 * 60_000;
 
 // ---------------------------------------------------------------- small helpers
@@ -107,9 +126,8 @@ function applyOne(state: CloudState, intent: CloudIntent, ctx: TickContext): { o
   const reject = (code: string, message: string): never => { throw new IntentError(code, message); };
   const findJob = (id: string) => state.jobs.jobs.find(job => job.id === id) ?? reject('job_not_found', 'No such cloud job in the current job list (finished jobs are archived after 14 days).');
   const meta = state.meta;
-  switch (intent.kind) {
-    case 'new_job': {
-      const input = intent.job;
+  // Paid work: a new job, or a research question (FREE-07) on exactly the same checks, limits and confirmation.
+  const queueJob = (input: { id: string; title: string; prompt: string; site?: SiteId; configRevision: number }): { outcome: 'applied' | 'duplicate' } => {
       const hash = promptHash(input.prompt);
       // A job id that already reached the archive can never be dispatched (or paid) again.
       if (state.archivedJobIds.ids.includes(input.id)) return { outcome: 'duplicate' };
@@ -140,6 +158,30 @@ function applyOne(state: CloudState, intent: CloudIntent, ctx: TickContext): { o
       });
       journal(state, ctx, 'job', `${input.title}: queued (allowance ${meta.limits.perTaskBudgetCents} cents, estimate).`, { intentId: intent.id, jobId: input.id });
       return { outcome: 'applied' };
+  };
+  const orgCtx = { now: ctx.now, intentId: intent.id };
+  const orgRule = <T>(run: () => T): T => { try { return run(); } catch (error) { if (error instanceof OrgRuleError) reject(error.code, error.message); throw error; } };
+  switch (intent.kind) {
+    case 'new_job': return queueJob(intent.job);
+    case 'research': {
+      const result = queueJob({ id: intent.job.id, title: researchTitle(intent.question), prompt: cloudResearchPrompt(intent.question, intent.job.id), configRevision: intent.job.configRevision });
+      if (result.outcome === 'applied') orgRule(() => addResearch(state.org, intent.job.id, intent.question, ctx.now));
+      return result;
+    }
+    case 'approval_decision': {
+      const outcome = orgRule(() => decideApproval(state.org, intent, orgCtx));
+      if (outcome === 'applied') journal(state, ctx, 'intent_applied', `Inbox ${intent.approvalId} ${intent.decision === 'approve' ? 'approved' : 'declined'} by the CEO.`, { intentId: intent.id });
+      return { outcome };
+    }
+    case 'lesson_propose': {
+      const lesson = orgRule(() => proposeLesson(state.org, intent.lesson, orgCtx, state.jobs.jobs));
+      journal(state, ctx, 'intent_applied', `Lesson ${lesson.id} proposed; it waits in the inbox as ${lesson.approvalId}.`, { intentId: intent.id });
+      return { outcome: 'applied' };
+    }
+    case 'lesson_retire': {
+      const outcome = orgRule(() => retireLesson(state.org, intent.lessonId, orgCtx));
+      if (outcome === 'applied') journal(state, ctx, 'intent_applied', `Lesson ${intent.lessonId} retired by the CEO.`, { intentId: intent.id });
+      return { outcome };
     }
     case 'review': {
       const job = findJob(intent.jobId);
@@ -657,7 +699,7 @@ function stamp(state: CloudState, ctx: TickContext) {
 /** True when a run changed anything beyond the city clock (which may wait for the next commit). */
 function meaningful(state: CloudState, snapshot: StateSnapshot): boolean {
   const next = serializeState(state);
-  for (const file of [STATE_FILES.jobs, STATE_FILES.ledger, STATE_FILES.journal, STATE_FILES.processed]) if (next[file] !== snapshot.files[file]) return true;
+  for (const file of [STATE_FILES.jobs, STATE_FILES.ledger, STATE_FILES.journal, STATE_FILES.processed, ORG_FILE]) if (next[file] !== snapshot.files[file]) return true;
   const core = (text: string | undefined) => { if (!text) return ''; const { coordinator: _c, revision: _r, ...rest } = JSON.parse(text); return JSON.stringify(rest); };
   return core(next[STATE_FILES.meta]) !== core(snapshot.files[STATE_FILES.meta]);
 }
@@ -691,6 +733,7 @@ export async function runCoordinatorTick(deps: CoordinatorDeps): Promise<TickRep
   const log = deps.log ?? (() => {});
   const ctx1: TickContext = { now: deps.now(), runId: deps.runId };
   let observations: ProviderResult[] | undefined;
+  let researchReads: Record<string, BranchFile> | undefined;
   let provisionOutcome: ProvisionOutcome | undefined;
   let migrated: string[] = [];
   let commits = 0;
@@ -703,6 +746,9 @@ export async function runCoordinatorTick(deps: CoordinatorDeps): Promise<TickRep
     // against the session's current state. A commit retry reuses these results.
     observations ??= await observeSessions(collectObservations(state), deps.provider, state);
     state = recordObservations(state, observations, ctx1);
+    // FREE-07: read-only reads of finished research reports from their task branches, once per tick (reused on retry).
+    researchReads ??= await readResearchReports(researchDue(state.org, state.jobs.jobs), deps.provider, state);
+    recordResearch(state.org, state.jobs.jobs, researchReads, ctx1.now);
     const intents = applyIntents(state, intentFilesOf(snapshot), ctx1);
     state = intents.state;
     // Free control-plane calls, once per tick (a commit retry reuses the outcome), before dispatch planning.

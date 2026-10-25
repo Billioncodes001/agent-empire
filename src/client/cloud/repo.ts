@@ -12,7 +12,7 @@
  * Error messages never include the token.
  */
 import { intentPath, parseIntent, type CloudIntent } from '../../cloud/intents';
-import { INTENT_PATH, parseStateFiles, STATE_FILES, type CloudState } from '../../cloud/schema';
+import { INTENT_PATH, parseStateFiles, STATE_PATHS, type CloudState } from '../../cloud/schema';
 import { encodeBase64Utf8 } from '../../cloud/store';
 import { WORKFLOW_FILE } from '../../cloud/workflow';
 import { uuidv7 } from './uuid';
@@ -148,7 +148,7 @@ export class CloudRepo {
     const entries: { path: string; sha: string; size?: number }[] = (Array.isArray(tree.data?.tree) ? tree.data.tree : []).filter(
       (e: any) => e?.type === 'blob' && typeof e.path === 'string' && typeof e.sha === 'string',
     );
-    const wanted = new Set<string>(Object.values(STATE_FILES));
+    const wanted = new Set<string>(STATE_PATHS);
     const files: Record<string, string> = {};
     for (const entry of entries.filter((e) => wanted.has(e.path))) {
       if (entry.size !== undefined && entry.size > MAX_STATE_FILE) throw new RepoError('invalid_state', `${entry.path} is larger than the app can read.`);

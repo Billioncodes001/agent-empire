@@ -60,6 +60,33 @@ export interface ProviderAdapter {
    * agent pushed; it does not verify the work. Throws when the answer is unknown.
    */
   branchHead(execution: CloudExecution, branch: string): Promise<{ state: 'found'; sha: string } | { state: 'missing' }>;
+  /**
+   * FREE-07, read-only: one small file from a task branch (project token), e.g. a research report. `missing` when the
+   * branch or file does not exist; refuses symlinks, directories and anything over 256 KB. Throws when unknown.
+   */
+  readBranchFile?(execution: CloudExecution, branch: string, path: string): Promise<{ state: 'found'; text: string; bytes: number } | { state: 'missing' }>;
+}
+
+/** GitHub contents API read of one regular file on a task branch, shared by both adapters. */
+export async function readTaskBranchFile(
+  request: (method: 'GET', path: string) => Promise<{ data: any }>, isNotFound: (error: unknown) => boolean,
+  execution: CloudExecution, branch: string, path: string,
+): Promise<{ state: 'found'; text: string; bytes: number } | { state: 'missing' }> {
+  if (!/^agent-empire\/task-[a-f0-9-]{36}$/.test(branch)) throw new Error('Unexpected task branch name.');
+  if (!/^docs\/empire\/[a-z]+\/[a-f0-9-]{36}\.md$/.test(path)) throw new Error('Unexpected artifact path.');
+  const { owner, name } = execution.repository;
+  let data: any;
+  try { ({ data } = await request('GET', `/repos/${owner}/${name}/contents/${path}?ref=${encodeURIComponent(branch)}`)); }
+  catch (error) { if (isNotFound(error)) return { state: 'missing' }; throw error; }
+  if (!data || Array.isArray(data) || data.type !== 'file' || typeof data.size !== 'number') throw new Error('The report is not a regular file (a symlink or folder is refused).');
+  if (data.size > 256 * 1024) return { state: 'found', text: '', bytes: data.size };
+  if (data.encoding !== 'base64' || typeof data.content !== 'string') throw new Error('GitHub returned the report in an unexpected form.');
+  const bin = atob(data.content.replace(/\s/g, ''));
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  let text: string;
+  try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { return { state: 'found', text: '\u0000', bytes: bytes.length }; }
+  return { state: 'found', text, bytes: bytes.length };
 }
 
 /** Used when no provider credential is configured: observation and dispatch both refuse safely. */
@@ -94,4 +121,9 @@ export class ProviderRouter implements ProviderAdapter {
   interrupt(sessionId: string) { return this.bySession(sessionId).interrupt(sessionId); }
   archive(sessionId: string) { return this.bySession(sessionId).archive(sessionId); }
   branchHead(execution: CloudExecution, branch: string) { return this.adapters[execution.provider].branchHead(execution, branch); }
+  async readBranchFile(execution: CloudExecution, branch: string, path: string) {
+    const adapter = this.adapters[execution.provider];
+    if (!adapter.readBranchFile) throw new Error('This execution cannot read task branch files.');
+    return adapter.readBranchFile(execution, branch, path);
+  }
 }
