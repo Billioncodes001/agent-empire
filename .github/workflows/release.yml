@@ -46,6 +46,7 @@ jobs:
       version: ${{ steps.info.outputs.version }}
       tag: ${{ steps.info.outputs.tag }}
       prerelease: ${{ steps.info.outputs.prerelease }}
+      latest: ${{ steps.info.outputs.latest }}
       release: ${{ steps.info.outputs.release }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -67,6 +68,7 @@ jobs:
             echo "version=$(jq -r .version "$RUNNER_TEMP/version.json")"
             echo "tag=$(jq -r .tag "$RUNNER_TEMP/version.json")"
             echo "prerelease=$(jq -r .prerelease "$RUNNER_TEMP/version.json")"
+            echo "latest=$(jq -r .latest "$RUNNER_TEMP/version.json")"
             if [ "$EVENT" = push ] && [ "$REF_TYPE" = tag ]; then echo "release=true"; else echo "release=false"; fi
           } >> "$GITHUB_OUTPUT"
       - name: Tag matches the version and is on main
@@ -600,6 +602,10 @@ jobs:
       VERSION: ${{ needs.verify.outputs.version }}
       TAG: ${{ needs.verify.outputs.tag }}
       PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+      # true for a stable release, and for a 1.0.0 pre-release bridging the stable channel (tools/release/version.mjs
+      # stableBridge): installed v1.0.0-beta.1 apps read releases/latest/download/channel-stable.json, and GitHub's
+      # "latest" release can never be one flagged pre-release.
+      LATEST: ${{ needs.verify.outputs.latest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -616,7 +622,8 @@ jobs:
           [ "$TAG" = "$GITHUB_REF_NAME" ] || { echo "::error::tag $GITHUB_REF_NAME != $TAG"; exit 1; }
           NOTES="docs/release-notes/$VERSION.md"
           if [ -f "$NOTES" ]; then NOTE_ARGS=(--notes-file "$NOTES"); else NOTE_ARGS=(--generate-notes); fi
-          if [ "$PRERELEASE" = true ]; then PRE_ARGS=(--prerelease --latest=false); else PRE_ARGS=(--latest); fi
+          if [ "$LATEST" = true ]; then PRE_ARGS=(--latest); else PRE_ARGS=(--prerelease --latest=false); fi
+          if [ "$LATEST" = true ] && [ ! -f release/assets/channel-stable.json ]; then echo "::error::a latest release must publish channel-stable.json"; exit 1; fi
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "Agent Empire $VERSION" "${NOTE_ARGS[@]}" "${PRE_ARGS[@]}" release/assets/*
 
   play:

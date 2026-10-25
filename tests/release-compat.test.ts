@@ -75,24 +75,28 @@ function release({ signedDesktop }: { signedDesktop: boolean }): string {
   writeFileSync(path.join(assets, NAMES.androidApk), 'apk beta.2');
   writeBuildInfo(info, { platform: 'android', signed: true });
   writeRelease({ assetsDir: assets, infoDir: info, version: V, repo: REPO, publishedAt: '2026-10-26T12:00:00Z', notes: 'beta.2', config: { playListing: null, iosTestFlight: null, iosAppStore: null } });
-  writeFileSync(path.join(assets, 'channel-beta.json.sig'), signBytes(readFileSync(path.join(assets, 'channel-beta.json')), devPrivateKey()) + '\n');
+  for (const c of readdirSync(assets).filter((n) => /^channel-(stable|beta)\.json$/.test(n)))
+    writeFileSync(path.join(assets, `${c}.sig`), signBytes(readFileSync(path.join(assets, c)), devPrivateKey()) + '\n');
   assert.deepEqual(checkPublished(assets), []);
   return assets;
 }
 
 /** GitHub as installed apps see it: beta.1 (its real asset names) and the new pre-release, served from `dir`. */
-function fakeGitHub(dir: string) {
+function fakeGitHub(dir: string, { latest = false }: { latest?: boolean } = {}) {
   const published = readdirSync(dir).sort();
   const requested: string[] = [];
+  // `latest`: GitHub's "latest release" (never a pre-release) is this release, so .../releases/latest/download/<file> serves it.
   const listing = JSON.stringify([
-    { tag_name: TAG, prerelease: true, draft: false, assets: published.map(name => ({ name })) },
+    { tag_name: TAG, prerelease: !latest, draft: false, assets: published.map(name => ({ name })) },
     { tag_name: `v${OLD}`, prerelease: true, draft: false, assets: BETA1_ASSETS.map(name => ({ name })) },
   ]);
   const prefix = `https://github.com/${REPO}/releases/download/${TAG}/`;
+  const latestPrefix = `https://github.com/${REPO}/releases/latest/download/`;
   const bytes = (url: string): Buffer | null => {
     requested.push(url);
-    if (!url.startsWith(prefix)) return null;
-    const name = decodeURIComponent(url.slice(prefix.length));
+    const from = url.startsWith(prefix) ? prefix : latest && url.startsWith(latestPrefix) ? latestPrefix : null;
+    if (!from) return null;
+    const name = decodeURIComponent(url.slice(from.length));
     return published.includes(name) ? readFileSync(path.join(dir, name)) : null;
   };
   return {
@@ -280,4 +284,28 @@ test('the frozen readers are exactly the code tagged v1.0.0-beta.1', (t) => {
     const original = execFileSync('git', ['show', `v1.0.0-beta.1:${rel}`], { cwd: ROOT });
     assert.ok(original.equals(readFileSync(path.join(BETA1, rel))), `${rel} differs from v1.0.0-beta.1`);
   }
+});
+
+// Device testing (v1.0.0-beta.1): installed beta.1 apps default to the STABLE channel (src/client/update/service.ts at the
+// tag), which reads .../releases/latest/download/channel-stable.json. v1.0.0-beta.1 was published as a pre-release that is
+// not "latest", so that URL is a 404 and those apps say "You're up to date" forever. Until the first stable 1.0.0, each
+// 1.0.0 pre-release is therefore also the stable channel's release: it publishes channel-stable.json and is marked latest.
+test('beta.1 client on its default stable channel: reaches the next 1.0.0 pre-release through GitHub latest', async () => {
+  const dir = release({ signedDesktop: false });
+  assert.ok(readdirSync(dir).includes('channel-stable.json'), 'a 1.0.0 pre-release also publishes the stable channel');
+  assert.ok(readdirSync(dir).includes('channel-stable.json.sig'));
+  const gh = fakeGitHub(dir, { latest: true });
+  const stable = await fetchChannel('stable', gh.client, { publicKey: KEY });
+  assert.ok(stable, 'the frozen beta.1 stable reader found a release');
+  assert.equal(stable.file.version, V);
+  assert.ok(gh.requested.includes(`https://github.com/${REPO}/releases/latest/download/channel-stable.json`));
+  const offer = decide(stable.file, { info: desktopInfo('macos', false) });
+  assert.equal(offer.game.kind, 'install', 'the game update is offered');
+  if (offer.game.kind === 'install') assert.equal(sha256(gh.get(offer.game.url)!), offer.game.sha256);
+  // The shells' fetch policy admits the latest URL, and the desktop shell re-verifies against the tag's own channel-beta.json.
+  assert.ok(desktopPolicy.isUpdateFetchUrl(`https://github.com/${REPO}/releases/latest/download/channel-stable.json`));
+  assert.ok(gh.get(desktopStore.releaseChannelUrl(V)), 'channel-beta.json is still published under the tag');
+  // A beta.1 player who chose beta still gets it: the listing no longer marks it a pre-release, but beta also reads stable.
+  const beta = await fetchChannel('beta', gh.client, { publicKey: KEY });
+  assert.equal(beta?.file.version, V);
 });
