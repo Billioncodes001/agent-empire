@@ -62,7 +62,7 @@ function chiefBlocks(item: Approval): HTMLElement[] {
 export const pendingApprovals = () => store.approvals?.pending ?? 0;
 
 /** FREE-07: a cloud decision this device sent that the coordinator has not applied yet. */
-const sentDecision = (item: Approval) => store.cloud?.sent.find((s) => s.kind === 'approval_decision' && s.ref === item.id);
+const sentDecision = (item: Approval) => store.cloud?.sent?.find((s) => s.kind === 'approval_decision' && s.ref === item.id);
 /** FREE-07: the inbox kinds cloud mode never raises, each with its specific reason (from the capability matrix). */
 function cloudGaps(): HTMLElement {
   return h('details.inbox-cloud-gaps', {},

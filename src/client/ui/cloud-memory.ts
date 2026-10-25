@@ -14,7 +14,7 @@ import { morphChildren } from './reconcile';
 import { openInbox } from './inbox';
 
 const lessonsNow = (): Lesson[] => (store.cloud?.snapshot ? cloudMemory(store.cloud.snapshot.state.org).lessons : []);
-const sentFor = (id: string) => store.cloud?.sent.find((s) => s.ref === id && (s.kind === 'lesson_retire'));
+const sentFor = (id: string) => store.cloud?.sent?.find((s) => s.ref === id && (s.kind === 'lesson_retire'));
 
 export function openCloudMemory() {
   const close = h('button.btn.close', { type: 'button', 'aria-label': 'Close memory' }, '✕');
