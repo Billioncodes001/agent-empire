@@ -1056,6 +1056,10 @@ html.ae-touch .radar-stats, html.ae-touch .crosshair .look-hint { display: none 
 html.ae-touch .hint { bottom: calc(14px + env(safe-area-inset-bottom)); max-width: calc(100vw - 370px - env(safe-area-inset-left) - env(safe-area-inset-right)); gap: 6px 10px; padding: 7px 12px; font-size: 12px; }
 html.ae-touch .traversal-hint { top: calc(58px + env(safe-area-inset-top)); bottom: auto; left: 50%; right: auto; transform: translateX(-50%); max-width: calc(100vw - 300px); font-size: 11px; }
 html.ae-touch #toasts { top: calc(58px + env(safe-area-inset-top)); }
+/* While a dialog is open its header and tabs sit where toasts appear: toasts move to the bottom edge instead, newest
+   lowest, and only the two newest show (DEVTEST-02: "test sent" toasts stacked over the onboarding step tabs). */
+html:has(#modal-root > .backdrop) #toasts { top: auto; bottom: calc(12px + env(safe-area-inset-bottom)); z-index: 60; }
+html:has(#modal-root > .backdrop) #toasts > .toast:nth-last-child(n + 3) { display: none; }
 html.ae-touch #hud #conn { top: calc(58px + env(safe-area-inset-top)); bottom: auto; }
 html.ae-touch #hud #shares { top: calc(58px + env(safe-area-inset-top)); bottom: auto; left: calc(12px + env(safe-area-inset-left)); }
 html.ae-touch .share-thumb { width: 150px; }

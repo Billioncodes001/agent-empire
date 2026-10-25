@@ -91,8 +91,12 @@ export interface OnboardingHooks {
   cloud?: boolean;
 }
 
+/** The onboarding dialog that is open now: a second request (Settings › Company setup, the first-run offer) reuses it. */
+let openDialog: Modal | null = null;
+
 export function openOnboarding(hooks: OnboardingHooks, initial?: OnboardingView): Modal {
   if (hooks.cloud) return cloudPanel();
+  if (openDialog?.backdrop.isConnected) return openDialog;
   let view = initial;
   let busy = false;
   let doneScreen = false;
@@ -113,7 +117,8 @@ export function openOnboarding(hooks: OnboardingHooks, initial?: OnboardingView)
   let collect: () => Promise<void> = async () => {};
   let dirty = false;
   el.addEventListener('input', () => { dirty = true; });
-  const modal = openModal(el, { dirty: () => dirty });
+  const modal = openModal(el, { dirty: () => dirty, onClose: () => { if (openDialog === modal) openDialog = null; } });
+  openDialog = modal;
   close.addEventListener('click', () => modal.close());
   later.addEventListener('click', () => modal.close());
 
