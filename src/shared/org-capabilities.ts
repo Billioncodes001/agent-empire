@@ -28,16 +28,15 @@ export const ORG_CAPABILITIES: Record<OrgFeature, OrgCapability> = {
     label: 'Approval inbox',
     local: 'Every kind of item, decided in the game, on the founder desk or in Telegram.',
     cloud: 'partial',
-    cloudSummary: 'Tool proposals and lessons are decided in the game; your coordinator applies each decision on its next run.',
-    reason: 'Client plans, budget increases, campaign sends, chief proposals and city architect summaries are never raised in cloud mode (see each kind).',
+    cloudSummary: 'Tool proposals, lessons, the chief’s plans and proposals, and campaign sends are decided in the game; your coordinator applies each decision on its next run.',
+    reason: 'Budget increases and city architect summaries are never raised in cloud mode (see each kind).',
   },
   job_plan: {
     label: 'Client plans',
     local: 'A saved client job waits in the inbox with its estimate; approving queues its items.',
-    cloud: 'unavailable',
-    cloudSummary: 'Not raised.',
-    reason: 'Cloud mode has no consultancy journal or estimates. Each cloud job is approved when you submit it: the paid confirmation names its allowance and is checked against your current limits.',
-    instead: 'Submit work from Cloud Empire → New job.',
+    cloud: 'partial',
+    cloudSummary: 'With the chief’s brain on, a brief you write becomes a proposed plan in the inbox, every prompt shown. Approving records your decision; each item becomes paid work only when you submit it and confirm the spend.',
+    reason: 'Cloud mode has no consultancy journal or estimates, so approving a plan queues nothing by itself: the paid confirmation of each submitted job names its allowance and is checked against your current limits.',
   },
   budget_increase: {
     label: 'Budget increases',
@@ -50,9 +49,9 @@ export const ORG_CAPABILITIES: Record<OrgFeature, OrgCapability> = {
   external_action: {
     label: 'Campaign sends',
     local: 'Jordan raises the exact message and every recipient; approving sends it over SMTP.',
-    cloud: 'unavailable',
-    cloudSummary: 'Not raised: outreach does not run in cloud mode.',
-    reason: 'A campaign send is email over your SMTP server, paced and capped per day; the cloud coordinator holds no SMTP password and runs only every 15–60 minutes (see Email outreach).',
+    cloud: 'partial',
+    cloudSummary: 'Your coordinator raises the exact message and every recipient; approving sends it in batches from a separate send job that holds your SMTP secret.',
+    reason: 'The coordinator runs every 15–60 minutes, so sends go out at most a set number per run and per day, not one every few seconds; a send that is not confirmed is never re-sent.',
   },
   tool_proposal: {
     label: 'Tool proposals',
@@ -63,9 +62,9 @@ export const ORG_CAPABILITIES: Record<OrgFeature, OrgCapability> = {
   chief_proposal: {
     label: 'Chief proposals',
     local: 'The chief’s model suggests how to unblock stalled work.',
-    cloud: 'unavailable',
-    cloudSummary: 'Not raised.',
-    reason: 'Only the chief’s model writes them, and the chief has no model in cloud mode (see Chief’s planning brain).',
+    cloud: 'partial',
+    cloudSummary: 'With the chief’s brain on, you can ask for a review of a finished cloud job or an idea to unblock a failed one. Deciding records your decision only.',
+    reason: 'In cloud mode the chief answers only when you ask (each answer is a charged model call), and it has no one-click retry: submit a new job instead.',
   },
   architect_summary: {
     label: 'City architect summaries',
@@ -78,22 +77,21 @@ export const ORG_CAPABILITIES: Record<OrgFeature, OrgCapability> = {
     label: 'Lessons',
     local: 'Proposed by you or the chief’s model; approving makes a lesson planning context.',
     cloud: 'works',
-    cloudSummary: 'Lessons you write are decided in the inbox. The chief proposes none, because it has no model in cloud mode.',
+    cloudSummary: 'Lessons you write are decided in the inbox; approved lessons are given to the chief’s brain when it plans.',
   },
   executives: {
     label: 'Executives',
     local: 'Rule-based cards computed from the live queue, workers, client jobs, usage, outreach and reports.',
     cloud: 'partial',
-    cloudSummary: 'Rule-based cards computed from the last snapshot of your cloud jobs, spend ledger, research and inbox, labelled with its age.',
-    reason: 'There is no live queue or desk worker in cloud mode, so the cards summarise cloud jobs instead, and marketing has no outreach to coordinate.',
+    cloudSummary: 'Rule-based cards computed from the last snapshot of your cloud jobs, spend ledger, research, outreach and inbox, labelled with its age.',
+    reason: 'There is no live queue or desk worker in cloud mode, so the cards summarise cloud jobs instead.',
   },
   chief_brain: {
     label: 'Chief’s planning brain',
     local: 'Off, free (Ollama on this computer) or premium (your API key, with a daily cap).',
-    cloud: 'unavailable',
-    cloudSummary: 'The chief is rule-based in cloud mode.',
-    reason: 'The free brain needs Ollama on your computer; GitHub-hosted runners have none. A premium brain would need a model API key as another Actions secret and a daily cap the coordinator enforces; that is not built, and the coordinator calls no model. A Claude subscription is never relayed into the cloud.',
-    instead: 'Use the brain on your own server or the desktop app (Run on this computer).',
+    cloud: 'partial',
+    cloudSummary: 'Off, a free tier with your own key (OpenRouter, Gemini or Groq, after you accept its data-use terms) or premium (your Anthropic or OpenAI key with a daily cap and a 30-day cap). Your coordinator charges each call’s worst case before making it; the output is proposals only.',
+    reason: 'There is no Ollama free brain in cloud mode: GitHub-hosted runners have none. The key is your own Actions secret (only its name is checked), a Claude subscription is never used for the brain, and the chief answers only on the coordinator’s runs (every 15–60 minutes, or when the game wakes it).',
   },
   research: {
     label: 'Research',
@@ -104,17 +102,15 @@ export const ORG_CAPABILITIES: Record<OrgFeature, OrgCapability> = {
   outreach: {
     label: 'Email outreach',
     local: 'Leads, suppression, drafted campaigns and paced sending over your SMTP server.',
-    cloud: 'unavailable',
-    cloudSummary: 'Not available in cloud mode.',
-    reason: 'Sending needs your SMTP password as an Actions secret, and the coordinator runs every 15–60 minutes, so it cannot pace sends or keep a daily cap. Leads and opt-outs are personal data: in the state repository, git history would keep them after deletion. There is no Telegram /optout in cloud mode either.',
-    instead: 'Run outreach on your own server.',
+    cloud: 'partial',
+    cloudSummary: 'Leads, hashed opt-outs and campaigns you write live in your private state repository; each send needs your approval of the exact message and recipients, and a separate send job holding your SMTP secret sends it.',
+    reason: 'The coordinator runs every 15–60 minutes, so sends are capped per run and per day, and delivery can take hours. Leads are personal data: “Delete lead data” removes them from the current files, but git history keeps old versions unless you rewrite it. Workers don’t draft campaigns in cloud mode, and there is no Telegram /optout: record opt-outs in the game.',
   },
   memory: {
     label: 'Organizational memory',
     local: 'Reviewed lessons with provenance; approved lessons are cited when the chief plans.',
-    cloud: 'partial',
-    cloudSummary: 'Add, edit, approve, decline and retire lessons; export them as Markdown.',
-    reason: 'No plan cites a lesson in cloud mode, because the chief has no planning brain there.',
+    cloud: 'works',
+    cloudSummary: 'Add, edit, approve, decline and retire lessons, and export them as Markdown; with the chief’s brain on, its plans cite the approved lessons they rely on.',
   },
   notifications: {
     label: 'Telegram and email notifications',
@@ -144,4 +140,4 @@ export function cloudGapMessage(feature: OrgFeature): string {
 
 /** Inbox kinds that never appear in cloud mode, each with its reason (the inbox lists them). */
 export const cloudMissingKinds = (): { kind: ApprovalKind; message: string }[] =>
-  (['job_plan', 'budget_increase', 'external_action', 'chief_proposal', 'architect_summary'] as const).map((kind) => ({ kind, message: cloudGapMessage(kind) }));
+  (['budget_increase', 'architect_summary'] as const).map((kind) => ({ kind, message: cloudGapMessage(kind) }));
