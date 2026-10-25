@@ -99,6 +99,20 @@ Regression tests in `tests/architect-review.test.ts` (12, from the reviewer's pr
 
 Rechecked after the fixes: typecheck, build, `npm test` 1,081 (1,080 pass, 1 skipped), architect-ui-check 19/19 plus max 4/4, city-ui-check 23/23, rides 25/25, mobile 411/411, inbox 47/47, onboarding 60/60 (devtest-02 added checks), chief 38/38. Perf was not re-measured: the fixes add no geometry and remove per-frame allocations.
 
+## Re-review (approve after one blocker, at `c5f4ab4`) and follow-ups
+
+Regression tests in `tests/architect-rereview.test.ts` (13, from the reviewer's c10b probes), committed red at `6fb7907`; fixes at `9b635f1`.
+
+| # | Finding | Fix |
+| --- | --- | --- |
+| 1 (blocker) | A corrupt `architect.json` still crashed startup (non-string `reason`/`note` on an interrupted paid run) | `reason`, `note` and `approvalId` must be text; `finishedAt` is finite, `reverted` boolean and `worldRevision` an integer; each change's `lot`/`anchor` are strings and `undone` is boolean. Nine corrupt shapes are tested; startup never throws and the file is preserved |
+| 2 | A forward clock glitch silently stopped scheduled premium runs | Blocked days grow with rule-based growth (US$0) instead of skipping. The engine shows not ready, with the clock reason, and `nextRunAt` stays honest. One reading raises the clock mark by at most 36 h, and 72 h of consistent readings behind the mark reset it (a paid call made under the wrong time then counts as at least 72 h old). Tallies are per period, so a reset never erases spend |
+| 3 | The daily start crept about a minute a day | The paid gap is 23 h, measured from the actual call. With one-minute ticks over 20 days, every run starts at 03:00 or 03:01 |
+| 4 | Crash window between the world and its undo record | The run is saved as `applying` (its changes and the world revision it writes), then the world is written, then the run is marked applied. On restore an `applying` run is finished if the world has that revision, marked interrupted with no changes if it doesn't, and any other mismatch refuses the file. Tested with the process dying before and after the world write |
+| optional | Colliders waited only for the walker | `colliderMaySolidify` (district-layout, same test as the garage slots) also waits for the driven car and the parked sedan |
+
+The earlier review test for the minimum gap now expects the 23-hour wording (coordinator's choice). Rechecked: typecheck, build, `npm test` 1,094 (1,093 pass, 1 skipped), architect-ui-check 19/19 plus max 4/4, city-ui-check 23/23, rides 25/25, mobile 411/411, inbox 47/47, onboarding 60/60, chief 38/38.
+
 ## Deferred / not verified
 
 - **Onboarding step**: deferred by the coordinator until devtest-02 merges.
