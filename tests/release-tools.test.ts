@@ -299,12 +299,12 @@ function fakeDist(): string {
 
 test('the game bundle is deterministic and its manifest describes it', () => {
   const dist = fakeDist();
-  const a = packageGame({ dist, outDir: temp('outa'), version: '1.0.0-beta.1', commit: COMMIT, minShell: '1.0.0-beta.1' });
+  const a = packageGame({ dist, outDir: temp('outa'), manifestDir: temp('infoa'), version: '1.0.0-beta.1', commit: COMMIT, minShell: '1.0.0-beta.1' });
   // Different timestamps and a different copy must not change a single byte.
   const copy = temp('dist2');
   cpSync(dist, copy, { recursive: true });
   utimesSync(path.join(copy, 'index.html'), new Date(2001, 1, 1), new Date(2001, 1, 1));
-  const b = packageGame({ dist: copy, outDir: temp('outb'), version: '1.0.0-beta.1', commit: COMMIT, minShell: '1.0.0-beta.1' });
+  const b = packageGame({ dist: copy, outDir: temp('outb'), manifestDir: temp('infob'), version: '1.0.0-beta.1', commit: COMMIT, minShell: '1.0.0-beta.1' });
   assert.deepEqual(readFileSync(a.zipPath), readFileSync(b.zipPath));
   assert.equal(readFileSync(a.manifestPath, 'utf8'), readFileSync(b.manifestPath, 'utf8'));
   assert.equal(path.basename(a.zipPath), 'agent-empire-game-1.0.0-beta.1.zip');
@@ -318,13 +318,16 @@ test('the game bundle is deterministic and its manifest describes it', () => {
   const changed = temp('dist3');
   cpSync(dist, changed, { recursive: true });
   writeFileSync(path.join(changed, 'index.html'), '<!doctype html><title>Agent Empire 2</title>');
-  const c = packageGame({ dist: changed, outDir: temp('outc'), version: '1.0.0-beta.1', commit: COMMIT, minShell: '1.0.0-beta.1' });
+  const c = packageGame({ dist: changed, outDir: temp('outc'), manifestDir: temp('infoc'), version: '1.0.0-beta.1', commit: COMMIT, minShell: '1.0.0-beta.1' });
   assert.notEqual(c.manifest.sha256, a.manifest.sha256);
 });
 
 test('the game bundle refuses fixture builds, missing pages and bad inputs', () => {
   const dist = fakeDist();
-  const ok = { dist, outDir: temp('out'), version: '1.0.0-beta.1', commit: COMMIT, minShell: '1.0.0-beta.1' };
+  const ok = { dist, outDir: temp('out'), manifestDir: temp('info'), version: '1.0.0-beta.1', commit: COMMIT, minShell: '1.0.0-beta.1' };
+  // The manifest is never staged with the publishable files: its folder is explicit and must differ from outDir.
+  assert.throws(() => packageGame({ ...ok, manifestDir: undefined }), /manifestDir/);
+  assert.throws(() => packageGame({ ...ok, manifestDir: ok.outDir }), /manifestDir/);
   assert.throws(() => packageGame({ ...ok, commit: 'abc' }), /40-character/);
   assert.throws(() => packageGame({ ...ok, version: '1.0' }), /Invalid version/);
   assert.throws(() => packageGame({ ...ok, dist: temp('empty') }), /index\.html is missing/);
@@ -541,6 +544,34 @@ test('checkPublished: the folder holds exactly the files the signed channel list
   execFileSync('rm', [path.join(unsigned.assets, 'channel-beta.json.sig')]);
   assert.match(checkPublished(unsigned.assets).join('\n'), /channel-beta\.json\.sig is missing/);
   assert.match(checkPublished(temp('none')).join('\n'), /channel-beta\.json is missing/);
+});
+
+test('writeRelease refuses channel files, signatures and feeds that arrive with the platform artifacts', () => {
+  // release.yml signs every channel-*.json in release/assets with the production key: only writeRelease may create them.
+  for (const stray of ['channel-beta.json', 'channel-stable.json', 'channel-beta.json.sig', 'game-manifest.json.sig', 'RELEASES-darwin-arm64.json']) {
+    const s = stage({ mac: { arm64: true }, android: true });
+    writeFileSync(path.join(s.assets, stray), '{}');
+    assert.throws(() => writeRelease(releaseArgs(s)), new RegExp(`${stray.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} arrived with the build artifacts`), stray);
+    assert.ok(!readdirSync(s.assets).includes('channel-beta.json') || stray === 'channel-beta.json', `${stray}: nothing was written`);
+  }
+});
+
+test('macOS: no feed unless every macOS build is signed; mixed signing is refused', () => {
+  const mixed = stage({ mac: { arm64: true, x64: false } });
+  assert.throws(() => writeRelease(releaseArgs(mixed)), /macOS builds disagree on signing/);
+  assert.ok(!readdirSync(mixed.assets).some(n => n.startsWith('RELEASES-darwin')));
+  const unsigned = stage({ mac: { arm64: false, x64: false } });
+  publish(unsigned);
+  assert.ok(!readdirSync(unsigned.assets).some(n => n.startsWith('RELEASES-darwin')), 'auto: false publishes no feed');
+  assert.equal(readJson(path.join(unsigned.assets, 'channel-beta.json')).shell.macos.auto, false);
+});
+
+test('the game manifest must give the real size of the zip', () => {
+  const s = stage({ android: true });
+  const manifestPath = path.join(s.info, 'game-manifest.json');
+  const manifest = readJson(manifestPath);
+  writeFileSync(manifestPath, JSON.stringify({ ...manifest, bytes: manifest.bytes + 1 }));
+  assert.throws(() => buildChannel(channelArgs(s)), /does not describe/);
 });
 
 test('Squirrel.Windows: NuGet versions sort like ours, and the RELEASES feed must match the package', () => {

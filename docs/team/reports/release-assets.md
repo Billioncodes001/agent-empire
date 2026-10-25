@@ -138,6 +138,25 @@ New and changed tests:
   - a new test pins the staged paths, the names, `check-publish` and the absence of SHA256SUMS and old labels.
 - `tests/update-roundtrip.test.ts`: ported to the staged layout. The new channel still parses in today's client and desktop policy for stable and beta, signed and unsigned.
 
+## Review fixes (after the coordinator's review; the dry run, run 40186581018, published exactly the 8 files)
+
+1. **DISTRIBUTION.md was corrupted.** My doc script used `String.replace`, and the Obtainium replacement contained `` $` ``, which inserts the text before the match. The file body ended up spliced into the table three times.
+   - Fix: restored the file from `759480d` and re-applied the edits with an exact, single-occurrence split/join. I also moved the permanent-links paragraph below the platform table, where it had split off the iPhone row.
+   - I checked the other scripted edits (`release.yml`, RELEASING.md, RELEASE_PLAN.md, the winget template); none had a special `$` pattern in a replacement.
+   - New `tests/docs-integrity.test.ts` checks that:
+     - each doc has one top-level heading outside code fences;
+     - the title text occurs once anywhere in the file (fence-independent);
+     - every table starts with a header and separator row;
+     - the DISTRIBUTION.md Obtainium cell is the filter RELEASING.md documents.
+
+     All three tests fail on the corrupted `b5e6899` file and pass on the fixed one.
+2. `writeRelease` now refuses `channel-*.json`, any `.sig` and `RELEASES-darwin-*` arriving in `release/assets` from build artifacts, before writing anything. Otherwise `release.yml` would production-sign a stray channel file.
+3. **macOS feeds.** A feed is written only when the channel says `macos.auto: true`. Mixed macOS signing (one arch signed, one not) is refused, so a signed payload can never sit next to `auto: false`.
+4. **Manifest and comments.**
+   - `packageGame` requires `manifestDir`, and it must differ from `outDir`. The CLI default is `release/build-info`.
+   - The `sign.mjs` header now says the channel file is the only signed file.
+5. The game manifest's `bytes` must equal the zip's real size.
+
 ## Not verified
 
 - **No workflow run.** I did not run a dry run or a tag release (as instructed). Three things need the owner's dry run:

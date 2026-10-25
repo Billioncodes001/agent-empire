@@ -28,7 +28,7 @@
 //   stable channel: https://github.com/<repo>/releases/latest/download[/RELEASES-darwin-<arch>.json]
 //   beta channel:   https://github.com/<repo>/releases/download/<tag>[/RELEASES-darwin-<arch>.json]
 import { createHash } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MANIFEST_NAME } from './package-game.mjs';
@@ -69,6 +69,10 @@ export function planRelease({ assetsDir, infoDir, version }) {
   const need = (name, why) => { planned.add(name); if (!has(name)) problems.push(`${name} is missing (${why})`); };
   const orphan = (name) => { if (has(name)) problems.push(`${name} would be published but no updater reads it (the build is not signed)`); planned.add(name); };
 
+  // Both macOS jobs see the same secrets. If they disagree, the channel would have to say auto: false while a signed
+  // payload sits on the release, so refuse instead of guessing.
+  const macSigned = new Set(Object.values(info.macos ?? {}).map((b) => b.signed));
+  if (macSigned.size > 1) throw new Error('macOS builds disagree on signing (one arch signed, the other not); rerun the release so both use the same signing');
   const mac = {};
   for (const arch of MAC_ARCHS) {
     const built = info.macos?.[arch];
@@ -124,7 +128,8 @@ export function buildChannel({ assetsDir, infoDir, version, channel, repo, publi
   const plan = planRelease({ assetsDir, infoDir, version });
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
   const gameSha = sha256(readFileSync(path.join(assetsDir, game)));
-  if (manifest.version !== version || manifest.file !== game || manifest.sha256 !== gameSha)
+  const gameBytes = statSync(path.join(assetsDir, game)).size;
+  if (manifest.version !== version || manifest.file !== game || manifest.sha256 !== gameSha || manifest.bytes !== gameBytes)
     throw new Error(`${MANIFEST_NAME} does not describe ${game} for ${version}`);
   const at = isoSeconds(publishedAt);
   // Generated feeds are hashed from the exact text writeRelease writes.
@@ -170,8 +175,18 @@ export function buildChannel({ assetsDir, infoDir, version, channel, repo, publi
   };
 }
 
+/**
+ * Files only writeRelease (and the signing step after it) may create. Arriving with the platform artifacts, a channel
+ * file would be production-signed by release.yml (`sign.mjs sign release/assets/channel-*.json`), so refuse it.
+ */
+export function generatedArrivals(names) {
+  return names.filter((n) => CHANNEL_FILE.test(n) || n.endsWith('.sig') || /^RELEASES-darwin-/.test(n));
+}
+
 /** Writes the channel file(s) and the Squirrel.Mac feeds into assetsDir. Returns the written file names. */
 export function writeRelease({ assetsDir, infoDir, version, repo, publishedAt, notes, config, playPublished = false, root = ROOT }) {
+  const arrived = generatedArrivals(readdirSync(assetsDir));
+  if (arrived.length) throw new Error(arrived.map((n) => `${n} arrived with the build artifacts; only channel.mjs and the signing step create it`).join('; '));
   const channels = releaseChannel(version) === 'stable' ? ['stable', 'beta'] : ['beta'];
   const written = [];
   let doc;
@@ -180,7 +195,8 @@ export function writeRelease({ assetsDir, infoDir, version, repo, publishedAt, n
     writeFileSync(path.join(assetsDir, NAMES.channel(channel)), JSON.stringify(doc, null, 2) + '\n');
     written.push(NAMES.channel(channel));
   }
-  for (const [arch, entry] of Object.entries(doc.shell.macos?.downloads ?? {})) {
+  // A feed only when the channel lets apps use it (auto: true); otherwise no reader exists.
+  for (const [arch, entry] of Object.entries(doc.shell.macos?.auto ? doc.shell.macos.downloads : {})) {
     if (!entry.zip) continue;
     writeFileSync(path.join(assetsDir, NAMES.macFeed(arch)), feedText({ version, url: entry.zip.url, notes, publishedAt: doc.publishedAt }));
     written.push(NAMES.macFeed(arch));
