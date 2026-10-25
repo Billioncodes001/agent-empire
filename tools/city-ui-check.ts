@@ -18,7 +18,8 @@ const out = resolve(import.meta.dirname, '../docs/team/reports/free-09');
 mkdirSync(out, { recursive: true });
 const rideOut = resolve(import.meta.dirname, '../docs/team/reports/city-06-08');
 mkdirSync(rideOut, { recursive: true });
-const perfOut = process.env.PERF_OUT === 'city-06-08' ? rideOut : out;
+// CHAR-01: PERF_OUT=char-01 sends perf runs to docs/team/reports/char-01/.
+const perfOut = process.env.PERF_OUT === 'city-06-08' ? rideOut : process.env.PERF_OUT === 'char-01' ? resolve(import.meta.dirname, '../docs/team/reports/char-01') : out;
 const only = process.env.CITY_UI_ONLY;
 
 const results: { name: string; ok: boolean; detail: string }[] = [];

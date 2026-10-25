@@ -20,7 +20,7 @@ import { SURFACE as S, boxMesh as box, solid } from './materials';
 import { Vegetation } from './vegetation';
 import type { Collider } from './office';
 import { buildDistricts } from './districts';
-import { SKYLINE_TOWERS, liveCarPose, skylineColliders } from './district-layout';
+import { SKYLINE_TOWERS, SedanBody, liveCarPose, skylineColliders } from './district-layout';
 import { SEDAN, type Ride } from '../rides';
 export type { Ride } from '../rides';
 
@@ -402,13 +402,8 @@ export function buildCity() {
   const car = new THREE.Group();
   car.name = 'Executive sedan';
   car.position.set(5, 0, 45);
-  const carCollider: Collider = {
-    minX: 4,
-    maxX: 6,
-    minZ: 42.6,
-    maxZ: 47.4,
-    top: 1.55,
-  };
+  const sedanBody = new SedanBody();
+  const carCollider: Collider = sedanBody.collider;
   colliders.push(carCollider);
   group.add(car);
   let vehicleRig: VehicleRig | undefined;
@@ -512,18 +507,11 @@ export function buildCity() {
     /** `active`: the ride the founder is in (CITY-06/08); the sedan stays solid while another vehicle is driven. */
     update(t: number, dt = 0.016, playerPosition = new THREE.Vector3(), driving = false, facing = 0, active: Ride | null = null) {
       const sedanDriven = driving && (active?.key ?? 'sedan') === 'sedan';
-      const yaw = car.rotation.y,
-        halfX = Math.abs(Math.cos(yaw)) * 1.03 + Math.abs(Math.sin(yaw)) * 2.35,
-        halfZ = Math.abs(Math.sin(yaw)) * 1.03 + Math.abs(Math.cos(yaw)) * 2.35;
-      Object.assign(carCollider, {
-        minX: car.position.x - halfX,
-        maxX: car.position.x + halfX,
-        minZ: car.position.z - halfZ,
-        maxZ: car.position.z + halfZ,
-        top: sedanDriven ? 0 : 1.55,
-      });
-      foliage.update(t);
       const driven = driving && active && active.spec.kind === 'car' ? [{ ...liveCarPose(true, playerPosition, facing, car), half: active.spec.half }] : [];
+      // CHAR-01: the sedan is solid at its own height (on a roof too), never a floor, and (review 5) turns solid
+      // after the founder steps out only once nobody stands inside its box.
+      sedanBody.update(car, sedanDriven, driving ? null : playerPosition, sedanDriven ? [] : driven);
+      foliage.update(t);
       districts.update(dt, playerPosition, sedanDriven ? driven : [...driven, car], driving);
       const displayedWorkers = new Set<string>();
       const ev = store.evidence();

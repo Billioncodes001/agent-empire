@@ -69,6 +69,8 @@ export class Person {
   reach(){this.human.reach();}
   setTransition(name:string|null,progress=0){this.human.setTransition(name,progress);}
   setVehiclePose(pose:VehiclePose|null){this.human.setVehiclePose(pose);}
+  /** CHAR-01: lift a foot that would sink into a stair tread (see Human.groundFeet). */
+  groundFeet(floorAt:(x:number,z:number,y:number)=>number){this.human.groundFeet(floorAt);}
   /**
    * `airborne` selects the held flight pose (never the idle clip) and, on touchdown, a landing dip.
    * `landingGrace` (s) keeps an interpolated peer airborne through brief false "grounded" frames at the apex.
