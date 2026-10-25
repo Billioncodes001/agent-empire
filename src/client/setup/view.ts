@@ -325,7 +325,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
         ico: ICONS.cloud,
         badge: 'No server needed',
         title: 'Run in the cloud with my accounts',
-        points: ['Lives in a private repository in your GitHub', 'Keeps working when the app is closed', 'Uses your Claude and/or OpenAI API keys'],
+        points: ['Lives in a private repository in your GitHub', 'Keeps working when the app is closed', 'Runs free on GitHub Actions, or on your Claude plan or API keys'],
         limits: [el('strong', { text: 'Limits: ' }), 'reacts in minutes, not seconds. No live terminals, tunnels or local agents; voice and screen share are limited.'].reduce((f, n) => (f.append(n), f), document.createDocumentFragment()),
         cta: 'Link my accounts',
       });
