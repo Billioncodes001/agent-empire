@@ -97,6 +97,8 @@ export interface ShellInfo {
   localAvailable?: boolean;
   deviceName?: string;
   signedOut?: SignedOutReason;
+  /** Android only: a debuggable build, which may reach its local http test hosts. Absent means a release build. */
+  devBuild?: true;
 }
 
 export function parseShellInfo(raw: unknown): ShellInfo | null {
@@ -108,6 +110,7 @@ export function parseShellInfo(raw: unknown): ShellInfo | null {
   if (r.localAvailable === true && info.platform === 'desktop') info.localAvailable = true;
   if (typeof r.deviceName === 'string' && r.deviceName.trim()) info.deviceName = r.deviceName.trim().slice(0, 64);
   if (r.signedOut === 'user' || r.signedOut === 'revoked' || r.signedOut === 'unauthorized') info.signedOut = r.signedOut;
+  if (r.devBuild === true && info.platform === 'android') info.devBuild = true;
   return info;
 }
 

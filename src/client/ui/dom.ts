@@ -51,6 +51,13 @@ export function modalOpen(): boolean {
   return stack.length > 0;
 }
 
+/** Closes every dialog stacked above `modal`, so it is in front again (and takes focus back). */
+export function bringToFront(modal: Modal) {
+  if (!stack.includes(modal)) return;
+  while (stack[stack.length - 1] !== modal) stack[stack.length - 1].close();
+  if (!modal.el.contains(document.activeElement)) (focusables(modal.el)[0] ?? modal.el).focus({ preventScroll: true });
+}
+
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])';
 
 function focusables(root: HTMLElement): HTMLElement[] {
@@ -112,6 +119,11 @@ export function openModal(content: HTMLElement, opts: { escCloses?: boolean; onC
     } else if (!e.shiftKey && active === last) {
       e.preventDefault();
       first.focus();
+    } else {
+      // Safari's default Tab skips buttons, so the last natively tabbable field (not `last`) can hand focus to the
+      // page or the browser. Wrap it back once the browser has moved focus (DEVTEST-02, WebKit).
+      const back = e.shiftKey ? last : first;
+      setTimeout(() => { if (!closed && stack[stack.length - 1] === modal && !content.contains(document.activeElement)) back.focus(); }, 0);
     }
   };
   const modal: Modal = {
@@ -152,9 +164,62 @@ export function closeAllModals() {
   while (stack.length) stack[stack.length - 1].close();
 }
 
+const SIDE_MIN = 260;
+let watched: Element | null = null;
+const resizeWatch = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => placeToasts()) : null;
+
+/**
+ * Toasts must never cover an open dialog's header, tabs or footer (DEVTEST-02 review). With room beside the dialog they
+ * sit there (top-right, outside its box); otherwise just above its footer. In that narrow case an interactive toast
+ * (the update toast) is held back until the dialog closes, so it can't block the dialog's controls.
+ */
+export function placeToasts() {
+  const box = document.getElementById('toasts');
+  if (!box?.dataset || !box.style) return; // test doubles of #toasts are bare elements
+  delete box.dataset.tight;
+  const top = stack[stack.length - 1];
+  if (watched !== (top?.el ?? null)) {
+    if (watched) resizeWatch?.unobserve(watched);
+    watched = top?.el ?? null;
+    if (watched) resizeWatch?.observe(watched);
+  }
+  if (!top) {
+    delete box.dataset.place;
+    box.style.cssText = '';
+    return;
+  }
+  const r = top.el.getBoundingClientRect();
+  const gap = 12;
+  const side = window.innerWidth - r.right - gap * 2;
+  if (side >= SIDE_MIN) {
+    box.dataset.place = 'side';
+    box.style.cssText = `position: fixed; left: ${Math.round(r.right + gap)}px; top: ${Math.round(Math.max(r.top, gap))}px; bottom: auto; width: ${Math.round(Math.min(side, 360))}px; transform: none; align-items: stretch;`;
+  } else {
+    const footer = top.el.querySelector(':scope > footer');
+    const edge = footer ? footer.getBoundingClientRect().top : r.bottom;
+    // The header and step tabs sit above the dialog's body: on short screens the stack is clipped to the space below
+    // them, keeping the newest toast (flex-end) and dropping older ones off the top.
+    const body = top.el.querySelector(':scope > .body');
+    const ceiling = body ? body.getBoundingClientRect().top : r.top;
+    const room = Math.max(0, Math.round(edge - 8 - ceiling - 8));
+    box.dataset.place = 'above-footer';
+    box.style.cssText = `position: fixed; top: auto; bottom: ${Math.round(window.innerHeight - edge + 8)}px; max-width: min(560px, calc(100vw - 32px)); max-height: ${room}px; overflow: hidden; justify-content: flex-end;`;
+    // When two toasts don't fit, show only the newest rather than a half-clipped older one.
+    // (Overflow past the top of a flex-end box isn't scrollable, so measure the two newest shown toasts directly.)
+    const shown = [...box.children].filter((c): c is HTMLElement => c instanceof HTMLElement && c.offsetHeight > 0).slice(-2);
+    const need = shown.reduce((sum, c) => sum + c.offsetHeight, 0) + 8 * Math.max(0, shown.length - 1);
+    if (need > room) box.dataset.tight = '';
+  }
+}
+if (typeof window !== 'undefined') {
+  listeners.add(() => requestAnimationFrame(placeToasts));
+  window.addEventListener('resize', () => placeToasts());
+}
+
 export function toast(text: string, level: 'info' | 'warn' | 'error' = 'info', ms = 3500) {
   const el = h('div.toast', { class: level }, text);
   document.getElementById('toasts')!.append(el);
+  placeToasts();
   setTimeout(() => {
     el.style.transition = 'opacity .3s';
     el.style.opacity = '0';

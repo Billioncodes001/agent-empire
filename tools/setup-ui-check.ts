@@ -158,6 +158,9 @@ async function run() {
       if (size.touch) ok(await page.evaluate(() => (window as unknown as { __touches: number }).__touches > 0), `${tag} the setup is driven by real touch events`);
       await page.waitForSelector('.su-card-cloud');
       await shot('02-mode');
+      // DEVTEST-02: since FREE-04 the cloud can run free (Qwen Code on GitHub Actions), on a Claude plan or with API keys.
+      const cloudCard = (await page.locator('.su-card-cloud .su-card-points').textContent()) ?? '';
+      ok(/free/i.test(cloudCard) && /Claude (plan|subscription)/.test(cloudCard) && /API keys/.test(cloudCard) && !/Uses your Claude and\/or OpenAI API keys/.test(cloudCard), `${tag} the cloud card names the free engine, a Claude plan and API keys (${cloudCard.replace(/\s+/g, ' ').trim()})`);
       textMode = await page.evaluate(SETUP_TEXT);
       // keyboard: Tab reaches the first card with a visible focus ring
       await page.keyboard.press('Tab');
