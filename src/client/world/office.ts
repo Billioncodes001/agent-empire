@@ -24,6 +24,10 @@ export interface Collider {
   top: number;
   /** Underside, for things you walk beneath (the loft). Defaults to the floor. */
   bottom?: number;
+  /** CHAR-01: a vehicle body. Solid to walkers at every height above its base, never a floor. */
+  vehicle?: boolean;
+  /** CHAR-01: walkers only (stairs). A car treats it as a wall at any height. */
+  walkOnly?: boolean;
 }
 
 export type InteractKind = 'desk' | 'issues' | 'pulls' | 'services' | 'queue' | 'tv' | 'coffee' | 'gym' | 'cafeteria' | 'decor' | 'elevator' | 'executive' | 'inbox';
