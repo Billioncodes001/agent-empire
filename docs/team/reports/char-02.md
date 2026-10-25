@@ -35,9 +35,9 @@ Nothing paid was used: no Higgsfield, Meshy, Mixamo, Human Generator or worker c
 
 ## Pipeline
 
-Rebuild with `npx tsx tools/avatars/build-clips.mts`. Add `--inspect` to print the source pelvis and foot heights used to choose the trim windows.
+Rebuild with `npx tsx tools/avatars/build-clips.mts`.
 
-1. **Download and verify.** The script downloads the archive once, checks it against the pinned SHA-256 and lists it with `tools/city/zip-guard.ts` (no symlinks, no path escapes, size cap). It then extracts the archive and requires CC0 in its `License.txt`.
+1. **Download and verify.** The script downloads the archive once and checks it against the pinned SHA-256 before writing it to the cache; a corrupt cached copy is deleted and fetched again (`tools/avatars/pinned.ts`). It lists it with `tools/city/zip-guard.ts` (no symlinks, no path escapes, size cap). It then extracts the archive and requires CC0 in its `License.txt`.
 2. **Retarget** (`tools/avatars/retarget.ts`). This runs in node with three.js, not Blender, so the output is byte-for-byte reproducible (verified by rebuilding twice).
    - **Calibration.** Both rigs stand in a reference idle: the source's `Idle_Loop` and the target's own `idle_neutral_01`. Each mapped bone gets the source's world-space rotation delta from that idle, turned to the target's facing: `T = R·S·S_ref⁻¹·R⁻¹·T_ref`. At the source idle the Rocketbox body is exactly in its own idle, so the current characters keep their look.
    - **Pelvis.** The pelvis sits where the lower ankle reaches its scaled source height. It keeps the hips' shift over the feet (capped at 0.3 m) and never travels.
@@ -87,7 +87,8 @@ Rebuild with `npx tsx tools/avatars/build-clips.mts`. Add `--inspect` to print t
 - `jump_start` and `jump_land` play once and hold their last frame.
 - Fades: 0.08 s into the take-off, 0.15 s into the air, 0.06 s into the landing and 0.25 s out of it.
 - The procedural tuck shapes only the held fallback frame, and the landing dip runs only when no landing clip plays. The clips are never doubled up.
-- The landing clip needs a real touchdown (faster than 2.5 m/s). Walking off a landing ends it, so stopping later never restarts the crouch.
+- The landing is decided once, at touchdown (`landWithClip`): the clip plays only after a hard touchdown (faster than 2.5 m/s) while standing still (0.5 m/s or less), with the clip present and motion allowed. Every other landing, such as a ledge caught on the way down or a landing at a run, gets the CHAR-01 procedural dip. The two never stack. The first frame the stride wins ends a clip landing, so stopping later never starts a late crouch.
+- The state machine's inputs and its `has()` closure are allocated once per body and refilled every frame.
 - Stairs add a small spine lean, eased in and out: +0.07 rad climbing, −0.03 rad descending. CHAR-01 foot IK still grounds the founder's feet on the treads, and stride scaling is unchanged.
 - **Reduced motion** keeps the calm CHAR-01 jump (held frame and small dip) and halves the stair lean. It follows the OS setting live through `setHumanReducedMotion`.
 
@@ -145,7 +146,7 @@ Viewpoints, preset and headless Chrome on ANGLE/Metal are the same as CHAR-01. T
 | Aerial | 7.13 → 6.90 | 6.52 → 5.27 |
 | Helipad | 7.96 → 7.88 | 6.83 → 6.57 |
 
-- Draw calls and triangles are identical (one more texture: nothing new is drawn).
+- Draw calls and triangles are identical. The phone views counted one texture more than base in both runs. The extra clip files carry no images, so that texture is not from this change; it was not traced further.
 - Every phone view is inside the +1.5 ms budget; all are at or below base.
 - Run-to-run noise on this shared machine was ±1.5 ms, larger than any difference measured. Single-run outliers (desktop helipad +1.6 ms in run 1, −1.8 ms in run 2) cancel out.
 - The work per body is one more mixer action at a time and a pure-function lookup.
@@ -165,13 +166,14 @@ Measured headless, not on a device.
 | 07 | At the wheel (`drive_seated`, hand and pedal IK) |
 | 08 | Getting out |
 | 09 | Reduced-motion jump (held CHAR-01 frame), 874×402 only |
+| 10 | Helicopter pilot in `drive_seated` (`10-helicopter-pilot-xray-*`: the opaque cabin shell is made see-through for this one shot, then restored) |
 
 ## Deferred, and why
 
 - **Stairs clips.** Neither free CC0 Quaternius library has a stair clip; only the paid Pro tier lists more locomotion, and the owner asked for free libraries. Stairs are a state on the stride clip, with a lean layer and CHAR-01 foot IK. A CC0 stair clip, if one turns up, slots in through `selectMotion` with no other change.
 - **Car get-in / get-out clips.** The free libraries have only front-facing chair sits (`Sitting_Enter`/`Exit`), which are wrong for a side car door. The existing Rocketbox side-sit transition with foot IK through the door (CHAR-01) stays.
 - **Turn in place.** No clean in-place turn exists in either free library. Rocketbox's 90° turns carry root rotation, as CHAR-01 found. The CHAR-01 procedural turn step stays.
-- **Head height in the sedan.** The top of the head reaches the roofline in the sedan. This predates CHAR-02: the chair sit used before does the same, as CHAR-01 shot 09 shows. The driving pose is held to the chair-sit hip spot, and its head is no higher (tested). Lowering the seat or raising the roof belongs to the sedan model or the driver placement, outside this slice.
+- **Head height in the sedan.** Measured in the fixture with a vertical ray against the sedan's triangles: 2.2 cm between the top of the skull (head bone + 0.12 m) and the roof. The hair reaches the roofline in the screenshots. This predates CHAR-02: the chair sit used before has the same hip spot, and the driving pose's head is no higher (tested). The value is reported by `char-ui-check`, not gated. More room belongs to the sedan model or the driver placement, outside this slice. The helicopter pilot has 25.8 cm, which is gated.
 - **Peers' landing.** Remote players and workers play the same state machine, but a peer whose airborne flag flickers at the apex uses the existing landing grace. It was not separately screenshotted.
 
 ## Not verified
@@ -179,3 +181,41 @@ Measured headless, not on a device.
 - Real devices: all evidence is headless Chrome with touch emulation. Nothing ran on Android, iOS or the desktop app.
 - The perf numbers come from a shared, noisy machine (see above).
 - `build-clips.mts` was run here with the archive already cached. Its first download path was exercised once at the start, when the zip was fetched from OpenGameArt and matched the pinned SHA-256.
+
+## Review round 1 (changes requested on `4e072cf`)
+
+Each fix has a failing-first test: the landings at `ddcd20f` and the pinned download at `e92b587`.
+
+1. **Soft landings no longer stack the clip on the dip.**
+   - `MotionInput.landClip` is set at touchdown by `landWithClip`, and `selectMotion` returns `jump_land` only when it is true.
+   - A jump onto a 1 m ledge (touchdown about 2.2 m/s) now lands with the CHAR-01 dip. Pelvis low point: 0.836 m, against 0.865 m without the extra clips; it was 0.513 m before the fix.
+   - Tests: `review: jumping onto a 1 m ledge…` and the pure `landWithClip` table.
+2. **Landing while moving keeps the dip; no late crouch.**
+   - The touchdown decision includes ground speed (≤ 0.5 m/s for the clip).
+   - The first frame the stride wins ends a clip landing.
+   - The probe's run-then-stop sequence is now `jump_air → run_neutral → idle_neutral_01`, with no `jump_land`.
+   - Test: `review: landing at a run keeps the dip and stride…`.
+3. **Small items:**
+   - `tools/avatars/pinned.ts` verifies the archive before caching it and replaces a corrupt cached zip (`tests/char-02-pinned.test.ts`, 4 tests).
+   - The `--inspect` debug code is removed. The rebuilt clips are byte-identical.
+   - New char-ui-check section F: the helicopter pilot plays `drive_seated` with 25.8 cm of head clearance under the cabin roof (gated), with an x-ray screenshot. Sedan clearance (2.2 cm) is reported.
+   - Scratch inputs are reused per frame.
+   - The jump check now reads a per-frame clip log in the page, so a slow screenshot can no longer hide the 0.3 s airborne phase (that flake was seen once).
+   - Report wording fixed: the texture count and the test header no longer claim reproducibility.
+4. **Merged** `origin/codex/empire-world` @ `64585f8` (CITY-10 #55, FREE-07 #54). The one conflict was the `PERF_OUT` line in `tools/city-ui-check.ts`, which now accepts `char-01`, `char-02` and `city-10`.
+
+**Checks after the fixes (on the merge):**
+
+| Check | Result |
+| --- | --- |
+| typecheck | pass |
+| `npm test` | 1165 tests, 1164 pass, 1 skipped (actionlint), 0 fail |
+| build | pass |
+| `char-ui-check` (fresh fixture, 5184) | 66/66 |
+| `city-ui-check` FREE-09 part (5185) | 23/23 |
+| `city-ui-check` rides (5186) | 25/25 |
+| `mobile-ui-check` (5187) | 411/411 |
+| `outfit-ui-check` (5188) | 29/29 |
+| `life04-ui-check`, waiting (5189) | 20/20 |
+
+Screenshots regenerated by the other checks were reverted. All fixtures were stopped by task id, and only ports 5184–5189 were used. Perf was not re-measured: the per-frame change only removes allocations.
