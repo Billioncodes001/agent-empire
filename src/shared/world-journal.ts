@@ -112,7 +112,7 @@ export function avoidFromUndo(c: Pick<AppliedChange, 'op' | 'model' | 'lot' | 'a
   if (c.op !== 'place') return undefined;
   const e = catalogEntry(c.model);
   const where = c.lot ? LOTS.find((l) => l.id === c.lot)?.name : c.anchor ? ANCHORS.find((a) => a.id === c.anchor)?.name : undefined;
-  return { model: c.model, ...(c.lot ? { lot: c.lot } : {}), text: `The owner undid a ${e?.label ?? c.model}${where ? ` on the ${where}` : ''}`.slice(0, JOURNAL_LIMITS.avoidText), at, source: 'undo' };
+  return { model: c.model, ...(c.lot ? { lot: c.lot } : {}), ...(c.anchor ? { anchor: c.anchor } : {}), text: `The owner undid a ${e?.label ?? c.model}${where ? ` on the ${where}` : ''}`.slice(0, JOURNAL_LIMITS.avoidText), at, source: 'undo' };
 }
 
 /** Adds a validated avoid-rule (throws with the reason otherwise). An identical model/lot rule is not repeated. */
@@ -120,12 +120,13 @@ export function addAvoid(input: WorldJournal, rule: Omit<AvoidRule, 'id'> & { id
   if (rule.model === undefined && rule.lot === undefined) throw new Error('an avoid-rule needs a model or a lot');
   if (rule.model !== undefined && !catalogEntry(rule.model)) throw new Error(`unknown model "${String(rule.model).slice(0, 60)}"`);
   if (rule.lot !== undefined && !LOTS.some((l) => l.id === rule.lot)) throw new Error(`unknown lot "${String(rule.lot).slice(0, 40)}"`);
+  if (rule.anchor !== undefined && !ANCHORS.some((a) => a.id === rule.anchor)) throw new Error(`unknown anchor "${String(rule.anchor).slice(0, 40)}"`);
   if (typeof rule.text !== 'string' || !rule.text.trim()) throw new Error('an avoid-rule needs its text');
   if (rule.text.length > JOURNAL_LIMITS.avoidText) throw new Error(`the avoid-rule text is longer than ${JOURNAL_LIMITS.avoidText} characters`);
   if (hasHiddenText(rule.text)) throw new Error('the avoid-rule text contains invisible or control characters');
   const j = structuredClone(input);
-  if (j.avoid.some((r) => r.model === rule.model && r.lot === rule.lot)) return j;
-  j.avoid.push({ id: `V${j.nextAvoid++}`, ...(rule.model ? { model: rule.model } : {}), ...(rule.lot ? { lot: rule.lot } : {}), text: rule.text.trim(), at: rule.at, source: rule.source });
+  if (j.avoid.some((r) => r.model === rule.model && r.lot === rule.lot && r.anchor === rule.anchor)) return j;
+  j.avoid.push({ id: `V${j.nextAvoid++}`, ...(rule.model ? { model: rule.model } : {}), ...(rule.lot ? { lot: rule.lot } : {}), ...(rule.anchor ? { anchor: rule.anchor } : {}), text: rule.text.trim(), at: rule.at, source: rule.source });
   return fit(j);
 }
 
@@ -153,7 +154,7 @@ export function validateJournal(raw: unknown): { ok: WorldJournal } | { error: s
   if (!Array.isArray(j.entries) || !j.entries.every((e) => e && isStr(e.day, 10) && isStr(e.runId, 12) && Array.isArray(e.changes) && e.changes.every((c) => c && isStr(c.reason, WORLD_CAPS.reason) && isStr(c.additionId, 10)))) return { error: 'the journal entries are invalid' };
   if (!Array.isArray(j.summaries) || !j.summaries.every((s) => s && isStr(s.period, 40) && isStr(s.text, 300))) return { error: 'the journal summaries are invalid' };
   if (!Array.isArray(j.ideas) || !j.ideas.every((i) => i && isStr(i.id, 12) && isStr(i.text, JOURNAL_LIMITS.idea) && Number.isFinite(i.at) && ['seed', 'model', 'rules'].includes(i.source))) return { error: 'the ideas are invalid' };
-  if (!Array.isArray(j.avoid) || !j.avoid.every((r) => r && isStr(r.id, 12) && isStr(r.text, JOURNAL_LIMITS.avoidText) && Number.isFinite(r.at) && ['undo', 'owner'].includes(r.source) && (r.model === undefined || catalogEntry(r.model)) && (r.lot === undefined || LOTS.some((l) => l.id === r.lot)))) return { error: 'the avoid-rules are invalid' };
+  if (!Array.isArray(j.avoid) || !j.avoid.every((r) => r && isStr(r.id, 12) && isStr(r.text, JOURNAL_LIMITS.avoidText) && Number.isFinite(r.at) && ['undo', 'owner'].includes(r.source) && (r.model === undefined || catalogEntry(r.model)) && (r.lot === undefined || LOTS.some((l) => l.id === r.lot)) && (r.anchor === undefined || ANCHORS.some((a) => a.id === r.anchor)))) return { error: 'the avoid-rules are invalid' };
   return { ok: j };
 }
 
@@ -183,7 +184,7 @@ export function journalPromptData(j: WorldJournal, doc: WorldDocument): string {
     recent: j.entries.slice(-JOURNAL_LIMITS.recentForModel).map((e) => ({ day: e.day, status: e.status, changes: e.changes.map((c) => `${c.op} ${c.model}${c.lot ? ` in ${c.lot}` : ''}: ${c.reason}`) })),
     earlier: j.summaries.slice(-6).map((s) => s.text),
     ideas: j.ideas.map((i) => i.text),
-    avoid: j.avoid.map((a) => ({ model: a.model, lot: a.lot, why: a.text })),
+    avoid: j.avoid.map((a) => ({ model: a.model, lot: a.lot, anchor: a.anchor, why: a.text })),
     additions: doc.additions.map((a) => ({ id: a.id, model: a.model, lot: a.lot, anchor: a.anchor, x: a.x, z: a.z, yaw: a.yaw })),
     lots: LOTS.map((l) => ({ id: l.id, name: l.name, district: l.district, minX: l.minX, maxX: l.maxX, minZ: l.minZ, maxZ: l.maxZ, kinds: l.kinds, face: l.face })),
     anchors: ANCHORS.map((a) => ({ id: a.id, name: a.name, x: a.x, z: a.z, yaw: a.yaw, models: a.models, taken: doc.additions.some((x) => x.anchor === a.id) })),

@@ -49,6 +49,8 @@ export function buildArchitectLayer(parent: THREE.Group, districts: Districts) {
   const pending: { collider: Collider; box: Collider }[] = [];
   let doc: WorldDocument | undefined;
   let shown: WorldAddition[] = [];
+  /** Footprints of the shown additions, computed once per rebuild (the hint runs every frame). */
+  let shownBoxes: Box2[] = [];
   let quality: GraphicsQuality = 'medium';
   let built = '';
   let flora: Map<string, THREE.Object3D> | undefined;
@@ -79,9 +81,11 @@ export function buildArchitectLayer(parent: THREE.Group, districts: Districts) {
   function rebuild() {
     clear();
     stats.rendered = 0;
+    shown = []; shownBoxes = [];
     if (!doc || !doc.additions.length || !districts.loaded) return;
     const kinds = visibleKinds({ quality, saveData: saveDataOn() });
     shown = doc.additions.filter((a) => kinds.includes(catalogEntry(a.model)!.kind));
+    shownBoxes = shown.map((a) => footprintOf(a.model, a.x, a.z, a.yaw));
     const byModel = new Map<string, WorldAddition[]>();
     for (const a of shown) (byModel.get(a.model) ?? byModel.set(a.model, []).get(a.model)!).push(a);
     for (const [model, list] of byModel) {
@@ -159,7 +163,8 @@ export function buildArchitectLayer(parent: THREE.Group, districts: Districts) {
     /** "Built by the city architect · day · reason" near an addition at street level. */
     hint(p: THREE.Vector3): string {
       if (p.y > 2) return '';
-      const a = shown.find((x) => near(footprintOf(x.model, x.x, x.z, x.yaw), p, 1.6));
+      const i = shownBoxes.findIndex((b) => near(b, p, 1.6));
+      const a = i >= 0 ? shown[i] : undefined;
       if (!a) return '';
       const reason = a.reason.length > 90 ? `${a.reason.slice(0, 87)}…` : a.reason;
       return `Built by the city architect · ${a.day} · ${reason}`;

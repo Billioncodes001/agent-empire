@@ -31,7 +31,7 @@ import {
   JOURNAL_LIMITS, addAvoid, addIdeas, avoidFromUndo, journalMarkdown, journalPromptData, markReverted, recordRun, removeAvoid, seedJournal, validateJournal,
   type WorldJournal,
 } from '../shared/world-journal.js';
-import { extractJson, hasHiddenChars, inputTokenBound, unsafeReason, type ChatFn } from './chief.js';
+import { extractJson, hasHiddenChars, unsafeReason, type ChatFn } from './chief.js';
 import type { ProviderKeys } from './engines.js';
 import { chat as llmChat, estimateCost, provider, type ChatMessage, type ChatResult, type LlmProvider } from './llm.js';
 import { writeJsonAtomic } from './persistence.js';
@@ -65,10 +65,56 @@ export interface ArchitectPorts {
   now?: () => number;
   timeoutMs?: number;
   onChange?: () => void;
+  /** Tests only: the JSON writer (defaults to the atomic writer), to simulate a full disk at a precise point. */
+  writeJson?: (file: string, value: unknown) => void;
 }
 
-interface Spend { day: string; usd: number; month: string; monthUsd: number }
+/**
+ * Review 4: spend per period (never one overwritten scalar), the latest clock reading seen and the last paid call, so a
+ * clock moved back or a time-zone change cannot reset a tally or allow a second paid run inside 24 hours.
+ */
+interface Spend { days: Record<string, number>; months: Record<string, number>; maxSeenAt: number; lastPaidAt?: number }
 interface StoredFile { version: 1; settings: ArchitectSettings; spend: Spend; lastRunDay?: string; nextRun: number; nextChange: number; expiredChange: number; runs: RunRecord[] }
+
+const PAID_GAP_MS = 24 * 3_600_000;
+const CLOCK_SLACK_MS = 5 * 60_000;
+
+/**
+ * Review extra: a conservative input-token bound for the cap check. Number-heavy JSON tokenizes denser than prose, so
+ * one token per 1.5 ASCII characters, one per other character, and 8 tokens of overhead per message.
+ */
+export function architectTokenBound(messages: ChatMessage[]): number {
+  let ascii = 0, other = 0;
+  for (const m of messages) for (const ch of m.content) { if (ch.charCodeAt(0) < 128) ascii++; else other++; }
+  return Math.ceil(ascii / 1.5) + other + 8 * messages.length;
+}
+
+const RUN_STATUSES = ['running', 'applied', 'no_changes', 'rejected', 'interrupted'];
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+const isAddition = (v: unknown) => isObj(v) && typeof v.id === 'string' && /^W[1-9]\d{0,6}$/.test(v.id) && typeof v.model === 'string' && !!catalogEntry(v.model) && Number.isFinite(v.x) && Number.isFinite(v.z);
+
+/** Review 2: every stored run and change is checked on restore; anything else refuses the file (preserved). */
+function runProblem(r: unknown, i: number): string | undefined {
+  const n = `run ${i + 1}`;
+  if (!isObj(r)) return `${n} is not an object`;
+  if (typeof r.id !== 'string' || !/^R[1-9]\d{0,8}$/.test(r.id)) return `${n} id is invalid`;
+  if (typeof r.day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(r.day)) return `${n} day is invalid`;
+  if (r.trigger !== 'schedule' && r.trigger !== 'manual') return `${n} trigger is invalid`;
+  if (r.engine !== 'rules' && r.engine !== 'free' && r.engine !== 'premium') return `${n} engine is invalid`;
+  if (!RUN_STATUSES.includes(r.status as string)) return `${n} status is invalid`;
+  if (!Number.isSafeInteger(r.startedAt)) return `${n} startedAt is invalid`;
+  if (typeof r.engineLabel !== 'string' || typeof r.costLabel !== 'string' || !Number.isFinite(r.costUsd) || (r.costUsd as number) < 0) return `${n} cost is invalid`;
+  if (r.worstUsd !== undefined && !Number.isFinite(r.worstUsd)) return `${n} worstUsd is invalid`;
+  if (!Array.isArray(r.changes)) return `${n} changes must be a list`;
+  for (const [j, c] of r.changes.entries()) {
+    const m = `${n} change ${j + 1}`;
+    if (!isObj(c) || typeof c.id !== 'string' || !/^C[1-9]\d{0,8}$/.test(c.id)) return `${m} id is invalid`;
+    if (c.op !== 'place' && c.op !== 'move' && c.op !== 'remove') return `${m} op is invalid`;
+    if (typeof c.additionId !== 'string' || typeof c.model !== 'string' || !catalogEntry(c.model) || typeof c.reason !== 'string' || typeof c.repair !== 'boolean') return `${m} is incomplete`;
+    if ((c.op !== 'place' && !isAddition(c.before)) || (c.op !== 'remove' && !isAddition(c.after))) return `${m} has no valid before/after record`;
+  }
+  return undefined;
+}
 
 const dayOf = (at: number) => new Date(at).toLocaleDateString('en-CA');
 const monthOf = (at: number) => dayOf(at).slice(0, 7);
@@ -122,6 +168,8 @@ export function parseArchitectAnswer(text: string, maxChanges: number): { ok: { 
     for (const k of Object.keys(c)) if (!keys.includes(k)) return { error: `${n} has an unexpected field "${k.slice(0, 40)}"` };
     const reason = cleanReason(c.reason, `${n} reason`);
     if ('error' in reason) return reason;
+    // Review 3: repairs (and the "Repair ·" label) belong to rule-based growth only.
+    if (/^repair\b/i.test(reason.ok)) return { error: `${n} reason may not start with "Repair" (repairs are rule-based only)` };
     const unsafe = unsafeReason(reason.ok);
     if (unsafe) return { error: `${n} reason ${unsafe}` };
     for (const k of ['model', 'lot', 'anchor', 'text', 'id']) if (c[k] !== undefined && typeof c[k] !== 'string') return { error: `${n}: ${k} must be a string` };
@@ -181,28 +229,35 @@ export class ArchitectService {
   private data: StoredFile;
   private worldDoc: WorldDocument = emptyWorld();
   private journal?: WorldJournal;
+  /** Runtime storage failure: everything is refused until a restart, but state saves are still attempted. */
   private storageError?: string;
+  /** A file that could not be restored: preserved untouched, never written, everything refused. */
+  private restoreError?: string;
   private running = false;
   private readonly now: () => number;
   private readonly chatFn: ChatFn;
+  private readonly writeJson: (file: string, value: unknown) => void;
 
   constructor(dataDir: string, private readonly ports: ArchitectPorts) {
     this.dir = path.join(dataDir, 'world');
     this.files = { state: path.join(this.dir, 'architect.json'), world: path.join(this.dir, 'additions.json'), journal: path.join(this.dir, 'journal.json'), md: path.join(this.dir, 'journal.md') };
     this.now = ports.now ?? Date.now;
     this.chatFn = ports.chat ?? llmChat;
-    const at = this.now();
-    this.data = { version: 1, settings: { ...DEFAULT_ARCHITECT_SETTINGS }, spend: { day: dayOf(at), usd: 0, month: monthOf(at), monthUsd: 0 }, nextRun: 1, nextChange: 1, expiredChange: 0, runs: [] };
+    this.writeJson = ports.writeJson ?? writeJsonAtomic;
+    this.data = { version: 1, settings: { ...DEFAULT_ARCHITECT_SETTINGS }, spend: { days: {}, months: {}, maxSeenAt: this.now() }, nextRun: 1, nextChange: 1, expiredChange: 0, runs: [] };
     this.restore();
+    // Review extra: a paid run cut off by a restart keeps its worst-case charge; the owner is told once.
+    for (const r of this.data.runs) if (r.status === 'interrupted' && r.costUsd > 0 && !r.approvalId) { this.raiseSummary(r); this.save(); }
   }
+  private get blocked(): string | undefined { return this.restoreError ?? this.storageError; }
 
   // ---- Views ----
 
   private available(): { ok: true } | { ok: false; reason: string } {
     return this.ports.host === 'cloud' ? { ok: false, reason: CLOUD_ARCHITECT_NOTE } : { ok: true };
   }
-  private spentToday() { return this.data.spend.day === dayOf(this.now()) ? this.data.spend.usd : 0; }
-  private spentMonth() { return this.data.spend.month === monthOf(this.now()) ? this.data.spend.monthUsd : 0; }
+  private spentToday() { return this.data.spend.days[dayOf(this.now())] ?? 0; }
+  private spentMonth() { return this.data.spend.months[monthOf(this.now())] ?? 0; }
   private capReached(): string | undefined {
     const s = this.data.settings;
     if (this.spentToday() >= s.dailyCapUsd) return `Paused: today's estimated premium spend ${money(this.spentToday())} reached the ${money(s.dailyCapUsd)} daily cap. It resumes tomorrow, or raise the cap.`;
@@ -219,7 +274,7 @@ export class ArchitectService {
     const label = `Premium · ${c.premiumModel || 'no model set'} · your ${name} key · estimates, capped ${money(s.dailyCapUsd)}/day and ${money(s.monthlyCapUsd)}/month`;
     if (!c.premiumModel) return { label, ready: false, reason: `Set the ${name} model id in the chief's brain settings.` };
     if (!this.ports.keys()[KEY_FOR[c.premiumProvider]]) return { label, ready: false, reason: `No ${KEY_FOR[c.premiumProvider]} saved. Add your key in Linked accounts.` };
-    if (!c.premiumPrice) return { label, ready: false, reason: 'Set the price per million tokens in the chief\'s brain settings so the caps can be enforced.' };
+    if (!c.premiumPrice || c.premiumPrice[0] + c.premiumPrice[1] <= 0) return { label, ready: false, reason: 'Set the price per million tokens in the chief\'s brain settings so the caps can be enforced.' };
     const cap = this.capReached();
     if (cap) return { label, ready: false, reason: cap };
     return { label, ready: true };
@@ -253,14 +308,14 @@ export class ArchitectService {
       schemaVersion: 1, available: avail.ok, ...(!avail.ok ? { unavailableReason: avail.reason } : {}),
       settings: { ...this.data.settings }, engine: this.engineStatus(), budget: this.budget(),
       ...(this.nextRunAt() !== undefined ? { nextRunAt: this.nextRunAt() } : {}), running: this.running,
-      runs: structuredClone(this.data.runs), world: this.storageError ? emptyWorld() : structuredClone(this.worldDoc),
+      runs: structuredClone(this.data.runs), world: this.restoreError ? emptyWorld() : structuredClone(this.worldDoc),
       journal: { entries: j.entries.length, ideas: structuredClone(j.ideas), avoid: structuredClone(j.avoid) },
-      ...(this.storageError ? { storageError: this.storageError } : {}),
+      ...(this.blocked ? { storageError: this.blocked } : {}),
     };
   }
 
   /** The additions the game renders (empty while storage is broken). */
-  world(): WorldDocument { return this.storageError ? emptyWorld() : structuredClone(this.worldDoc); }
+  world(): WorldDocument { return this.restoreError ? emptyWorld() : structuredClone(this.worldDoc); }
 
   journalMarkdown(): string { return journalMarkdown(this.journal ?? seedJournal(this.worldDoc, this.now()), this.worldDoc, this.now()); }
 
@@ -269,7 +324,7 @@ export class ArchitectService {
   private assertMutable() {
     const a = this.available();
     if (!a.ok) throw new ArchitectError(409, a.reason);
-    if (this.storageError) throw new ArchitectError(503, this.storageError);
+    if (this.blocked) throw new ArchitectError(503, this.blocked);
   }
 
   updateSettings(input: unknown): ArchitectState {
@@ -314,8 +369,20 @@ export class ArchitectService {
   /** True when a scheduled run is due now. */
   private due(): boolean {
     const s = this.data.settings;
-    return this.available().ok && !this.storageError && s.enabled && !s.paused && !this.running
-      && new Date(this.now()).getHours() >= s.runHour && this.data.lastRunDay !== dayOf(this.now());
+    if (!this.available().ok || this.blocked || !s.enabled || s.paused || this.running) return false;
+    if (new Date(this.now()).getHours() < s.runHour || this.data.lastRunDay === dayOf(this.now())) return false;
+    // Review 4: a scheduled premium run waits until 24 hours have passed since the last paid call, instead of spending
+    // its day on rule-based growth (Run now inside the gap falls back and says why).
+    if (s.engine === 'premium' && this.engineStatus().ready && this.paidGapProblem()) return false;
+    return true;
+  }
+
+  /** Review 4: why a paid call may not happen now (clock behind the latest reading, or a paid call within 24 hours). */
+  private paidGapProblem(): string | undefined {
+    const now = this.now(), sp = this.data.spend;
+    if (now < sp.maxSeenAt - CLOCK_SLACK_MS) return `This server's clock is behind the latest time it has seen (${new Date(sp.maxSeenAt).toISOString().slice(0, 16).replace('T', ' ')} UTC); paid calls wait until the clock catches up.`;
+    if (sp.lastPaidAt !== undefined && now - sp.lastPaidAt < PAID_GAP_MS) return 'A paid run happened less than 24 hours ago; at most one paid run per 24 hours, whatever the local date.';
+    return undefined;
   }
 
   /** Called once a minute by the host. Runs today's growth when due; never throws. */
@@ -334,15 +401,27 @@ export class ArchitectService {
     if (this.running) throw new ArchitectError(409, 'The city architect is already running.');
     const at = this.now(), day = dayOf(at);
     if (this.data.lastRunDay === day) throw new ArchitectError(409, 'The city architect already ran today. The next run is tomorrow; little updates, once a day.');
-    this.running = true;
-    const record: RunRecord = { id: `R${this.data.nextRun++}`, day, trigger, engine: s.engine, engineLabel: this.engineStatus().label, status: 'running', startedAt: at, changes: [], costUsd: 0, costLabel: 'US$0' };
+    const record: RunRecord = { id: `R${this.data.nextRun}`, day, trigger, engine: s.engine, engineLabel: this.engineStatus().label, status: 'running', startedAt: at, changes: [], costUsd: 0, costLabel: 'US$0' };
+    // Review 4: the clock check uses the latest reading before this one.
+    const clockProblem = this.paidGapProblem();
+    const prev = { lastRunDay: this.data.lastRunDay, maxSeenAt: this.data.spend.maxSeenAt };
+    this.data.nextRun++;
     this.data.runs.unshift(record);
-    // Saved before any work: a restart from here on never runs this day again.
     this.data.lastRunDay = day;
-    this.save();
+    this.data.spend.maxSeenAt = Math.max(this.data.spend.maxSeenAt, at);
+    // Review 1: saved before any work, or nothing happens: a restart from here on never runs this day again, and no
+    // provider is called without that record on disk.
+    if (!this.save()) {
+      this.data.runs.shift();
+      this.data.nextRun--;
+      Object.assign(this.data, { lastRunDay: prev.lastRunDay });
+      this.data.spend.maxSeenAt = prev.maxSeenAt;
+      throw new ArchitectError(503, this.storageError ?? 'The architect could not save its run record; nothing was done.');
+    }
+    this.running = true;
     this.notify();
     try {
-      await this.work(record);
+      await this.work(record, clockProblem);
     } catch (error) {
       if (record.status === 'running') Object.assign(record, { status: 'rejected', reason: `The run failed: ${(error as Error).message.slice(0, 200)} Nothing changed.` });
     } finally {
@@ -359,7 +438,7 @@ export class ArchitectService {
     return structuredClone(record);
   }
 
-  private async work(record: RunRecord) {
+  private async work(record: RunRecord, clockProblem?: string) {
     const s = this.data.settings, c = this.ports.chiefSettings();
     const journal = this.ensureJournal();
     const avoid = journal.avoid;
@@ -386,15 +465,23 @@ export class ArchitectService {
         if (engine === 'free') p = provider('ollama', c.freeModel, {}, { ollamaUrl: this.ports.ollamaUrl });
         else {
           p = provider(c.premiumProvider, c.premiumModel, this.ports.keys(), { price: c.premiumPrice });
-          worst = round(estimateCost(c.premiumPrice!, inputTokenBound(messages), ARCHITECT_LIMITS.outputTokens));
+          worst = round(estimateCost(c.premiumPrice!, architectTokenBound(messages), ARCHITECT_LIMITS.outputTokens));
           record.worstUsd = worst;
-          if (this.spentToday() + worst > s.dailyCapUsd) { callable = false; fallback(`Premium paused: this run could cost up to ${money(worst)}, which would pass today's ${money(s.dailyCapUsd)} daily cap (${money(this.spentToday())} used).`); }
+          if (clockProblem) { callable = false; fallback(clockProblem); }
+          else if (this.spentToday() + worst > s.dailyCapUsd) { callable = false; fallback(`Premium paused: this run could cost up to ${money(worst)}, which would pass today's ${money(s.dailyCapUsd)} daily cap (${money(this.spentToday())} used).`); }
           else if (this.spentMonth() + worst > s.monthlyCapUsd) { callable = false; fallback(`Premium paused: this run could cost up to ${money(worst)}, which would pass this month's ${money(s.monthlyCapUsd)} monthly cap (${money(this.spentMonth())} used).`); }
           else {
             // Charged before the call, so a crash or restart mid-call never under-counts.
+            // Review 1: and only once that charge is on disk; otherwise no call is made.
+            const before = structuredClone(this.data.spend);
             this.addSpend(worst);
+            this.data.spend.lastPaidAt = this.now();
             Object.assign(record, { costUsd: worst, costLabel: `≈ US$${worst.toFixed(4)} (worst-case estimate)` });
-            this.save();
+            if (!this.save()) {
+              this.data.spend = before;
+              Object.assign(record, { engine, costUsd: 0, costLabel: 'US$0 · no call made', status: 'rejected', reason: 'The worst-case charge could not be saved, so no model was called. Nothing changed; repair storage and restart.' });
+              return;
+            }
           }
         }
         if (callable) {
@@ -436,9 +523,22 @@ export class ArchitectService {
       Object.assign(record, { status: 'rejected', reason: `${engine === 'rules' ? 'Rule-based growth' : 'The model'} proposed a change the rules refuse (${applied.error}). Nothing changed.` });
       return;
     }
-    this.writeWorld(applied.ok.doc);
+    // Review 1: the world and its undo record go to disk together. The world is written first; if the run record with
+    // its changes cannot be saved right after, the world is rolled back, so no addition is ever without its undo record.
+    const previous = this.worldDoc;
+    try { this.writeWorld(applied.ok.doc); } catch (error) {
+      Object.assign(record, { status: 'rejected', reason: `The world could not be saved (${(error as Error).message.slice(0, 120)}). Nothing changed.` });
+      this.storageError = `world/additions.json could not be saved: ${(error as Error).message}`;
+      return;
+    }
     this.data.nextChange += applied.ok.applied.length;
     Object.assign(record, { changes: applied.ok.applied, status: applied.ok.applied.length ? 'applied' : 'no_changes' });
+    if (!this.save()) {
+      try { this.writeWorld(previous); } catch { /* storageError already refuses everything; restart shows the file */ }
+      this.data.nextChange -= applied.ok.applied.length;
+      Object.assign(record, { changes: [], status: 'rejected', reason: 'The run record could not be saved, so the changes were rolled back. Nothing changed; repair storage and restart.' });
+      return;
+    }
     let j = recordRun(journal, { day: record.day, runId: record.id, engine, engineLabel: record.engineLabel, costLabel: record.costLabel, changes: applied.ok.applied, note: record.note });
     if (ideas.length) j = addIdeas(j, ideas, 'model', this.now());
     this.journal = j;
@@ -532,15 +632,18 @@ export class ArchitectService {
     if (keep.length === this.data.runs.length) return;
     for (const r of this.data.runs) if (!keep.includes(r)) for (const c of r.changes) this.data.expiredChange = Math.max(this.data.expiredChange, Number(c.id.slice(1)));
     this.data.runs = keep;
-    if (!this.storageError) this.save();
+    if (!this.restoreError) this.save();
   }
 
+  /** Review 4: adds to today's and this month's tallies (kept per period: the last 40 days and 14 months). */
   private addSpend(usd: number) {
-    const at = this.now(), day = dayOf(at), month = monthOf(at);
-    if (this.data.spend.day !== day) Object.assign(this.data.spend, { day, usd: 0 });
-    if (this.data.spend.month !== month) Object.assign(this.data.spend, { month, monthUsd: 0 });
-    this.data.spend.usd = round(Math.max(0, this.data.spend.usd + usd));
-    this.data.spend.monthUsd = round(Math.max(0, this.data.spend.monthUsd + usd));
+    const at = this.now(), day = dayOf(at), month = monthOf(at), sp = this.data.spend;
+    sp.days[day] = round(Math.max(0, (sp.days[day] ?? 0) + usd));
+    sp.months[month] = round(Math.max(0, (sp.months[month] ?? 0) + usd));
+    for (const [map, keep] of [[sp.days, 40], [sp.months, 14]] as const) {
+      const keys = Object.keys(map).sort();
+      for (const k of keys.slice(0, Math.max(0, keys.length - keep))) delete map[k];
+    }
   }
 
   private ensureJournal(): WorldJournal {
@@ -550,25 +653,37 @@ export class ArchitectService {
 
   private writeWorld(doc: WorldDocument) {
     mkdirSync(this.dir, { recursive: true });
-    writeJsonAtomic(this.files.world, doc);
+    this.writeJson(this.files.world, doc);
     this.worldDoc = doc;
   }
 
-  private saveJournal() {
-    if (!this.journal) return;
+  /** The journal is memory, not the undo record: a failure refuses further work but never blocks state saves. */
+  private saveJournal(): boolean {
+    if (!this.journal || this.restoreError) return false;
     try {
       mkdirSync(this.dir, { recursive: true });
-      writeJsonAtomic(this.files.journal, this.journal);
+      this.writeJson(this.files.journal, this.journal);
       const tmp = `${this.files.md}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
       writeFileSync(tmp, journalMarkdown(this.journal, this.worldDoc, this.now()), { mode: 0o600 });
       renameSync(tmp, this.files.md);
-    } catch (error) { this.storageError = `The world journal could not be saved: ${(error as Error).message}`; }
+      return true;
+    } catch (error) {
+      this.storageError ??= `The world journal could not be saved; the architect stops until storage is repaired and the host restarts. ${(error as Error).message}`;
+      return false;
+    }
   }
 
-  private save() {
-    if (this.storageError) return;
-    try { mkdirSync(this.dir, { recursive: true }); writeJsonAtomic(this.files.state, this.data); }
-    catch (error) { this.storageError = `The architect's state could not be saved; preserve world/architect.json, repair storage and restart. ${(error as Error).message}`; }
+  /**
+   * Review 1: answers whether the state reached disk. Attempted even after a runtime failure (so an undo record is
+   * never dropped); never written over a file that could not be restored.
+   */
+  private save(): boolean {
+    if (this.restoreError) return false;
+    try { mkdirSync(this.dir, { recursive: true }); this.writeJson(this.files.state, this.data); return true; }
+    catch (error) {
+      this.storageError ??= `The architect's state could not be saved; preserve world/architect.json, repair storage and restart. ${(error as Error).message}`;
+      return false;
+    }
   }
 
   private notify() { try { this.ports.onChange?.(); } catch { /* observers never break a run */ } }
@@ -581,7 +696,7 @@ export class ArchitectService {
         this.worldDoc = v.ok;
       }
     } catch (error) {
-      this.storageError = `Cannot use world/additions.json; it is preserved untouched and the city shows no architect additions. ${(error as Error).message}`;
+      this.restoreError = `Cannot use world/additions.json; it is preserved untouched and the city shows no architect additions. ${(error as Error).message}`;
       return;
     }
     try {
@@ -591,21 +706,45 @@ export class ArchitectService {
         this.journal = v.ok;
       }
     } catch (error) {
-      this.storageError = `Cannot use world/journal.json (${(error as Error).message}); it is preserved untouched.`;
+      this.restoreError = `Cannot use world/journal.json (${(error as Error).message}); it is preserved untouched.`;
       return;
     }
     if (!existsSync(this.files.state)) return;
     try {
-      const raw = JSON.parse(readFileSync(this.files.state, 'utf8')) as StoredFile;
-      if (raw?.version !== 1 || !Array.isArray(raw.runs) || !Number.isSafeInteger(raw.nextRun) || !Number.isSafeInteger(raw.nextChange)) throw new Error('unsupported architect.json');
+      const raw = JSON.parse(readFileSync(this.files.state, 'utf8')) as Record<string, unknown>;
+      if (!isObj(raw) || raw.version !== 1 || !Array.isArray(raw.runs) || !Number.isSafeInteger(raw.nextRun) || !Number.isSafeInteger(raw.nextChange)) throw new Error('unsupported architect.json');
+      // Review 2: every run and change is checked; one bad entry refuses the file instead of crashing later.
+      for (const [i, r] of raw.runs.entries()) { const why = runProblem(r, i); if (why) throw new Error(why); }
+      if (raw.lastRunDay !== undefined && (typeof raw.lastRunDay !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(raw.lastRunDay))) throw new Error('lastRunDay is invalid');
       const settings = cleanArchitectSettings(raw.settings ?? {}, { ...DEFAULT_ARCHITECT_SETTINGS });
       const at = this.now();
+      const runs = raw.runs as RunRecord[];
       // A run cut off by a restart is never re-run silently: a paid call may already have been billed.
-      for (const r of raw.runs) if (r.status === 'running') Object.assign(r, { status: 'interrupted', reason: 'The server restarted before this run finished. Nothing more is done today.', finishedAt: at });
-      const spend = raw.spend && typeof raw.spend.day === 'string' && Number.isFinite(raw.spend.usd) && typeof raw.spend.month === 'string' && Number.isFinite(raw.spend.monthUsd) ? raw.spend : { day: dayOf(at), usd: 0, month: monthOf(at), monthUsd: 0 };
-      this.data = { version: 1, settings, spend, ...(typeof raw.lastRunDay === 'string' ? { lastRunDay: raw.lastRunDay } : {}), nextRun: raw.nextRun, nextChange: raw.nextChange, expiredChange: Number.isSafeInteger(raw.expiredChange) ? raw.expiredChange : 0, runs: raw.runs };
+      for (const r of runs) if (r.status === 'running') Object.assign(r, {
+        status: 'interrupted', finishedAt: at,
+        reason: r.costUsd > 0 ? `The run was interrupted by a server restart during its model call. The worst-case estimate ${money(r.costUsd)} stays charged. Nothing more is done today.` : 'The run was interrupted by a server restart. Nothing more is done today.',
+      });
+      this.data = { version: 1, settings, spend: restoreSpend(raw.spend, at), ...(typeof raw.lastRunDay === 'string' ? { lastRunDay: raw.lastRunDay } : {}), nextRun: raw.nextRun as number, nextChange: raw.nextChange as number, expiredChange: Number.isSafeInteger(raw.expiredChange) ? raw.expiredChange as number : 0, runs };
     } catch (error) {
-      this.storageError = `Cannot restore world/architect.json; preserve the file and recover a valid backup. ${(error as Error).message}`;
+      this.restoreError = `Cannot restore world/architect.json; it is preserved untouched. Recover a valid backup. ${(error as Error).message}`;
     }
   }
 }
+
+/** Spend per period; also reads the first release's single-scalar form. Anything malformed is refused. */
+function restoreSpend(raw: unknown, at: number): Spend {
+  const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0;
+  const map = (v: unknown) => {
+    if (!isObj(v)) throw new Error('spend is invalid');
+    for (const [k, x] of Object.entries(v)) if (!/^\d{4}-\d{2}(-\d{2})?$/.test(k) || !num(x)) throw new Error('spend is invalid');
+    return v as Record<string, number>;
+  };
+  if (raw === undefined || (isObj(raw) && Object.keys(raw).length === 0)) return { days: {}, months: {}, maxSeenAt: at };
+  if (!isObj(raw)) throw new Error('spend is invalid');
+  if (typeof raw.day === 'string' && num(raw.usd) && typeof raw.month === 'string' && num(raw.monthUsd)) {
+    return { days: { [raw.day]: raw.usd }, months: { [raw.month]: raw.monthUsd }, maxSeenAt: at };
+  }
+  if (!num(raw.maxSeenAt) || (raw.lastPaidAt !== undefined && !num(raw.lastPaidAt))) throw new Error('spend is invalid');
+  return { days: map(raw.days), months: map(raw.months), maxSeenAt: raw.maxSeenAt, ...(raw.lastPaidAt !== undefined ? { lastPaidAt: raw.lastPaidAt as number } : {}) };
+}
+

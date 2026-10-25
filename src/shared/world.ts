@@ -148,7 +148,8 @@ export interface AppliedChange {
   undone?: boolean;
 }
 
-export interface AvoidRule { id: string; model?: CatalogId; lot?: LotId; text: string; at: number; source: 'undo' | 'owner' }
+/** An owner's "don't build". `anchor` scopes a rule to one façade or terrace anchor (from undoing an anchored placement). */
+export interface AvoidRule { id: string; model?: CatalogId; lot?: LotId; anchor?: string; text: string; at: number; source: 'undo' | 'owner' }
 
 export const emptyWorld = (): WorldDocument => ({ schema: 1, revision: 0, additions: [] });
 
@@ -208,8 +209,8 @@ export interface RuleOptions {
   extraKeepClear?: readonly KeepClear[];
 }
 
-export function avoidedBy(p: Pick<AdditionPlacement, 'model' | 'lot'>, avoid: readonly AvoidRule[] = []): AvoidRule | undefined {
-  return avoid.find((r) => (r.model === undefined || r.model === p.model) && (r.lot === undefined || r.lot === p.lot) && (r.model !== undefined || r.lot !== undefined));
+export function avoidedBy(p: Pick<AdditionPlacement, 'model' | 'lot' | 'anchor'>, avoid: readonly AvoidRule[] = []): AvoidRule | undefined {
+  return avoid.find((r) => (r.model === undefined || r.model === p.model) && (r.lot === undefined || r.lot === p.lot) && (r.anchor === undefined || r.anchor === p.anchor) && (r.model !== undefined || r.lot !== undefined || r.anchor !== undefined));
 }
 
 /**
@@ -345,7 +346,9 @@ export function applyChanges(input: WorldDocument, changes: readonly ProposedCha
   for (const [i, c] of changes.entries()) {
     const reason = cleanReason(c.reason);
     if ('error' in reason) return fail(i, reason.error);
-    const repair = /^Repair\b/.test(reason.ok);
+    // Review 3: only rule-based growth marks repairs (which may move an addition despite an avoid-rule). A model's
+    // "Repair" wording earns nothing.
+    const repair = meta.engine === 'rules' && /^Repair\b/.test(reason.ok);
     if (c.op === 'place') {
       const p: AdditionPlacement = { model: c.model, x: c.x, z: c.z, yaw: c.yaw, ...(c.lot !== undefined ? { lot: c.lot } : {}), ...(c.anchor !== undefined ? { anchor: c.anchor } : {}), ...(c.text !== undefined ? { text: c.text } : {}) };
       const problem = placementProblem(p, doc.additions, { avoid: meta.avoid });

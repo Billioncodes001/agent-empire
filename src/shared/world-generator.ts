@@ -104,10 +104,10 @@ export function generateGrowth(doc: WorldDocument, opts: GrowthOptions): Propose
   // 2. Growth.
   const count = (kind: AdditionKind) => sim.filter((a) => catalogEntry(a.model)?.kind === kind).length;
   for (let attempt = 0; changes.length < max && attempt < 40 && sim.length < WORLD_CAPS.total; attempt++) {
-    const freeAnchors = ANCHORS.filter((a) => !sim.some((s) => s.anchor === a.id) && a.models.some((m) => !avoidedBy({ model: m }, opts.avoid)));
+    const freeAnchors = ANCHORS.filter((a) => !sim.some((s) => s.anchor === a.id) && a.models.some((m) => !avoidedBy({ model: m, anchor: a.id }, opts.avoid)));
     if (freeAnchors.length && count('decor') < WORLD_CAPS.perKind.decor && r() < 0.15) {
       const a = freeAnchors[Math.floor(r() * freeAnchors.length)];
-      const model = a.models.find((m) => !avoidedBy({ model: m }, opts.avoid))!;
+      const model = a.models.find((m) => !avoidedBy({ model: m, anchor: a.id }, opts.avoid))!;
       const p = { model, anchor: a.id, x: a.x, z: a.z, yaw: a.yaw };
       if (!placementProblem(p, sim, { avoid: opts.avoid })) {
         const e = catalogEntry(model)!;
