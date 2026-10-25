@@ -327,6 +327,30 @@ export class Human {
       bone.quaternion.premultiply(_q3.copy(_q2).invert().multiply(_q).multiply(_q2)); bone.updateWorldMatrix(true, true);
     }
   }
+  /**
+   * CHAR-01: light foot IK for stairs and ledges. A foot that would sink into the floor beneath it (a stair tread
+   * while the body eases up a step) is lifted onto it. Run after update(); the next update restores the clean pose.
+   * `floorAt(x, z, y)` is the floor height at a world point for feet near `y`. Two probes a frame.
+   */
+  groundFeet(floorAt: (x: number, z: number, y: number) => number) {
+    if (!this.model || !this.ready) return;
+    this.root.updateWorldMatrix(true, true);
+    const rootY = this.root.getWorldPosition(_v3).y;
+    for (const side of ['l', 'r'] as const) {
+      const foot = this.bones.get(`bip01${side}foot`);
+      if (!foot) continue;
+      const p = foot.getWorldPosition(_v);
+      const floor = floorAt(p.x, p.z, rootY + 0.35);
+      const sink = floor + ANKLE - p.y;
+      if (sink <= 0.005 || sink > 0.45) continue;
+      const target = this.root.worldToLocal(_feet[side === 'l' ? 0 : 1].set(p.x, floor + ANKLE, p.z));
+      // Seed a knee bend of about the right size (a near-straight chain barely bends under CCD), then solve.
+      const bend = Math.sqrt((2 * sink) / 0.85);
+      this.rotate(`bip01${side}thigh`, -bend);
+      this.rotate(`bip01${side}calf`, 2 * bend);
+      this.placeFoot(side, target, 1, 10);
+    }
+  }
   /** Track airborne time, vertical speed and landings; returns whether the flight pose applies. */
   private updateFlight(dt: number): boolean {
     const y = this.root.getWorldPosition(_v).y;

@@ -1416,6 +1416,8 @@ function frame(ts?: number) {
   me.root.position.y += player.stepOffset;
   me.root.rotation.y = player.facing;
   me.update(dt,t,player.moving&&player.grounded,!player.grounded,player.speed);
+  // CHAR-01: feet stay on stair treads (not on Low, not in a vehicle or a scripted transition).
+  if (player.grounded && !player.driving && !player.scripted && settings.quality !== 'low' && player.view === 'third') me.groundFeet(player.floorAt);
   traversal.placeDriver();
   me.setVoiceLevel(voice.inVoice ? voice.localLevel : 0);
   const firstPerson = player.view === 'first';

@@ -461,6 +461,9 @@ export class PlayerController {
     this.camera.lookAt(target);
   }
 
+  /** CHAR-01: the floor at a world point for feet near `y` (vehicles are never a floor). */
+  floorAt = (x: number, z: number, y: number) => groundAt(this.colliders, x, z, y);
+
   /** Unit vector the character is facing, on the XZ plane. */
   forward(): THREE.Vector2 {
     return new THREE.Vector2(Math.sin(this.facing), Math.cos(this.facing));

@@ -39,3 +39,26 @@ for (const id of AVATAR_IDS) test(`${id}: walk and run play at a rate where plan
   assert.ok(slide(RUN, run) < 0.16, `run slides ${(slide(RUN, run) * 100).toFixed(0)} %`);
   assert.ok(slide(RUN, run) < Math.abs(RUN - run * (RUN / 3.8)) / RUN, 'less sliding than the fixed 3.8 m/s rate');
 });
+
+test('CHAR-01: a foot over a stair tread is lifted onto it, the other stays planted', async () => {
+  const { Human } = await import('../src/client/world/human');
+  const [mesh, clips] = await Promise.all([parseGlb(new URL('business-f01.glb', M)), parseGlb(new URL('clips-female.glb', M))]);
+  const model = clone(mesh.scene);
+  const mixer = prepareHumanModel(model, clips.animations, (mesh.scene.userData.height as number | undefined) ?? 1.78);
+  const bones = new Map<string, THREE.Bone>();
+  model.traverse((o) => { if (o instanceof THREE.Bone) bones.set(o.name.replace(/[^a-z0-9]/gi, '').toLowerCase(), o); });
+  const human = Object.create(Human.prototype) as InstanceType<typeof Human>;
+  const parent = new THREE.Group(), root = new THREE.Group();
+  parent.add(root); root.add(model);
+  const actions = new Map(clips.animations.map((c) => [c.name, mixer.clipAction(c)]));
+  Object.assign(human, { root, model, mixer, bones, actions, ready: true, current: actions.get('idle_neutral_01'), motion: 'idle_neutral_01', transition: null, seatedBaseZ: model.position.z, typingBlend: 0, gestureTime: 0, turnLean: 0, reachRemaining: 0 });
+  for (let i = 0; i < 20; i++) human.update(1 / 60, 0);
+  const at = (b: string) => { root.updateWorldMatrix(true, true); return bones.get(b)!.getWorldPosition(new THREE.Vector3()); };
+  const l = at('bip01lfoot'), r = at('bip01rfoot');
+  const tread = 0.2, split = (l.x + r.x) / 2, leftHigh = l.x > split;
+  human.groundFeet((x) => ((x > split) === leftHigh ? tread : 0));
+  const l2 = at('bip01lfoot'), r2 = at('bip01rfoot');
+  const [up, flat, flatBefore] = leftHigh === (l.x > r.x) ? [l2, r2, r] : [r2, l2, l];
+  assert.ok(up.y > tread + 0.08, `foot lifted onto the tread: ${up.y.toFixed(3)}`);
+  assert.ok(flat.distanceTo(flatBefore) < 0.01, 'the other foot is untouched');
+});
