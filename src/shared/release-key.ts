@@ -1,5 +1,5 @@
 // Pinned Ed25519 public keys for signed release files (docs/team/RELEASE_PLAN.md, "Update channel contract").
-// They verify channel-<channel>.json(.sig) and game-manifest.json(.sig): the client and every native shell check a file's
+// They verify channel-<channel>.json(.sig) (which carries the game bundle's sha256): the client and every native shell check a file's
 // signature against the keys their build trusts before trusting anything in it.
 //
 // Format: base64 of the raw 32-byte Ed25519 public key (tweetnacl `sign.detached.verify`, CryptoKit

@@ -699,7 +699,7 @@ test('release workflow: publishes the planned names only; signing state travels 
   const text = readFileSync(path.join(ROOT, '.github/workflows/release.yml'), 'utf8');
   const jobs = workflowJobs();
   const job = (name: string) => jobs.find(j => j.name === name)!.job;
-  for (const gone of [/SHA256SUMS/, /-unsigned/, /debug-signed\.apk/, /windows-x64/, /macos-(arm64|x64)/, /zip\.mjs "\$APP_DIR"/, /game-manifest\.json\.sig/, /--label/])
+  for (const gone of [/SHA256SUMS/, /-unsigned\.(dmg|zip|exe|apk)|Setup-unsigned|\$LABEL/, /debug-signed\.apk/, /windows-x64/, /macos-(arm64|x64)/, /zip\.mjs "\$APP_DIR"/, /game-manifest\.json\.sig/, /--label/])
     assert.doesNotMatch(text, gone, String(gone));
   // Each platform job stages release/assets (publishable) and release/build-info (signing state, game manifest).
   for (const name of ['game', 'desktop-macos', 'desktop-windows', 'android']) {
