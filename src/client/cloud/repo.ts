@@ -12,7 +12,7 @@
  * Error messages never include the token.
  */
 import { intentPath, parseIntent, type CloudIntent } from '../../cloud/intents';
-import { INTENT_PATH, parseStateFiles, STATE_FILES, type CloudState } from '../../cloud/schema';
+import { INTENT_PATH, OPTIONAL_STATE_FILES, parseStateFiles, STATE_PATHS, type CloudState } from '../../cloud/schema';
 import { encodeBase64Utf8 } from '../../cloud/store';
 import { WORKFLOW_FILE } from '../../cloud/workflow';
 import { uuidv7 } from './uuid';
@@ -148,18 +148,25 @@ export class CloudRepo {
     const entries: { path: string; sha: string; size?: number }[] = (Array.isArray(tree.data?.tree) ? tree.data.tree : []).filter(
       (e: any) => e?.type === 'blob' && typeof e.path === 'string' && typeof e.sha === 'string',
     );
-    const wanted = new Set<string>(Object.values(STATE_FILES));
+    const wanted = new Set<string>(STATE_PATHS);
     const files: Record<string, string> = {};
+    // FREE-07 re-review: an optional state file (org.json) the app can't read is quarantined like the coordinator does.
+    const unreadable: Record<string, string> = {};
     for (const entry of entries.filter((e) => wanted.has(e.path))) {
-      if (entry.size !== undefined && entry.size > MAX_STATE_FILE) throw new RepoError('invalid_state', `${entry.path} is larger than the app can read.`);
-      files[entry.path] = this.blobs.get(entry.sha) ?? (await this.blob(entry.sha));
+      const optional = OPTIONAL_STATE_FILES.includes(entry.path);
+      if (entry.size !== undefined && entry.size > MAX_STATE_FILE) {
+        if (optional) { unreadable[entry.path] = `${entry.path} is larger than ${MAX_STATE_FILE / 1024 / 1024} MiB`; continue; }
+        throw new RepoError('invalid_state', `${entry.path} is larger than the app can read.`);
+      }
+      try { files[entry.path] = this.blobs.get(entry.sha) ?? (await this.blob(entry.sha)); }
+      catch (error) { if (optional && error instanceof RepoError && error.code === 'invalid_state') unreadable[entry.path] = `${entry.path} is not UTF-8 text`; else throw error; }
     }
     const pending = entries
       .map((e) => INTENT_PATH.exec(e.path)?.[1])
       .filter((id): id is string => !!id)
       .map((id) => id.toLowerCase())
       .sort();
-    const snapshot = this.parse(sha, files, pending, now());
+    const snapshot = this.parse(sha, files, pending, now(), unreadable);
     // Keep only the blobs this snapshot uses; the cache never grows past one state.
     const used = new Set(entries.filter((e) => wanted.has(e.path)).map((e) => e.sha));
     for (const key of [...this.blobs.keys()]) if (!used.has(key)) this.blobs.delete(key);
@@ -186,9 +193,9 @@ export class CloudRepo {
   }
 
   /** Parses raw state files with the coordinator's rules. Also used for a snapshot saved on this device. */
-  parse(sha: string, files: Record<string, string>, pending: string[], readAt: number): Snapshot {
+  parse(sha: string, files: Record<string, string>, pending: string[], readAt: number, unreadable: Record<string, string> = {}): Snapshot {
     try {
-      const { state } = parseStateFiles(files, readAt);
+      const { state } = parseStateFiles(files, readAt, unreadable);
       return { sha, state, files, pending, readAt };
     } catch (error) {
       const msg = error instanceof Error ? error.message : '';

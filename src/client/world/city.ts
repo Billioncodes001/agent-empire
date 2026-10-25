@@ -20,6 +20,7 @@ import { SURFACE as S, boxMesh as box, solid } from './materials';
 import { Vegetation } from './vegetation';
 import type { Collider } from './office';
 import { buildDistricts } from './districts';
+import { buildArchitectLayer } from './architect';
 import { SKYLINE_TOWERS, SedanBody, liveCarPose, skylineColliders } from './district-layout';
 import { SEDAN, type Ride } from '../rides';
 export type { Ride } from '../rides';
@@ -387,6 +388,13 @@ export function buildCity() {
   // FREE-09 districts and garage, added after batching: the roller door, plot signs and instanced kits stay separate.
   const districts = buildDistricts(group);
   colliders.push(...districts.colliders);
+  // CITY-10: the city architect's additions (own-server hosts), validated again and drawn after the kits load.
+  const architect = buildArchitectLayer(group, districts);
+  colliders.push(...architect.colliders);
+  districts.setExtraHint((p) => architect.hint(p));
+  const syncArchitect = () => architect.sync(store.cloud ? undefined : store.architect?.world);
+  store.on('architect', syncArchitect);
+  syncArchitect();
   // The chief of staff dresses by the CEO's choice (never in the same suit); see shared/outfit.ts.
   const chief = new Person('Chief of staff', '#345f65', lookFromSeed('empire-chief'), { avatar: chiefAvatar(ceoAvatar(store.profile.look.style)) });
   chief.showLabel(false);
@@ -473,8 +481,10 @@ export function buildCity() {
       water.onBeforeRender = profile.reflections ? reflectOcean : () => {};
       crowd = profile.citizens;
       districts.setQuality(quality);
+      architect.setQuality(quality);
     },
     districts,
+    architect,
     group,
     colliders,
     car,
@@ -513,6 +523,7 @@ export function buildCity() {
       sedanBody.update(car, sedanDriven, driving ? null : playerPosition, sedanDriven ? [] : driven);
       foliage.update(t);
       districts.update(dt, playerPosition, sedanDriven ? driven : [...driven, car], driving);
+      architect.update(playerPosition, sedanDriven ? driven : [...driven, car], driving);
       const displayedWorkers = new Set<string>();
       const ev = store.evidence();
       for (const site of SITES) {

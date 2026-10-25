@@ -60,7 +60,41 @@ export interface ProviderAdapter {
    * agent pushed; it does not verify the work. Throws when the answer is unknown.
    */
   branchHead(execution: CloudExecution, branch: string): Promise<{ state: 'found'; sha: string } | { state: 'missing' }>;
+  /**
+   * FREE-07, read-only: one small file from a task branch (project token), e.g. a research report. `missing` when the
+   * branch or file does not exist; refuses symlinks, directories and anything over 256 KB. Throws when unknown.
+   */
+  readBranchFile?(execution: CloudExecution, branch: string, path: string): Promise<BranchRead>;
 }
+
+/** GitHub contents API read of one regular file on a task branch, shared by both adapters. */
+export async function readTaskBranchFile(
+  request: (method: 'GET', path: string) => Promise<{ data: any }>, isNotFound: (error: unknown) => boolean,
+  execution: CloudExecution, branch: string, path: string,
+): Promise<BranchRead> {
+  if (!/^agent-empire\/task-[a-f0-9-]{36}$/.test(branch)) throw new Error('Unexpected task branch name.');
+  if (!/^docs\/empire\/[a-z]+\/[a-f0-9-]{36}\.md$/.test(path)) throw new Error('Unexpected artifact path.');
+  const { owner, name } = execution.repository;
+  let data: any;
+  try { ({ data } = await request('GET', `/repos/${owner}/${name}/contents/${path}?ref=${encodeURIComponent(branch)}`)); }
+  catch (error) { if (isNotFound(error)) return { state: 'missing' }; throw error; }
+  // FREE-07 review fix 4: structural refusals are final answers (needs attention), never retried.
+  if (!data || Array.isArray(data)) return { state: 'refused', reason: 'The report path is a folder, not a file.' };
+  if (data.type !== 'file' || typeof data.size !== 'number') return { state: 'refused', reason: 'The report is not a regular file (a symlink or submodule is refused).' };
+  if (data.size > 256 * 1024) return { state: 'refused', reason: 'The report is larger than 256 KB.' };
+  if (data.encoding !== 'base64' || typeof data.content !== 'string') return { state: 'refused', reason: 'GitHub did not return the report as file content (it may be too large for the contents API).' };
+  let bin: string;
+  try { bin = atob(data.content.replace(/\s/g, '')); } catch { return { state: 'refused', reason: 'GitHub returned the report in an unreadable encoding.' }; }
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  if (bytes.length > 256 * 1024) return { state: 'refused', reason: 'The report is larger than 256 KB.' };
+  let text: string;
+  try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { return { state: 'refused', reason: 'The report is not valid UTF-8 text.' }; }
+  return { state: 'found', text, bytes: bytes.length };
+}
+
+/** One task-branch read: a file, no file, or a final structural refusal with its reason. Network trouble throws. */
+export type BranchRead = { state: 'found'; text: string; bytes: number } | { state: 'missing' } | { state: 'refused'; reason: string };
 
 /** Used when no provider credential is configured: observation and dispatch both refuse safely. */
 export class UnavailableProvider implements ProviderAdapter {
@@ -94,4 +128,9 @@ export class ProviderRouter implements ProviderAdapter {
   interrupt(sessionId: string) { return this.bySession(sessionId).interrupt(sessionId); }
   archive(sessionId: string) { return this.bySession(sessionId).archive(sessionId); }
   branchHead(execution: CloudExecution, branch: string) { return this.adapters[execution.provider].branchHead(execution, branch); }
+  async readBranchFile(execution: CloudExecution, branch: string, path: string) {
+    const adapter = this.adapters[execution.provider];
+    if (!adapter.readBranchFile) throw new Error('This execution cannot read task branch files.');
+    return adapter.readBranchFile(execution, branch, path);
+  }
 }

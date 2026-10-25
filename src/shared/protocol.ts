@@ -10,6 +10,7 @@ import type { OrgState } from './org.js';
 import type { ApprovalsState } from './approvals.js';
 import type { ResearchState } from './research.js';
 import type { ChiefState } from './chief.js';
+import type { ArchitectState } from './architect.js';
 
 export type WorkerStatus =
   | 'starting' // PTY launched, agent booting
@@ -540,6 +541,8 @@ export type ServerMsg =
       research?: ResearchState;
       /** FREE-02: the chief's planning brain, plans, reviews and stall proposals; absent from servers older than it. */
       chief?: ChiefState;
+      /** CITY-10: the city architect (settings, runs, world additions); absent from servers older than it. */
+      architect?: ArchitectState;
     }
   | { t: 'peer.join'; peer: PeerInfo }
   | { t: 'peer.update'; peer: PeerInfo }
@@ -572,6 +575,7 @@ export type ServerMsg =
   /** Research reports or tool-proposal decisions changed (ORG-05); sent on change only. */
   | { t: 'research'; state: ResearchState }
   | { t: 'chief'; state: ChiefState }
+  | { t: 'architect'; state: ArchitectState }
   /** Sent to whoever watches that worker's changes, whenever they change. */
   | { t: 'changes'; state: ChangesState }
   | { t: 'changes.diff'; workerId: string; path: string; diff: string; truncated: boolean; error?: string }

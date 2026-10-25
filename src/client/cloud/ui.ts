@@ -12,6 +12,7 @@ import { DEFAULT_WORKER_MODEL, WORKER_MODELS, type WorkerModel } from '../../clo
 import { repoLabel } from './repo';
 import type { CloudNet, NewJobRequest } from './net';
 import { store } from '../state';
+import { setActiveCloudNet } from './active';
 import { h, openModal, toast, type Modal } from '../ui/dom';
 import { setMenuExtension } from '../ui/game-menu';
 import type { CloudJob, CloudState } from '../../cloud/schema';
@@ -327,6 +328,10 @@ export function openCloudJobDialog(net: CloudNet, request: NewJobRequest) {
   go.onclick = () => {
     if (!tick.checked || !exec.canSubmit) return;
     modal.close();
+    if (request.research) {
+      void net.submit({ kind: 'research', question: request.research, job: { id: net.newJobId(), configRevision: state.meta.configRevision, confirmPaid: true } }, `Research “${request.research.slice(0, 40)}”`);
+      return;
+    }
     void net.submit(
       { kind: 'new_job', job: { id: net.newJobId(), title: request.title.slice(0, 120), prompt: request.prompt, ...(site ? { site } : {}), configRevision: state.meta.configRevision, confirmPaid: true } },
       `New job “${request.title.slice(0, 40)}”`,
@@ -511,6 +516,7 @@ export function explainServerOnly(feature: string) {
  */
 export function installCloudChrome(net: CloudNet, opts: { forgetDevice(): void }) {
   document.documentElement.classList.add('ae-cloud');
+  setActiveCloudNet(net);
   net.hooks.newJob = (req) => openCloudJobDialog(net, req);
   net.hooks.serverOnly = explainServerOnly;
   for (const [id, feature] of SERVER_ONLY_BUTTONS) {

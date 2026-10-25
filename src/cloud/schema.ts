@@ -15,6 +15,7 @@ import { normalizeCity } from '../shared/city.js';
 import type { ExecutionConfig, ExecutionTask } from '../shared/execution.js';
 import { COMMIT, PROVIDER_ID, TASK_ID, validateConfig } from '../server/execution-validation.js';
 import { DEFAULT_WORKER_MODEL, isWorkerModel, WORKER_ENVIRONMENT, type WorkerModel } from './worker-spec.js';
+import { emptyOrg, isEmptyOrg, ORG_FILE, OrgSchemaError, validateOrg, type CloudOrg } from './org.js';
 import { ActionsSettingsError, isCloudEngine, RUN_CAPS, validateActionsSettings, type ActionsSettings, type CloudEngine } from './actions-spec.js';
 
 export const CLOUD_SCHEMA_VERSION = 1;
@@ -34,6 +35,13 @@ export const STATE_FILES = {
    */
   archivedJobIds: 'state/archived-job-ids.json',
 } as const;
+/**
+ * Every state file a reader fetches: the required STATE_FILES plus optional ones. FREE-07 `state/org.json` (cloud inbox,
+ * lessons, research; src/cloud/org.ts) is optional: a snapshot written before FREE-07 has none and reads as an empty
+ * organization, and the file is written only once it is non-empty.
+ */
+export const OPTIONAL_STATE_FILES: readonly string[] = [ORG_FILE];
+export const STATE_PATHS: readonly string[] = [...Object.values(STATE_FILES), ...OPTIONAL_STATE_FILES];
 export const INTENT_DIR = 'intents/';
 export const INTENT_PATH = /^intents\/([A-Za-z0-9._-]{1,80})\.json$/;
 export const ARCHIVE_DIR = 'archive/';
@@ -239,6 +247,10 @@ export interface CloudState {
   heartbeat: CloudHeartbeat;
   processed: CloudProcessedIntents;
   archivedJobIds: CloudArchivedJobIds;
+  /** FREE-07 organization: cloud inbox, lessons, research. */
+  org: CloudOrg;
+  /** FREE-07 review: set when state/org.json could not be read; the file is then left untouched. */
+  orgError?: string;
 }
 
 export class SchemaError extends Error {
@@ -276,6 +288,7 @@ export function initialCloudState(now: number, options: { limits?: CloudLimits; 
     heartbeat: { schemaVersion: 1 },
     processed: { schemaVersion: 1, entries: [] },
     archivedJobIds: { schemaVersion: 1, ids: [] },
+    org: emptyOrg(),
   };
 }
 
@@ -554,13 +567,16 @@ export function migrateEmpire(value: unknown, now: number): { empire: unknown; m
   return { empire, migrated: true };
 }
 
-export function parseStateFiles(files: StateFiles, now: number): { state: CloudState; migrated: string[] } {
+export function parseStateFiles(files: StateFiles, now: number, unreadable: Record<string, string> = {}): { state: CloudState; migrated: string[] } {
   const raw: Record<string, unknown> = {};
   for (const [key, file] of Object.entries(STATE_FILES)) {
     const text = files[file];
     if (text === undefined) throw new SchemaError(file, 'missing; the state repository is not initialized');
     try { raw[key] = JSON.parse(text); } catch { throw new SchemaError(file, 'invalid JSON'); }
   }
+  // FREE-07 re-review: the store reports an org.json it could not even fetch (not UTF-8, oversized) as unreadable.
+  let orgParseError: string | undefined = unreadable[ORG_FILE];
+  if (!orgParseError && files[ORG_FILE] !== undefined) { try { raw.org = JSON.parse(files[ORG_FILE]); } catch { orgParseError = `${ORG_FILE}: invalid JSON`; } }
   const migrated: string[] = [];
   let version = (raw.meta as any)?.schemaVersion;
   if (!Number.isSafeInteger(version) || version < 1) throw new SchemaError(STATE_FILES.meta, 'missing schemaVersion');
@@ -572,11 +588,18 @@ export function parseStateFiles(files: StateFiles, now: number): { state: CloudS
   }
   const empire = migrateEmpire(raw.empire, now);
   if (empire.migrated) migrated.push('empire version 1→2');
+  // FREE-07 review: an unreadable org.json is quarantined, never fatal. The city, jobs, cancel and shutdown keep working;
+  // the file is left untouched (not overwritten), organization intents are refused, and the game shows the reason.
+  let org = emptyOrg();
+  let orgError: string | undefined;
+  if (orgParseError) orgError = orgParseError;
+  else if (raw.org !== undefined) { try { org = validateOrg(raw.org); } catch (e) { orgError = e instanceof OrgSchemaError ? e.message : 'invalid organization file'; } }
   return {
     state: {
       meta: validateMeta(raw.meta), empire: validateEmpire(empire.empire), jobs: validateJobs(raw.jobs), ledger: validateLedger(raw.ledger),
       journal: validateJournal(raw.journal), heartbeat: validateHeartbeat(raw.heartbeat), processed: validateProcessed(raw.processed),
       archivedJobIds: validateArchivedJobIds(raw.archivedJobIds),
+      org, ...(orgError ? { orgError } : {}),
     },
     migrated,
   };
@@ -595,5 +618,7 @@ export function serializeState(state: CloudState): StateFiles {
     [STATE_FILES.heartbeat]: text(state.heartbeat),
     [STATE_FILES.processed]: text(state.processed),
     [STATE_FILES.archivedJobIds]: JSON.stringify(state.archivedJobIds) + '\n',
+    // FREE-07: an empty organization is not written, so an older Empire gains no commit until it uses one.
+    ...(state.orgError || isEmptyOrg(state.org) ? {} : { [ORG_FILE]: text(state.org) }),
   };
 }

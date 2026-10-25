@@ -46,6 +46,7 @@ import { ExecutionManager, ExecutionError, type ExecutionOptions } from './execu
 import { ResearchDesk, ResearchError } from './research.js';
 import { ChiefBrain, ChiefError, chiefActions, defaultEvidence, gitDiffStat, type ChatFn } from './chief.js';
 import { LessonMemory, MemoryError } from './memory.js';
+import { ArchitectError, ArchitectService } from './architect.js';
 import { readArtifact } from './artifacts.js';
 import { LinkedAccounts, envKeys, type Exec, type ProviderKeys } from './engines.js';
 import { DEFAULT_OLLAMA_URL, OllamaRuntime } from './ollama.js';
@@ -212,6 +213,8 @@ export interface ServerRuntime {
   engines?: { providerKeys?: () => ProviderKeys; resolve?: (cmd: string) => string | null; exec?: Exec; ollamaUrl?: string; totalMem?: () => number; env?: () => Record<string, string> };
   /** FREE-02: the chief's model client. Tests and previews inject a fake; nothing real is called in them. */
   chief?: { chat?: ChatFn; timeoutMs?: number; probe?: () => Promise<{ running: boolean; models: string[] }> };
+  /** CITY-10: the city architect's model client and clock. Tests and previews inject fakes; nothing real is called in them. */
+  architect?: { chat?: ChatFn; timeoutMs?: number; probe?: () => Promise<{ running: boolean; models: string[] }>; now?: () => number };
   /** FREE-06: a fake gh, products folder, creation limit and clock for tests and fixtures (never a real GitHub write). */
   products?: { gh?: GhRunner; productsDir?: string; perHour?: number; now?: () => number };
   /**
@@ -563,6 +566,28 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   ]);
   inbox.setChief(chiefActions(queue), (jobId) => (brain.planFor(jobId) ? brain.label() : undefined));
   chiefSent = JSON.stringify(chief.state());
+  // CITY-10: the city architect. This host is an own-server install; off until the owner turns it on in Settings.
+  let architectSent = '';
+  const publishArchitect = () => {
+    const state = architect.state();
+    const sig = JSON.stringify(state);
+    if (sig === architectSent) return;
+    architectSent = sig;
+    broadcast({ t: 'architect', state });
+  };
+  const architect: ArchitectService = new ArchitectService(cfg.dataDir, {
+    host: 'server', keys: providerKeys, chiefSettings: () => brain.state().settings, ollamaUrl,
+    chat: runtime.architect?.chat, timeoutMs: runtime.architect?.timeoutMs, now: runtime.architect?.now,
+    probe: runtime.architect?.probe ?? (runtime.architect?.chat ? undefined : async () => { const o = await ollama.detect(); return { running: o.running, models: o.models.map((m) => m.name) }; }),
+    inbox: { raise: (fields) => desk.raiseArchitect(fields), resolve: (id, note) => desk.resolveArchitect(id, note) },
+    onChange: () => publishArchitect(),
+  });
+  inbox.setArchitect({ revert: (runId, actor) => architect.revertRun(runId, actor) });
+  architectSent = JSON.stringify(architect.state());
+  // Once a minute: run today's growth when it is due (never throws; a run is single-flight and once per local day).
+  const architectTimer = setInterval(() => { void architect.tick(); }, 60_000);
+  architectTimer.unref();
+  void architect.tick();
   // ORG-01: the executive roster is a pure projection, re-sent only when a summary or attention count changes.
   let orgSent = '';
   const currentOrg = () => projectOrg({
@@ -1057,6 +1082,34 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
           return send(res, 500, { error: 'Organizational memory could not complete this request.' });
         }
       }
+      if (p === '/api/architect' || p.startsWith('/api/architect/')) {
+        if (req.method !== 'GET' && !trusted()) return send(res, 403, { error: 'A same-origin Origin header is required' });
+        try {
+          if (p === '/api/architect' && req.method === 'GET') return send(res, 200, architect.state());
+          if (p === '/api/architect/journal.md' && req.method === 'GET') {
+            res.writeHead(200, { 'content-type': 'text/markdown; charset=utf-8', 'cache-control': 'no-store', 'content-disposition': 'attachment; filename="city-architect-journal.md"' });
+            return res.end(architect.journalMarkdown());
+          }
+          if (req.method !== 'POST') return send(res, 404, { error: 'Unknown architect endpoint.' });
+          let body: Record<string, unknown>;
+          try { body = JSON.parse(await readBody(req, 8_000) || '{}'); } catch { return send(res, 400, { error: 'Expected a JSON request.' }); }
+          if (!body || typeof body !== 'object' || Array.isArray(body)) return send(res, 400, { error: 'Expected a JSON object.' });
+          let out: unknown;
+          if (p === '/api/architect/settings') out = architect.updateSettings(body);
+          else if (p === '/api/architect/run') { const run = await architect.runNow('CEO'); publishApprovals(); return send(res, 202, run); }
+          else if (p === '/api/architect/undo') out = architect.undo(body.changeId, 'CEO');
+          else if (p === '/api/architect/revert') { const note = architect.revertRun(body.runId, 'CEO'); out = { note, state: architect.state() }; }
+          else if (p === '/api/architect/avoid') out = architect.addAvoid(body);
+          else if (p === '/api/architect/avoid/remove') out = architect.removeAvoid(body.id);
+          else return send(res, 404, { error: 'Unknown architect endpoint.' });
+          publishArchitect();
+          publishApprovals();
+          return send(res, 200, out);
+        } catch (error) {
+          if (error instanceof ArchitectError) return send(res, error.status, { error: error.message });
+          return send(res, 500, { error: 'The city architect could not complete this request.' });
+        }
+      }
       if (p === '/api/chief' || p.startsWith('/api/chief/')) {
         if (req.method !== 'GET' && !trusted()) return send(res, 403, { error: 'A same-origin Origin header is required' });
         try {
@@ -1501,6 +1554,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
       approvals: inbox?.state(),
       research: research?.state(),
       chief: chief?.state(),
+      architect: architect.state(),
       queue: queue.state(),
     });
     sendTo(client, { t: 'empire', state: empire.state });
@@ -1860,6 +1914,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     outreach?.stop();
     execution.stop();
     clearInterval(empireTimer);
+    clearInterval(architectTimer);
     empire.flush();
     clearInterval(heartbeat);
     clearInterval(resync);
@@ -1876,5 +1931,5 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     hookServer.close();
   };
 
-  return { server, shutdown, workers, publicDir, hookPort, execution, consultancy: office, outreach: outreachService, inbox, chief: brain, memory: lessons };
+  return { server, shutdown, workers, publicDir, hookPort, execution, consultancy: office, outreach: outreachService, inbox, chief: brain, memory: lessons, architect };
 }

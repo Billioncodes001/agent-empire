@@ -4,10 +4,12 @@
  * so a concurrent writer makes the update fail (HTTP 422) instead of being overwritten. Callers retry
  * by re-reading and recomputing. Browser-safe: no Node built-ins.
  */
-import { INTENT_PATH, STATE_FILES } from './schema.js';
+import { INTENT_PATH, OPTIONAL_STATE_FILES, STATE_PATHS } from './schema.js';
 import { INTENT_FETCH_MARGIN, MAX_INTENT_BYTES, selectIntentBatch } from './intents.js';
 
 export interface StateSnapshot {
+  /** FREE-07 re-review: optional state files present but unreadable (not UTF-8, oversized), with the reason. */
+  unreadableState?: Record<string, string>;
   /** Commit the snapshot was read from; the optimistic-concurrency token. */
   sha: string;
   treeSha: string;
@@ -33,7 +35,7 @@ export interface WorkflowControl {
   setWorkflowEnabled(enabled: boolean): Promise<void>;
 }
 
-export const isStatePath = (path: string) => (Object.values(STATE_FILES) as string[]).includes(path) || INTENT_PATH.test(path);
+export const isStatePath = (path: string) => STATE_PATHS.includes(path) || INTENT_PATH.test(path);
 
 export class ConflictRetriesExhausted extends Error {
   constructor(attempts: number) { super(`The state branch kept moving; gave up after ${attempts} attempts.`); this.name = 'ConflictRetriesExhausted'; }
@@ -180,8 +182,16 @@ export class GitHubStateStore implements StateStore, WorkflowControl {
       try { return decodeBase64Utf8(response.data.content); }
       catch { throw new GitHubError(422, 'file_encoding', `${entry.path} is not UTF-8 text.`); }
     };
+    // FREE-07 re-review: an optional state file (org.json) that can't be fetched is quarantined, not fatal: it is
+    // reported as unreadable, parsing records the reason, and the file is left untouched.
+    const unreadableState: Record<string, string> = {};
+    for (const entry of state.filter(e => OPTIONAL_STATE_FILES.includes(e.path))) {
+      if (entry.size !== undefined && entry.size > maxBytes) { unreadableState[entry.path] = `${entry.path} is larger than ${maxBytes / 1024 / 1024} MiB`; continue; }
+      try { files[entry.path] = await blob(entry); }
+      catch (error) { if (error instanceof GitHubError && error.code === 'file_encoding') unreadableState[entry.path] = `${entry.path} is not UTF-8 text`; else throw error; }
+    }
     // Coordinator-written state: bounded by design; a failure here is a real fault and stops the run.
-    for (const entry of state) {
+    for (const entry of state.filter(e => !OPTIONAL_STATE_FILES.includes(e.path))) {
       if (entry.size !== undefined && entry.size > maxBytes) throw new GitHubError(413, 'state_file_large', `${entry.path} exceeds the supported size.`);
       files[entry.path] = await blob(entry);
     }
@@ -204,7 +214,7 @@ export class GitHubStateStore implements StateStore, WorkflowControl {
     const batch = selectIntentBatch(intentText, maxIntents);
     for (const path of batch.selected) files[path] = intentText[path];
     unreadableIntents.sort((a, b) => a.path.localeCompare(b.path));
-    return { sha, treeSha, files, unreadableIntents, intentsTruncated: batch.truncated || intents.length > scanned.length };
+    return { sha, treeSha, files, unreadableIntents, ...(Object.keys(unreadableState).length ? { unreadableState } : {}), intentsTruncated: batch.truncated || intents.length > scanned.length };
   }
 
   async commit(base: Pick<StateSnapshot, 'sha' | 'treeSha'>, changes: FileChange[], message: string): Promise<CommitResult> {

@@ -36,8 +36,13 @@ import { chat as llmChat, estimateCost, provider, type ChatMessage, type ChatOpt
 import { itemDependencies } from './consultancy.js';
 import { writeJsonAtomic } from './persistence.js';
 import { LESSON_LIMITS, type Lesson, type LessonSource } from '../shared/memory.js';
+// FREE-07: the text screens are shared with the cloud coordinator; re-exported for existing importers.
+import { CONTROL, hasHiddenChars, unsafeReason } from '../shared/text-safety.js';
+export { hasHiddenChars, unsafeReason };
 
 const FILE = 'chief.json';
+/** CITY-10 review 6: the architect spends from the same API key under its own, separate caps. */
+const ARCHITECT_CAP_NOTE = ' The city architect has its own premium cap on the same API key (Settings › City architect), counted separately.';
 const MAX_PENDING_CALLS = 12;
 const MAX_PLANS = 60;
 const MAX_REVIEWS = 200;
@@ -108,14 +113,7 @@ interface StoredFile {
 
 // ---- Validation -----------------------------------------------------------------------------------------------------
 
-/**
- * Review fix 1: text a worker reads but the CEO cannot see. Format characters (zero-width, bidi overrides and isolates,
- * soft hyphen, Unicode tags U+E0000–E007F), line/paragraph separators, unassigned or private-use code points, and every
- * control character except newline and tab are refused in model-written titles, prompts and summaries.
- */
-const CONTROL = /[\p{Cf}\p{Zl}\p{Zp}\p{Co}\p{Cn}\u{E0000}-\u{E007F}]|[^\P{Cc}\n\t]/u;
-/** FREE-10: the same invisible/control-character test, for lesson text. */
-export const hasHiddenChars = (text: string) => CONTROL.test(text);
+// CONTROL / hasHiddenChars and unsafeReason live in src/shared/text-safety.ts (FREE-07).
 
 function str(value: unknown, label: string, max: number): string {
   if (typeof value !== 'string') throw new ChiefError(400, `${label} must be a string`);
@@ -166,33 +164,6 @@ export function cleanSettings(input: unknown, current: ChiefSettings): ChiefSett
     next.dailyCapUsd = Math.round(c * 100) / 100;
   }
   return next;
-}
-
-/** Review fix 6: secrets (a bare `.env`, not `.env.example`) and the verbs that move them, on lower-cased text. */
-const SECRET = String.raw`(?:\b(?:api[ _-]?keys?|passwords?|secrets?|(?:auth|access|api|bearer|session|refresh|oauth|npm|gh)[ _-]?tokens?|credentials?|ssh keys?|private keys?)\b|(?<![\w.])\.env(?![\w.]))`;
-const LEAK_VERB = String.raw`\b(?:send|post|upload|email|share|paste|exfiltrat\w*|leak|print|reveal|transmit|include|commit|cat|echo|expose|copy|log(?=\s+(?:the|it|them|all)\b))\b`;
-
-/**
- * A heuristic screen for prompts that would make an approved worker do something consequential outside its branch. It
- * is a pattern list, not a guarantee: the CEO still reads every prompt before approving. Returns the reason, or undefined.
- */
-export function unsafeReason(text: string): string | undefined {
-  const t = text.toLowerCase();
-  const rules: [RegExp, string][] = [
-    [/\b(curl|wget|iwr|invoke-webrequest)\b[^\n]*\|\s*(sudo\s+)?(ba|z|da)?sh\b/, 'pipes a download into a shell'],
-    [/\brm\s+-[a-z]*r[a-z]*f?\s+(\/|~|\$home)(\s|$)/, 'deletes a home or root directory'],
-    [/\bgit\s+push\b[^\n]*(--force|-f\b|--mirror)/, 'force-pushes'],
-    [new RegExp(`${LEAK_VERB}[^\\n]{0,80}${SECRET}`), 'moves credentials or secrets'],
-    [new RegExp(`${SECRET}[^\\n]{0,80}${LEAK_VERB}`), 'moves credentials or secrets'],
-    [/\b(auto-?approve|approve (the|this|all|every)\b[^\n.]{0,40}\b(plan|budget|spend|payment|send))/, 'tries to approve on the CEO’s behalf'],
-    [/\b(raise|increase|set)\b[^\n.]{0,30}\bbudget\b/, 'tries to change a budget'],
-    [/\b(wire|transfer|pay|send)\b[^\n.]{0,30}(\$|usd|eur|£|€)\s?\d/, 'moves money'],
-    [/\b(email|message|dm|text|call)\b[^\n.]{0,40}\b(all (customers|clients|users|leads)|mailing list|everyone)\b/, 'contacts people outside the Empire'],
-    [/\b(deploy|release|publish)\b[^\n.]{0,30}\b(to )?(production|prod|app store|play store|npm)\b/, 'deploys or publishes'],
-    [/\bdisable\b[^\n.]{0,30}\b(tests?|ci|checks?|security|auth(entication)?|2fa|mfa)\b/, 'disables tests or security'],
-  ];
-  for (const [re, why] of rules) if (re.test(t)) return why;
-  return undefined;
 }
 
 /** Strict JSON extraction: a bare object, or one ```json fenced block and nothing else. Never searches prose. */
@@ -476,7 +447,7 @@ export class ChiefBrain {
     const spent = this.spentToday();
     const paused = spent >= s.dailyCapUsd;
     return { kind: 'premium', day, spentUsd: Math.round(spent * 1e4) / 1e4, capUsd: s.dailyCapUsd, paused,
-      note: paused ? `Paused at the daily cap (${money(s.dailyCapUsd)}). Estimated from your configured price; never city credits.` : `Estimated ${money(spent)} of ${money(s.dailyCapUsd)} today, from your configured price. Separate from city credits and worker spend.` };
+      note: `${paused ? `Paused at the daily cap (${money(s.dailyCapUsd)}). Estimated from your configured price; never city credits.` : `Estimated ${money(spent)} of ${money(s.dailyCapUsd)} today, from your configured price. Separate from city credits and worker spend.`}${ARCHITECT_CAP_NOTE}` };
   }
 
   state(): ChiefState {

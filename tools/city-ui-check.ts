@@ -6,7 +6,7 @@
  * CITY_UI_ONLY=perf measures frame time only (PERF_LABEL names the run, e.g. before/after) at the same viewpoints,
  * which also works against an older build's fixture that has no districts.
  * CITY-06/08: CITY_UI_ONLY=rides runs only the driving/flying section; its screenshots and perf JSON go to
- * docs/team/reports/city-06-08/ (PERF_OUT=city-06-08 sends perf runs there too).
+ * docs/team/reports/city-06-08/ (PERF_OUT=city-06-08 sends perf runs there too; PERF_OUT=city-10 sends them to city-10/).
  */
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -18,8 +18,8 @@ const out = resolve(import.meta.dirname, '../docs/team/reports/free-09');
 mkdirSync(out, { recursive: true });
 const rideOut = resolve(import.meta.dirname, '../docs/team/reports/city-06-08');
 mkdirSync(rideOut, { recursive: true });
-// CHAR-01/02: PERF_OUT=char-01 (or char-02) sends perf runs to docs/team/reports/char-01/ (char-02/).
-const perfOut = process.env.PERF_OUT === 'city-06-08' ? rideOut : /^char-0[12]$/.test(process.env.PERF_OUT ?? '') ? resolve(import.meta.dirname, `../docs/team/reports/${process.env.PERF_OUT}`) : out;
+// CHAR-01/02 and CITY-10: PERF_OUT=char-01, char-02 or city-10 sends perf runs to docs/team/reports/<that>/.
+const perfOut = process.env.PERF_OUT === 'city-06-08' ? rideOut : /^(char-0[12]|city-10)$/.test(process.env.PERF_OUT ?? '') ? resolve(import.meta.dirname, `../docs/team/reports/${process.env.PERF_OUT}`) : out;
 const only = process.env.CITY_UI_ONLY;
 
 const results: { name: string; ok: boolean; detail: string }[] = [];
@@ -110,7 +110,7 @@ async function perf(browser: Browser, label: string) {
       await enterGame(s.page);
       await s.page.waitForTimeout(6000);
       const views: Record<string, unknown> = {};
-      for (const view of ['founding', 'business', 'aerial', 'helipad'] as const) {
+      for (const view of (process.env.PERF_OUT === 'city-10' ? ['founding', 'business', 'aerial', 'helipad', 'harbour'] : ['founding', 'business', 'aerial', 'helipad']) as (keyof typeof VIEWS)[]) {
         await place(s.page, VIEWS[view], 2500);
         const frames = await frameTimes(s.page);
         const info = await s.page.evaluate(() => { const r = (window as unknown as { __office: Office }).__office.renderer.info; return { triangles: r.render.triangles, calls: r.render.calls, geometries: r.memory.geometries, textures: r.memory.textures }; });

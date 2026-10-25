@@ -1351,6 +1351,13 @@ html.ae-cloud #hud .status-strip.cloud-strip .status-monitor { white-space: nowr
 .inbox-kind[data-kind="budget_increase"] { color: #f2a488; }
 .inbox-history-box { margin-top: 14px; }
 .inbox-history-box summary { cursor: pointer; font-size: 12px; color: var(--hud-muted); padding: 6px 2px; }
+/* FREE-07: cloud mode. The inbox kinds not raised there, each with its reason; small and collapsed by default. */
+.inbox-cloud-note { margin-top: 14px; font-size: 12px; }
+.inbox-cloud-gaps { margin-top: 6px; }
+.inbox-cloud-gaps summary { cursor: pointer; font-size: 12px; color: var(--hud-muted); padding: 6px 2px; }
+.inbox-cloud-gaps ul { margin: 4px 0 0; padding-left: 16px; display: grid; gap: 6px; }
+.inbox-cloud-gaps li { font-size: 12px; line-height: 1.45; color: var(--hud-muted); }
+.exec-cloud-gap { font-size: 12px; line-height: 1.45; }
 .inbox-history { margin-top: 6px; }
 .inbox-detail { overflow: auto; padding: 18px 22px 22px; min-width: 0; }
 .inbox-detail h3 { font-size: 20px; font-weight: 600; margin: 6px 0 4px; line-height: 1.25; overflow-wrap: anywhere; }
@@ -1645,3 +1652,29 @@ html.ae-touch #hud .topbar .controls > #btn-inbox > span:not(.svc-count):not(.in
 
 /* Opened-from-disk notice (see the entry HTML): this stylesheet loaded, so the page is served correctly. */
 .file-open-note { display: none !important; }
+
+/* CITY-10: the city architect (Settings) and its daily summary (inbox). Copper marks world changes, not agent work. */
+.architect-form { display: grid; gap: 10px; margin-top: 10px; }
+.architect-form select, .architect-form input[type=number], .architect-body > .chief-row select { min-height: 38px; font: inherit; font-size: 13px; padding: 6px 8px; border-radius: 8px; min-width: 0; width: 100%; }
+.architect-form .chief-row label { display: grid; gap: 4px; font-size: 12px; font-weight: 700; }
+.architect-toggle { display: flex; gap: 10px; align-items: center; padding: 10px 12px; border: 1px solid #d9a46a66; border-radius: 8px; background: #d9a46a12; font-weight: 700; cursor: pointer; }
+.architect-toggle input { width: 18px; height: 18px; accent-color: #d9a46a; }
+.architect-status[data-ready=true] { color: #e8c49a; }
+.architect-sub { margin: 16px 0 6px; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; opacity: .85; }
+.architect-run { margin: 8px 0; padding: 10px 12px; border: 1px solid #d9a46a44; border-left: 3px solid #d9a46a; border-radius: 8px; background: #d9a46a0b; }
+.architect-run[data-status=reverted], .architect-run[data-status=rejected], .architect-run[data-status=interrupted] { border-left-color: #ffffff40; opacity: .8; }
+.architect-run header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 10px; font-size: 13px; }
+.architect-run-status { font: 600 10.5px/1.6 ui-monospace, monospace; letter-spacing: .1em; text-transform: uppercase; opacity: .8; }
+.architect-changes { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 6px; }
+.architect-changes li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0; border-top: 1px solid #ffffff14; font-size: 13px; overflow-wrap: anywhere; }
+.architect-changes li > span:first-child { display: grid; gap: 2px; min-width: 0; }
+.architect-changes small { font-size: 11.5px; opacity: .78; }
+.architect-changes li[data-undone=true] strong { text-decoration: line-through; opacity: .6; }
+.architect-changes .btn { flex: none; min-height: 34px; }
+.architect-undone { flex: none; font-size: 11px; opacity: .7; }
+.architect-avoid { list-style: none; margin: 6px 0; padding: 0; display: grid; gap: 6px; }
+.architect-avoid li { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 13px; overflow-wrap: anywhere; }
+.empire-tag[data-monitor=architect] { border-color: #d9a46a; color: #f1d6b4; background: #d9a46a1a; max-width: 100%; white-space: normal; }
+.architect-facts .architect-changes { margin: 0; }
+@media (max-width: 720px) { .architect-form .chief-modes, .architect-form .chief-row, .architect-body > .chief-row { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: no-preference) { .architect-run { transition: border-color .2s ease; } }

@@ -1,0 +1,25 @@
+{
+  "base": "http://localhost:5142/",
+  "results": [
+    {
+      "name": "max world rendered in full (1440x900)",
+      "ok": true,
+      "detail": "{\"rendered\":47,\"skipped\":0,\"invalid\":\"\",\"revision\":10}"
+    },
+    {
+      "name": "no console errors with the max world (1440x900)",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "max world rendered in full (phone-874x402)",
+      "ok": true,
+      "detail": "{\"rendered\":47,\"skipped\":0,\"invalid\":\"\",\"revision\":10}"
+    },
+    {
+      "name": "no console errors with the max world (phone-874x402)",
+      "ok": true,
+      "detail": ""
+    }
+  ]
+}
