@@ -1,5 +1,5 @@
-# Template (docs/DISTRIBUTION.md#winget). <SHA256> is the installer's line in the release's SHA256SUMS.
-# Use the signed installer name (without -unsigned) once SignPath signing is live.
+# Template (docs/DISTRIBUTION.md#winget). <SHA256> is assets["Agent-Empire-Windows-Setup.exe"].sha256 in the release's
+# channel-stable.json (also shown on the release page). The installer name is the same signed or unsigned.
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
 PackageIdentifier: Billioncodes001.AgentEmpire
 PackageVersion: <VERSION>
@@ -15,7 +15,7 @@ UpgradeBehavior: install
 ReleaseDate: <YYYY-MM-DD>
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/Billioncodes001/agent-empire/releases/download/v<VERSION>/Agent-Empire-<VERSION>-windows-x64-Setup-unsigned.exe
+    InstallerUrl: https://github.com/Billioncodes001/agent-empire/releases/download/v<VERSION>/Agent-Empire-Windows-Setup.exe
     InstallerSha256: <SHA256>
 ManifestType: installer
 ManifestVersion: 1.6.0
