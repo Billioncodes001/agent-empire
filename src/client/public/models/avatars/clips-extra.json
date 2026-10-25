@@ -1,0 +1,43 @@
+{
+  "generatedBy": "tools/avatars/build-clips.mts",
+  "licence": "CC0-1.0",
+  "licenceUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+  "packs": {
+    "ual1": {
+      "pack": "Universal Animation Library [Standard]",
+      "author": "Quaternius (quaternius.com)",
+      "page": "https://opengameart.org/content/universal-animation-library",
+      "authorPage": "https://quaternius.com/packs/universalanimationlibrary.html",
+      "zip": "https://opengameart.org/sites/default/files/universal_animation_librarystandard.zip",
+      "zipSha256": "18ff1a7215f4852b320203e8aaf02a1578b5c8eef9027fbaedfcedc7b85a3ac2"
+    }
+  },
+  "files": {
+    "clips-extra-male.glb": {
+      "pack": "ual1",
+      "bytes": 79296,
+      "sha256": "63eee549cd170545b197ccf05da51589c4257c6eb1abe99676d6ab76ebdc1551",
+      "licence": "CC0-1.0",
+      "source": "https://opengameart.org/content/universal-animation-library",
+      "clips": {
+        "jump_start": "Jump_Start",
+        "jump_air": "Jump_Loop",
+        "jump_land": "Jump_Land",
+        "drive_seated": "Driving_Loop"
+      }
+    },
+    "clips-extra-female.glb": {
+      "pack": "ual1",
+      "bytes": 79004,
+      "sha256": "a097a8a92a87ff0a03d57a8747d7b80301b0acc7ac06b42cf04a90a1dd479398",
+      "licence": "CC0-1.0",
+      "source": "https://opengameart.org/content/universal-animation-library",
+      "clips": {
+        "jump_start": "Jump_Start",
+        "jump_air": "Jump_Loop",
+        "jump_land": "Jump_Land",
+        "drive_seated": "Driving_Loop"
+      }
+    }
+  }
+}
