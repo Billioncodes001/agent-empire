@@ -1,6 +1,6 @@
 # Email outreach
 
-Email outreach is the first channel of Jordan, the marketing & sales executive. Jordan is rule-based: it coordinates and never writes. A worker drafts each campaign. You approve the drafting job first, and later you approve the exact message and the full recipient list. Nothing is emailed before that second approval. Outreach runs on your own server; it isn't available in cloud mode.
+Email outreach is the first channel of Jordan, the marketing & sales executive. Jordan is rule-based: it coordinates and never writes. A worker drafts each campaign. You approve the drafting job first, and later you approve the exact message and the full recipient list. Nothing is emailed before that second approval. Outreach runs on your own server; it isn't available in cloud mode, because the coordinator would need your SMTP password as an Actions secret, runs only every 15–60 minutes (no pacing or daily cap), and leads and opt-outs would stay in the state repository's git history. The marketing card says so in cloud mode.
 
 ## Your responsibilities
 

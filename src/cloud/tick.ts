@@ -22,7 +22,8 @@
 import { advanceEconomy, applyEmpireAction, rewardAcceptedJob, settleCapMs, syncManagers, syncWorkforce } from './economy.js';
 import { intentIdFromPath, parseIntent, sortIntents, IntentError, type CloudIntent } from './intents.js';
 import { DispatchFailure, ProvisionError, type ProviderAdapter, type ProviderObservation, type ProvisionResult } from './provider.js';
-import { SITES } from '../shared/empire.js';
+import { SITES, type SiteId } from '../shared/empire.js';
+import { addResearch, checkOrg, ORG_FILE, cloudResearchPrompt, decideApproval, OrgRuleError, proposeLesson, recordResearch, researchDue, researchPath, researchTitle, retireLesson, type BranchFile } from './org.js';
 import { isMoneyEngine } from './actions-spec.js';
 import { DEFAULT_WORKER_MODEL, WORKER_ENVIRONMENT, workerModelLabel } from './worker-spec.js';
 import {
@@ -32,6 +33,26 @@ import {
 import { updateWithRetry, type FileChange, type RetryOptions, type StateSnapshot, type StateStore, type WorkflowControl } from './store.js';
 
 export interface TickContext { now: number; runId: string }
+
+/** FREE-07: at most this many research reports are read per run (read-only GitHub calls with the project token). */
+export const RESEARCH_READS_PER_TICK = 5;
+/** Intents that change state/org.json; their result must pass checkOrg before it is kept. */
+const ORG_INTENTS = new Set<string>(['approval_decision', 'lesson_propose', 'lesson_retire', 'research']);
+/**
+ * Reads finished research reports from their task branches (read-only). A provider that cannot read branch files gives
+ * `unsupported`; a failed read gives `unknown` and is retried next run. Never sends model text anywhere.
+ */
+export async function readResearchReports(due: { jobId: string; branch: string }[], provider: ProviderAdapter, state: CloudState): Promise<Record<string, BranchFile>> {
+  const out: Record<string, BranchFile> = {};
+  for (const item of due.slice(0, RESEARCH_READS_PER_TICK)) {
+    const job = state.jobs.jobs.find(j => j.id === item.jobId);
+    const execution = state.meta.execution;
+    if (!job || !execution || !provider.readBranchFile) { out[item.jobId] = { state: 'unsupported' }; continue; }
+    try { out[item.jobId] = await provider.readBranchFile({ ...execution, repository: clone(job.repository) } as typeof execution, item.branch, researchPath(item.jobId)); }
+    catch { out[item.jobId] = { state: 'unknown', reason: 'GitHub could not be read with the project token' }; }
+  }
+  return out;
+}
 export const HEARTBEAT_MS = 60 * 60_000;
 
 // ---------------------------------------------------------------- small helpers
@@ -107,9 +128,8 @@ function applyOne(state: CloudState, intent: CloudIntent, ctx: TickContext): { o
   const reject = (code: string, message: string): never => { throw new IntentError(code, message); };
   const findJob = (id: string) => state.jobs.jobs.find(job => job.id === id) ?? reject('job_not_found', 'No such cloud job in the current job list (finished jobs are archived after 14 days).');
   const meta = state.meta;
-  switch (intent.kind) {
-    case 'new_job': {
-      const input = intent.job;
+  // Paid work: a new job, or a research question (FREE-07) on exactly the same checks, limits and confirmation.
+  const queueJob = (input: { id: string; title: string; prompt: string; site?: SiteId; configRevision: number }): { outcome: 'applied' | 'duplicate' } => {
       const hash = promptHash(input.prompt);
       // A job id that already reached the archive can never be dispatched (or paid) again.
       if (state.archivedJobIds.ids.includes(input.id)) return { outcome: 'duplicate' };
@@ -140,6 +160,30 @@ function applyOne(state: CloudState, intent: CloudIntent, ctx: TickContext): { o
       });
       journal(state, ctx, 'job', `${input.title}: queued (allowance ${meta.limits.perTaskBudgetCents} cents, estimate).`, { intentId: intent.id, jobId: input.id });
       return { outcome: 'applied' };
+  };
+  const orgCtx = { now: ctx.now, intentId: intent.id };
+  const orgRule = <T>(run: () => T): T => { try { return run(); } catch (error) { if (error instanceof OrgRuleError) reject(error.code, error.message); throw error; } };
+  switch (intent.kind) {
+    case 'new_job': return queueJob(intent.job);
+    case 'research': {
+      const result = queueJob({ id: intent.job.id, title: researchTitle(intent.question), prompt: cloudResearchPrompt(intent.question, intent.job.id), configRevision: intent.job.configRevision });
+      if (result.outcome === 'applied') orgRule(() => addResearch(state.org, intent.job.id, intent.question, ctx.now));
+      return result;
+    }
+    case 'approval_decision': {
+      const outcome = orgRule(() => decideApproval(state.org, intent, orgCtx));
+      if (outcome === 'applied') journal(state, ctx, 'intent_applied', `Inbox ${intent.approvalId} ${intent.decision === 'approve' ? 'approved' : 'declined'} by the CEO.`, { intentId: intent.id });
+      return { outcome };
+    }
+    case 'lesson_propose': {
+      const lesson = orgRule(() => proposeLesson(state.org, intent.lesson, orgCtx, state.jobs.jobs));
+      journal(state, ctx, 'intent_applied', `Lesson ${lesson.id} proposed; it waits in the inbox as ${lesson.approvalId}.`, { intentId: intent.id });
+      return { outcome: 'applied' };
+    }
+    case 'lesson_retire': {
+      const outcome = orgRule(() => retireLesson(state.org, intent.lessonId, orgCtx));
+      if (outcome === 'applied') journal(state, ctx, 'intent_applied', `Lesson ${intent.lessonId} retired by the CEO.`, { intentId: intent.id });
+      return { outcome };
     }
     case 'review': {
       const job = findJob(intent.jobId);
@@ -274,6 +318,11 @@ export function applyIntents(input: CloudState, files: IntentFile[], ctx: TickCo
     const scratch = clone(state);
     try {
       const { outcome } = applyOne(scratch, intent, ctx);
+      // FREE-07 review fix 1: an organization change is kept only if the result fits its budget and reads back.
+      if (ORG_INTENTS.has(intent.kind)) {
+        if (scratch.orgError) throw new IntentError('org_unreadable', `The organization file could not be read (${scratch.orgError}), so nothing was changed. Repair or remove state/org.json in the state repository.`);
+        try { checkOrg(scratch.org); } catch (error) { throw new IntentError(error instanceof OrgRuleError ? error.code : 'org_invalid', error instanceof Error ? error.message : 'The organization change was refused.'); }
+      }
       Object.assign(state, scratch);
       record(intent.id, outcome, intent.kind);
       outcomes.push({ path: item.path, id: intent.id, kind: intent.kind, outcome });
@@ -657,7 +706,7 @@ function stamp(state: CloudState, ctx: TickContext) {
 /** True when a run changed anything beyond the city clock (which may wait for the next commit). */
 function meaningful(state: CloudState, snapshot: StateSnapshot): boolean {
   const next = serializeState(state);
-  for (const file of [STATE_FILES.jobs, STATE_FILES.ledger, STATE_FILES.journal, STATE_FILES.processed]) if (next[file] !== snapshot.files[file]) return true;
+  for (const file of [STATE_FILES.jobs, STATE_FILES.ledger, STATE_FILES.journal, STATE_FILES.processed, ORG_FILE]) if (next[file] !== undefined && next[file] !== snapshot.files[file]) return true;
   const core = (text: string | undefined) => { if (!text) return ''; const { coordinator: _c, revision: _r, ...rest } = JSON.parse(text); return JSON.stringify(rest); };
   return core(next[STATE_FILES.meta]) !== core(snapshot.files[STATE_FILES.meta]);
 }
@@ -691,12 +740,13 @@ export async function runCoordinatorTick(deps: CoordinatorDeps): Promise<TickRep
   const log = deps.log ?? (() => {});
   const ctx1: TickContext = { now: deps.now(), runId: deps.runId };
   let observations: ProviderResult[] | undefined;
+  let researchReads: Record<string, BranchFile> | undefined;
   let provisionOutcome: ProvisionOutcome | undefined;
   let migrated: string[] = [];
   let commits = 0;
 
   const phase1 = await updateWithRetry(deps.store, async snapshot => {
-    const parsed = parseStateFiles(stateFilesOf(snapshot), ctx1.now);
+    const parsed = parseStateFiles(stateFilesOf(snapshot), ctx1.now, snapshot.unreadableState);
     migrated = parsed.migrated;
     let state = reconcileStaleDispatches(parsed.state, ctx1);
     // Read-only provider calls run once per tick, before intents, so a review or cancel is judged
@@ -705,6 +755,20 @@ export async function runCoordinatorTick(deps: CoordinatorDeps): Promise<TickRep
     state = recordObservations(state, observations, ctx1);
     const intents = applyIntents(state, intentFilesOf(snapshot), ctx1);
     state = intents.state;
+    // FREE-07 (review fix 2): research reports are imported AFTER intents, so decisions can always drain a full inbox,
+    // and nothing in an untrusted report can stop cancel, shutdown or the stops below. Reads are read-only and reused
+    // on a commit retry; any failure leaves the organization exactly as it was and is journaled.
+    if (!state.orgError) {
+      try {
+        researchReads ??= await readResearchReports(researchDue(state.org, state.jobs.jobs), deps.provider, state);
+        const org = clone(state.org);
+        recordResearch(org, state.jobs.jobs, researchReads, ctx1.now);
+        checkOrg(org);
+        state.org = org;
+      } catch (error) {
+        journal(state, ctx1, 'warning', `Research reports were not imported this run (${error instanceof Error ? error.message.slice(0, 160) : 'unexpected error'}).`);
+      }
+    }
     // Free control-plane calls, once per tick (a commit retry reuses the outcome), before dispatch planning.
     if (provisioningDue(state, ctx1.now)) {
       if (!provisionOutcome || provisionOutcome.key !== provisionKey(state)) provisionOutcome = await attemptProvisioning(state, deps.provider);
@@ -761,7 +825,7 @@ export async function runCoordinatorTick(deps: CoordinatorDeps): Promise<TickRep
   if (stopResults.length || dispatchResults.length || wantDisable) {
     try {
       const phase2 = await updateWithRetry(deps.store, snapshot => {
-        const { state: next } = receipts(parseStateFiles(stateFilesOf(snapshot), ctx2.now).state);
+        const { state: next } = receipts(parseStateFiles(stateFilesOf(snapshot), ctx2.now, snapshot.unreadableState).state);
         if (wantDisable && next.meta.lifecycle.status === 'shutdown' && next.meta.lifecycle.workflow === 'disable_requested') {
           if (workflowDisabled) { next.meta.lifecycle.workflow = 'disabled'; journal(next, ctx2, 'lifecycle', 'Coordinator workflow disabled. Start the Empire from the app to re-enable it.'); }
           else journal(next, ctx2, 'warning', 'The coordinator could not disable its own workflow. The app disables it with your GitHub sign-in; scheduled runs do nothing while shut down.');

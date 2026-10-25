@@ -9,7 +9,7 @@ import { COMMIT } from '../server/execution-validation.js';
 import { GitHubClient, GitHubError } from './store.js';
 import { AnthropicManaged, type ProviderCredentials } from '../server/providers/anthropic-managed.js';
 import { provisionAnthropicExecution, type ProvisionResult, type WorkerModel } from './provisioning.js';
-import { DispatchFailure, type DispatchRequest, type ProviderAdapter, type ProviderObservation } from './provider.js';
+import { DispatchFailure, readTaskBranchFile, type DispatchRequest, type ProviderAdapter, type ProviderObservation } from './provider.js';
 import { utcDay, type AnthropicExecution, type CloudExecution, type EventCursorState } from './schema.js';
 
 const MAX_EVENT_PAGES = 5;
@@ -94,5 +94,11 @@ export class AnthropicCloudAdapter implements ProviderAdapter {
       if (error instanceof GitHubError && error.status === 404) return { state: 'missing' };
       throw error;
     }
+  }
+
+  /** FREE-07: a research report from the task branch the agent pushed (read-only, project token). */
+  async readBranchFile(execution: CloudExecution, branch: string, path: string) {
+    if (!this.credentials.githubToken) throw new Error('The project GitHub token is not configured.');
+    return readTaskBranchFile((method, route) => this.github.request(method, route), (e) => e instanceof GitHubError && e.status === 404, execution, branch, path);
   }
 }

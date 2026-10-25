@@ -6,11 +6,25 @@ import { store } from '../state';
 import { h } from './dom';
 import { morphChildren } from './reconcile';
 import { openInbox } from './inbox';
+import { activeCloudNet } from '../cloud/active';
+import { cloudResearchReport, researchTitle } from '../../cloud/org';
+import { ORG_CAPABILITIES } from '../../shared/org-capabilities';
 
 // ORG-05: the research card's panel in the game. It lists the real reports and tool proposals the server reports, lets
 // the CEO ask a question (an internal job that still needs approval), and opens a report as readable text.
 
 const newRequestId = () => (typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`);
+
+/**
+ * FREE-07: in cloud mode a question is paid cloud work. It opens the same paid confirmation as a new cloud job (allowance,
+ * today's spend, current limits); only a confirmed question is sent, as a `research` intent.
+ */
+function askCloud(question: string): boolean {
+  const net = activeCloudNet();
+  if (!net?.hooks.newJob) return false;
+  net.hooks.newJob({ title: researchTitle(question), prompt: question, research: question });
+  return true;
+}
 
 async function ask(question: string, requestId: string) {
   const res = await apiFetch('/api/research', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ question, requestId }) });
@@ -31,6 +45,13 @@ function reportRow(r: ResearchReportSummary, onOpen: () => void): HTMLElement {
 }
 
 async function fetchReport(jobId: string): Promise<ResearchReport> {
+  const snap = store.cloud?.snapshot;
+  if (store.cloud) {
+    // FREE-07: the coordinator recorded the report (sections clipped) in the snapshot.
+    const report = snap && cloudResearchReport(snap.state.org, snap.state.jobs.jobs, jobId);
+    if (!report) throw new Error('This report is not in the latest snapshot of your cloud Empire.');
+    return report;
+  }
   const res = await apiFetch(`/api/research/reports/${encodeURIComponent(jobId)}`);
   const report = (await res.json()) as ResearchReport & { error?: string };
   if (!res.ok) throw new Error(report.error || `The server answered ${res.status}.`);
@@ -46,13 +67,17 @@ export function researchPanel(onLeave?: () => void): { el: HTMLElement; dispose(
   const form = h('form.research-ask', {},
     h('label', { for: 'research-question' }, 'Ask a question or describe an unfamiliar job'),
     field,
-    h('p.setting-note', { id: 'research-ask-note' }, 'Creates an internal job with an estimate. Nothing runs, and nothing is spent, until you approve it in the inbox. Telegram: /research <question>.'),
+    h('p.setting-note', { id: 'research-ask-note' }, store.cloud ? `${ORG_CAPABILITIES.research.cloudSummary} Nothing is sent until you confirm the spend.` : 'Creates an internal job with an estimate. Nothing runs, and nothing is spent, until you approve it in the inbox. Telegram: /research <question>.'),
     h('div.research-actions', {}, submit),
     status);
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const q = field.value.trim();
     if (!q) { status.textContent = 'Write a question first.'; field.focus(); return; }
+    if (store.cloud) {
+      status.textContent = askCloud(q) ? 'Confirm the spend in the dialog. The question is sent only after you confirm.' : 'Cloud mode is not connected on this device yet.';
+      return;
+    }
     submit.disabled = true;
     status.textContent = 'Saving…';
     try {
@@ -70,7 +95,6 @@ export function researchPanel(onLeave?: () => void): { el: HTMLElement; dispose(
   const summary = h('p.research-summary');
   const render = () => {
     const state = store.research;
-    if (store.cloud) { list.replaceChildren(h('li.setting-note', {}, 'Research runs on your own server; it is not available in cloud mode yet.')); summary.textContent = ''; return; }
     if (!state) { list.replaceChildren(h('li.setting-note', {}, 'This server has not reported research yet. Update the office host to use it.')); summary.textContent = ''; return; }
     if (state.storageError) { list.replaceChildren(h('li.inbox-error', { role: 'alert' }, state.storageError)); return; }
     const done = state.reports.filter((r) => r.status === 'imported').length;

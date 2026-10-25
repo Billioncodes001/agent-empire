@@ -17,6 +17,7 @@ import { Net } from '../net';
 import { store, type Profile } from '../state';
 import { toast } from '../ui/dom';
 import { intentOutcome, toQueue, toUsage } from './map';
+import { cloudApprovals, cloudExecutives, cloudResearch } from '../../cloud/org';
 import { CloudRepo, RepoError, repoLabel, type DispatchType, type IntentBody, type Snapshot } from './repo';
 import { loadSavedSnapshot, saveSnapshot, type CloudSession } from './session';
 import type { CloudInfo, SentIntent } from './types';
@@ -53,7 +54,7 @@ const SERVER_ONLY: [RegExp, string][] = [
   [/^voice$|^rtc$/, 'Voice and screen sharing'],
 ];
 
-export interface NewJobRequest { title: string; prompt: string; site?: string }
+export interface NewJobRequest { title: string; prompt: string; site?: string; /** FREE-07: a research question; sent as a `research` intent with the same paid confirmation. */ research?: string }
 export interface CloudHooks {
   /** Opens the paid-job confirmation (cloud/ui.ts). */
   newJob?(request: NewJobRequest): void;
@@ -228,6 +229,10 @@ export class CloudNet extends Net {
     this.emit({ t: 'empire', state: state.empire });
     this.emit({ t: 'queue', state: toQueue(state) });
     this.emit({ t: 'usage', state: toUsage(state, this.now()) });
+    // FREE-07: the inbox, executives and research the coordinator recorded, in the shapes the server sends.
+    this.emit({ t: 'approvals', state: cloudApprovals(state.org, state.meta.revision, state.orgError ? `Your organization file could not be read (${state.orgError}). Decisions are refused until state/org.json is repaired; the rest of the Empire keeps running.` : undefined) });
+    this.emit({ t: 'org', state: cloudExecutives(state, state.org, snapshot.readAt) });
+    this.emit({ t: 'research', state: cloudResearch(state.org, state.jobs.jobs) });
   }
 
   private publish() {
@@ -261,7 +266,9 @@ export class CloudNet extends Net {
     try {
       const { id, dispatched } = await this.repo.submit(body, wake, this.now());
       const jobId = 'jobId' in body ? body.jobId : 'job' in body ? body.job.id : undefined;
-      this.info.sent.push({ id, kind: body.kind, label, at: this.now(), ...(jobId ? { jobId } : {}) });
+      // FREE-07: the inbox item or lesson an organization intent is about, so its panel shows "sent, waiting".
+      const ref = 'approvalId' in body ? body.approvalId : 'lessonId' in body ? body.lessonId : undefined;
+      this.info.sent.push({ id, kind: body.kind, label, at: this.now(), ...(jobId ? { jobId } : {}), ...(ref ? { ref } : {}) });
       if (!opts.quiet) this.notify(dispatched ? `${label}: sent. Your coordinator applies it on its next run, usually within a few minutes.` : `${label}: saved in your state repository. The coordinator applies it on its next scheduled run.`, 'info');
       this.fastUntil = this.now() + FAST_WINDOW_MS;
       return id;
