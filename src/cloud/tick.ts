@@ -33,6 +33,8 @@ import {
 import { updateWithRetry, type FileChange, type RetryOptions, type StateSnapshot, type StateStore, type WorkflowControl } from './store.js';
 
 export interface TickContext { now: number; runId: string }
+/** FREE-11: one call to the chief's model (an OpenAI-compatible API with the user's own key). Tests inject a fake. */
+export type BrainCaller = (call: { provider: import('./brain.js').BrainProvider; model: string; messages: { role: 'system' | 'user' | 'assistant'; content: string }[]; maxTokens: number }) => Promise<{ text: string; model?: string; usage: { input: number; output: number } }>;
 
 /** FREE-07: at most this many research reports are read per run (read-only GitHub calls with the project token). */
 export const RESEARCH_READS_PER_TICK = 5;

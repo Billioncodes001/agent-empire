@@ -171,7 +171,8 @@ export function validateOrg(value: unknown): CloudOrg {
 
 export interface OrgCtx { now: number; intentId: string }
 
-function raise(org: CloudOrg, fields: Omit<Approval, 'id' | 'raisedBy' | 'status'>): Approval {
+/** Raises one inbox item (dropping the oldest decided items when full; pending items are never dropped). */
+export function raiseApproval(org: CloudOrg, fields: Omit<Approval, 'id' | 'raisedBy' | 'status'>): Approval {
   if (org.approvals.length >= ORG_LIMITS.approvals) {
     // Drop the oldest decided items first; pending items are never dropped.
     const decided = org.approvals.filter((a) => a.status !== 'pending').sort((a, b) => (a.decidedAt ?? a.createdAt) - (b.decidedAt ?? b.createdAt));
@@ -213,7 +214,7 @@ export function proposeLesson(org: CloudOrg, input: LessonInput, ctx: OrgCtx, jo
     id: `L${org.nextLesson++}`, text: fields.text, scope: fields.scope, ...(fields.scopeValue ? { scopeValue: fields.scopeValue } : {}),
     source, status: 'proposed', proposedBy: 'CEO', proposedAt: ctx.now, uses: 0, nonce: nonceFor(ctx.intentId), ...(old ? { supersedes: old.id } : {}),
   };
-  const item = raise(org, {
+  const item = raiseApproval(org, {
     kind: 'lesson', jobId: source.jobId ?? '', createdAt: ctx.now,
     title: old ? `Edit of lesson ${old.id}` : `Lesson ${lesson.id}: ${short(lesson.text, 70)}`,
     detail: `CEO proposes a ${lesson.scope === 'company' ? 'company-wide' : lesson.scope} lesson from ${SOURCE_LABEL[source.kind].toLowerCase()}. Approving makes it planning context; nothing else happens.`,
@@ -385,7 +386,7 @@ export function recordResearch(org: CloudOrg, jobs: readonly CloudJob[], reads: 
       Object.assign(r, { status: 'imported', feasibility: parsed.feasibility, confidence: parsed.confidence, sources: parsed.sources, sections: clipSections(parsed.sections), importedAt: now });
       r.tools = parsed.tools.map((t) => ({ ...t, decision: 'pending' as const }));
       for (const tool of r.tools) {
-        const item = raise(org, {
+        const item = raiseApproval(org, {
           kind: 'tool_proposal', jobId: r.jobId, createdAt: now,
           title: `Tool proposal: ${short(tool.name, 80)}`,
           detail: short(`Sam · Research proposes it in the report on “${r.question}”. Approving records your decision only.`, 600),
