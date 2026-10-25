@@ -22,7 +22,7 @@ export const ARCHITECT_LIMITS = { maxChangesPerRun: 5, maxDailyCapUsd: 1, maxMon
 export const CLOUD_ARCHITECT_NOTE = 'The city architect is not available in cloud mode yet. It runs on your own server (an office host or a VPS).';
 export const ARCHITECT_TITLE = 'Let the city grow while you’re away';
 
-export type RunStatus = 'running' | 'applied' | 'no_changes' | 'rejected' | 'interrupted';
+export type RunStatus = 'running' | 'applying' | 'applied' | 'no_changes' | 'rejected' | 'interrupted';
 export interface RunRecord {
   id: string;
   day: string;
@@ -44,6 +44,8 @@ export interface RunRecord {
   costLabel: string;
   approvalId?: string;
   reverted?: boolean;
+  /** Re-review 4: while `applying`, the world revision the run writes (restore reconciles a run cut off there). */
+  worldRevision?: number;
 }
 
 export interface ArchitectBudget { day: string; month: string; spentTodayUsd: number; spentMonthUsd: number; dailyCapUsd: number; monthlyCapUsd: number; paused: boolean; note: string }

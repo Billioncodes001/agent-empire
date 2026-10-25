@@ -168,7 +168,7 @@ test('review 4: moving the clock back neither resets the month tally nor allows 
   } finally { clean(dir); }
 });
 
-test('review 4: never two paid runs within 24 hours, whatever the local date says (an eastward time-zone move)', async () => {
+test('review 4: never two paid runs within 23 hours (re-review 3: 23, so the daily start never creeps), whatever the local date says', async () => {
   const dir = tmp();
   const clock = { t: local(9, 25, 3) };
   const { chat, calls } = counting();
@@ -180,7 +180,7 @@ test('review 4: never two paid runs within 24 hours, whatever the local date say
     const early = await a.runNow('CEO');
     assert.equal(calls.length, 1);
     assert.equal(early.engine, 'rules');
-    assert.match(early.note ?? '', /24 hours/);
+    assert.match(early.note ?? '', /23 hours/);
     // The scheduler waits for the gap instead of spending its day on rules.
     clock.t = local(9, 27, 2, 59);
     assert.equal(await a.tick(), undefined);

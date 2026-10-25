@@ -3,7 +3,7 @@
  * fix. Fake model clients only; any network call fails the test.
  */
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -11,7 +11,7 @@ import { ArchitectService, type ArchitectPorts } from '../src/server/architect.j
 import type { ChatFn } from '../src/server/chief.js';
 import { writeJsonAtomic } from '../src/server/persistence.js';
 import { DEFAULT_CHIEF_SETTINGS, type ChiefSettings } from '../src/shared/chief.js';
-import { colliderMaySolidify } from '../src/client/world/architect.js';
+import { colliderMaySolidify } from '../src/client/world/district-layout.js';
 
 const realFetch = globalThis.fetch;
 test.before(() => { globalThis.fetch = (() => { throw new Error('network call attempted'); }) as typeof fetch; });
@@ -121,7 +121,8 @@ test('re-review 4: the undo record is on disk before the world changes; a death 
       a.updateSettings({ enabled: true });
       phase = 1;
       await a.runNow('CEO').catch(() => undefined);
-      const disk = JSON.parse(readFileSync(path.join(dir, 'world', 'additions.json'), 'utf8'));
+      const worldFile = path.join(dir, 'world', 'additions.json');
+      const disk = existsSync(worldFile) ? JSON.parse(readFileSync(worldFile, 'utf8')) : { additions: [] };
       const b = make(dir, () => clock.t, { chiefSettings: () => DEFAULT_CHIEF_SETTINGS });
       const s = b.state();
       assert.equal(s.storageError, undefined, where);

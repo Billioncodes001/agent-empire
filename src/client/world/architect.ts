@@ -18,6 +18,7 @@ import { solid } from './materials';
 import { textPlane } from './toon';
 import type { Collider } from './office';
 import type { Districts } from './districts';
+import { colliderMaySolidify, type CarPose } from './district-layout';
 import type { GraphicsQuality } from '../graphics';
 
 const saveDataOn = () => typeof navigator !== 'undefined' && !!(navigator as Navigator & { connection?: { saveData?: boolean } }).connection?.saveData;
@@ -152,10 +153,11 @@ export function buildArchitectLayer(parent: THREE.Group, districts: Districts) {
       refresh();
     },
     setQuality(q: GraphicsQuality) { quality = q; refresh(); },
-    update(player: THREE.Vector3) {
+    /** `bodies`: the live vehicles (the driven ride, the parked sedan); `driving`: the founder is one of them. */
+    update(player: THREE.Vector3, bodies: readonly CarPose[] = [], driving = false) {
       for (let i = pending.length - 1; i >= 0; i--) {
         const { collider, box } = pending[i];
-        if (near(box, player, 0.4)) continue;
+        if (!colliderMaySolidify(box, player, bodies, driving)) continue;
         Object.assign(collider, box);
         pending.splice(i, 1);
       }

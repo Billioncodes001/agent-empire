@@ -523,7 +523,7 @@ export function buildCity() {
       sedanBody.update(car, sedanDriven, driving ? null : playerPosition, sedanDriven ? [] : driven);
       foliage.update(t);
       districts.update(dt, playerPosition, sedanDriven ? driven : [...driven, car], driving);
-      architect.update(playerPosition);
+      architect.update(playerPosition, sedanDriven ? driven : [...driven, car], driving);
       const displayedWorkers = new Set<string>();
       const ev = store.evidence();
       for (const site of SITES) {

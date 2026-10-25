@@ -73,10 +73,14 @@ export interface ArchitectPorts {
  * Review 4: spend per period (never one overwritten scalar), the latest clock reading seen and the last paid call, so a
  * clock moved back or a time-zone change cannot reset a tally or allow a second paid run inside 24 hours.
  */
-interface Spend { days: Record<string, number>; months: Record<string, number>; maxSeenAt: number; lastPaidAt?: number }
+interface Spend { days: Record<string, number>; months: Record<string, number>; maxSeenAt: number; lastPaidAt?: number; /** Re-review 2: when the clock was first seen behind the mark, and its last reading since. */ behindSince?: number; behindLast?: number }
 interface StoredFile { version: 1; settings: ArchitectSettings; spend: Spend; lastRunDay?: string; nextRun: number; nextChange: number; expiredChange: number; runs: RunRecord[] }
 
-const PAID_GAP_MS = 24 * 3_600_000;
+/** Re-review 3: 23 h, not 24, so a once-a-day run started by a one-minute tick never creeps later (and DST days fit). */
+const PAID_GAP_MS = 23 * 3_600_000;
+/** Re-review 2: one reading raises the clock mark by at most this, and 72 h of consistent readings behind it reset it. */
+const MAX_RAISE_MS = 36 * 3_600_000;
+const TRUST_AFTER_MS = 72 * 3_600_000;
 const CLOCK_SLACK_MS = 5 * 60_000;
 
 /**
@@ -89,7 +93,7 @@ export function architectTokenBound(messages: ChatMessage[]): number {
   return Math.ceil(ascii / 1.5) + other + 8 * messages.length;
 }
 
-const RUN_STATUSES = ['running', 'applied', 'no_changes', 'rejected', 'interrupted'];
+const RUN_STATUSES = ['running', 'applying', 'applied', 'no_changes', 'rejected', 'interrupted'];
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const isAddition = (v: unknown) => isObj(v) && typeof v.id === 'string' && /^W[1-9]\d{0,6}$/.test(v.id) && typeof v.model === 'string' && !!catalogEntry(v.model) && Number.isFinite(v.x) && Number.isFinite(v.z);
 
@@ -105,6 +109,11 @@ function runProblem(r: unknown, i: number): string | undefined {
   if (!Number.isSafeInteger(r.startedAt)) return `${n} startedAt is invalid`;
   if (typeof r.engineLabel !== 'string' || typeof r.costLabel !== 'string' || !Number.isFinite(r.costUsd) || (r.costUsd as number) < 0) return `${n} cost is invalid`;
   if (r.worstUsd !== undefined && !Number.isFinite(r.worstUsd)) return `${n} worstUsd is invalid`;
+  // Re-review 1: every optional field startup or the inbox reads is typed, so restore can never throw later.
+  for (const k of ['reason', 'note', 'approvalId']) if (r[k] !== undefined && (typeof r[k] !== 'string' || (r[k] as string).length > 2000)) return `${n} ${k} must be text`;
+  if (r.finishedAt !== undefined && !Number.isFinite(r.finishedAt)) return `${n} finishedAt is invalid`;
+  if (r.reverted !== undefined && typeof r.reverted !== 'boolean') return `${n} reverted is invalid`;
+  if (r.worldRevision !== undefined && !Number.isSafeInteger(r.worldRevision)) return `${n} worldRevision is invalid`;
   if (!Array.isArray(r.changes)) return `${n} changes must be a list`;
   for (const [j, c] of r.changes.entries()) {
     const m = `${n} change ${j + 1}`;
@@ -112,6 +121,8 @@ function runProblem(r: unknown, i: number): string | undefined {
     if (c.op !== 'place' && c.op !== 'move' && c.op !== 'remove') return `${m} op is invalid`;
     if (typeof c.additionId !== 'string' || typeof c.model !== 'string' || !catalogEntry(c.model) || typeof c.reason !== 'string' || typeof c.repair !== 'boolean') return `${m} is incomplete`;
     if ((c.op !== 'place' && !isAddition(c.before)) || (c.op !== 'remove' && !isAddition(c.after))) return `${m} has no valid before/after record`;
+    for (const k of ['lot', 'anchor']) if (c[k] !== undefined && typeof c[k] !== 'string') return `${m} ${k} is invalid`;
+    if (c.undone !== undefined && typeof c.undone !== 'boolean') return `${m} undone is invalid`;
   }
   return undefined;
 }
@@ -234,6 +245,8 @@ export class ArchitectService {
   /** A file that could not be restored: preserved untouched, never written, everything refused. */
   private restoreError?: string;
   private running = false;
+  /** Re-review 4: restore finished or undid an `applying` run; saved once the service is built. */
+  private reconciled = false;
   private readonly now: () => number;
   private readonly chatFn: ChatFn;
   private readonly writeJson: (file: string, value: unknown) => void;
@@ -246,6 +259,7 @@ export class ArchitectService {
     this.writeJson = ports.writeJson ?? writeJsonAtomic;
     this.data = { version: 1, settings: { ...DEFAULT_ARCHITECT_SETTINGS }, spend: { days: {}, months: {}, maxSeenAt: this.now() }, nextRun: 1, nextChange: 1, expiredChange: 0, runs: [] };
     this.restore();
+    if (this.reconciled) this.save();
     // Review extra: a paid run cut off by a restart keeps its worst-case charge; the owner is told once.
     for (const r of this.data.runs) if (r.status === 'interrupted' && r.costUsd > 0 && !r.approvalId) { this.raiseSummary(r); this.save(); }
   }
@@ -275,6 +289,8 @@ export class ArchitectService {
     if (!c.premiumModel) return { label, ready: false, reason: `Set the ${name} model id in the chief's brain settings.` };
     if (!this.ports.keys()[KEY_FOR[c.premiumProvider]]) return { label, ready: false, reason: `No ${KEY_FOR[c.premiumProvider]} saved. Add your key in Linked accounts.` };
     if (!c.premiumPrice || c.premiumPrice[0] + c.premiumPrice[1] <= 0) return { label, ready: false, reason: 'Set the price per million tokens in the chief\'s brain settings so the caps can be enforced.' };
+    const behind = this.clockBehind();
+    if (behind) return { label, ready: false, reason: `${behind} Rule-based growth runs meanwhile (US$0).` };
     const cap = this.capReached();
     if (cap) return { label, ready: false, reason: cap };
     return { label, ready: true };
@@ -296,11 +312,14 @@ export class ArchitectService {
     if (!s.enabled || s.paused || !this.available().ok) return undefined;
     const now = new Date(this.now());
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), s.runHour).getTime();
-    if (this.data.lastRunDay === dayOf(this.now())) return new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, s.runHour).getTime();
-    return Math.max(today, this.now());
+    const slot = this.data.lastRunDay === dayOf(this.now()) ? new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, s.runHour).getTime() : Math.max(today, this.now());
+    // Re-review 2: honest about the minimum gap a scheduled premium run waits for (never about a clock problem: those days run rule-based).
+    const paid = this.data.spend.lastPaidAt;
+    return s.engine === 'premium' && this.engineStatus().ready && paid !== undefined && paid <= this.now() ? Math.max(slot, paid + PAID_GAP_MS) : slot;
   }
 
   state(): ArchitectState {
+    if (!this.blocked) this.observeClock();
     this.prune();
     const avail = this.available();
     const j = this.journal ?? seedJournal(this.worldDoc, this.now());
@@ -371,22 +390,56 @@ export class ArchitectService {
     const s = this.data.settings;
     if (!this.available().ok || this.blocked || !s.enabled || s.paused || this.running) return false;
     if (new Date(this.now()).getHours() < s.runHour || this.data.lastRunDay === dayOf(this.now())) return false;
-    // Review 4: a scheduled premium run waits until 24 hours have passed since the last paid call, instead of spending
-    // its day on rule-based growth (Run now inside the gap falls back and says why).
-    if (s.engine === 'premium' && this.engineStatus().ready && this.paidGapProblem()) return false;
+    // Review 4: a scheduled premium run waits for the minimum gap since the last paid call (minutes at most, at the set
+    // hour), instead of spending its day on rule-based growth. Re-review 2: a clock behind its mark never waits: that
+    // day grows with rule-based growth and the engine status says why.
+    const gap = this.data.spend.lastPaidAt === undefined ? Infinity : this.now() - this.data.spend.lastPaidAt;
+    if (s.engine === 'premium' && this.engineStatus().ready && gap >= 0 && gap < PAID_GAP_MS) return false;
     return true;
   }
 
-  /** Review 4: why a paid call may not happen now (clock behind the latest reading, or a paid call within 24 hours). */
+  private clockBehind(): string | undefined {
+    const sp = this.data.spend;
+    if (this.now() >= sp.maxSeenAt - CLOCK_SLACK_MS) return undefined;
+    return `This server's clock is behind the latest time it has seen (${new Date(sp.maxSeenAt).toISOString().slice(0, 16).replace('T', ' ')} UTC); paid calls wait until the clock is consistent again (at most 72 hours).`;
+  }
+
+  /** Review 4: why a paid call may not happen now (clock behind its mark, or a paid call within the minimum gap). */
   private paidGapProblem(): string | undefined {
-    const now = this.now(), sp = this.data.spend;
-    if (now < sp.maxSeenAt - CLOCK_SLACK_MS) return `This server's clock is behind the latest time it has seen (${new Date(sp.maxSeenAt).toISOString().slice(0, 16).replace('T', ' ')} UTC); paid calls wait until the clock catches up.`;
-    if (sp.lastPaidAt !== undefined && now - sp.lastPaidAt < PAID_GAP_MS) return 'A paid run happened less than 24 hours ago; at most one paid run per 24 hours, whatever the local date.';
+    const behind = this.clockBehind();
+    if (behind) return behind;
+    const sp = this.data.spend;
+    if (sp.lastPaidAt !== undefined && this.now() - sp.lastPaidAt < PAID_GAP_MS) return 'A paid run happened less than 23 hours ago; at most one paid run a day, whatever the local date.';
     return undefined;
+  }
+
+  /**
+   * Re-review 2: one clock reading. The mark rises by at most 36 h per reading, so a single wrong future reading cannot
+   * block paid runs for long; and once the clock has read consistently behind the mark for 72 h, the mark was the
+   * glitch: it is reset to now (a paid call made under the wrong time counts as at least 72 h old). Spend tallies are per
+   * period, so a reset never erases them.
+   */
+  private observeClock() {
+    const now = this.now(), sp = this.data.spend;
+    if (now >= sp.maxSeenAt - CLOCK_SLACK_MS) {
+      if (sp.behindSince !== undefined) { delete sp.behindSince; delete sp.behindLast; }
+      if (now > sp.maxSeenAt) sp.maxSeenAt = Math.min(now, sp.maxSeenAt + MAX_RAISE_MS);
+      return;
+    }
+    if (sp.behindSince === undefined || now < (sp.behindLast ?? now) - CLOCK_SLACK_MS) sp.behindSince = now;
+    sp.behindLast = now;
+    if (now - sp.behindSince >= TRUST_AFTER_MS) {
+      sp.maxSeenAt = now;
+      if (sp.lastPaidAt !== undefined && sp.lastPaidAt > now - TRUST_AFTER_MS) sp.lastPaidAt = now - TRUST_AFTER_MS;
+      delete sp.behindSince;
+      delete sp.behindLast;
+      this.save();
+    }
   }
 
   /** Called once a minute by the host. Runs today's growth when due; never throws. */
   async tick(): Promise<RunRecord | undefined> {
+    if (!this.blocked) this.observeClock();
     if (!this.due()) return undefined;
     try { return await this.run('schedule'); } catch { return undefined; }
   }
@@ -402,13 +455,13 @@ export class ArchitectService {
     const at = this.now(), day = dayOf(at);
     if (this.data.lastRunDay === day) throw new ArchitectError(409, 'The city architect already ran today. The next run is tomorrow; little updates, once a day.');
     const record: RunRecord = { id: `R${this.data.nextRun}`, day, trigger, engine: s.engine, engineLabel: this.engineStatus().label, status: 'running', startedAt: at, changes: [], costUsd: 0, costLabel: 'US$0' };
-    // Review 4: the clock check uses the latest reading before this one.
+    // Review 4 / re-review 2: this reading is observed first (capped raise, decay), then checked for paid calls.
+    this.observeClock();
     const clockProblem = this.paidGapProblem();
     const prev = { lastRunDay: this.data.lastRunDay, maxSeenAt: this.data.spend.maxSeenAt };
     this.data.nextRun++;
     this.data.runs.unshift(record);
     this.data.lastRunDay = day;
-    this.data.spend.maxSeenAt = Math.max(this.data.spend.maxSeenAt, at);
     // Review 1: saved before any work, or nothing happens: a restart from here on never runs this day again, and no
     // provider is called without that record on disk.
     if (!this.save()) {
@@ -523,22 +576,29 @@ export class ArchitectService {
       Object.assign(record, { status: 'rejected', reason: `${engine === 'rules' ? 'Rule-based growth' : 'The model'} proposed a change the rules refuse (${applied.error}). Nothing changed.` });
       return;
     }
-    // Review 1: the world and its undo record go to disk together. The world is written first; if the run record with
-    // its changes cannot be saved right after, the world is rolled back, so no addition is ever without its undo record.
-    const previous = this.worldDoc;
-    try { this.writeWorld(applied.ok.doc); } catch (error) {
-      Object.assign(record, { status: 'rejected', reason: `The world could not be saved (${(error as Error).message.slice(0, 120)}). Nothing changed.` });
-      this.storageError = `world/additions.json could not be saved: ${(error as Error).message}`;
-      return;
+    // Re-review 4: the undo record reaches disk before the world changes. (1) The run is saved as `applying` with its
+    // changes and the world revision it will write; (2) the world is written; (3) the run is marked applied. A death
+    // between (1) and (2) or (2) and (3) is reconciled on restore (`reconcileApplying`), by the world's revision.
+    const n = applied.ok.applied.length;
+    if (n) {
+      this.data.nextChange += n;
+      Object.assign(record, { changes: applied.ok.applied, status: 'applying', worldRevision: applied.ok.doc.revision });
+      if (!this.save()) {
+        Object.assign(record, { changes: [], status: 'rejected', reason: 'The run record could not be saved, so the world was not changed. Repair storage and restart.' });
+        delete record.worldRevision;
+        return;
+      }
+      try { this.writeWorld(applied.ok.doc); } catch (error) {
+        Object.assign(record, { changes: [], status: 'rejected', reason: `The world could not be saved (${(error as Error).message.slice(0, 120)}). Nothing changed.` });
+        delete record.worldRevision;
+        this.storageError ??= `world/additions.json could not be saved: ${(error as Error).message}`;
+        return;
+      }
     }
-    this.data.nextChange += applied.ok.applied.length;
-    Object.assign(record, { changes: applied.ok.applied, status: applied.ok.applied.length ? 'applied' : 'no_changes' });
-    if (!this.save()) {
-      try { this.writeWorld(previous); } catch { /* storageError already refuses everything; restart shows the file */ }
-      this.data.nextChange -= applied.ok.applied.length;
-      Object.assign(record, { changes: [], status: 'rejected', reason: 'The run record could not be saved, so the changes were rolled back. Nothing changed; repair storage and restart.' });
-      return;
-    }
+    record.status = n ? 'applied' : 'no_changes';
+    delete record.worldRevision;
+    // If this save fails the record stays `applying` on disk with its undo data; restore finishes it.
+    this.save();
     let j = recordRun(journal, { day: record.day, runId: record.id, engine, engineLabel: record.engineLabel, costLabel: record.costLabel, changes: applied.ok.applied, note: record.note });
     if (ideas.length) j = addIdeas(j, ideas, 'model', this.now());
     this.journal = j;
@@ -724,6 +784,14 @@ export class ArchitectService {
         status: 'interrupted', finishedAt: at,
         reason: r.costUsd > 0 ? `The run was interrupted by a server restart during its model call. The worst-case estimate ${money(r.costUsd)} stays charged. Nothing more is done today.` : 'The run was interrupted by a server restart. Nothing more is done today.',
       });
+      // Re-review 4: a run cut off between its undo record and the world write is finished or undone, by revision.
+      for (const r of runs) if (r.status === 'applying') {
+        if (this.worldDoc.revision === r.worldRevision) Object.assign(r, { status: 'applied', finishedAt: at });
+        else if (this.worldDoc.revision === (r.worldRevision ?? 0) - 1) Object.assign(r, { status: 'interrupted', changes: [], finishedAt: at, reason: 'The server stopped before the world was changed. Nothing changed today.' });
+        else throw new Error(`run ${r.id} was applying world revision ${r.worldRevision} but the world is at ${this.worldDoc.revision}`);
+        delete r.worldRevision;
+        this.reconciled = true;
+      }
       this.data = { version: 1, settings, spend: restoreSpend(raw.spend, at), ...(typeof raw.lastRunDay === 'string' ? { lastRunDay: raw.lastRunDay } : {}), nextRun: raw.nextRun as number, nextChange: raw.nextChange as number, expiredChange: Number.isSafeInteger(raw.expiredChange) ? raw.expiredChange as number : 0, runs };
     } catch (error) {
       this.restoreError = `Cannot restore world/architect.json; it is preserved untouched. Recover a valid backup. ${(error as Error).message}`;
@@ -744,7 +812,8 @@ function restoreSpend(raw: unknown, at: number): Spend {
   if (typeof raw.day === 'string' && num(raw.usd) && typeof raw.month === 'string' && num(raw.monthUsd)) {
     return { days: { [raw.day]: raw.usd }, months: { [raw.month]: raw.monthUsd }, maxSeenAt: at };
   }
-  if (!num(raw.maxSeenAt) || (raw.lastPaidAt !== undefined && !num(raw.lastPaidAt))) throw new Error('spend is invalid');
-  return { days: map(raw.days), months: map(raw.months), maxSeenAt: raw.maxSeenAt, ...(raw.lastPaidAt !== undefined ? { lastPaidAt: raw.lastPaidAt as number } : {}) };
+  for (const k of ['lastPaidAt', 'behindSince', 'behindLast']) if (raw[k] !== undefined && !num(raw[k])) throw new Error('spend is invalid');
+  if (!num(raw.maxSeenAt)) throw new Error('spend is invalid');
+  return { days: map(raw.days), months: map(raw.months), maxSeenAt: raw.maxSeenAt, ...(raw.lastPaidAt !== undefined ? { lastPaidAt: raw.lastPaidAt as number } : {}), ...(raw.behindSince !== undefined ? { behindSince: raw.behindSince as number, behindLast: (raw.behindLast ?? raw.behindSince) as number } : {}) };
 }
 
