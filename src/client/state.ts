@@ -12,8 +12,9 @@ import type { OrgState } from '../shared/org';
 import type { ApprovalsState } from '../shared/approvals';
 import type { ResearchState } from '../shared/research';
 import type { ChiefState } from '../shared/chief';
+import type { ArchitectState } from '../shared/architect';
 
-type Topic = 'cloud' | 'empire' | 'peers' | 'workers' | 'issues' | 'pulls' | 'chat' | 'project' | 'screens' | 'team' | 'upgrade' | 'services' | 'decor' | 'usage' | 'queue' | 'connection' | 'freshness' | 'continuity' | 'org' | 'approvals' | 'research' | 'chief';
+type Topic = 'cloud' | 'empire' | 'peers' | 'workers' | 'issues' | 'pulls' | 'chat' | 'project' | 'screens' | 'team' | 'upgrade' | 'services' | 'decor' | 'usage' | 'queue' | 'connection' | 'freshness' | 'continuity' | 'org' | 'approvals' | 'research' | 'chief' | 'architect';
 
 const zeroUsage = (): Usage => ({ input: 0, output: 0, cacheWrite: 0, cacheRead: 0, cost: 0, calls: 0 });
 
@@ -130,6 +131,8 @@ class Store {
   research: ResearchState | null = null;
   /** FREE-02: the chief's planning brain, plans, reviews and stall proposals; null from servers older than it. */
   chief: ChiefState | null = null;
+  /** CITY-10: the city architect, from an own-server host (null on older hosts and in cloud mode). */
+  architect: ArchitectState | null = null;
   /** Cloud mode only: the state-repository snapshot this game is showing, with its age. Null in server mode. */
   cloud: CloudInfo | null = null;
   private subs = new Map<Topic, Set<() => void>>();
@@ -233,7 +236,8 @@ class Store {
         this.approvals = msg.approvals ?? null;
         this.research = msg.research ?? null;
         this.chief = msg.chief ?? null;
-        for (const t of ['peers', 'workers', 'issues', 'pulls', 'chat', 'project', 'upgrade', 'services', 'decor', 'usage', 'queue', 'org', 'approvals', 'research', 'chief'] as Topic[]) this.emit(t);
+        this.architect = msg.architect ?? null;
+        for (const t of ['peers', 'workers', 'issues', 'pulls', 'chat', 'project', 'upgrade', 'services', 'decor', 'usage', 'queue', 'org', 'approvals', 'research', 'chief', 'architect'] as Topic[]) this.emit(t);
         break;
       case 'peer.join':
       case 'peer.update':
@@ -317,6 +321,10 @@ class Store {
       case 'chief':
         this.chief = msg.state;
         this.emit('chief');
+        break;
+      case 'architect':
+        this.architect = msg.state;
+        this.emit('architect');
         break;
       case 'chat':
         this.chat.push(msg);

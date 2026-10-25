@@ -1,0 +1,139 @@
+{
+  "label": "before",
+  "base": "http://localhost:5144/",
+  "note": "Headless Chrome, ANGLE/Metal, vsync and frame cap disabled; Medium preset (default). Same viewpoints in every run.",
+  "desktop-1440x900": {
+    "founding": {
+      "frames": {
+        "mean": 5.792063492063492,
+        "p95": 11.100000000000364,
+        "frames": 693
+      },
+      "renderer": {
+        "triangles": 1381155,
+        "calls": 385,
+        "geometries": 833,
+        "textures": 170
+      }
+    },
+    "business": {
+      "frames": {
+        "mean": 3.69972299168975,
+        "p95": 5.299999999999272,
+        "frames": 1083
+      },
+      "renderer": {
+        "triangles": 1343034,
+        "calls": 181,
+        "geometries": 833,
+        "textures": 170
+      }
+    },
+    "aerial": {
+      "frames": {
+        "mean": 5.066498103666244,
+        "p95": 6,
+        "frames": 791
+      },
+      "renderer": {
+        "triangles": 1387593,
+        "calls": 322,
+        "geometries": 909,
+        "textures": 172
+      }
+    },
+    "helipad": {
+      "frames": {
+        "mean": 6.47016129032258,
+        "p95": 7.599999999998545,
+        "frames": 620
+      },
+      "renderer": {
+        "triangles": 1387194,
+        "calls": 436,
+        "geometries": 988,
+        "textures": 174
+      }
+    },
+    "harbour": {
+      "frames": {
+        "mean": 3.7546904315196996,
+        "p95": 5.69999999999709,
+        "frames": 1066
+      },
+      "renderer": {
+        "triangles": 1297971,
+        "calls": 144,
+        "geometries": 988,
+        "textures": 174
+      }
+    }
+  },
+  "phone-874x402": {
+    "founding": {
+      "frames": {
+        "mean": 4.456840934371525,
+        "p95": 5.600000000000364,
+        "frames": 899
+      },
+      "renderer": {
+        "triangles": 1383093,
+        "calls": 440,
+        "geometries": 874,
+        "textures": 176
+      }
+    },
+    "business": {
+      "frames": {
+        "mean": 3.565716829919857,
+        "p95": 4.599999999998545,
+        "frames": 1123
+      },
+      "renderer": {
+        "triangles": 1347726,
+        "calls": 195,
+        "geometries": 874,
+        "textures": 176
+      }
+    },
+    "aerial": {
+      "frames": {
+        "mean": 5.602797202797203,
+        "p95": 6.600000000002183,
+        "frames": 715
+      },
+      "renderer": {
+        "triangles": 1391577,
+        "calls": 385,
+        "geometries": 974,
+        "textures": 176
+      }
+    },
+    "helipad": {
+      "frames": {
+        "mean": 6.5799671592774995,
+        "p95": 7.900000000001455,
+        "frames": 609
+      },
+      "renderer": {
+        "triangles": 1392262,
+        "calls": 493,
+        "geometries": 1015,
+        "textures": 179
+      }
+    },
+    "harbour": {
+      "frames": {
+        "mean": 2.952138643067851,
+        "p95": 3.900000000001455,
+        "frames": 1356
+      },
+      "renderer": {
+        "triangles": 1301021,
+        "calls": 147,
+        "geometries": 1015,
+        "textures": 179
+      }
+    }
+  }
+}

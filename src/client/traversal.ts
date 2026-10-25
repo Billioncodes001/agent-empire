@@ -246,6 +246,7 @@ export class Traversal {
     this.nearby = !p.driving && p.pos.z >= 30 ? this.near() : undefined;
     const rideHint = this.nearby ? this.rideHint() : '';
     const k = p.bindings;
+    let districtHint = '';
     if (p.flying) {
       const floor = airframeFloor(this.office.colliders, p.pos.x, p.pos.z, p.facing, p.ride.half, p.pos.y);
       // Review 3: on touch screens name the on-screen buttons, not keyboard keys.
@@ -257,7 +258,8 @@ export class Traversal {
     else if (p.pos.z < 30)
       this.hint.textContent = p.pos.z > 8 && Math.abs(p.pos.x) < 4 ? (this.office.floor === 0 ? 'Walk through the glass doors to the waterfront' : 'Take the elevator to floor 1 for the street exit') : '';
     else if (rideHint) this.hint.textContent = rideHint;
-    else if (this.city.districts?.hintAt(p.pos, keyLabel(k.interact))) this.hint.textContent = this.city.districts.hintAt(p.pos, keyLabel(k.interact));
+    // CITY-10 review: the district (and city architect) hint is asked once a frame.
+    else if ((districtHint = this.city.districts?.hintAt(p.pos, keyLabel(k.interact)) ?? '')) this.hint.textContent = districtHint;
     else {
       const site = SITES.find((s) => {
         const e = entrance(s.id);

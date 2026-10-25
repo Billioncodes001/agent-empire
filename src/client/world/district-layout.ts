@@ -161,6 +161,13 @@ export type CarPose = { position: { x: number; z: number }; rotation: { y: numbe
  * `car` is the sedan, or (CITY-06) every live body: the driven ride with its own footprint and the parked sedan.
  * While driving, the founder is the car: its full body is tested, not a point at its centre.
  */
+/**
+ * CITY-10 re-review (optional): a city-architect addition's collider turns solid only once neither the walker nor any
+ * live vehicle (a driven car, the parked sedan) overlaps it (with 0.4 m slack), so nobody is trapped inside one.
+ */
+export function colliderMaySolidify(box: Omit<Box, 'top'>, player: { x: number; z: number }, bodies: readonly CarPose[], driving: boolean): boolean {
+  return slotClear({ minX: box.minX - 0.4, maxX: box.maxX + 0.4, minZ: box.minZ - 0.4, maxZ: box.maxZ + 0.4, top: 0 }, bodies, player, driving);
+}
 export function slotClear(box: Box, car: CarPose | readonly CarPose[], player: { x: number; z: number }, driving = false) {
   const person = !driving && player.x > box.minX - 0.4 && player.x < box.maxX + 0.4 && player.z > box.minZ - 0.4 && player.z < box.maxZ + 0.4;
   const bodies: readonly CarPose[] = Array.isArray(car) ? car : [car as CarPose];

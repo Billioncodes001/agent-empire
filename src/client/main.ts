@@ -60,6 +60,7 @@ import { voiceSetupSection } from './ui/voice-setup';
 import { maybeOfferOnboarding, onboardingSection } from './ui/onboarding';
 import { openPhone } from './ui/phone';
 import { chiefBrainSection } from './ui/chief';
+import { architectSection } from './ui/architect';
 import { ENGINE_NAME, type WorkerEngine } from '../shared/engines';
 import { startUpdates, updateSettingsSection } from './update';
 import { connectionView } from './ui/continuity';
@@ -1332,7 +1333,7 @@ $('btn-settings').addEventListener('click', () =>
     },
     editProfile,
     () => sound.ding('done'),
-    combineSections(appPanel(net), onboardingSection(onboardingHooks()), voiceSetupSection(), linkedAccountsSection({ onSignIn: () => { closeAllModals(); signInToClaude(); } }), productsSection(), chiefBrainSection(), updateSettingsSection(updateService)),
+    combineSections(appPanel(net), onboardingSection(onboardingHooks()), voiceSetupSection(), linkedAccountsSection({ onSignIn: () => { closeAllModals(); signInToClaude(); } }), productsSection(), chiefBrainSection(), architectSection(), updateSettingsSection(updateService)),
   ),
 );
 
