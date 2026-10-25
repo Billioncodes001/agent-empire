@@ -21,7 +21,8 @@ import {
   LESSON_LIMITS, SOURCE_KINDS, SOURCE_LABEL, isLessonScope, lessonsMarkdown, relevantLessons,
   type Lesson, type LessonScope, type LessonSource, type MemoryState,
 } from '../shared/memory.js';
-import { hasHiddenChars, unsafeReason } from './chief.js';
+import { hasHiddenChars } from '../shared/text-safety.js';
+import { checkLesson, lessonItemMatches, sameLesson, type LessonDraft } from '../shared/lesson-rules.js';
 import { writeJsonAtomic } from './persistence.js';
 
 const FILE = 'lessons.json';
@@ -49,39 +50,8 @@ export interface MemoryInboxPort {
   get(approvalId: string): Approval | undefined;
 }
 
-export interface LessonDraft { text: unknown; scope: unknown; scopeValue?: unknown }
-
-/**
- * Validates lesson text and scope. `model`: text the chief's model wrote (screened as untrusted). Answers the clean
- * fields or an error message; nothing is trimmed into shape.
- */
-export function checkLesson(draft: LessonDraft, origin: 'model' | 'ceo'): { ok: { text: string; scope: LessonScope; scopeValue?: string } } | { error: string } {
-  if (typeof draft.text !== 'string' || !draft.text.trim()) return { error: 'the lesson text is missing' };
-  const text = draft.text.trim();
-  if (text.length > LESSON_LIMITS.text) return { error: `the lesson is longer than ${LESSON_LIMITS.text} characters` };
-  if (hasHiddenChars(text)) return { error: 'the lesson contains invisible or control characters' };
-  if (origin === 'model') { const why = unsafeReason(text); if (why) return { error: `the lesson ${why}` }; }
-  if (!isLessonScope(draft.scope)) return { error: 'scope must be company, product, role or client' };
-  const scope = draft.scope;
-  const raw = draft.scopeValue;
-  if (scope === 'company') {
-    if (raw !== undefined && raw !== null && raw !== '') return { error: 'a company-wide lesson has no scope value' };
-    return { ok: { text, scope } };
-  }
-  if (typeof raw !== 'string' || !raw.trim()) return { error: `a ${scope} lesson needs its ${scope === 'role' ? 'role' : `${scope} name`}` };
-  const value = raw.trim();
-  if (scope === 'role') {
-    if (!(CHIEF_ROLES as readonly string[]).includes(value)) return { error: `role must be one of ${CHIEF_ROLES.join(', ')}` };
-  } else {
-    if (value.length > LESSON_LIMITS.scopeValue) return { error: `the ${scope} name is longer than ${LESSON_LIMITS.scopeValue} characters` };
-    if (hasHiddenChars(value)) return { error: `the ${scope} name contains invisible or control characters` };
-  }
-  return { ok: { text, scope, scopeValue: value } };
-}
-
-const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, ' ');
-const sameLesson = (a: Pick<Lesson, 'text' | 'scope' | 'scopeValue'>, b: Pick<Lesson, 'text' | 'scope' | 'scopeValue'>) =>
-  a.scope === b.scope && norm(a.text) === norm(b.text) && norm(a.scopeValue ?? '') === norm(b.scopeValue ?? '');
+// FREE-07: checkLesson, sameLesson and the proposal match guard are shared with the cloud coordinator.
+export { checkLesson, type LessonDraft } from '../shared/lesson-rules.js';
 const REF_RE = /^[\w:.#@-]{1,200}$/;
 const JOB_RE = /^[\w-]{1,80}$/;
 
@@ -228,9 +198,7 @@ export class LessonMemory {
 
   /** Review fix 1: the inbox item was raised for exactly this proposal. */
   private matches(item: Approval, l: Stored): boolean {
-    const a = item.lesson;
-    return item.kind === 'lesson' && !!a && a.lessonId === l.id && a.text === l.text && a.scope === l.scope && (a.scopeValue ?? '') === (l.scopeValue ?? '')
-      && !!l.nonce && a.nonce === l.nonce && item.createdAt >= l.proposedAt;
+    return lessonItemMatches(item, l);
   }
 
   private decide(id: string, decision: 'approved' | 'rejected', actor: string): string {
