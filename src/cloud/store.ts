@@ -4,7 +4,7 @@
  * so a concurrent writer makes the update fail (HTTP 422) instead of being overwritten. Callers retry
  * by re-reading and recomputing. Browser-safe: no Node built-ins.
  */
-import { INTENT_PATH, OPTIONAL_STATE_FILES, STATE_PATHS } from './schema.js';
+import { INTENT_PATH, OPTIONAL_STATE_FILES, RECEIPT_PATH, STATE_PATHS } from './schema.js';
 import { INTENT_FETCH_MARGIN, MAX_INTENT_BYTES, selectIntentBatch } from './intents.js';
 
 export interface StateSnapshot {
@@ -35,7 +35,7 @@ export interface WorkflowControl {
   setWorkflowEnabled(enabled: boolean): Promise<void>;
 }
 
-export const isStatePath = (path: string) => STATE_PATHS.includes(path) || INTENT_PATH.test(path);
+export const isStatePath = (path: string) => STATE_PATHS.includes(path) || INTENT_PATH.test(path) || RECEIPT_PATH.test(path);
 
 export class ConflictRetriesExhausted extends Error {
   constructor(attempts: number) { super(`The state branch kept moving; gave up after ${attempts} attempts.`); this.name = 'ConflictRetriesExhausted'; }

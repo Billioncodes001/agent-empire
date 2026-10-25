@@ -45,6 +45,10 @@ export const STATE_PATHS: readonly string[] = [...Object.values(STATE_FILES), ..
 export const INTENT_DIR = 'intents/';
 export const INTENT_PATH = /^intents\/([A-Za-z0-9._-]{1,80})\.json$/;
 export const ARCHIVE_DIR = 'archive/';
+/** FREE-12: receipts the outreach send job writes for the next tick to consume (one per run id). */
+export const RECEIPT_DIR = 'outbox/receipts/';
+export const RECEIPT_PATH = /^outbox\/receipts\/([A-Za-z0-9._-]{1,80})\.json$/;
+export const receiptPath = (runId: string) => `${RECEIPT_DIR}${runId.replace(/[^A-Za-z0-9._-]/g, '').slice(0, 80)}.json`;
 
 export const LIMITS = {
   journal: 500, spendEntries: 1000, spendDays: 90, processedIntents: 2000, reports: 80,
