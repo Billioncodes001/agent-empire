@@ -1061,6 +1061,7 @@ html.ae-touch #toasts { top: calc(58px + env(safe-area-inset-top)); }
    to close so it can't block the dialog's controls. */
 #toasts[data-place] > .toast:nth-last-child(n + 3) { display: none; }
 #toasts[data-place="above-footer"] > .toast.update-toast { display: none; }
+#toasts[data-tight] > .toast:not(:last-child) { display: none; }
 html.ae-touch #hud #conn { top: calc(58px + env(safe-area-inset-top)); bottom: auto; }
 html.ae-touch #hud #shares { top: calc(58px + env(safe-area-inset-top)); bottom: auto; left: calc(12px + env(safe-area-inset-left)); }
 html.ae-touch .share-thumb { width: 150px; }

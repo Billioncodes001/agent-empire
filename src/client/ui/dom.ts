@@ -176,6 +176,7 @@ const resizeWatch = typeof ResizeObserver !== 'undefined' ? new ResizeObserver((
 export function placeToasts() {
   const box = document.getElementById('toasts');
   if (!box?.dataset || !box.style) return; // test doubles of #toasts are bare elements
+  delete box.dataset.tight;
   const top = stack[stack.length - 1];
   if (watched !== (top?.el ?? null)) {
     if (watched) resizeWatch?.unobserve(watched);
@@ -196,8 +197,18 @@ export function placeToasts() {
   } else {
     const footer = top.el.querySelector(':scope > footer');
     const edge = footer ? footer.getBoundingClientRect().top : r.bottom;
+    // The header and step tabs sit above the dialog's body: on short screens the stack is clipped to the space below
+    // them, keeping the newest toast (flex-end) and dropping older ones off the top.
+    const body = top.el.querySelector(':scope > .body');
+    const ceiling = body ? body.getBoundingClientRect().top : r.top;
+    const room = Math.max(0, Math.round(edge - 8 - ceiling - 8));
     box.dataset.place = 'above-footer';
-    box.style.cssText = `position: fixed; top: auto; bottom: ${Math.round(window.innerHeight - edge + 8)}px; max-width: min(560px, calc(100vw - 32px));`;
+    box.style.cssText = `position: fixed; top: auto; bottom: ${Math.round(window.innerHeight - edge + 8)}px; max-width: min(560px, calc(100vw - 32px)); max-height: ${room}px; overflow: hidden; justify-content: flex-end;`;
+    // When two toasts don't fit, show only the newest rather than a half-clipped older one.
+    // (Overflow past the top of a flex-end box isn't scrollable, so measure the two newest shown toasts directly.)
+    const shown = [...box.children].filter((c): c is HTMLElement => c instanceof HTMLElement && c.offsetHeight > 0).slice(-2);
+    const need = shown.reduce((sum, c) => sum + c.offsetHeight, 0) + 8 * Math.max(0, shown.length - 1);
+    if (need > room) box.dataset.tight = '';
   }
 }
 if (typeof window !== 'undefined') {
