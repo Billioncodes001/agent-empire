@@ -25,6 +25,8 @@ html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 html, body { margin: 0; height: 100%; overflow: hidden; background: #0f1b21; } /* the splash ink: no light flash while the setup hands over or the scene loads */
 body { font-family: var(--font); color: var(--ink); -webkit-font-smoothing: antialiased; }
 button { font-family: inherit; }
+/* A long press on a button must not select its label or open the touch Copy/Share bar over the game (device testing). */
+button, [role="button"] { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 .hidden { display: none !important; }
 
 #app { position: fixed; inset: 0; }
@@ -335,6 +337,8 @@ button { font-family: inherit; }
 .svc-title { font-weight: 900; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .svc-meta { font-size: 12px; font-weight: 700; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .svc-port { font: 800 14px ui-monospace, Menlo, monospace; }
+/* Service rows are role="button", but their command, branch and port stay copyable by hand. */
+.svc-title, .svc-meta, .svc-port { -webkit-user-select: text; user-select: text; }
 .svc-list .btn { padding: 3px 10px; font-size: 13px; text-decoration: none; color: inherit; }
 .svc-empty { text-align: center; padding: 18px 8px; border: 3px dashed var(--muted); border-radius: 14px; }
 .svc-empty p { margin: 0; font-weight: 800; }

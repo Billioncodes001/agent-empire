@@ -13,7 +13,7 @@ Every signing step switches on by itself once its GitHub secrets exist. Without 
    npm run version:check                 # every file agrees
    ```
 
-   Versions are `X.Y.Z` or `X.Y.Z-(alpha|beta|rc).N`. Any prerelease goes to the beta channel and is marked pre-release on GitHub. Versions only move forward. Android `versionCode` and the iOS build number are derived from the version (`1.0.0-beta.2` = 10000302), so a version can only be uploaded to Play or TestFlight once.
+   Versions are `X.Y.Z` or `X.Y.Z-(alpha|beta|rc).N`. Any prerelease goes to the beta channel and is marked pre-release on GitHub, with one exception: until 1.0.0 ships, a `1.0.0-*` prerelease is also the stable channel's release. It publishes `channel-stable.json` and is GitHub's "latest" release (so it is not flagged pre-release), because installed v1.0.0-beta.1 apps default to the stable channel and read `…/releases/latest/download/channel-stable.json` (`tools/release/version.mjs` `stableBridge`, tested against the frozen beta.1 readers in `tests/release-compat.test.ts`). Versions only move forward. Android `versionCode` and the iOS build number are derived from the version (`1.0.0-beta.2` = 10000302), so a version can only be uploaded to Play or TestFlight once.
 
 2. **Release notes:** `docs/release-notes/<version>.md`, for example `docs/release-notes/1.0.0-beta.2.md`. The text goes into the channel file the apps show (first 4000 characters), and becomes the GitHub release notes. Without the file, the apps show "Agent Empire <version>" and GitHub generates notes. Follow "Release notes" below: it must end with one install line per platform.
 
@@ -224,7 +224,7 @@ Names come from `tools/release/assets.mjs`. Files people download have plain nam
 | `agent-empire-game-<v>.zip` | every app's over-the-air game update (url + sha256 from the channel) | always |
 | `agent-empire-coordinator.mjs` | cloud mode: a state repository gets it only when its user accepts the prompt | always |
 | `channel-beta.json`, `channel-beta.json.sig` | every installed app (the beta.1 apps find releases by these two names); also the signed checksum list (`assets`: sha256 and size of every other file) | always |
-| `channel-stable.json`, `.sig` | stable apps (`…/releases/latest/download/channel-stable.json`) | final releases |
+| `channel-stable.json`, `.sig` | stable apps (`…/releases/latest/download/channel-stable.json`) | final releases, and `1.0.0-*` prereleases until 1.0.0 ships |
 | `Agent-Empire-Mac-Apple-Silicon-Update.zip`, `Agent-Empire-Mac-Intel-Update.zip` | Squirrel.Mac in-place update payload | signed and notarized macOS only |
 | `RELEASES-darwin-arm64.json`, `RELEASES-darwin-x64.json` | Squirrel.Mac feed (Electron's static `RELEASES.json`; stable apps accept only this name under `latest/download`) | signed and notarized macOS only |
 | `AgentEmpire-<nugetVersion>-full.nupkg`, `RELEASES` | Squirrel.Windows update package (the installed shell accepts only this name) and feed index | signed Windows only |

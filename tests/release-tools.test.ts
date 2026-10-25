@@ -82,9 +82,22 @@ test('derived values: channel, iOS marketing version and build number', () => {
   assert.equal(releaseChannel('1.0.0-rc.2'), 'beta');
   assert.equal(releaseChannel('1.0.0'), 'stable');
   assert.deepEqual(versionInfo('1.2.3-beta.4'), {
-    version: '1.2.3-beta.4', tag: 'v1.2.3-beta.4', prerelease: true, channel: 'beta', androidVersionName: '1.2.3-beta.4',
+    version: '1.2.3-beta.4', tag: 'v1.2.3-beta.4', prerelease: true, channel: 'beta', stableBridge: false, latest: false, androidVersionName: '1.2.3-beta.4',
     androidVersionCode: 10203304, iosMarketingVersion: '1.2.3', iosBuildNumber: '10203304',
   });
+});
+
+test('stable bridge: until 1.0.0 ships, a 1.0.0 pre-release is GitHub latest and publishes the stable channel', () => {
+  // Installed v1.0.0-beta.1 apps default to the stable channel (releases/latest/download/channel-stable.json).
+  for (const v of ['1.0.0-beta.2', '1.0.0-rc.1']) assert.deepEqual([versionInfo(v).stableBridge, versionInfo(v).latest, versionInfo(v).prerelease], [true, true, true], v);
+  assert.deepEqual([versionInfo('1.0.0').stableBridge, versionInfo('1.0.0').latest], [false, true]);
+  assert.deepEqual([versionInfo('1.0.1-beta.1').stableBridge, versionInfo('1.0.1-beta.1').latest], [false, false]);
+  assert.deepEqual([versionInfo('2.0.0-beta.1').stableBridge, versionInfo('2.0.0-beta.1').latest], [false, false]);
+  // The workflow publishes by `latest`, not by `prerelease`, and refuses a latest release without the stable channel.
+  const wf = readFileSync(path.join(ROOT, '.github/workflows/release.yml'), 'utf8');
+  assert.match(wf, /echo "latest=\$\(jq -r \.latest/);
+  assert.match(wf, /if \[ "\$LATEST" = true \]; then PRE_ARGS=\(--latest\); else PRE_ARGS=\(--prerelease --latest=false\); fi/);
+  assert.match(wf, /a latest release must publish channel-stable\.json/);
 });
 
 test('this branch is on 1.0.0-beta.1 and every target is in sync', () => {
@@ -118,6 +131,16 @@ test('sync writes every target, check names drift, and other content is untouche
   assert.match(problems[0], /project\.pbxproj: has 7, 10200603/);
   writeFileSync(pkg, readFileSync(pkg, 'utf8').replace('"version": "1.2.0-rc.3"', '"version": "1.2"'));
   assert.match(checkVersion(root)[0], /package\.json: Invalid version/);
+});
+
+test('tag rule: versions only move forward, so a late 1.0.0 pre-release cannot take over "latest" through the bridge', () => {
+  const existing = ['v0.1.99', 'v1.0.0-beta.1', 'not-a-version', 'vbogus'];
+  assert.deepEqual(checkTag('v1.0.0-beta.2', '1.0.0-beta.2', existing), [], 'newer than every release tag');
+  assert.deepEqual(checkTag('v1.0.0-beta.2', '1.0.0-beta.2', [...existing, 'v1.0.0-beta.2']), [], 'its own tag is ignored');
+  const late = checkTag('v1.0.0-beta.9', '1.0.0-beta.9', [...existing, 'v1.0.0']);
+  assert.equal(late.length, 1);
+  assert.match(late[0], /not newer than existing release tag\(s\) v1\.0\.0/);
+  assert.equal(checkTag('v1.0.0-beta.1', '1.0.0-beta.1', ['v1.0.0-rc.1']).length, 1, 'rc.1 is newer than beta.1');
 });
 
 test('tag rule: the tag is exactly v<version> and its commit is on main', () => {
@@ -423,6 +446,8 @@ test('unsigned beta: only the DMGs, the installer, the APK and the files install
   assert.deepEqual(listing, [
     'Agent-Empire-Android.apk', 'Agent-Empire-Mac-Apple-Silicon.dmg', 'Agent-Empire-Mac-Intel.dmg', 'Agent-Empire-Windows-Setup.exe',
     'agent-empire-coordinator.mjs', `agent-empire-game-${V}.zip`, 'channel-beta.json', 'channel-beta.json.sig',
+    // A 1.0.0 pre-release also bridges the stable channel until 1.0.0 ships (version.mjs stableBridge).
+    'channel-stable.json', 'channel-stable.json.sig',
   ]);
   assert.deepEqual(checkPublished(s.assets), []);
   const doc = readJson(path.join(s.assets, 'channel-beta.json'));
@@ -463,6 +488,8 @@ test('signed desktop builds add exactly the update payloads and feeds the update
     'Agent-Empire-Android.apk', 'Agent-Empire-Mac-Apple-Silicon-Update.zip', 'Agent-Empire-Mac-Apple-Silicon.dmg', 'Agent-Empire-Mac-Intel-Update.zip',
     'Agent-Empire-Mac-Intel.dmg', 'Agent-Empire-Windows-Setup.exe', nupkgName(V), 'RELEASES', 'RELEASES-darwin-arm64.json', 'RELEASES-darwin-x64.json',
     'agent-empire-coordinator.mjs', `agent-empire-game-${V}.zip`, 'channel-beta.json', 'channel-beta.json.sig',
+    // A 1.0.0 pre-release also bridges the stable channel until 1.0.0 ships (version.mjs stableBridge).
+    'channel-stable.json', 'channel-stable.json.sig',
   ]);
   assert.deepEqual(checkPublished(s.assets), []);
   const doc = readJson(path.join(s.assets, 'channel-beta.json'));
@@ -520,7 +547,9 @@ test('the channel builder refuses a staging folder that would publish the wrong 
     assert.throws(() => buildChannel(channelArgs(s)), new RegExp(`${stray.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} is not a release asset`));
   }
   const base = ok();
-  assert.throws(() => buildChannel(channelArgs(base, { channel: 'stable' })), /prerelease/);
+  // Only a 1.0.0 pre-release may bridge the stable channel; a later pre-release may not.
+  assert.equal(buildChannel(channelArgs(base, { channel: 'stable' })).channel, 'stable');
+  assert.throws(() => buildChannel(channelArgs(base, { channel: 'stable', version: '1.0.1-beta.1' })), /prerelease/);
   assert.throws(() => buildChannel(channelArgs(base, { channel: 'nightly' })), /Unknown channel/);
   assert.throws(() => buildChannel(channelArgs(base, { repo: 'https://evil.example/x' })), /owner\/name/);
   assert.throws(() => buildChannel(channelArgs(base, { version: '1.0.0-beta.3' })), /agent-empire-game-1\.0\.0-beta\.3\.zip/);
