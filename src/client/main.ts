@@ -69,6 +69,7 @@ import { cloudSession, forgetSavedSnapshots } from './cloud/session';
 import { CloudNet } from './cloud/net';
 import { installCloudChrome, mountCloudStrip, openCloudPanel } from './cloud/ui';
 import { native } from './native';
+import { mountGamepad } from './gamepad';
 import { hiringPaused, renderUsage, usageLabel, usageTitle } from './ui/usage';
 
 // ---- Renderer & scene ---------------------------------------------------------------------------
@@ -345,6 +346,16 @@ const life = new OfficeLife(office, {
   detail: () => settings.quality !== 'low',
   onTyping: (id, typing) => { const w = store.workers.get(id), d = w && DESK_BY_ID.get(w.deskId); if (d) sound.setTyping(id, d.x, d.z, typing); },
 });
+// CHAR-01: a gamepad drives the same actions as the keyboard (feature-detected; idle until a pad connects).
+const gamepad = mountGamepad({
+  player,
+  interact: () => { if (!traversal.interactCar() && !cityInteract() && !empireUI.interact()) use(target, 'E'); },
+  changeView: () => changeView(),
+  openMap: () => empireUI.openMap(),
+  openMenu: () => document.getElementById('btn-menu')?.click(),
+  blocked: () => modalOpen() || player.scripted || isTyping(),
+});
+
 let firstWelcome = true;
 let foundingOpened = false;
 /** The server version this page was loaded with. */
@@ -1398,6 +1409,8 @@ function frame(ts?: number) {
     r.cabinView?.(cabin && r === activeRide);
   }
   empireUI.touch.setMode(player.flying ? 'fly' : player.driving ? 'drive' : 'walk');
+  empireUI.touch.setUse(tower.active ? 'Use' : traversal.useLabel());
+  gamepad.update(dt);
   sound.environment(outside);
   sound.vehicle(player.flying ? player.flight.audio() : player.vehicle, player.driving, (activeRide?.object ?? city.car).position, player.view === 'first');
   canvas.dataset.audio = sound.recordings;

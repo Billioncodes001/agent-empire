@@ -34,6 +34,45 @@ export function gamepadActions(pad: PadState | null | undefined, prev: PadAction
   };
 }
 
+type Held = 'forward' | 'backward' | 'left' | 'right' | 'run' | 'jump';
+const HELD: Held[] = ['forward', 'backward', 'left', 'right', 'run', 'jump'];
+export interface GamepadTarget {
+  setAction(action: Held, pressed: boolean): void;
+  lookBy(dx: number, dy: number): void;
+  readonly enabled: boolean;
+}
+/**
+ * Polls the pad once a frame (call `update` from the render loop). Does nothing without the Gamepad API or before a
+ * pad connects. `blocked()` (a window open, text being typed) releases everything held.
+ */
+export function mountGamepad(opts: { player: GamepadTarget; interact(): void; changeView(): void; openMap(): void; openMenu(): void; blocked(): boolean }) {
+  let connected = false, prev: PadActions = NO_PAD;
+  if (typeof window !== 'undefined' && typeof navigator !== 'undefined' && typeof navigator.getGamepads === 'function') {
+    window.addEventListener('gamepadconnected', () => { connected = true; document.documentElement.classList.add('ae-gamepad'); });
+    window.addEventListener('gamepaddisconnected', () => { connected = !!readPad(); if (!connected) { release(); document.documentElement.classList.remove('ae-gamepad'); } });
+  }
+  const release = () => {
+    for (const a of HELD) if (prev[a]) opts.player.setAction(a, false);
+    prev = NO_PAD;
+  };
+  return {
+    get connected() { return connected; },
+    update(dt: number) {
+      if (!connected) return;
+      if (opts.blocked() || !opts.player.enabled) { release(); return; }
+      const next = gamepadActions(readPad(), prev);
+      for (const a of HELD) if (next[a] !== prev[a]) opts.player.setAction(a, next[a]);
+      if (next.interact && !prev.interact) opts.interact();
+      if (next.camera && !prev.camera) opts.changeView();
+      if (next.map && !prev.map) opts.openMap();
+      if (next.menu && !prev.menu) opts.openMenu();
+      if (next.lookX || next.lookY) opts.player.lookBy(next.lookX * 2.6 * dt, next.lookY * 1.6 * dt);
+      prev = next;
+    },
+    release,
+  };
+}
+
 /** The first connected pad, or null (also when the Gamepad API is missing). */
 export function readPad(): PadState | null {
   if (typeof navigator === 'undefined' || typeof navigator.getGamepads !== 'function') return null;

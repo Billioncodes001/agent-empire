@@ -233,6 +233,17 @@ export class PlayerController {
     }
   }
 
+  /** CHAR-01: camera from a gamepad's right stick (radians): looks around in first person, orbits in third. */
+  lookBy(dx: number, dy: number) {
+    if (!this.enabled) return;
+    if (this.view === 'first') { this.look(dx, dy); return; }
+    this.camYaw -= dx;
+    this.moveYaw -= dx;
+    this.orbitGrace = 1.2;
+    this.followPending = false;
+    this.camPitch = THREE.MathUtils.clamp(this.camPitch + dy * 0.8, 0.05, 1.3);
+  }
+
   private look(dx: number, dy: number) {
     this.camYaw -= dx;
     // Only deliberate mouse input changes the held movement basis. Automatic

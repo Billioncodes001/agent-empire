@@ -1,6 +1,7 @@
 import type { Action } from '../controls';
 import type { PlayerController } from '../player';
-import { NO_STICK, knobOffset, stickActions, type StickActions } from '../touch-input';
+import { NO_STICK, knobOffset, stickActions, touchMoves, type StickActions } from '../touch-input';
+import './touch-controls.css';
 import { h, modalOpen, onModalChange } from './dom';
 
 const MOVES = ['forward', 'backward', 'left', 'right', 'run'] as const satisfies readonly Action[];
@@ -29,6 +30,8 @@ export interface TouchControls {
   release(): void;
   /** CITY-08: while flying, Jump becomes Up and a Down button appears; the stick then flies and turns only. */
   setMode(mode: 'walk' | 'drive' | 'fly'): void;
+  /** CHAR-01: what Use does here (Exit, Enter, Board or Use); the button's label and name follow it. */
+  setUse(label: 'Exit' | 'Enter' | 'Board' | 'Use'): void;
 }
 
 /**
@@ -51,10 +54,17 @@ export function mountTouchControls(opts: { player: PlayerController; interact: (
   );
   let stick: { id: number; cx: number; cy: number; radius: number } | null = null;
   let held: StickActions = NO_STICK;
+  /** The stick as pushed, before the Run button is applied. */
+  let raw: StickActions = NO_STICK;
+  /** CHAR-01: the Run button's lock. */
+  let runLock = false;
 
   let mode: 'walk' | 'drive' | 'fly' = 'walk';
-  const apply = (next: StickActions) => {
-    // In flight the run action means descend; only the Down button holds it.
+  const apply = (stick: StickActions) => {
+    raw = stick;
+    // CHAR-01: the Run button runs (or accelerates) at any deflection; in flight the run action means descend, and
+    // only the Down button holds it.
+    const next = touchMoves(stick, runLock, mode);
     for (const action of MOVES) if (next[action] !== held[action] && !(mode === 'fly' && action === 'run')) player.setAction(action, next[action]);
     held = next;
     root.dataset.stick = next.magnitude ? (next.run ? 'run' : 'walk') : 'rest';
@@ -106,8 +116,21 @@ export function mountTouchControls(opts: { player: PlayerController; interact: (
   const view = button('touch-view', 'Switch camera view', 'View', '◐');
   const down = button('touch-down', 'Descend', 'Down', '⤓');
   down.hidden = true;
+  // CHAR-01: Run is a toggle (a lock), so the stick no longer has to be pushed to the edge. Accelerates in a car.
+  const run = button('touch-run', 'Run', 'Run', '»');
+  run.setAttribute('aria-pressed', 'false');
+  const paintRun = () => {
+    run.setAttribute('aria-pressed', String(runLock));
+    run.classList.toggle('on', runLock);
+    root.classList.toggle('ae-run-lock', runLock);
+  };
+  run.addEventListener('click', () => {
+    runLock = !runLock;
+    paintRun();
+    apply(raw);
+  });
   // Touching a control must not focus it: a focused button would swallow keyboard input for the game.
-  for (const b of [jump, use, view, down]) b.addEventListener('pointerdown', (e) => e.preventDefault());
+  for (const b of [jump, use, view, down, run]) b.addEventListener('pointerdown', (e) => e.preventDefault());
   const downRelease = () => { down.classList.remove('down'); player.setAction('run', false); };
   down.addEventListener('pointerdown', (e) => { down.setPointerCapture?.(e.pointerId); down.classList.add('down'); player.setAction('run', true); });
   for (const type of ['pointerup', 'pointercancel', 'lostpointercapture'] as const) down.addEventListener(type, downRelease);
@@ -140,7 +163,7 @@ export function mountTouchControls(opts: { player: PlayerController; interact: (
   use.addEventListener('click', () => opts.interact());
   view.addEventListener('click', () => opts.changeView());
 
-  const actions = h('div.touch-actions', { role: 'group', 'aria-label': 'Touch actions' }, view, use, down, jump);
+  const actions = h('div.touch-actions', { role: 'group', 'aria-label': 'Touch actions' }, view, run, use, down, jump);
   const ui = h('div.touch-ui', {}, zone, actions);
   document.getElementById('hud')!.append(ui);
 
@@ -187,6 +210,19 @@ export function mountTouchControls(opts: { player: PlayerController; interact: (
     root.classList.toggle('ae-flying', flying);
     jump.setAttribute('aria-label', flying ? 'Climb' : 'Jump');
     jump.querySelector('.touch-label')!.textContent = flying ? 'Up' : 'Jump';
+    run.hidden = flying;
+    const driving = mode === 'drive';
+    run.setAttribute('aria-label', driving ? 'Drive fast' : 'Run');
+    run.querySelector('.touch-label')!.textContent = driving ? 'Fast' : 'Run';
   };
-  return { release, setMode };
+  let useLabel = 'Use';
+  const USE_NAMES = { Use: 'Interact with what is in front of you', Enter: 'Enter the vehicle at the driver’s door', Board: 'Board the helicopter at the pilot’s door', Exit: 'Exit the vehicle' } as const;
+  const setUse = (label: keyof typeof USE_NAMES) => {
+    if (label === useLabel) return;
+    useLabel = label;
+    use.querySelector('.touch-label')!.textContent = label;
+    use.setAttribute('aria-label', USE_NAMES[label]);
+    use.classList.toggle('context', label !== 'Use');
+  };
+  return { release, setMode, setUse };
 }

@@ -199,6 +199,16 @@ export class Traversal {
     this.begin('enter-car');
     return true;
   }
+  /** CHAR-01: what the touch Use button does here: Exit a vehicle, Enter a car, Board the helicopter, or Use. */
+  useLabel(): 'Exit' | 'Enter' | 'Board' | 'Use' {
+    const p = this.player;
+    if (this.current) return p.driving || this.current.kind === 'enter-car' ? 'Exit' : 'Use';
+    if (p.driving) return 'Exit';
+    if (p.pos.z < 30) return 'Use';
+    const r = this.near();
+    if (!r || r.locked) return 'Use';
+    return r.spec.kind === 'helicopter' ? 'Board' : 'Enter';
+  }
   /** What the hint says next to a ride, or ''. */
   private rideHint(): string {
     const p = this.player, r = this.near();
