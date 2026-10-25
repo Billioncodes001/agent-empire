@@ -253,6 +253,8 @@ test('premium: the daily and monthly caps are checked against the worst case bef
     b.arch.updateSettings({ enabled: true, engine: 'premium', dailyCapUsd: 0.05, monthlyCapUsd: 0.05 });
     const d1 = await b.arch.runNow('CEO');
     assert.equal(noUsage.calls.length, 1);
+    // Lower the monthly cap to what day 1 already spent: no room is left this month.
+    b.arch.updateSettings({ monthlyCapUsd: Math.max(0.01, Math.floor(d1.worstUsd! * 100) / 100) });
     b.clock.t = local(26, 3, 0);
     const d2 = await b.arch.tick();
     assert.equal(noUsage.calls.length, 1, 'no second call this month');
@@ -315,7 +317,8 @@ test('malformed or malicious model output becomes a rejected run; the world neve
   const good = placeIn('harbour-works-yard');
   const answers: [string, RegExp][] = [
     ['Sure! Here are some ideas: build a tower.', /single JSON object/],
-    ['{"changes": [', /valid JSON/],
+    ['{"changes": [', /single JSON object/],
+    ['{"changes": [}', /valid JSON/],
     [JSON.stringify({ changes: [good], approve: true }), /unexpected field/],
     [JSON.stringify({ changes: [{ ...good, exec: 'rm -rf /' }] }), /unexpected field/],
     [JSON.stringify({ changes: [{ ...good, model: 'commercial/building-skyscraper-d' }] }), /unknown model/],
