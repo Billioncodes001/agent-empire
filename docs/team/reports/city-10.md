@@ -124,6 +124,17 @@ Regression tests in `tests/architect-final.test.ts` (10, from the reviewer's c10
 
 Three earlier multi-day tests now inject a monotonic clock that models real elapsed time; without it, no real time passes in a test and paid calls are rightly refused. Rechecked: typecheck, build, `npm test` 1,104 (1,103 pass, 1 skipped), architect-ui-check 19/19 plus max 4/4, inbox-ui-check 47/47.
 
+## Last review (approved at `f11db7e`) and the last two fixes
+
+Regression tests in `tests/architect-last.test.ts` (2, from the reviewer's c10d probe), committed red at `b84cb25`; fixes at `1c10ee3`.
+
+| # | Finding | Fix |
+| --- | --- | --- |
+| 1 | A sleeping host skipped whole days, rule-based growth included (monotonic time stops during sleep, and the scheduler waited for the 23 h paid gap) | The scheduler never waits for the paid-call gap. The run happens at its slot every day; when the gap (or the clock) blocks a paid call, `run()` grows the day rule-based (US$0) and the run note says why. `nextRunAt` is the slot. A host awake 4 hours a day now gets 10 runs in 10 days, with paid calls still 23 h of awake time apart |
+| 2 | An addition touched twice in one run was refused after a crash | Reconcile compares, per addition, its first change's "before" with its last change's "after". A run that moves W1 twice reconciles at both crash points, and undoing both moves returns W1 to where it started |
+
+Rechecked: typecheck, build, `npm test` 1,106 (1,105 pass, 1 skipped), architect-ui-check 19/19 plus max 4/4.
+
 ## Deferred / not verified
 
 - **Onboarding step**: deferred by the coordinator until devtest-02 merges.
