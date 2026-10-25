@@ -425,7 +425,8 @@ const server = createServer(async (req, res) => {
     for (const [ws, token] of socketToken) if (token === entry[0]) ws.close(4401, 'Device signed out');
     return json(res, 200, { ok: true });
   }
-  if (FX_ONBOARDING && await FX_ONBOARDING.route(req, res, url.pathname, sameOrigin)) return;
+  // As on the real server (`trusted()`), a signed-in device's bearer request is trusted: a browser never sends one on its own.
+  if (FX_ONBOARDING && await FX_ONBOARDING.route(req, res, url.pathname, sameOrigin || !!device)) return;
   if (url.pathname === '/__fixture/jobs') return json(res, 200, fxOffice.snapshot());
   if (FX_VOICE && (url.pathname === '/api/voice' || url.pathname.startsWith('/api/voice/') || url.pathname === '/api/phone/chief')) return fxVoiceRoute(req, res, url.pathname);
   if (FX_ENGINES && url.pathname === '/api/engines' && req.method === 'GET') return json(res, 200, fxEngines());

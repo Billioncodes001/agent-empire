@@ -104,9 +104,11 @@ const LANDING_TIME = 0.3;
 const ANKLE = 0.1;
 const FLIGHT = 'airborne_flight';
 
+/** CHAR-01: turning on the spot faster than this (rad/s) steps the feet with a slow walk instead of spinning the idle. */
+export const TURN_STEP = 2.5;
 /** Which recorded clip a grounded, standing body plays at this speed, with hysteresis between walk and run. */
-export function locomotionClip(speed: number, previous: string): 'idle_neutral_01' | 'walk_neutral' | 'run_neutral' {
-  if (speed <= 0.08) return 'idle_neutral_01';
+export function locomotionClip(speed: number, previous: string, turnRate = 0): 'idle_neutral_01' | 'walk_neutral' | 'run_neutral' {
+  if (speed <= 0.08) return Math.abs(turnRate) > TURN_STEP ? 'walk_neutral' : 'idle_neutral_01';
   return (previous === 'run_neutral' ? speed > RUN_EXIT : speed > RUN_ENTER) ? 'run_neutral' : 'walk_neutral';
 }
 
@@ -141,6 +143,9 @@ export class Human {
   private seatedBaseZ = 0;
   private gestureTime = Math.random() * 30;
   private lastYaw?: number;
+  private turnRate?: number;
+  /** Recorded ground speed (m/s at time scale 1) of this body's walk and run strides; see strideSpeed. */
+  stride?: { walk: number; run: number };
   private turnLean = 0;
   private vehiclePose: VehiclePose | null = null;
   private bonePose?: Map<string, THREE.Quaternion>;
@@ -200,6 +205,7 @@ export class Human {
           flight.name = FLIGHT;
           this.actions.set(FLIGHT, this.mixer.clipAction(flight));
         }
+        this.stride = strideSpeeds(url, model, clips);
         this.current = this.actions.get('idle_neutral_01');
         this.motion = 'idle_neutral_01';
         model.traverse((o) => {
@@ -321,6 +327,30 @@ export class Human {
       bone.quaternion.premultiply(_q3.copy(_q2).invert().multiply(_q).multiply(_q2)); bone.updateWorldMatrix(true, true);
     }
   }
+  /**
+   * CHAR-01: light foot IK for stairs and ledges. A foot that would sink into the floor beneath it (a stair tread
+   * while the body eases up a step) is lifted onto it. Run after update(); the next update restores the clean pose.
+   * `floorAt(x, z, y)` is the floor height at a world point for feet near `y`. Two probes a frame.
+   */
+  groundFeet(floorAt: (x: number, z: number, y: number) => number) {
+    if (!this.model || !this.ready) return;
+    this.root.updateWorldMatrix(true, true);
+    const rootY = this.root.getWorldPosition(_v3).y;
+    for (const side of ['l', 'r'] as const) {
+      const foot = this.bones.get(`bip01${side}foot`);
+      if (!foot) continue;
+      const p = foot.getWorldPosition(_v);
+      const floor = floorAt(p.x, p.z, rootY + 0.35);
+      const sink = floor + ANKLE - p.y;
+      if (sink <= 0.005 || sink > 0.45) continue;
+      const target = this.root.worldToLocal(_feet[side === 'l' ? 0 : 1].set(p.x, floor + ANKLE, p.z));
+      // Seed a knee bend of about the right size (a near-straight chain barely bends under CCD), then solve.
+      const bend = Math.sqrt((2 * sink) / 0.85);
+      this.rotate(`bip01${side}thigh`, -bend);
+      this.rotate(`bip01${side}calf`, 2 * bend);
+      this.placeFoot(side, target, 1, 10);
+    }
+  }
   /** Track airborne time, vertical speed and landings; returns whether the flight pose applies. */
   private updateFlight(dt: number): boolean {
     const y = this.root.getWorldPosition(_v).y;
@@ -358,9 +388,14 @@ export class Human {
     if (!this.mixer || !this.model) return;
     const speed = typeof moving === 'number' ? moving : moving ? 1.65 : 0;
     const flying = !seated && !driving && !this.transition && this.updateFlight(dt);
+    // CHAR-01: how fast the body turns, smoothed; a quick turn on the spot steps the feet instead of spinning.
+    const yaw = this.root.parent?.rotation.y ?? 0;
+    const yawSpeed = this.lastYaw === undefined || dt <= 0 ? 0 : Math.atan2(Math.sin(yaw - this.lastYaw), Math.cos(yaw - this.lastYaw)) / dt;
+    this.lastYaw = yaw;
+    this.turnRate = THREE.MathUtils.damp(this.turnRate ?? 0, yawSpeed, 20, dt);
     const name =
       this.transition?.name ??
-      (seated ? 'sit_chair_idle_neutral_01' : flying && this.actions.has(FLIGHT) ? FLIGHT : locomotionClip(speed, this.motion));
+      (seated ? 'sit_chair_idle_neutral_01' : flying && this.actions.has(FLIGHT) ? FLIGHT : locomotionClip(speed, this.motion, this.turnRate));
     const next = this.actions.get(name) ?? this.actions.get('idle_neutral_01');
     if (next && name !== this.motion) {
       const old = this.current;
@@ -389,8 +424,11 @@ export class Human {
         this.current.time = RUN_FLIGHT_PHASE * this.current.getClip().duration;
       } else {
         this.current.paused = false;
+        // CHAR-01: play each stride at the rate its own recorded foot speed matches the ground speed (measured per
+        // body at load), so planted feet do not slide; the cadence is capped so a fast run never looks frantic.
+        const walk = this.stride?.walk ?? 1.45, run = this.stride?.run ?? 3.8;
         this.current.setEffectiveTimeScale(
-          name === 'walk_neutral' ? Math.max(0.15, speed / 1.45) : name === 'run_neutral' ? Math.max(0.3, speed / 3.8) : 1,
+          name === 'walk_neutral' ? (speed <= 0.08 ? 0.6 : THREE.MathUtils.clamp(speed / walk, 0.15, 1.6)) : name === 'run_neutral' ? THREE.MathUtils.clamp(speed / run, 0.3, 1.6) : 1,
         );
       }
     }
@@ -448,9 +486,6 @@ export class Human {
     this.flightLayer(dt, flying);
     this.activityLayer(dt, seated && !driving);
     // Small upper-body balance during a turn; recorded pelvis, knee and foot tracks remain intact.
-    const yaw = this.root.parent?.rotation.y ?? 0;
-    const yawSpeed = this.lastYaw === undefined ? 0 : Math.atan2(Math.sin(yaw - this.lastYaw), Math.cos(yaw - this.lastYaw)) / Math.max(dt, .001);
-    this.lastYaw = yaw;
     this.turnLean = THREE.MathUtils.damp(this.turnLean, !seated && !flying && speed > .4 ? THREE.MathUtils.clamp(-yawSpeed * .015, -.07, .07) : 0, 6, dt);
     this.model.rotation.z = this.turnLean;
     this.root.userData.motion = typing && seated ? 'seated-keyboard' : flying ? 'airborne' : (this.landing ?? 0) > 0 ? 'landing' : name;
@@ -629,6 +664,52 @@ export class Human {
     this.tinted = [];
     this.root.clear();
   }
+}
+
+const strides = new Map<string, { walk: number; run: number }>();
+/** Measured once per body (scaled to its height) and shared by every copy of it. */
+function strideSpeeds(key: string, model: THREE.Object3D, clips: THREE.AnimationClip[]) {
+  let s = strides.get(key);
+  if (!s) {
+    const walk = clips.find((c) => c.name === 'walk_neutral'), run = clips.find((c) => c.name === 'run_neutral');
+    s = { walk: walk ? strideSpeed(model, walk) ?? 1.45 : 1.45, run: run ? strideSpeed(model, run) ?? 3.8 : 3.8 };
+    strides.set(key, s);
+  }
+  return s;
+}
+/**
+ * CHAR-01: the ground speed a recorded stride implies: how fast a planted foot travels backwards relative to the body
+ * (median over the frames where each foot is within 1.5 cm of its lowest point). The clips carry no forward root
+ * motion, so this is the speed at which that clip plays without foot sliding. Uses a throwaway mixer on `model`.
+ */
+export function strideSpeed(model: THREE.Object3D, clip: THREE.AnimationClip, samples = 96): number | null {
+  const mixer = new THREE.AnimationMixer(model);
+  const action = mixer.clipAction(clip).play();
+  const speeds: number[] = [];
+  const parent = model.parent;
+  const holder = new THREE.Group();
+  holder.add(model);
+  const dt = clip.duration / samples;
+  for (const name of ['Bip01_L_Foot', 'Bip01_R_Foot']) {
+    const foot = model.getObjectByName(name);
+    if (!foot) continue;
+    const ys: number[] = [], zs: number[] = [];
+    for (let i = 0; i <= samples; i++) {
+      mixer.setTime(i * dt);
+      holder.updateMatrixWorld(true);
+      const p = foot.getWorldPosition(_v);
+      ys.push(p.y); zs.push(p.z);
+    }
+    const low = Math.min(...ys);
+    for (let i = 1; i <= samples; i++) if (ys[i] < low + 0.015 && ys[i - 1] < low + 0.015) speeds.push((zs[i - 1] - zs[i]) / dt);
+  }
+  action.stop();
+  mixer.uncacheRoot(model);
+  if (parent) parent.add(model); else holder.remove(model);
+  if (!speeds.length) return null;
+  speeds.sort((a, b) => a - b);
+  const median = speeds[speeds.length >> 1];
+  return median > 0.3 && median < 8 ? median : null;
 }
 
 /** Evaluate the skeleton before normalizing its dimensions to human scale. */

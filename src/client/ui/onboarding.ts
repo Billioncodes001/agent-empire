@@ -8,7 +8,7 @@
  * its name/size/licence confirmation.
  */
 import { apiFetch } from '../endpoint';
-import { h, openModal, toast, type Modal } from './dom';
+import { bringToFront, h, openModal, toast, type Modal } from './dom';
 import { enginesApi } from './engines';
 import { chiefApi } from './chief';
 import {
@@ -91,8 +91,17 @@ export interface OnboardingHooks {
   cloud?: boolean;
 }
 
+/**
+ * The onboarding dialog that is open now. A second request (Settings › Company setup opened over it via "Open Linked
+ * accounts…", or the first-run offer) closes the dialogs above it and brings it back to the front, with its live state.
+ */
+let openDialog: Modal | null = null;
+
+export const onboardingOpen = () => !!openDialog?.backdrop.isConnected;
+
 export function openOnboarding(hooks: OnboardingHooks, initial?: OnboardingView): Modal {
   if (hooks.cloud) return cloudPanel();
+  if (openDialog?.backdrop.isConnected) { bringToFront(openDialog); return openDialog; }
   let view = initial;
   let busy = false;
   let doneScreen = false;
@@ -113,7 +122,8 @@ export function openOnboarding(hooks: OnboardingHooks, initial?: OnboardingView)
   let collect: () => Promise<void> = async () => {};
   let dirty = false;
   el.addEventListener('input', () => { dirty = true; });
-  const modal = openModal(el, { dirty: () => dirty });
+  const modal = openModal(el, { dirty: () => dirty, onClose: () => { if (openDialog === modal) openDialog = null; } });
+  openDialog = modal;
   close.addEventListener('click', () => modal.close());
   later.addEventListener('click', () => modal.close());
 
@@ -365,6 +375,8 @@ export function onboardingSection(hooks: OnboardingHooks) {
   const open = h('button.btn', { type: 'button' }, 'Company setup…');
   open.addEventListener('click', async () => {
     if (hooks.cloud) { cloudPanel(); return; }
+    // Already open (under Settings): bring it back as it is; "reopen" would move the host's progress behind its back.
+    if (onboardingOpen()) { openOnboarding(hooks); return; }
     try { const v = await onboardingApi.progress({ action: 'reopen' }); openOnboarding(hooks, v); }
     catch (e) { toast((e as Error).message, 'warn'); }
   });

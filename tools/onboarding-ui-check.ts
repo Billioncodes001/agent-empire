@@ -49,6 +49,37 @@ async function next(p: Page) {
   await modal(p).locator('footer button.primary').click();
   await p.waitForTimeout(500);
 }
+/**
+ * Visible toasts that overlap the onboarding dialog's header, step rail, footer or footer buttons (DEVTEST-02: they
+ * first stacked over the tabs, then a bottom placement covered the footer).
+ */
+async function toastsOverHeader(p: Page) {
+  return p.evaluate(() => {
+    const m = document.querySelector('.onboarding-modal');
+    const zones = [m?.querySelector('header'), m?.querySelector('.ob-rail'), m?.querySelector(':scope > footer'), ...(m?.querySelectorAll(':scope > footer button') ?? [])]
+      .filter((e) => e && (e as HTMLElement).getClientRects().length).map((e) => (e as HTMLElement).getBoundingClientRect());
+    const toasts = [...document.querySelectorAll('#toasts .toast')].filter((t) => t.getClientRects().length && getComputedStyle(t).visibility !== 'hidden').map((t) => t.getBoundingClientRect());
+    const hit = toasts.filter((t) => zones.some((z) => t.left < z.right && t.right > z.left && t.top < z.bottom && t.bottom > z.top));
+    return { toasts: toasts.length, zones: zones.length, over: hit.length };
+  });
+}
+
+/** An update toast (Restart/Later buttons, pointer-events on) shown while the dialog is open: hidden, or clear of the dialog box. */
+async function updateToastClear(p: Page) {
+  return p.evaluate(() => {
+    const t = document.createElement('div');
+    t.className = 'toast update-toast';
+    t.innerHTML = '<span>A new version is ready</span><span class="update-toast-actions"><button class="btn primary">Restart</button><button class="btn">Later</button></span>';
+    document.getElementById('toasts')!.append(t);
+    const m = document.querySelector('.onboarding-modal')!.getBoundingClientRect();
+    const shown = t.getClientRects().length > 0;
+    const r = t.getBoundingClientRect();
+    const overlaps = shown && r.left < m.right && r.right > m.left && r.top < m.bottom && r.bottom > m.top;
+    t.remove();
+    return { shown, overlaps };
+  });
+}
+
 async function overflow(p: Page) {
   return p.evaluate(() => {
     const m = document.querySelector('.onboarding-modal') as HTMLElement | null;
@@ -82,11 +113,13 @@ async function main() {
     check('focus starts inside the dialog, on the step heading', await p.evaluate(() => document.activeElement?.classList.contains('ob-heading') ?? false));
     check('the rail marks the current step', (await modal(p).locator('.ob-step[aria-current=step]').count()) === 1);
     check('the free path is labelled', /Free · nothing here costs money/.test((await modal(p).locator('.ob-body').textContent()) ?? ''));
+    check('no step tab has focus on step 1 (the heading does)', await p.evaluate(() => !document.activeElement?.closest('.ob-rail')));
+    // The step-1 screenshot shows the initial focus, so it is taken before the Tab presses below move it along the rail.
+    await p.screenshot({ path: resolve(out, '01-company-1440x900.jpg'), quality: 82 });
     // Tab stays inside the dialog.
     let trapped = true;
     for (let i = 0; i < 25; i++) { await p.keyboard.press('Tab'); if (!(await p.evaluate(() => !!document.activeElement?.closest('.onboarding-modal')))) trapped = false; }
     check('Tab keeps focus inside the dialog (25 presses)', trapped);
-    await p.screenshot({ path: resolve(out, '01-company-1440x900.jpg'), quality: 82 });
     await modal(p).getByLabel('Company name').fill('Northwind Studio');
     await modal(p).getByLabel('What you do').fill('Booking software for clinics');
     await modal(p).getByLabel('Website (optional)').fill('javascript:alert(1)');
@@ -108,8 +141,20 @@ async function main() {
     await modal(p).getByRole('button', { name: 'Open Linked accounts…' }).click();
     const linked = await p.waitForSelector('.linked-accounts', { timeout: 10_000 }).then(() => true, () => false);
     check('"Open Linked accounts…" opens the existing panel above onboarding', linked);
-    await p.keyboard.press('Escape');
-    await p.waitForTimeout(400);
+    // Settings › Company setup while onboarding is open underneath: the same dialog comes back to the front, on the
+    // step it was on, and the host's progress is not moved by a "reopen" (DEVTEST-02 review).
+    const before = (await fixtureInfo(base)).progress;
+    await p.locator('.settings-modal .onboarding-section button').click();
+    await p.waitForFunction(() => !document.querySelector('.settings-modal') && document.querySelector('#modal-root > .backdrop:last-child .onboarding-modal'), null, { timeout: 10_000 }).catch(() => {});
+    const front = await p.evaluate(() => ({
+      settings: document.querySelectorAll('.settings-modal').length,
+      onboarding: document.querySelectorAll('.onboarding-modal').length,
+      topIsOnboarding: !!document.querySelector('#modal-root > .backdrop:last-child .onboarding-modal'),
+      focusInside: !!document.activeElement?.closest('.onboarding-modal'),
+    }));
+    const after = (await fixtureInfo(base)).progress;
+    check('Settings › Company setup over onboarding brings that dialog to the front (one dialog, focus inside)', front.settings === 0 && front.onboarding === 1 && front.topIsOnboarding && front.focusInside, JSON.stringify(front));
+    check('…on the step it was on, without moving the host progress', (await stepTitle(p)) === 'Who does the work' && after.current === before.current && after.status === before.status, `${await stepTitle(p)} | ${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
     check('closing Linked accounts returns to onboarding', (await modal(p).count()) === 1 && (await p.locator('.linked-accounts').count()) === 0);
     await modal(p).getByRole('button', { name: 'Skip this step' }).click();
     await p.waitForTimeout(500);
@@ -147,6 +192,10 @@ async function main() {
     check('no secret is shown back after saving', !html.includes(FAKE_TOKEN) && !html.includes(FAKE_PASS) && (await body.locator('input[type=password]').evaluateAll((els) => els.every((e) => (e as HTMLInputElement).value === ''))));
     check('saved secrets are shown only as present', (await body.locator('.ob-secret-state[data-present=true]').count()) === 2 && /Saved · type to replace/.test((await tg.getByLabel('Bot token').getAttribute('placeholder')) ?? ''));
     check('saved channels say they do not deliver in this preview', /saved, not delivering in this preview/.test((await tg.textContent()) ?? ''));
+    const t1 = await toastsOverHeader(p);
+    check('1440x900: "test sent" toasts never cover the dialog header, step tabs, footer or its buttons', t1.toasts > 0 && t1.zones >= 4 && t1.over === 0, JSON.stringify(t1));
+    const u1 = await updateToastClear(p);
+    check('1440x900: an update toast never overlaps the open dialog', !u1.overlaps, JSON.stringify(u1));
     await p.screenshot({ path: resolve(out, '04-notifications-saved-and-tested-1440x900.jpg'), quality: 82, fullPage: false });
     await body.evaluate((el) => { el.scrollTop = el.scrollHeight; });
     await p.screenshot({ path: resolve(out, '04b-notifications-email-1440x900.jpg'), quality: 82 });
@@ -196,15 +245,36 @@ async function main() {
 
     // ---- Phone landscape 667x375 (portrait shows the game's rotate hint by design; see mobile-ui-check) ----
     const s = await open(browser, base, { width: 667, height: 375, touch: true });
-    await s.page.evaluate(() => (document.getElementById('btn-settings') as HTMLButtonElement | null)?.click());
-    await s.page.waitForSelector('.onboarding-section button', { timeout: 10_000 });
-    await s.page.evaluate(() => (document.querySelector('.onboarding-section button') as HTMLButtonElement).click());
+    // Re-opening from Settings on the 874 run makes the unfinished setup resumable, so this page load may offer it by
+    // itself; Settings › Company setup then reuses that dialog instead of stacking a second one (DEVTEST-02).
+    // A player can't reach Settings over the dialog; when it was offered, use it as it is.
+    await s.page.waitForTimeout(4000);
+    if (!(await modal(s.page).count())) {
+      await s.page.evaluate(() => (document.getElementById('btn-settings') as HTMLButtonElement | null)?.click());
+      await s.page.waitForSelector('.onboarding-section button', { timeout: 10_000 });
+      await s.page.evaluate(() => (document.querySelector('.onboarding-section button') as HTMLButtonElement).click());
+    }
     await s.page.waitForSelector('.onboarding-modal .ob-heading', { timeout: 10_000 });
+    await s.page.waitForTimeout(800);
+    check('667x375: one onboarding dialog is open', (await modal(s.page).count()) === 1, String(await modal(s.page).count()));
+    await s.page.waitForFunction(() => document.querySelectorAll('.onboarding-modal .ob-step').length === 4, null, { timeout: 10_000 });
     await s.page.evaluate(() => (document.querySelectorAll('.onboarding-modal .ob-step')[2] as HTMLButtonElement).click());
+    await s.page.waitForFunction(() => document.querySelector('#ob-title')?.textContent === 'How the office reaches you', null, { timeout: 10_000 }).catch(() => {});
     await s.page.waitForTimeout(600);
+    check('667x375: the screenshot shows the notifications step', (await stepTitle(s.page)) === 'How the office reaches you', (await stepTitle(s.page)) ?? '');
     const o2 = await overflow(s.page);
     check('667x375: notifications step without horizontal overflow', o2.doc <= 0 && o2.modal <= 0 && o2.right <= 0, JSON.stringify(o2));
     await s.page.screenshot({ path: resolve(out, '08-notifications-667x375.jpg'), quality: 82 });
+    // Phone: send tests (the channels were saved on the desktop run) and check where the toasts land.
+    for (const i of [0, 1]) {
+      await s.page.locator('.onboarding-modal fieldset.ob-channel').nth(i).getByRole('button', { name: 'Save and send test' }).click();
+      await s.page.waitForTimeout(700);
+    }
+    const t2 = await toastsOverHeader(s.page);
+    check('667x375: "test sent" toasts never cover the dialog header, step tabs, footer or its buttons', t2.toasts > 0 && t2.zones >= 4 && t2.over === 0, JSON.stringify(t2));
+    const u2 = await updateToastClear(s.page);
+    check('667x375: an update toast never overlaps the open dialog', !u2.overlaps, JSON.stringify(u2));
+    await s.page.screenshot({ path: resolve(out, '08b-notifications-toasts-667x375.jpg'), quality: 82 });
     check('667x375: no console errors', s.errors.length === 0, s.errors.join(' | '));
     await s.context.close();
 

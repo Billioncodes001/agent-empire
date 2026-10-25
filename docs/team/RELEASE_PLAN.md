@@ -20,7 +20,7 @@ The owner's direction, recorded before implementation on 2026-10-02: GitHub is t
    - `npm run build`, `npm run build:cloud`.
    - The game files from `dist/public` are packed as `agent-empire-game-<version>.zip`.
    - The pack also gets a `game-manifest.json` with the version, the sha256 of the zip, `minShell` (the oldest native shell version that can run it) and the build commit.
-   - The manifest is signed with **Ed25519** (secret `GAME_SIGNING_KEY`). The matching public key is pinned in every shell and in the client.
+   - Since the release-assets clean-up (2026-10-25) the manifest is an input to the channel file, not a published asset: its facts are in the signed channel's `game` entry. The channel is signed with **Ed25519** (secret `GAME_SIGNING_KEY`); the matching public key is pinned in every shell and in the client.
    - The run fails if the fixture marker is present.
 3. **Desktop:**
    - macOS (arm64 and x64) and Windows (x64) builds.
@@ -36,7 +36,7 @@ The owner's direction, recorded before implementation on 2026-10-02: GitHub is t
    - Archive and TestFlight upload when `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8` and `IOS_DIST_CERT_P12` with its password and provisioning profile exist.
 6. **Publish:**
    - A GitHub Release for the tag, marked pre-release for `-beta`/`-rc`.
-   - Assets: the game zip, `game-manifest.json` and its `.sig`, the desktop installers and update feed, the APK and AAB, and SHA256SUMS.
+   - Assets (release-assets clean-up, 2026-10-25; docs/RELEASING.md "What each release contains"): the game zip, the coordinator, the macOS DMGs, the Windows installer, the APK, the channel file(s) and signatures, plus update payloads and feeds for signed desktop builds only. The AAB goes to Play through a workflow artifact; SHA256SUMS is replaced by the channel's signed `assets` checksum list.
    - Plus **`channel-<stable|beta>.json`**: the update channel file every app reads.
 7. **Cloud coordinator:** the `agent-empire-coordinator.mjs` bundle and its sha256 are also release assets. A user's state repo updates its coordinator only when the user accepts the in-app prompt; no state repo is ever changed automatically.
 
@@ -74,10 +74,11 @@ The file is signed with the same Ed25519 key (`channel-<channel>.json.sig`). App
 - **Channels:** a prerelease writes `channel-beta.json`. A final release writes `channel-stable.json` and also `channel-beta.json`, so beta users are offered it too.
 - **Fields beyond the example above** (additive; clients must ignore unknown fields):
   - top level: `tag`, `releasePage` (the GitHub release page).
-  - `game`: `bytes`, `manifest` and `manifestSig` (URLs of `game-manifest.json` and its `.sig`). `game-manifest.json` holds `schema, name, version, file, bytes, sha256, files, entry, minShell, commit`. `minShell` comes from `tools/release/config.json`.
+  - `game`: `bytes` and `commit` (from `game-manifest.json`, which is no longer published; 1.0.0-beta.1 also had `manifest`/`manifestSig` URLs, read by no app). `minShell` comes from `tools/release/config.json`.
+  - `assets`: `{ "<file name>": { sha256, bytes } }` for every published file except the channel files and signatures (the signed replacement for SHA256SUMS).
   - `shell.macos` / `shell.windows`: `url` is the release page (users pick a download). `downloads.<arch>` holds `{ name, url, sha256 }` entries and `signed`:
-    - macOS: `dmg` and `zip`.
-    - Windows: `setup`, `zip` and `nupkg`.
+    - macOS: `dmg`, plus `zip` for a signed build.
+    - Windows: `setup`, plus `nupkg` for a signed build.
   - `auto` is true only for a signed build that has its update feed: every macOS build signed and notarized, or a signed Windows Squirrel installer. Apps use `feed` only when `auto` is true; otherwise they prompt and open the release page.
 - **Desktop update feeds (Electron's built-in `autoUpdater`):**
 
@@ -91,10 +92,10 @@ The file is signed with the same Ed25519 key (`channel-<channel>.json.sig`). App
   - **Feed URLs:** apps take them from the verified channel file, never build them.
   - **Main process:** the desktop main process must handle Squirrel.Windows' `--squirrel-install`, `--squirrel-updated`, `--squirrel-uninstall` and `--squirrel-obsolete` launch arguments: create or remove shortcuts with `Update.exe`, then quit.
   - **Squirrel package:** its ID is `AgentEmpire` (install folder `%LocalAppData%\AgentEmpire`, which must never change). Its version is NuGet-style with a zero-padded prerelease (`1.0.0-beta.2` becomes `1.0.0-beta002`), so NuGet's string comparison orders betas correctly.
-  - `shell.android`: `name`, `sha256` (check it before opening the installer) and `signed` (false for the labelled debug-signed APK). `play` is set only when the release was uploaded to Play.
+  - `shell.android`: `name`, `sha256` (check it before opening the installer) and `signed` (false for a debug-signed APK; the name no longer says so). `play` is set only when the release was uploaded to Play.
   - `shell.ios`: `testflight` and `appStore` come from `tools/release/config.json` (null until the owner fills them in).
   - A platform whose build is missing is `null`.
-- **Asset names:** `agent-empire-game-<v>.zip`, `game-manifest.json(.sig)`, `agent-empire-coordinator.mjs`, `Agent-Empire-<v>-macos-<arm64|x64>[-unsigned].{zip,dmg}`, `Agent-Empire-<v>-windows-x64[-unsigned].zip`, `Agent-Empire-<v>-windows-x64-Setup[-unsigned].exe`, `AgentEmpire-<nugetVersion>-full.nupkg`, `RELEASES` (Squirrel.Windows feed index), `Agent-Empire-<v>-android[-debug-signed].apk`, `Agent-Empire-<v>-android.aab` (only when upload-key signed), `channel-<channel>.json(.sig)`, `RELEASES-darwin-<arch>.json` (only when signed), `SHA256SUMS`.
+- **Asset names** (`tools/release/assets.mjs`, since 1.0.0-beta.2): `Agent-Empire-Mac-Apple-Silicon.dmg`, `Agent-Empire-Mac-Intel.dmg`, `Agent-Empire-Windows-Setup.exe`, `Agent-Empire-Android.apk`, `agent-empire-game-<v>.zip`, `agent-empire-coordinator.mjs`, `channel-<channel>.json(.sig)`; signed macOS only: `Agent-Empire-Mac-<Apple-Silicon|Intel>-Update.zip`, `RELEASES-darwin-<arch>.json`; signed Windows only: `AgentEmpire-<nugetVersion>-full.nupkg`, `RELEASES`. Signing state is build info (`release/build-info`) carried into the channel, never a file-name label. 1.0.0-beta.1 used the older versioned names; installed beta.1 apps read none of the dropped files (`tests/release-compat.test.ts`, docs/team/reports/release-assets.md).
 
 ## In-app updates
 

@@ -1,4 +1,5 @@
-// Ed25519 signatures for release files (docs/team/RELEASE_PLAN.md): game-manifest.json and channel-<channel>.json.
+// Ed25519 signatures for release files (docs/team/RELEASE_PLAN.md): channel-<channel>.json, the only signed release
+// file. It carries the sha256 of the game bundle and of every other published asset (tools/release/channel.mjs).
 // A signature is the base64 of the 64-byte Ed25519 signature over the file's exact bytes, written to <file>.sig.
 // Public keys are the raw 32-byte key in base64 (what tweetnacl, CryptoKit and BouncyCastle-style verifiers take).
 //

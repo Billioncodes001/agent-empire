@@ -25,6 +25,8 @@ html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 html, body { margin: 0; height: 100%; overflow: hidden; background: #0f1b21; } /* the splash ink: no light flash while the setup hands over or the scene loads */
 body { font-family: var(--font); color: var(--ink); -webkit-font-smoothing: antialiased; }
 button { font-family: inherit; }
+/* A long press on a button must not select its label or open the touch Copy/Share bar over the game (device testing). */
+button, [role="button"] { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 .hidden { display: none !important; }
 
 #app { position: fixed; inset: 0; }
@@ -335,6 +337,8 @@ button { font-family: inherit; }
 .svc-title { font-weight: 900; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .svc-meta { font-size: 12px; font-weight: 700; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .svc-port { font: 800 14px ui-monospace, Menlo, monospace; }
+/* Service rows are role="button", but their command, branch and port stay copyable by hand. */
+.svc-title, .svc-meta, .svc-port { -webkit-user-select: text; user-select: text; }
 .svc-list .btn { padding: 3px 10px; font-size: 13px; text-decoration: none; color: inherit; }
 .svc-empty { text-align: center; padding: 18px 8px; border: 3px dashed var(--muted); border-radius: 14px; }
 .svc-empty p { margin: 0; font-weight: 800; }
@@ -1052,6 +1056,12 @@ html.ae-touch .radar-stats, html.ae-touch .crosshair .look-hint { display: none 
 html.ae-touch .hint { bottom: calc(14px + env(safe-area-inset-bottom)); max-width: calc(100vw - 370px - env(safe-area-inset-left) - env(safe-area-inset-right)); gap: 6px 10px; padding: 7px 12px; font-size: 12px; }
 html.ae-touch .traversal-hint { top: calc(58px + env(safe-area-inset-top)); bottom: auto; left: 50%; right: auto; transform: translateX(-50%); max-width: calc(100vw - 300px); font-size: 11px; }
 html.ae-touch #toasts { top: calc(58px + env(safe-area-inset-top)); }
+/* While a dialog is open, placeToasts() (ui/dom.ts) puts toasts beside it or just above its footer, never over its
+   header, tabs or footer. Only the two newest show; above the footer the interactive update toast waits for the dialog
+   to close so it can't block the dialog's controls. */
+#toasts[data-place] > .toast:nth-last-child(n + 3) { display: none; }
+#toasts[data-place="above-footer"] > .toast.update-toast { display: none; }
+#toasts[data-tight] > .toast:not(:last-child) { display: none; }
 html.ae-touch #hud #conn { top: calc(58px + env(safe-area-inset-top)); bottom: auto; }
 html.ae-touch #hud #shares { top: calc(58px + env(safe-area-inset-top)); bottom: auto; left: calc(12px + env(safe-area-inset-left)); }
 html.ae-touch .share-thumb { width: 150px; }

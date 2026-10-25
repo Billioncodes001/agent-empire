@@ -15,7 +15,7 @@ import { dressKenneyCar } from './garage-rides';
 import { SURFACE as S, boxMesh as box, solid } from './materials';
 import { textPlane } from './toon';
 import { batchStaticMeshes } from './batching';
-import { apronSlotsBlocked, bayBlocked, districtLayout, garagePose, poseBox, settleSlots, slotClear, type CarPose, footprint, PLOT_PAD, plotSign, ROADS, type Kit, type Placement, type Pose } from './district-layout';
+import { apronSlotsBlocked, bayBlocked, districtLayout, garagePose, poseBox, vehicleBox, settleSlots, slotClear, type CarPose, footprint, PLOT_PAD, plotSign, ROADS, type Kit, type Placement, type Pose } from './district-layout';
 import type { Collider } from './office';
 import type { GraphicsQuality } from '../graphics';
 
@@ -386,12 +386,12 @@ export function buildDistricts(parent: THREE.Group) {
         const c = pool[e.bay].collider;
         if (e.driven) { c.top = 0; continue; }
         if (!e.pending) continue;
-        const box = poseBox(poseOf(e.car.root), e.spec.half, e.spec.height);
+        const box = vehicleBox(poseOf(e.car.root), e.spec.half, e.spec.height, e.car.root.position.y);
         if (slotClear(box, bodies, player, driving)) { Object.assign(c, box); e.pending = false; }
       }
       if (heliState.driven) heliCollider.top = 0;
       else if (heliState.pending) {
-        const box = poseBox(poseOf(heli.root), HELICOPTER_SPEC.half, HELICOPTER_SPEC.height, heli.root.position.y);
+        const box = vehicleBox(poseOf(heli.root), HELICOPTER_SPEC.half, HELICOPTER_SPEC.height, heli.root.position.y);
         const walker = !driving && Math.abs(player.y - heli.root.position.y) < 2 ? player : { x: 1e6, z: 1e6 };
         if (slotClear(box, driving ? bodies : [], walker, false)) { Object.assign(heliCollider, box); heliState.pending = false; }
       }

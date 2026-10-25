@@ -315,6 +315,21 @@ test('a revoked device that ignores the close frame gets no further messages thr
   assert.deepEqual(chats, ['before']);
 });
 
+// Device testing (v1.0.0-beta.1): restarting the isolated UI fixture signed the Android app out ("Your sign-in is no
+// longer valid") because the fixture keeps tokens in memory. The real server must keep a device signed in across a restart.
+test('device store: an issued app token still verifies after a server restart (same secret and password)', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'empire-device-restart-'));
+  try {
+    const verifier = Buffer.alloc(32, 9);
+    const a = new DeviceStore(dir, 'secret', verifier).issue('Android')!;
+    const restarted = new DeviceStore(dir, 'secret', verifier);
+    assert.equal(restarted.verify(a.token)?.id, a.deviceId, 'the app stays signed in after a restart');
+    assert.equal(new DeviceStore(dir, 'other-secret', verifier).verify(a.token), undefined, 'a rotated secret still signs it out');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('device store: a failed write changes nothing, so revocations cannot be undone by a restart', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'empire-device-store-'));
   try {
