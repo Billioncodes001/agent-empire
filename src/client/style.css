@@ -1351,6 +1351,13 @@ html.ae-cloud #hud .status-strip.cloud-strip .status-monitor { white-space: nowr
 .inbox-kind[data-kind="budget_increase"] { color: #f2a488; }
 .inbox-history-box { margin-top: 14px; }
 .inbox-history-box summary { cursor: pointer; font-size: 12px; color: var(--hud-muted); padding: 6px 2px; }
+/* FREE-07: cloud mode. The inbox kinds not raised there, each with its reason; small and collapsed by default. */
+.inbox-cloud-note { margin-top: 14px; font-size: 12px; }
+.inbox-cloud-gaps { margin-top: 6px; }
+.inbox-cloud-gaps summary { cursor: pointer; font-size: 12px; color: var(--hud-muted); padding: 6px 2px; }
+.inbox-cloud-gaps ul { margin: 4px 0 0; padding-left: 16px; display: grid; gap: 6px; }
+.inbox-cloud-gaps li { font-size: 12px; line-height: 1.45; color: var(--hud-muted); }
+.exec-cloud-gap { font-size: 12px; line-height: 1.45; }
 .inbox-history { margin-top: 6px; }
 .inbox-detail { overflow: auto; padding: 18px 22px 22px; min-width: 0; }
 .inbox-detail h3 { font-size: 20px; font-weight: 600; margin: 6px 0 4px; line-height: 1.25; overflow-wrap: anywhere; }

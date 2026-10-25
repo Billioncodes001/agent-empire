@@ -1543,6 +1543,6 @@ if (saved?.look) {
 }
 
 // Debug handle for quick checks from the console / headless screenshots.
-(window as any).__office = { store, player, camera, workerViews, scene, net, renderer, me, remotes, settings, gallery, hanger, city, empireUI, life, office, executives, traversal };
+(window as any).__office = { store, player, camera, workerViews, scene, net, renderer, me, remotes, settings, gallery, hanger, city, empireUI, life, office, executives, traversal, orgUI: { openExecutiveCard, openInbox } };
 (window as any).__voice = voice;
 (window as any).__sound = sound;

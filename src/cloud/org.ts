@@ -192,7 +192,7 @@ export function proposeLesson(org: CloudOrg, input: LessonInput, ctx: OrgCtx, jo
   if (input.supersedes && old?.status !== 'approved') refuse('not_editable', `Only a lesson in use can be edited; ${input.supersedes} is not.`);
   if (org.lessons.some((l) => l.status !== 'retired' && l.id !== old?.id && sameLesson(l, fields)) || (old && sameLesson(old, fields))) refuse('duplicate_lesson', 'That lesson is already proposed or in use.');
   if (org.lessons.length >= ORG_LIMITS.lessons) refuse('memory_full', `Memory holds at most ${ORG_LIMITS.lessons} lessons.`);
-  let source: LessonSource = { kind: 'ceo_note', ref: '', label: 'CEO note' };
+  let source: LessonSource = { kind: 'ceo_note', ref: '', label: 'Written in the game' };
   if (input.source) {
     const { kind, ref } = input.source;
     const research = kind === 'research' ? org.research.find((r) => r.jobId === ref) : undefined;
