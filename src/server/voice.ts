@@ -18,7 +18,7 @@ import { execFile, spawn } from 'node:child_process';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import {
-  MAX_AUDIO_SECONDS, MAX_SPEAK_CHARS, SHERPA_PACKAGE, TRANSCRIPT_TTL_MS, VOICE_MODELS,
+  MAX_AUDIO_SECONDS, MAX_SPEAK_CHARS, SHERPA_INSTALL, SHERPA_PACKAGE, TRANSCRIPT_TTL_MS, VOICE_MODELS,
   type Transcript, type VoiceDownload, type VoiceKind, type VoiceModel, type VoiceState,
 } from '../shared/voice.js';
 
@@ -101,17 +101,29 @@ const need = (f: string | undefined, what: string) => { if (!f) throw new VoiceE
  * test_asr_non_streaming_whisper.js, test_tts_non_streaming_kokoro_en.js). Calls are synchronous native work, so a
  * transcription briefly occupies the office host's event loop (a 30-second cap bounds it).
  */
-export function sherpaEngines(load: () => any = () => createRequire(import.meta.url)(SHERPA_PACKAGE)): VoiceEngines {
-  let mod: any; let loadError: string | undefined;
+export function sherpaEngines(
+  load: () => any = () => createRequire(import.meta.url)(SHERPA_PACKAGE),
+  version: () => string | undefined = () => { try { return createRequire(import.meta.url)(`${SHERPA_PACKAGE}/package.json`).version; } catch { return undefined; } },
+): VoiceEngines {
+  let mod: any; let loadError: string | undefined; let unsupported: string | undefined;
   const get = () => {
     if (mod) return mod;
+    // 2.x dropped the espeak-ng data the catalogue's Kokoro voices need: refuse it instead of failing on every reply.
+    const v = version();
+    if (v && Number(v.split('.')[0]) >= 2) {
+      unsupported = v;
+      throw new VoiceError(409, `${SHERPA_PACKAGE} ${v} cannot run the chief's voice yet. Run “npm install ${SHERPA_INSTALL}” in the office’s install folder, then restart the office.`);
+    }
     try { mod = load(); return mod; } catch (e) { loadError = (e as Error).message; throw new VoiceError(409, `The speech runtime (${SHERPA_PACKAGE}) is not installed on the office host. Text works without it.`); }
   };
   const stt = new Map<string, SttEngine>(); const tts = new Map<string, TtsEngine>();
   return {
     async detect() {
       try { get(); return { available: true, detail: `${SHERPA_PACKAGE} is installed (Apache-2.0). Speech runs on the office host, offline.` }; }
-      catch { return { available: false, detail: `${SHERPA_PACKAGE} is not installed on the office host, so voice is off and text is used. To enable it, run “npm install ${SHERPA_PACKAGE}” in the office’s install folder (Apache-2.0; macOS, Windows, Linux).${loadError ? ` Load error: ${loadError.split('\n')[0].replace(/(?:[A-Za-z]:)?[\\/][^\s'"]+/g, '…').slice(0, 160)}` : ''}` }; }
+      catch {
+        if (unsupported) return { available: false, detail: `${SHERPA_PACKAGE} ${unsupported} is installed, but version 2 cannot run the chief's voice yet, so voice is off and text is used. Run “npm install ${SHERPA_INSTALL}” in the office’s install folder, then restart the office.` };
+        return { available: false, detail: `${SHERPA_PACKAGE} is not installed on the office host, so voice is off and text is used. To enable it, run “npm install ${SHERPA_INSTALL}” in the office’s install folder (Apache-2.0; macOS, Windows, Linux).${loadError ? ` Load error: ${loadError.split('\n')[0].replace(/(?:[A-Za-z]:)?[\\/][^\s'"]+/g, '…').slice(0, 160)}` : ''}` };
+      }
     },
     async stt(model, dir) {
       const cached = stt.get(model.id); if (cached) return cached;
@@ -168,7 +180,9 @@ export interface ExtractLimits { maxBytes: number; maxFiles: number; signal?: Ab
 /** An error whose message is safe to show any client (no host paths, no tool output). */
 export class PublicError extends Error {}
 
-const TAR_ENV = { LC_ALL: 'C', PATH: '' };
+// System directories only, never the user's PATH: GNU tar runs `bzip2` for -j (bsdtar has it built in), so an empty
+// PATH broke every model install on Linux hosts.
+const TAR_ENV = { LC_ALL: 'C', PATH: process.platform === 'win32' ? '' : '/usr/bin:/bin' };
 const run = (file: string, args: string[], signal?: AbortSignal, maxBuffer = 16 * 1024 * 1024) => new Promise<string>((resolve, reject) => {
   execFile(file, args, { timeout: 15 * 60_000, maxBuffer, signal, env: TAR_ENV, windowsHide: true }, (err, stdout, stderr) => {
     if (!err) return resolve(String(stdout));

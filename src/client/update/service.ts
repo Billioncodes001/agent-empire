@@ -7,7 +7,7 @@
  * The service holds state and emits changes; ui.ts decides when the player sees them. Nothing here installs,
  * restarts or commits anything without an explicit call from the UI after the player accepted.
  */
-import { isSemver } from './semver';
+import { isPrerelease, isSemver } from './semver';
 import { isChannel, type Channel, type ChannelFile } from './channel';
 import { fetchChannel, SourceError, type Fetcher, type KeyValue } from './source';
 import { decide, type Offer } from './decide';
@@ -58,7 +58,15 @@ export interface ServiceDeps {
   publicKey?: string | readonly string[];
   /** The bundled coordinator (same-origin), used instead of a download when it is the same file. */
   bundledCoordinator?: () => Promise<string | null>;
+  /** The game version to start from instead of builtGameVersion() (tests). */
+  version?: string | null;
 }
+
+/**
+ * The channel a player is on until they choose one: a pre-release build (1.0.0-beta.1) follows beta, because the stable
+ * channel has no release while every release is a pre-release, and a beta player would otherwise never see beta.2.
+ */
+export const defaultChannel = (version: string | null): Channel => (version && isPrerelease(version) ? 'beta' : 'stable');
 
 export class UpdateService {
   readonly state: UpdateState;
@@ -70,12 +78,13 @@ export class UpdateService {
 
   constructor(private deps: ServiceDeps) {
     this.now = deps.now ?? Date.now;
-    let channel: Channel = 'stable';
+    const game = deps.version !== undefined ? (isSemver(deps.version) ? deps.version : null) : builtGameVersion();
+    let channel: Channel = defaultChannel(game);
     try {
       const saved = deps.storage?.get(CHANNEL_KEY);
       if (isChannel(saved)) channel = saved;
     } catch {}
-    this.state = { phase: 'idle', channel, info: null, game: builtGameVersion(), checkedAt: null, channelFile: null, offer: null, error: null, installed: null, serverVersion: null, coordinator: null, coordinatorBusy: false, nativeUpdate: 'idle' };
+    this.state = { phase: 'idle', channel, info: null, game, checkedAt: null, channelFile: null, offer: null, error: null, installed: null, serverVersion: null, coordinator: null, coordinatorBusy: false, nativeUpdate: 'idle' };
   }
 
   /** True when this app can check at all (a shell, or an injected fetcher in tests and checks). */

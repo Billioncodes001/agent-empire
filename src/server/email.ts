@@ -218,6 +218,12 @@ export interface SmtpOptions {
   /** Tests route the plain connection to a local fake server. */
   connect?: (cfg: SmtpConfig) => net.Socket;
   tls?: tls.ConnectionOptions;
+  /**
+   * FREE-08 re-review 2: a target guard for saved settings. `refuse` checks the host as written; `lookup` resolves it,
+   * checks every answer and connects to the checked address (pinned). TLS still verifies the configured host name.
+   */
+  refuse?: (host: string) => string | undefined;
+  lookup?: net.LookupFunction;
 }
 
 export function smtpTransport(cfg: SmtpConfig, opts: SmtpOptions = {}): MailTransport {
@@ -228,7 +234,10 @@ async function smtpSend(cfg: SmtpConfig, m: MailMessage, opts: SmtpOptions): Pro
   if (!ADDRESS.test(m.from) || !ADDRESS.test(m.to)) throw new SmtpError('Email addresses are invalid');
   const timeoutMs = opts.timeoutMs ?? 20_000;
   const servername = net.isIP(cfg.host) ? undefined : cfg.host;
-  let socket: net.Socket = cfg.secure ? tls.connect({ host: cfg.host, port: cfg.port, servername, ...opts.tls }) : opts.connect?.(cfg) ?? net.connect({ host: cfg.host, port: cfg.port });
+  const refused = opts.refuse?.(cfg.host);
+  if (refused) throw new SmtpError(refused);
+  const lookup = opts.lookup ? { lookup: opts.lookup } : {};
+  let socket: net.Socket = cfg.secure ? tls.connect({ host: cfg.host, port: cfg.port, servername, ...lookup, ...opts.tls }) : opts.connect?.(cfg) ?? net.connect({ host: cfg.host, port: cfg.port, ...lookup });
   // A deadline for the whole conversation as well as for each silence.
   const deadline = setTimeout(() => socket.destroy(new SmtpError('SMTP timed out')), timeoutMs * 3);
   let dataWritten = false;
@@ -298,6 +307,11 @@ export interface NotifierOptions {
   log?: (line: string) => void;
   schedule?: (fn: () => void, ms: number) => () => void;
   backoffMs?: number[];
+  /** FREE-08: the same notifier delivers ntfy (its own record file and label). */
+  file?: string;
+  channel?: string;
+  /** The sender's display name, e.g. the company name from onboarding. */
+  fromName?: string;
 }
 
 /**
@@ -323,9 +337,13 @@ export class EmailNotifier {
   private readonly now: () => number;
   private readonly schedule: (fn: () => void, ms: number) => () => void;
   private readonly backoff: number[];
+  private readonly channel: string;
+  private readonly fromName?: string;
 
   constructor(dataDir: string, private readonly transport: MailTransport, private readonly addresses: { to: string; from: string }, opts: NotifierOptions = {}) {
-    this.file = path.join(dataDir, FILE);
+    this.file = path.join(dataDir, opts.file ?? FILE);
+    this.channel = opts.channel ?? 'Email';
+    this.fromName = opts.fromName;
     this.log = opts.log ?? ((line) => console.warn(line));
     this.now = opts.now ?? Date.now;
     this.schedule = opts.schedule ?? ((fn, ms) => { const t = setTimeout(fn, ms); t.unref?.(); return () => clearTimeout(t); });
@@ -342,7 +360,8 @@ export class EmailNotifier {
   status(): EmailStatus {
     // A later successful send clears the failed state; the last failure time stays visible.
     const failed = this.signInFailed || (this.lastFailedAt !== undefined && (this.lastSentAt === undefined || this.lastFailedAt > this.lastSentAt));
-    const label = this.signInFailed ? 'Email: sign-in failed — check AGENT_EMPIRE_SMTP_URL' : failed ? 'Email: last send failed' : 'Email: configured';
+    const c = this.channel;
+    const label = this.signInFailed ? (c === 'Email' ? 'Email: sign-in failed — check AGENT_EMPIRE_SMTP_URL' : `${c}: sign-in failed — check its settings`) : failed ? `${c}: last send failed` : `${c}: configured`;
     return { state: failed ? 'failed' : 'configured', label,
       ...(this.gaveUp.length ? { gaveUp: this.gaveUp.length } : {}),
       ...(this.lastSentAt ? { lastSentAt: this.lastSentAt } : {}), ...(this.lastFailedAt ? { lastFailedAt: this.lastFailedAt } : {}) };
@@ -385,15 +404,16 @@ export class EmailNotifier {
       if (!item) return;
       if (!this.firstTried.has(item.id)) this.firstTried.set(item.id, this.now());
       try {
-        await this.transport.send(approvalEmail(item, this.addresses));
+        await this.transport.send({ ...approvalEmail(item, this.addresses), ...(this.fromName ? { fromName: this.fromName } : {}) });
       } catch (error) {
         this.attempts += 1;
         const now = this.now();
         this.lastFailedAt = now;
         const message = (error as Error).message;
-        const signIn = SIGN_IN_FAILED.test(message);
+        const flags = error as { signIn?: boolean; permanent?: boolean };
+        const signIn = flags.signIn === true || SIGN_IN_FAILED.test(message);
         const tooOld = !signIn && now - (this.firstTried.get(item.id) ?? now) >= MAX_AGE_MS;
-        if (PERMANENT.test(message) || tooOld) {
+        if (flags.permanent === true || PERMANENT.test(message) || tooOld) {
           // Refused for this message, or failing for a day: give up on it so it never blocks the ones behind it.
           this.log(`[email] Gave up on the notification for approval ${item.id} after ${this.attempts} attempt${this.attempts === 1 ? '' : 's'}: ${message}.`);
           this.gaveUp = [...this.gaveUp, item.id].slice(-MAX_SENT);

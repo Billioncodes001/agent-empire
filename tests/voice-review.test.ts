@@ -192,7 +192,9 @@ test('an owner name with a space does not hide the real size: the cap still refu
   const src = path.join(dir, 'src'); mkdirSync(src);
   writeFileSync(path.join(src, 'big.bin'), Buffer.alloc(5000, 7));
   const arch = path.join(dir, 'owner.tar.bz2');
-  execFileSync(tar!, ['-cjf', arch, '--uname', 'x 0', '--gname', 'staff', '-C', src, 'big.bin']);
+  // GNU tar (Linux) and bsdtar (macOS, Windows) name the owner options differently.
+  const gnu = /GNU tar/.test(execFileSync(tar!, ['--version']).toString());
+  execFileSync(tar!, ['-cjf', arch, ...(gnu ? ['--owner=x 0', '--group=staff'] : ['--uname', 'x 0', '--gname', 'staff']), '-C', src, 'big.bin']);
   assert.match(execFileSync(tar!, ['-tvjf', arch]).toString(), /x 0/, 'the crafted archive really has an owner with a space');
   const out = path.join(dir, 'out');
   await assert.rejects(safeExtract(arch, out, { maxBytes: 1000, maxFiles: 10 }), /too large/i);

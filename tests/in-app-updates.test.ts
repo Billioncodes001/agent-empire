@@ -64,7 +64,7 @@ test('channel: a valid file parses; the owner key is pinned and a plain build tr
   assert.equal(isDevKey(DEV_RELEASE_PUBLIC_KEY), true);
   assert.equal(isDevKey(otherKey), false);
   assert.deepEqual(trustedKeys(otherKey), [OWNER_KEY]);
-  assert.deepEqual(c.shell.macos?.feed, { arm64: asset('1.0.0-beta.2', 'desktop-update-darwin-arm64.json'), x64: asset('1.0.0-beta.2', 'desktop-update-darwin-x64.json') });
+  assert.deepEqual(c.shell.macos?.feed, { arm64: asset('1.0.0-beta.2', 'RELEASES-darwin-arm64.json'), x64: asset('1.0.0-beta.2', 'RELEASES-darwin-x64.json') });
   // Fields this app doesn't use are ignored; a platform without a build is null.
   const extra = { ...channelJson({ version: '1.0.0-beta.2' }), future: { x: 1 }, shell: { ...channelJson({ version: '1.0.0-beta.2' }).shell, windows: null, ios: { version: '1.0.0-beta.2', testflight: null, appStore: null } } };
   const parsed = parseChannel(JSON.stringify(extra), 'stable');
@@ -269,7 +269,7 @@ test('offer: native paths per platform', () => {
   const mac = info({ platform: 'desktop', os: 'macos', arch: 'arm64' });
   assert.equal(nativeOffer(c, mac)?.how, 'download', 'an unsigned app opens the release page');
   assert.equal(nativeOffer(c, mac)?.params.url, `https://github.com/${RELEASE_REPO}/releases/tag/v1.0.0-beta.2`);
-  assert.deepEqual(nativeOffer(c, { ...mac, canAutoUpdate: true })?.params.feed, asset('1.0.0-beta.2', 'desktop-update-darwin-arm64.json'));
+  assert.deepEqual(nativeOffer(c, { ...mac, canAutoUpdate: true })?.params.feed, asset('1.0.0-beta.2', 'RELEASES-darwin-arm64.json'));
   assert.equal(nativeOffer(c, { ...mac, canAutoUpdate: true })?.how, 'auto');
   assert.equal(nativeOffer(c, info({ platform: 'desktop', os: 'windows', arch: 'x64', canAutoUpdate: true }))?.how, 'download', 'Windows has no in-place updater yet');
   const squirrel = parseChannel(JSON.stringify({ ...channelJson({ version: '1.0.0-beta.2' }), shell: { windows: { version: '1.0.0-beta.2', url: `https://github.com/${RELEASE_REPO}/releases/tag/v1.0.0-beta.2`, auto: true, feed: `https://github.com/${RELEASE_REPO}/releases/download/v1.0.0-beta.2` } } }), 'stable');
@@ -473,4 +473,24 @@ test('coordinator: the service commits only after the player accepts, using the 
   await svc.updateCoordinator();
   assert.equal(gh.files(full)[COORDINATOR_BUNDLE_PATH], bundle);
   assert.equal(svc.state.coordinator?.kind, 'current');
+});
+
+// Device testing (v1.0.0-beta.1, Android emulator): the beta build defaulted to the stable channel, which has no release
+// (releases/latest/download/channel-stable.json is 404 while every release is a pre-release), so "Check for updates" said
+// "You're up to date" and a beta player would never be offered beta.2. A pre-release build now defaults to beta.
+test('service: a pre-release build defaults to the beta channel and is offered the next beta; a saved choice wins', async () => {
+  const files: Record<string, { body: string }> = {};
+  files[RELEASES_API] = { body: listing([{ tag: 'v1.0.0-beta.2', prerelease: true }]) };
+  publish(files, 'beta', '1.0.0-beta.2', 'v1.0.0-beta.2');
+
+  const beta = new UpdateService({ bridge: fakeShell(files, { installedGame: '1.0.0-beta.1' }).bridge, storage: memory(), version: '1.0.0-beta.1' });
+  assert.equal(beta.state.channel, 'beta');
+  await beta.start();
+  beta.stop();
+  assert.equal(beta.state.offer?.game.kind, 'install', 'the next beta is offered');
+
+  const chosen = memory();
+  chosen.set('agent-empire.update.channel', 'stable');
+  assert.equal(new UpdateService({ bridge: null, storage: chosen, version: '1.0.0-beta.1' }).state.channel, 'stable', 'an explicit choice is kept');
+  assert.equal(new UpdateService({ bridge: null, storage: memory(), version: '1.0.0' }).state.channel, 'stable', 'a stable build stays on stable');
 });

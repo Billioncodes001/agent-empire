@@ -1,7 +1,13 @@
 import { Consultancy, ConsultancyError } from './consultancy.js';
 import { ApprovalError, ApprovalInbox } from './approvals.js';
-import { EmailNotifier, NOT_CONFIGURED, emailConfig, smtpTransport, type MailTransport } from './email.js';
-import { TelegramBridge, telegramConfig, type TelegramConfig, type TelegramTransport } from './telegram.js';
+import { EmailNotifier, NOT_CONFIGURED, smtpTransport, type MailTransport } from './email.js';
+import { TelegramBridge, telegramTransport, type TelegramConfig, type TelegramTransport } from './telegram.js';
+import { createHash } from 'node:crypto';
+import { existsSync as fileExists, readFileSync, renameSync } from 'node:fs';
+import { OnboardingError, OnboardingService, type SettingsChange } from './onboarding.js';
+import { FileSecretStore, type SecretStore } from './secrets.js';
+import { guardedLookup, ntfyTransport, refusedTarget, resolveBudget, resolveEmail, resolveNtfy, resolveTelegram, type Resolver } from './notify.js';
+import { shouldOffer, type ChannelId, type ChannelView, type OnboardingView, type Source } from '../shared/onboarding.js';
 import { chiefCommands } from './chief-commands.js';
 import { Outreach, OutreachError, outreachConfig, type OutreachConfig } from './outreach.js';
 import { Empire } from './empire.js';
@@ -208,6 +214,11 @@ export interface ServerRuntime {
   chief?: { chat?: ChatFn; timeoutMs?: number; probe?: () => Promise<{ running: boolean; models: string[] }> };
   /** FREE-06: a fake gh, products folder, creation limit and clock for tests and fixtures (never a real GitHub write). */
   products?: { gh?: GhRunner; productsDir?: string; perHour?: number; now?: () => number };
+  /**
+   * FREE-08 onboarding: a test environment (instead of process.env), a secret store (the desktop's vault), and for tests
+   * only a fake Telegram API base and fetch. `start` lets saved/env channels deliver even with backgroundServices off.
+   */
+  notify?: { env?: NodeJS.ProcessEnv; secrets?: SecretStore; telegramApiBase?: string; resolve?: Resolver; start?: boolean; allowLocalTargets?: boolean };
 }
 export async function startServer(cfg: Config, runtime: ServerRuntime = {}) {
   const releaseHost = acquireHostLock(cfg.dataDir);
@@ -287,6 +298,10 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   };
   let publishOrg = () => {};
   const empire = new Empire(cfg.dataDir, state => { broadcast({ t: 'empire', state }); observeContinuity(); publishOrg(); });
+  // FREE-08: onboarding and the settings it saves. An install already founded at its first start here is legacy.
+  const secrets = runtime.notify?.secrets ?? new FileSecretStore(cfg.dataDir);
+  const onboarding = new OnboardingService(cfg.dataDir, secrets, { legacy: empire.state.setup.completed, allowLocalTargets: !!runtime.notify?.allowLocalTargets });
+  const hostBudget = { usd: cfg.budget, pause: cfg.budgetPause, source: cfg.budgetSource, pauseSource: cfg.budgetPauseSource };
 
   // --- Loopback-only endpoint that Claude Code hooks POST to --------------------------------
   const hookServer = http.createServer(async (req, res) => {
@@ -330,7 +345,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   // What the workers spend, all time and today, with the optional daily budget.
   const ledger = new Ledger(
     cfg.dataDir,
-    { budget: cfg.budget, pauseHiring: cfg.budgetPause },
+    (() => { const b = resolveBudget(hostBudget, onboarding.settings()); return { budget: b.usd, pauseHiring: b.pause }; })(),
     (state) => { broadcast({ t: 'usage', state }); publishOrg(); },
     (text, level) => broadcast({ t: 'toast', text, level }),
   );
@@ -457,22 +472,19 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     approvalsSent = sig;
     broadcast({ t: 'approvals', state });
     email?.observe(state.items);
+    ntfy?.observe(state.items);
     // A tool-proposal decision is recorded on the research card too.
     research?.reconcile();
     publishOrg();
   };
-  // ORG-03: optional email, one per new pending approval. Never blocks; the URL and password are never logged.
+  // ORG-03: optional email, one per new pending approval (FREE-08: also ntfy). Started by applyChannels below once the
+  // inbox exists. Never blocks; the URL, token and password are never logged.
   let email: EmailNotifier | undefined;
   let emailError: string | undefined;
-  try {
-    const setup = runtime.email === false || runtime.backgroundServices === false && !runtime.email ? undefined
-      : runtime.email ? runtime.email : (() => { const c = emailConfig(process.env); return c && { transport: smtpTransport(c.smtp), to: c.to, from: c.from }; })();
-    if (setup) email = new EmailNotifier(cfg.dataDir, setup.transport, { to: setup.to, from: setup.from });
-  } catch (error) { emailError = (error as Error).message; }
-  startupCleanup.push(() => email?.stop());
+  let ntfy: EmailNotifier | undefined;
+  startupCleanup.push(() => { email?.stop(); ntfy?.stop(); });
   inbox = new ApprovalInbox(cfg.dataDir, office, publishApprovals);
   approvalsSent = JSON.stringify([inbox.state().items, inbox.state().storageError]);
-  email?.observe(inbox.state().items);
   // ORG-04a: email outreach. Off (and saying why) unless the owner set the outreach and SMTP variables on this host.
   {
     const hostOff = runtime.outreach === false || (runtime.backgroundServices === false && !runtime.outreach);
@@ -596,7 +608,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
     briefing: chiefBriefing,
     createJob: (title, brief, rid) => {
       // The same consultancy path as the founder desk and Telegram /new: a pending plan; nothing starts before approval.
-      const job = office.create({ requestId: rid, client: 'Your company', title, brief }, 'CEO by phone');
+      const job = office.create({ requestId: rid, client: onboarding.settings().profile.name || 'Your company', title, brief }, 'CEO by phone');
       inbox?.reconcile();
       publishApprovals(); publishOrg();
       const item = inbox?.state().items.find((i) => i.kind === 'job_plan' && i.jobId === job.id);
@@ -605,12 +617,150 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   }, requestId);
   let telegram: TelegramBridge | undefined;
   let telegramError: string | undefined;
-  try {
-    const config = runtime.telegram === false || runtime.backgroundServices === false && !runtime.telegram
-      ? undefined : runtime.telegram?.config ?? telegramConfig(process.env);
-    if (config) telegram = new TelegramBridge(cfg.dataDir, config, chiefTelegram, runtime.telegram ? runtime.telegram.transport : undefined);
-  } catch (error) { telegramError = (error as Error).message; }
   startupCleanup.push(() => telegram?.stop());
+  // FREE-08: channels from test injection, else the host environment, else saved settings (notify.ts has the rules).
+  // Previews and tests (backgroundServices off) never deliver from env or saved settings unless they opt in.
+  const notifyEnv = runtime.notify?.env ?? process.env;
+  const deliver = runtime.backgroundServices !== false || !!runtime.notify?.start;
+  const channelSource: Record<ChannelId, { source: Source; error?: string }> = { telegram: { source: 'off' }, ntfy: { source: 'off' }, email: { source: 'off' } };
+  let listening = false;
+  const tgTransport = (token: string) => runtime.telegram ? runtime.telegram.transport : runtime.notify?.telegramApiBase ? telegramTransport(token, runtime.notify.telegramApiBase) : undefined;
+  /** A Telegram checkpoint for another bot/owner is set aside (never deleted) when the CEO re-binds the bot in Settings. */
+  const setAsideTelegramCheckpoint = (config: TelegramConfig) => {
+    const file = path.join(cfg.dataDir, 'telegram.json');
+    if (!fileExists(file)) return;
+    const binding = createHash('sha256').update(`${config.token.split(':')[0]}:${config.ownerId}`).digest('hex');
+    try { if (JSON.parse(readFileSync(file, 'utf8'))?.binding === binding) return; } catch { /* unreadable: set aside too */ }
+    renameSync(file, path.join(cfg.dataDir, `telegram.previous-${Date.now()}.json`));
+  };
+  // Re-review 2: saved targets are checked as written, resolved, and connected to only at the checked address.
+  const allowLocal = !!runtime.notify?.allowLocalTargets;
+  const ntfyGuard = { guard: { allowLoopback: allowLocal, resolve: runtime.notify?.resolve } };
+  const smtpGuard = { refuse: (host: string) => refusedTarget(host, allowLocal), lookup: guardedLookup(allowLocal, runtime.notify?.resolve) };
+  const bridges = new Set<TelegramBridge>();
+  const applyChannelsNow = async (which: Set<ChannelId>, fromSettings = false) => {
+    let saved = onboarding.settings();
+    const fromName = saved.profile.name || undefined;
+    if (which.has('email')) {
+      email?.stop(); email = undefined; emailError = undefined;
+      if (runtime.email === false) channelSource.email = { source: 'off' };
+      else if (runtime.email) { channelSource.email = { source: 'runtime' }; email = new EmailNotifier(cfg.dataDir, runtime.email.transport, { to: runtime.email.to, from: runtime.email.from }, { fromName }); }
+      else {
+        const r = resolveEmail(notifyEnv, saved, secrets);
+        channelSource.email = { source: r.source, error: r.error };
+        emailError = r.error;
+        if (r.config && deliver) email = new EmailNotifier(cfg.dataDir, smtpTransport(r.config.smtp, r.source === 'saved' ? smtpGuard : {}), { to: r.config.to, from: r.config.from }, { fromName });
+      }
+      email?.observe(desk.state().items);
+    }
+    if (which.has('ntfy')) {
+      ntfy?.stop(); ntfy = undefined;
+      const r = resolveNtfy(notifyEnv, saved, secrets);
+      channelSource.ntfy = { source: r.source, error: r.error };
+      if (r.config && deliver) ntfy = new EmailNotifier(cfg.dataDir, ntfyTransport(r.config, r.source === 'saved' ? ntfyGuard : {}), { to: 'ntfy@agent-empire.local', from: 'ntfy@agent-empire.local' }, { file: 'ntfy-notify.json', channel: 'ntfy' });
+      ntfy?.observe(desk.state().items);
+    }
+    if (which.has('telegram')) {
+      const old = telegram;
+      old?.stop(); telegram = undefined; telegramError = undefined;
+      // Review 11: the old bridge's in-flight poll finishes before its checkpoint is moved or a new bridge starts.
+      if (old) await old.idle();
+      // Re-review 1: what was saved while waiting wins.
+      saved = onboarding.settings();
+      let config: TelegramConfig | undefined;
+      if (runtime.telegram === false) channelSource.telegram = { source: 'off' };
+      else if (runtime.telegram) { channelSource.telegram = { source: 'runtime' }; config = runtime.telegram.config; }
+      else {
+        const r = resolveTelegram(notifyEnv, saved, secrets);
+        channelSource.telegram = { source: r.source, error: r.error };
+        telegramError = r.error;
+        if (deliver) config = r.config;
+        if (config && fromSettings && r.source === 'saved') {
+          try { setAsideTelegramCheckpoint(config); } catch { /* the bridge reports the mismatch itself */ }
+        }
+      }
+      if (config) {
+        telegram = new TelegramBridge(cfg.dataDir, config, chiefTelegram, tgTransport(config.token));
+        bridges.add(telegram);
+        if (listening) telegram.start();
+      }
+      // Exactly one bridge may run: any other one is stopped.
+      for (const b of bridges) if (b !== telegram) { b.stop(); bridges.delete(b); }
+    }
+  };
+  // Re-review 1: one application at a time, in order. The start-up one has no old bridge, so it completes synchronously.
+  let channelChain: Promise<void> = applyChannelsNow(new Set(['telegram', 'ntfy', 'email']));
+  const applyChannels = (which: Set<ChannelId>, fromSettings = false) =>
+    (channelChain = channelChain.catch(() => {}).then(() => applyChannelsNow(which, fromSettings)));
+  const applySettings = async (changed: Set<SettingsChange>) => {
+    if (changed.has('budget') && hostBudget.usd === undefined) {
+      const b = resolveBudget(hostBudget, onboarding.settings());
+      ledger.setBudget({ budget: b.usd, pauseHiring: b.pause });
+    }
+    const channels = new Set<ChannelId>();
+    for (const c of ['telegram', 'ntfy', 'email'] as const) if (changed.has(c)) channels.add(c);
+    if (changed.has('profile')) channels.add('email'); // the sender's display name
+    if (channels.size) await applyChannels(channels, true);
+  };
+  const channelView = (id: ChannelId): ChannelView => {
+    const { source, error } = channelSource[id];
+    const name = id === 'telegram' ? 'Telegram' : id === 'ntfy' ? 'ntfy' : 'Email';
+    const configured = source !== 'off' && !error;
+    const tg = id === 'telegram' ? telegram?.status() : undefined;
+    const notifier = id === 'email' ? email?.status() : id === 'ntfy' ? ntfy?.status() : undefined;
+    const running = id === 'telegram' ? !!tg?.running : !!notifier;
+    const liveError = tg?.error;
+    const label = error ? `${name}: needs attention`
+      : !configured ? `${name}: not set up`
+      : notifier ? notifier.label
+      : running ? `${name}: connected`
+      : tg ? `${name}: starting`
+      : `${name}: saved, not delivering in this preview`;
+    return { source, configured, running, label, ...(error || liveError ? { error: error ?? liveError } : {}) };
+  };
+  const onboardingView = (): OnboardingView & { storageError?: string } => {
+    const progress = onboarding.progress();
+    const saved = onboarding.settings();
+    return {
+      progress, offer: shouldOffer(progress, empire.state.setup.completed),
+      settings: {
+        profile: saved.profile, notifications: saved.notifications, approvals: saved.approvals,
+        secrets: secrets.names(), secretStorage: secrets.describe,
+        channels: { telegram: channelView('telegram'), ntfy: channelView('ntfy'), email: channelView('email') },
+        budget: resolveBudget(hostBudget, saved),
+      },
+      ...((() => { const e = [onboarding.storageError, secrets.error?.()].filter(Boolean).join(' '); return e ? { storageError: e } : {}; })()),
+    };
+  };
+  // "Send test" only ever goes to the configured endpoint, only when the CEO clicks, at most once per 5 s per channel.
+  const lastTest = new Map<ChannelId, number>();
+  const testSend = async (id: ChannelId): Promise<string> => {
+    const now = Date.now();
+    if (now - (lastTest.get(id) ?? 0) < 5_000) throw new OnboardingError(429, 'Wait a few seconds before sending another test.');
+    const saved = onboarding.settings();
+    const company = saved.profile.name || 'Agent Empire';
+    const subject = `${company}: test notification`;
+    const text = `This is a test from your Agent Empire office host (${project.name}). If you can read it, approvals will reach you here.`;
+    if (id === 'telegram') {
+      const config = runtime.telegram === false ? undefined : runtime.telegram ? runtime.telegram.config : resolveTelegram(notifyEnv, saved, secrets).config;
+      if (!config) throw new OnboardingError(400, channelSource.telegram.error ?? 'Save your Telegram bot token and user ID first.');
+      lastTest.set(id, now);
+      await (tgTransport(config.token) ?? telegramTransport(config.token)).call('sendMessage', { chat_id: config.ownerId, text: `${subject}\n\n${text}` }, AbortSignal.timeout(20_000));
+      return 'Sent a test message to your Telegram chat with the bot.';
+    }
+    if (id === 'ntfy') {
+      const config = resolveNtfy(notifyEnv, saved, secrets).config;
+      if (!config) throw new OnboardingError(400, channelSource.ntfy.error ?? 'Save an ntfy server and topic first.');
+      lastTest.set(id, now);
+      await ntfyTransport(config, resolveNtfy(notifyEnv, saved, secrets).source === 'saved' ? ntfyGuard : {}).send({ from: 'ntfy@agent-empire.local', to: 'ntfy@agent-empire.local', subject, text });
+      return `Sent a test to the ntfy topic ${config.topic}.`;
+    }
+    const setup = runtime.email === false ? undefined : runtime.email ? runtime.email : (() => { const r = resolveEmail(notifyEnv, saved, secrets), c = r.config; return c && { transport: smtpTransport(c.smtp, r.source === 'saved' ? smtpGuard : {}), to: c.to, from: c.from }; })();
+    if (!setup) throw new OnboardingError(400, channelSource.email.error ?? 'Save the SMTP server and the address to notify first.');
+    lastTest.set(id, now);
+    await setup.transport.send({ from: setup.from, to: setup.to, subject, text, ...(saved.profile.name ? { fromName: saved.profile.name } : {}) });
+    return `Sent a test email to ${setup.to}.`;
+  };
 
   // What each worker changed, for the Changes window at its desk (see changes.ts).
   changes = new Changes(
@@ -857,6 +1007,7 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
             mode: 'rule_based', observedAt: Date.now(), repository: project.name,
             resources: capacityReport(), telegram: telegram?.status() ?? { configured: false, running: false, error: telegramError },
             email: email?.status() ?? (emailError ? { ...NOT_CONFIGURED, error: emailError } : NOT_CONFIGURED),
+            ntfy: ntfy?.status() ?? { state: 'not_configured', label: 'ntfy: not configured', ...(channelSource.ntfy.error ? { error: channelSource.ntfy.error } : {}) },
             hostRequired: true,
           });
           if (p === '/api/consultancy/jobs' && req.method === 'POST') {
@@ -1038,6 +1189,33 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
           return send(res, 500, { error: 'Products could not complete this request.' });
         }
       }
+      if (p === '/api/onboarding' || p.startsWith('/api/onboarding/') || p === '/api/settings' || p.startsWith('/api/settings/')) {
+        // FREE-08 onboarding and settings. GET never returns a secret, only whether each is present. Writes and test
+        // sends are the signed-in CEO's same-origin actions.
+        if (req.method !== 'GET' && !trusted()) return send(res, 403, { error: 'A same-origin Origin header is required' });
+        try {
+          if (p === '/api/onboarding' && req.method === 'GET') return send(res, 200, onboardingView());
+          if (req.method !== 'POST' && req.method !== 'PUT') return send(res, 404, { error: 'Unknown onboarding endpoint.' });
+          let body: unknown;
+          try { const raw = await readBody(req, 16_000); body = raw.trim() ? JSON.parse(raw) : {}; } catch { return send(res, 400, { error: 'Expected a JSON request.' }); }
+          if (p === '/api/onboarding/progress' && req.method === 'POST') { onboarding.updateProgress(body); return send(res, 200, onboardingView()); }
+          if (p === '/api/settings' && req.method === 'PUT') { await onboarding.checkTargets(body, runtime.notify?.resolve); await applySettings(onboarding.updateSettings(body)); return send(res, 200, onboardingView()); }
+          const test = /^\/api\/settings\/test\/(telegram|ntfy|email)$/.exec(p);
+          if (test && req.method === 'POST') {
+            try { return send(res, 200, { ok: true, message: await testSend(test[1] as ChannelId) }); }
+            catch (error) {
+              if (error instanceof OnboardingError) throw error;
+              // Transport errors carry a status at most: never the URL, token or password.
+              return send(res, 502, { error: `The test was not delivered: ${(error as Error).message}` });
+            }
+          }
+          return send(res, 404, { error: 'Unknown onboarding endpoint.' });
+        } catch (error) {
+          if (error instanceof OnboardingError) return send(res, error.status, { error: error.message });
+          console.error('[onboarding]', (error as Error).message);
+          return send(res, 500, { error: 'Settings could not be saved.' });
+        }
+      }
       if (p === '/api/engines' || p.startsWith('/api/engines/')) {
         // FREE-01 linked accounts. GET reports names and states only: never a key, token or credential file.
         if (req.method !== 'GET' && !trusted()) return send(res, 403, { error: 'A same-origin Origin header is required' });
@@ -1069,9 +1247,13 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
           if (p === '/api/voice' && req.method === 'GET') return send(res, 200, await voice.state());
           if (req.method !== 'POST') return send(res, 404, { error: 'Unknown voice endpoint.' });
           if (p === '/api/voice/transcribe') {
-            if (Number(req.headers['content-length'] ?? 0) > MAX_AUDIO_BYTES) {
-              req.resume(); // discard the signed-in caller's oversized body so the 413 reaches it
-              return send(res, 413, { error: 'Recordings are limited to 30 seconds.' }, { connection: 'close' });
+            const declared = Number(req.headers['content-length'] ?? 0);
+            if (declared > MAX_AUDIO_BYTES) {
+              // Discard the signed-in caller's oversized body so the 413 reaches it. Closing while the client is still
+              // sending races it into ECONNRESET, so a body up to 4x the limit is drained on an open connection; only a
+              // far larger one is cut off.
+              req.resume();
+              return send(res, 413, { error: 'Recordings are limited to 30 seconds.' }, declared <= 4 * MAX_AUDIO_BYTES ? {} : { connection: 'close' });
             }
             let audio: Buffer;
             try { audio = await readBuffer(req, MAX_AUDIO_BYTES); } catch { return send(res, 413, { error: 'Recordings are limited to 30 seconds.' }, { connection: 'close' }); }
@@ -1668,11 +1850,13 @@ async function startOwnedServer(cfg: Config, runtime: ServerRuntime, releaseHost
   if (runtime.backgroundServices !== false) services.start();
   execution.start();
   office.reconcile();
+  listening = true;
   telegram?.start();
 
   const shutdown = () => {
     telegram?.stop();
     email?.stop();
+    ntfy?.stop();
     outreach?.stop();
     execution.stop();
     clearInterval(empireTimer);

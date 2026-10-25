@@ -25,6 +25,8 @@ html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 html, body { margin: 0; height: 100%; overflow: hidden; background: #0f1b21; } /* the splash ink: no light flash while the setup hands over or the scene loads */
 body { font-family: var(--font); color: var(--ink); -webkit-font-smoothing: antialiased; }
 button { font-family: inherit; }
+/* A long press on a button must not select its label or open the touch Copy/Share bar over the game (device testing). */
+button, [role="button"] { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 .hidden { display: none !important; }
 
 #app { position: fixed; inset: 0; }
@@ -335,6 +337,8 @@ button { font-family: inherit; }
 .svc-title { font-weight: 900; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .svc-meta { font-size: 12px; font-weight: 700; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .svc-port { font: 800 14px ui-monospace, Menlo, monospace; }
+/* Service rows are role="button", but their command, branch and port stay copyable by hand. */
+.svc-title, .svc-meta, .svc-port { -webkit-user-select: text; user-select: text; }
 .svc-list .btn { padding: 3px 10px; font-size: 13px; text-decoration: none; color: inherit; }
 .svc-empty { text-align: center; padding: 18px 8px; border: 3px dashed var(--muted); border-radius: 14px; }
 .svc-empty p { margin: 0; font-weight: 800; }
@@ -1015,6 +1019,10 @@ html.ae-touch.ae-modal #hud > .touch-ui, html.ae-touch.ae-typing #hud > .touch-u
 .touch-use .touch-icon { font-size: 18px; font-weight: 700; }
 .touch-view { right: 14px; bottom: 86px; width: 46px; height: 46px; }
 .touch-view .touch-label { display: none; }
+/* CITY-08: in flight Jump reads Up and a Down button sits above it; View moves aside. */
+.touch-btn[hidden] { display: none; }
+.touch-down { right: 8px; bottom: 84px; width: 58px; height: 58px; }
+.ae-flying .touch-view { right: 76px; bottom: 92px; }
 .touch-btn:active, .touch-btn.down { transform: scale(.93); background: rgba(155, 209, 186, .38); }
 .touch-btn:focus-visible { outline: 2px solid #c3e7d7; outline-offset: 3px; }
 
@@ -1048,6 +1056,12 @@ html.ae-touch .radar-stats, html.ae-touch .crosshair .look-hint { display: none 
 html.ae-touch .hint { bottom: calc(14px + env(safe-area-inset-bottom)); max-width: calc(100vw - 370px - env(safe-area-inset-left) - env(safe-area-inset-right)); gap: 6px 10px; padding: 7px 12px; font-size: 12px; }
 html.ae-touch .traversal-hint { top: calc(58px + env(safe-area-inset-top)); bottom: auto; left: 50%; right: auto; transform: translateX(-50%); max-width: calc(100vw - 300px); font-size: 11px; }
 html.ae-touch #toasts { top: calc(58px + env(safe-area-inset-top)); }
+/* While a dialog is open, placeToasts() (ui/dom.ts) puts toasts beside it or just above its footer, never over its
+   header, tabs or footer. Only the two newest show; above the footer the interactive update toast waits for the dialog
+   to close so it can't block the dialog's controls. */
+#toasts[data-place] > .toast:nth-last-child(n + 3) { display: none; }
+#toasts[data-place="above-footer"] > .toast.update-toast { display: none; }
+#toasts[data-tight] > .toast:not(:last-child) { display: none; }
 html.ae-touch #hud #conn { top: calc(58px + env(safe-area-inset-top)); bottom: auto; }
 html.ae-touch #hud #shares { top: calc(58px + env(safe-area-inset-top)); bottom: auto; left: calc(12px + env(safe-area-inset-left)); }
 html.ae-touch .share-thumb { width: 150px; }
@@ -1553,6 +1567,81 @@ html.ae-touch #hud .topbar .controls > #btn-inbox > span:not(.svc-count):not(.in
 .modal.city-modal .body { overflow-y: auto; overscroll-behavior: contain; }
 .modal.city-modal h3 { font-size: 15px; font-weight: 650; margin: 14px 0 8px; color: var(--ink); }
 .modal.city-modal .city-list li { border-bottom: 1px solid rgba(155, 209, 186, .1); padding: 4px 0; }
+
+/* ---------- FREE-08 onboarding: the dark exec dialog with a step rail; no media, nothing heavy (Save-Data safe) ---------- */
+.modal.onboarding-modal { width: min(820px, 96vw); display: flex; flex-direction: column; }
+.onboarding-modal header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.onboarding-modal .btn.close { flex: none; width: 44px; min-height: 44px; padding: 0; justify-content: center; }
+.onboarding-modal .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.onboarding-modal header, .onboarding-modal footer { flex: none; }
+.ob-status:empty { display: none; }
+.ob-rail { flex: none; display: flex; gap: 6px; margin: 0; padding: 10px 22px; list-style: none; border-bottom: 1px solid var(--hud-line); overflow-x: auto; }
+.ob-rail li { flex: 1 1 0; min-width: 0; }
+.ob-step { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 44px; padding: 6px 10px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--hud-muted); font: inherit; font-size: 13px; cursor: pointer; text-align: left; }
+.ob-step:hover { background: #ffffff0d; color: var(--hud-text); }
+.ob-step[aria-current=step] { border-color: #9bd1ba66; background: #9bd1ba14; color: #e6f2ec; }
+.ob-step:focus-visible { outline: 2px solid #c3e7d7; outline-offset: 2px; }
+.ob-step-n { display: inline-grid; place-items: center; flex: none; width: 24px; height: 24px; border-radius: 50%; border: 1px solid #ffffff40; font-size: 12px; font-weight: 600; }
+.ob-step[data-state=done] .ob-step-n { background: #9bd1ba; border-color: #9bd1ba; color: #0f2019; }
+.ob-step[data-state=skipped] .ob-step-n { border-style: dashed; }
+.ob-body { overflow-y: auto; min-height: 0; flex: 1 1 auto; }
+.ob-body > * { animation: ob-in .22s ease-out both; }
+@keyframes ob-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .ob-body > * { animation: none; } }
+.ob-heading { margin: 0 0 4px !important; outline: none; }
+.ob-lead { margin: 0 0 14px; color: #c9d6d2; font-size: 14px; line-height: 1.5; }
+.ob-cost { margin: 6px 0; font-size: 13px; color: var(--hud-muted); }
+.ob-cost strong { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+.ob-cost[data-free=true] strong { background: #173a2c; color: #bfeed3; border: 1px solid #9bd1ba55; }
+.ob-cost[data-free=false] strong { background: #3d2a16; color: #f6d9b2; border: 1px solid #d9b36a66; }
+.ob-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 14px; }
+.ob-field { display: flex; flex-direction: column; gap: 6px; margin: 12px 0 0; min-width: 0; }
+.ob-field label { font-size: 13px; font-weight: 600; color: #dce6df; }
+.ob-field .setting-note { margin: 0; font-size: 12px; }
+.onboarding-modal input[type=text], .onboarding-modal input[type=password], .onboarding-modal textarea, .onboarding-modal select { width: 100%; min-height: 44px; box-sizing: border-box; font: inherit; font-size: 16px; color: #e6ecea; background: rgba(6, 14, 18, .6); border: 1px solid #9bd1ba33; border-radius: 8px; padding: 9px 12px; }
+.onboarding-modal input:focus-visible, .onboarding-modal textarea:focus-visible, .onboarding-modal select:focus-visible { outline: 2px solid #c3e7d7; outline-offset: 1px; border-color: #9bd1ba; }
+.onboarding-modal input:disabled { opacity: .5; }
+.onboarding-modal input::placeholder, .onboarding-modal textarea::placeholder { color: #7e9894; }
+.ob-secret-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.ob-secret-state { font-size: 12px; color: var(--hud-muted); }
+.ob-secret-state[data-present=true] { color: #bfeed3; }
+.ob-channel { margin: 16px 0 0; padding: 12px 14px 14px; border: 1px solid var(--hud-line); border-radius: 10px; background: #ffffff05; min-width: 0; }
+.ob-channel legend { padding: 0 6px; font-weight: 600; color: #e6f2ec; }
+.ob-channel-state { display: block; font-size: 13px; color: #f2a488; }
+.ob-channel-state::before { content: '○ '; }
+.ob-channel-state[data-ok=true] { color: #bfeed3; }
+.ob-channel-state[data-ok=true]::before { content: '● '; }
+.ob-env { margin: 8px 0 0; padding: 8px 10px; border-left: 3px solid #d9b36a; background: #d9b36a14; color: #f2dfbd; font-size: 12.5px; }
+.ob-engine-list, .ob-summary, .ob-cloud { margin: 10px 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.ob-engine-list li { display: flex; justify-content: space-between; gap: 12px; padding: 8px 10px; border: 1px solid var(--hud-line); border-radius: 8px; font-size: 13px; }
+.ob-engine-list li span { color: var(--hud-muted); text-align: right; }
+.ob-engine-list li[data-ok=true] span::before { content: '● '; color: #9bd1ba; }
+.ob-engine-list li[data-ok=false] span::before { content: '○ '; }
+.ob-cloud li { padding: 10px 12px; border: 1px solid var(--hud-line); border-radius: 8px; }
+.ob-cloud li p { margin: 4px 0 0; color: var(--hud-muted); font-size: 13px; }
+.ob-rules { width: 100%; border-collapse: collapse; margin: 6px 0; font-size: 13px; }
+.ob-rules th, .ob-rules td { padding: 7px 8px; border-bottom: 1px solid var(--hud-line); text-align: left; vertical-align: top; }
+.ob-rules th { color: #c9d6d2; font-weight: 600; }
+.ob-rules td:first-child { color: #e6f2ec; width: 42%; }
+.ob-rules td:last-child { color: var(--hud-muted); }
+.onboarding-modal footer { align-items: center; gap: 8px; }
+.onboarding-modal footer .grow { flex: 1 1 auto; }
+.ob-status { margin: 0; font-size: 13px; color: var(--hud-muted); max-width: 40ch; }
+.ob-status[data-tone=error] { color: #ffb4a0; }
+.onboarding-modal .btn.ob-link { background: transparent; border-color: transparent; color: var(--hud-muted); text-decoration: underline; }
+@media (max-width: 720px), (max-height: 520px) {
+  .modal.onboarding-modal { width: 100vw; max-height: var(--vh); border-radius: 0; }
+  .ob-rail { padding: 6px 12px; }
+  .ob-step span:not(.ob-step-n):not(.sr-only) { display: none; }
+  .ob-step[aria-current=step] span:not(.ob-step-n):not(.sr-only) { display: inline; }
+  .ob-grid { grid-template-columns: 1fr; }
+  .onboarding-modal header, .onboarding-modal .exec-body, .onboarding-modal footer { padding-left: 14px; padding-right: 14px; }
+  .onboarding-modal header { padding-top: 10px; padding-bottom: 8px; }
+  .onboarding-modal header h2 { font-size: 18px; }
+  .ob-status { flex-basis: 100%; order: -1; }
+  .onboarding-modal .ob-later { display: none; }
+  .onboarding-modal footer { padding-top: 8px; padding-bottom: 8px; }
+}
 
 /* Opened-from-disk notice (see the entry HTML): this stylesheet loaded, so the page is served correctly. */
 .file-open-note { display: none !important; }

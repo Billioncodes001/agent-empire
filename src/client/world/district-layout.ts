@@ -4,13 +4,13 @@
  * the kit manifest written by tools/city/build-city-assets.ts.
  */
 import manifest from '../public/models/city/manifest.json';
-import { GARAGE, PLOTS, type DistrictId } from '../../shared/city';
+import { GARAGE, HELIPAD, PLOTS, type CityState, type DistrictId } from '../../shared/city';
 import { vehicleOverlaps } from '../vehicle';
 
 export type Kit = 'commercial' | 'industrial' | 'streets' | 'vehicles';
 export interface Placement { kit: Kit; model: string; x: number; z: number; yaw: number; scale: number; district: DistrictId; furniture: boolean }
 export interface Rect { x: number; z: number; w: number; d: number }
-export interface Box { minX: number; maxX: number; minZ: number; maxZ: number; top: number; bottom?: number }
+export interface Box { minX: number; maxX: number; minZ: number; maxZ: number; top: number; bottom?: number; vehicle?: boolean; walkOnly?: boolean }
 
 const SCALE: Record<Kit, number> = { commercial: 9, industrial: 9, streets: 7, vehicles: 1.8 };
 const kits = manifest.kits as unknown as Record<Kit, { models: Record<string, { min: number[]; max: number[] }> }>;
@@ -99,7 +99,11 @@ function furniture(out: Placement[]) {
   out.push({ kit: 'vehicles', model: 'delivery', x: 112, z: 171.4, yaw: -Math.PI / 2, scale: SCALE.vehicles, district: 'harbour', furniture: false });
 }
 
-export interface DistrictLayout { placements: Placement[]; colliders: Box[]; garage: { walls: Box[]; door: Box; kiosk: { x: number; z: number } } }
+export interface DistrictLayout {
+  placements: Placement[];
+  colliders: Box[];
+  garage: { walls: Box[]; door: Box; kiosk: { x: number; z: number }; stairs: Box[]; rails: Box[]; helipadKiosk: Box };
+}
 
 /** Garage shell: back and side walls, two front wall sections either side of the roller door, a roof slab. */
 function garageBoxes() {
@@ -114,7 +118,16 @@ function garageBoxes() {
     { minX: 81, maxX: 82.6, minZ: 82.4, maxZ: 83.2, top: 1.1 },
   ];
   const doorBox: Box = { minX: door.x - door.width / 2, maxX: door.x + door.width / 2, minZ: door.z - 0.15, maxZ: door.z + 0.15, top: 4.6 };
-  return { walls, door: doorBox, kiosk: { x: 81.8, z: 81.9 } };
+  // CITY-08: the roof slab (top = HELIPAD.y) is the helipad deck. A staircase on the east wall climbs north from the
+  // pavement to a landing level with the roof; rails along the roof edges keep walkers up there, with an opening at the
+  // north-east corner beside the landing. Every step rises less than the 0.3 m a walker steps up.
+  const steps = 22, rise = HELIPAD.y / steps, tread = 0.5, foot = z1 - 0.4 + steps * tread - 11; // bottom step at z ≈ 84.1
+  const stairs: Box[] = Array.from({ length: steps }, (_, i) => ({ minX: x1 + 0.25, maxX: x1 + 1.95, minZ: foot - (i + 1) * tread, maxZ: foot - i * tread, top: (i + 1) * rise, walkOnly: true }));
+  stairs.push({ minX: x1, maxX: x1 + 1.95, minZ: foot - steps * tread - 2.4, maxZ: foot - steps * tread, top: HELIPAD.y, walkOnly: true });
+  const y = HELIPAD.y, rail = (minX: number, maxX: number, minZ: number, maxZ: number): Box => ({ minX, maxX, minZ, maxZ, bottom: y, top: y + 1.05 });
+  const rails = [rail(x0, x1 - 1.8, z0, z0 + 0.25), rail(x1 - 0.25, x1, z0 + 2.2, z1), rail(x0, x1, z1 - 0.25, z1), rail(x0, x0 + 0.25, z0, z1)];
+  const helipadKiosk: Box = { minX: HELIPAD.kiosk.x - 0.6, maxX: HELIPAD.kiosk.x + 0.6, minZ: HELIPAD.kiosk.z - 0.9, maxZ: HELIPAD.kiosk.z - 0.3, bottom: y, top: y + 1.1 };
+  return { walls, door: doorBox, kiosk: { x: 81.8, z: 81.9 }, stairs, rails, helipadKiosk };
 }
 
 export function districtLayout(): DistrictLayout {
@@ -126,7 +139,7 @@ export function districtLayout(): DistrictLayout {
   // Lamp and signal posts are thin; a 0.3 m post keeps people from walking through them.
   for (const p of placements.filter((p) => p.kit === 'streets' && p.model !== 'dumpster'))
     colliders.push({ minX: p.x - 0.15, maxX: p.x + 0.15, minZ: p.z - 0.15, maxZ: p.z + 0.15, top: 3 });
-  colliders.push(...garage.walls);
+  colliders.push(...garage.walls, ...garage.stairs, ...garage.rails, garage.helipadKiosk);
   return { placements, colliders, garage };
 }
 
@@ -143,11 +156,15 @@ export const skylineColliders = (): Box[] =>
  * Whether a garage bay or kerb slot can turn solid: the live sedan and the founder must be clear of it, otherwise a
  * vehicle bought or stored while they stand there would trap them inside its collider.
  */
-export type CarPose = { position: { x: number; z: number }; rotation: { y: number } };
-export function slotClear(box: Box, car: CarPose, player: { x: number; z: number }, driving = false) {
-  // While driving, the founder is the car: its full 2.14 × 4.72 m body is tested, not a point at its centre.
+export type CarPose = { position: { x: number; z: number }; rotation: { y: number }; half?: { w: number; l: number } };
+/**
+ * `car` is the sedan, or (CITY-06) every live body: the driven ride with its own footprint and the parked sedan.
+ * While driving, the founder is the car: its full body is tested, not a point at its centre.
+ */
+export function slotClear(box: Box, car: CarPose | readonly CarPose[], player: { x: number; z: number }, driving = false) {
   const person = !driving && player.x > box.minX - 0.4 && player.x < box.maxX + 0.4 && player.z > box.minZ - 0.4 && player.z < box.maxZ + 0.4;
-  return !person && !vehicleOverlaps(car.position.x, car.position.z, car.rotation.y, box);
+  const bodies: readonly CarPose[] = Array.isArray(car) ? car : [car as CarPose];
+  return !person && !bodies.some((b) => vehicleOverlaps(b.position.x, b.position.z, b.rotation.y, box, b.half));
 }
 /** The sedan's pose this frame: while driving, the player controller has already moved it (city.car lags a frame). */
 export const liveCarPose = (driving: boolean, player: { x: number; z: number }, facing: number, car: CarPose): CarPose =>
@@ -161,6 +178,74 @@ export function settleSlots(slots: { occupied: boolean; collider: Box }[], occup
     s.occupied = occupiedNow[i];
     if (!s.occupied) s.collider.top = 0;
   });
+}
+
+/** A ride's pose on the ground plane. */
+export interface Pose { x: number; z: number; yaw: number }
+/** The world-aligned box around a rotated body (its collider), from its footprint and height. */
+export function poseBox(p: Pose, half: { w: number; l: number }, height: number, bottom = 0): Box {
+  const c = Math.abs(Math.cos(p.yaw)), s = Math.abs(Math.sin(p.yaw));
+  const hx = c * half.w + s * half.l, hz = s * half.w + c * half.l;
+  return { minX: p.x - hx, maxX: p.x + hx, minZ: p.z - hz, maxZ: p.z + hz, bottom, top: bottom + height };
+}
+/**
+ * CHAR-01: a vehicle's collider at its own base height (a car parked on the garage roof is solid up there, not at the
+ * street below), marked as a vehicle so walkers never stand on it or step onto it.
+ */
+export function vehicleBox(p: Pose, half: { w: number; l: number }, height: number, bottom = 0): Box {
+  return { ...poseBox(p, half, height, bottom), vehicle: true };
+}
+/** The executive sedan's collision body (slightly inside its 1.07 × 2.36 m shell, as before CHAR-01). */
+export const SEDAN_BODY = { w: 1.03, l: 2.35 };
+/** The sedan's collider for this frame: at its own height, and not solid while the founder drives it. */
+export function sedanCollider(car: { position: { x: number; y: number; z: number }; rotation: { y: number } }, driven: boolean): Box {
+  const box = vehicleBox({ x: car.position.x, z: car.position.z, yaw: car.rotation.y }, SEDAN_BODY, 1.55, car.position.y);
+  if (driven) box.top = box.bottom!;
+  return box;
+}
+/**
+ * CHAR-01 review 5: the sedan's collider, deferred like the bay cars. After the founder steps out it turns solid only
+ * once nobody stands inside its box (at a diagonal heading the world-aligned box reaches past the doors, and turning
+ * solid at once would push the founder about a metre). Once solid it stays solid until the sedan is driven again.
+ */
+export class SedanBody {
+  readonly collider: Box = sedanCollider({ position: { x: 5, y: 0, z: 45 }, rotation: { y: 0 } }, false);
+  private solid = true;
+  update(car: { position: { x: number; y: number; z: number }; rotation: { y: number } }, driven: boolean, walker: { x: number; y: number; z: number } | null, bodies: readonly CarPose[]): Box {
+    const box = sedanCollider(car, false);
+    if (driven) this.solid = false;
+    else if (!this.solid) {
+      const near = walker && Math.abs(walker.y - car.position.y) < 2 ? walker : { x: 1e6, z: 1e6 };
+      this.solid = slotClear(box, bodies, near, false);
+    }
+    if (!this.solid) box.top = box.bottom!;
+    return Object.assign(this.collider, box);
+  }
+}
+/**
+ * CITY-06: where a bought vehicle stands. A pose from this session (where the founder parked it) wins; otherwise the
+ * slot its save records: its kerb slot after "Bring out", else its bay. Parked poses are not saved, so a reload
+ * returns every vehicle to its slot.
+ */
+export function garagePose(city: CityState, id: string, parked?: Pose): Pose {
+  if (parked) return parked;
+  const v = city.vehicles.find((x) => x.id === id)!;
+  if (v.apron !== undefined) return { ...GARAGE.apron[v.apron] };
+  return { x: GARAGE.bays[v.bay].x, z: GARAGE.bays[v.bay].z, yaw: 0 };
+}
+
+/** Kerb slot boxes (as the host numbers them). */
+export const APRON_BOXES: readonly Box[] = GARAGE.apron.map((a) => ({ minX: a.x - 2.4, maxX: a.x + 2.4, minZ: a.z - 1.1, maxZ: a.z + 1.1, top: 0 }));
+/** Kerb slots a live body (any ride, including the helicopter at street level) or the founder occupies. */
+export function apronSlotsBlocked(bodies: readonly CarPose[], player: { x: number; z: number }) {
+  return APRON_BOXES.flatMap((s, i) => (slotClear(s, bodies, player) ? [] : [i]));
+}
+/** Review 5: storing a vehicle is refused while another body (a car parked there this session) stands in its bay. */
+export function bayBlocked(city: CityState, id: string, bodies: readonly CarPose[]) {
+  const v = city.vehicles.find((x) => x.id === id);
+  if (!v) return false;
+  const b = GARAGE.bays[v.bay];
+  return !slotClear({ minX: b.x - 1.1, maxX: b.x + 1.1, minZ: b.z - 2.4, maxZ: b.z + 2.4, top: 0 }, bodies, { x: 1e6, z: 1e6 });
 }
 
 export const PLOT_PAD = { w: 20, d: 14 };

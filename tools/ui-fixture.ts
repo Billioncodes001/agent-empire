@@ -30,6 +30,7 @@ import { MAX_AUDIO_BYTES } from '../src/shared/voice.js';
 import { ChiefBrain, ChiefError, chiefActions } from '../src/server/chief.js';
 import { LessonMemory } from '../src/server/memory.js';
 import { fixtureChat } from './chief-fixture.js';
+import { onboardingFixture } from './onboarding-fixture.js';
 
 /**
  * ORG-03: a real approval inbox over a real consultancy journal in a throwaway temp directory, with a fake queue that
@@ -138,6 +139,9 @@ function fixtureOrg(state: ReturnType<typeof initialEmpire>, workers: WorkerInfo
 }
 
 const port = Number(process.env.FIXTURE_PORT || 4613);
+// FREE-08: FIXTURE_ONBOARDING=new (offered after founding) | legacy (an old install: never offered) serves onboarding over
+// the real OnboardingService with fake Telegram/ntfy/SMTP servers on loopback (tools/onboarding-fixture.ts).
+const FX_ONBOARDING = process.env.FIXTURE_ONBOARDING === 'new' || process.env.FIXTURE_ONBOARDING === 'legacy' ? await onboardingFixture(process.env.FIXTURE_ONBOARDING, () => true) : undefined;
 if (!Number.isInteger(port) || port < 1024 || port > 65535 || port === 4610) throw new Error('Use an isolated fixture port (not 4610).');
 const root = resolve(import.meta.dirname, '../dist/public');
 const scenarios = ['working', 'idle', 'needs_input', 'turn_ended', 'interrupted', 'unknown', 'missing', 'stale', 'disconnected', 'waiting'] as const;
@@ -421,6 +425,8 @@ const server = createServer(async (req, res) => {
     for (const [ws, token] of socketToken) if (token === entry[0]) ws.close(4401, 'Device signed out');
     return json(res, 200, { ok: true });
   }
+  // As on the real server (`trusted()`), a signed-in device's bearer request is trusted: a browser never sends one on its own.
+  if (FX_ONBOARDING && await FX_ONBOARDING.route(req, res, url.pathname, sameOrigin || !!device)) return;
   if (url.pathname === '/__fixture/jobs') return json(res, 200, fxOffice.snapshot());
   if (FX_VOICE && (url.pathname === '/api/voice' || url.pathname.startsWith('/api/voice/') || url.pathname === '/api/phone/chief')) return fxVoiceRoute(req, res, url.pathname);
   if (FX_ENGINES && url.pathname === '/api/engines' && req.method === 'GET') return json(res, 200, fxEngines());
@@ -503,7 +509,7 @@ sockets.on('connection', ws => {
     if (msg.t === 'worker.attach') send(ws, { t: 'term.snapshot', workerId: 'fixture-chief', cols: 90, rows: 25, data: 'SYNTHETIC TERMINAL — no commands execute.\r\nType to test keyboard routing: ' });
     else if (msg.t === 'term.input' && typeof msg.data === 'string') send(ws, { t: 'term.data', workerId: 'fixture-chief', data: msg.data.replace(/\r/g, '\r\n') });
     else if (msg.t === 'ping') send(ws, { t: 'pong', at: msg.at });
-    else if (msg.t === 'empire.action' && ['buy-plot', 'buy-vehicle', 'vehicle-spawn', 'vehicle-store'].includes(msg.action?.kind)) {
+    else if (msg.t === 'empire.action' && ['buy-plot', 'buy-vehicle', 'vehicle-spawn', 'vehicle-store', 'buy-helicopter'].includes(msg.action?.kind)) {
       const error = fixtureCityAction(msg.action);
       if (error) send(ws, { t: 'toast', text: error, level: 'error' });
       else for (const client of sockets.clients) publish(client);
@@ -518,4 +524,4 @@ sockets.on('connection', ws => {
 });
 const timer = setInterval(() => { if (!['stale', 'disconnected'].includes(scenario)) for (const ws of sockets.clients) publish(ws); }, 3000);
 server.listen(port, '127.0.0.1', () => console.log(`UI fixture: http://localhost:${port}/ — controls: http://localhost:${port}/__fixture`));
-for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => { clearInterval(timer); for (const ws of sockets.clients) ws.terminate(); sockets.close(); server.close(); });
+for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => { clearInterval(timer); FX_ONBOARDING?.close(); for (const ws of sockets.clients) ws.terminate(); sockets.close(); server.close(); });
