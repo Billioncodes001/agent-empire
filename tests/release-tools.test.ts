@@ -100,26 +100,28 @@ test('stable bridge: until 1.0.0 ships, a 1.0.0 pre-release is GitHub latest and
   assert.match(wf, /a latest release must publish channel-stable\.json/);
 });
 
-test('this branch is on 1.0.0-beta.1 and every target is in sync', () => {
-  assert.equal(JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version, '1.0.0-beta.1');
+test('the current version is valid and every target is in sync', () => {
+  const current = JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
+  const info = versionInfo(current);
   assert.deepEqual(checkVersion(ROOT), []);
-  assert.match(readFileSync(path.join(ROOT, 'mobile/android/app/src/main/AndroidManifest.xml'), 'utf8'), /android:versionCode="10000301" android:versionName="1.0.0-beta.1"/);
+  assert.ok(readFileSync(path.join(ROOT, 'mobile/android/app/src/main/AndroidManifest.xml'), 'utf8').includes(`android:versionCode="${info.androidVersionCode}" android:versionName="${current}"`));
   const pbx = readFileSync(path.join(ROOT, 'mobile/ios/AgentEmpire.xcodeproj/project.pbxproj'), 'utf8');
-  assert.equal([...pbx.matchAll(/MARKETING_VERSION = 1\.0\.0;/g)].length, 2);
-  assert.equal([...pbx.matchAll(/CURRENT_PROJECT_VERSION = 10000301;/g)].length, 2);
+  assert.equal(pbx.split(`MARKETING_VERSION = ${info.iosMarketingVersion};`).length - 1, 2);
+  assert.equal(pbx.split(`CURRENT_PROJECT_VERSION = ${info.iosBuildNumber};`).length - 1, 2);
 });
 
 test('sync writes every target, check names drift, and other content is untouched', () => {
   const root = fixtureRoot();
   const pkg = path.join(root, 'package.json');
-  writeFileSync(pkg, readFileSync(pkg, 'utf8').replace('"version": "1.0.0-beta.1"', '"version": "1.2.0-rc.3"'));
+  const current = JSON.parse(readFileSync(pkg, 'utf8')).version;
+  writeFileSync(pkg, readFileSync(pkg, 'utf8').split(`"version": "${current}"`).join('"version": "1.2.0-rc.3"'));
   const before = readFileSync(path.join(root, 'desktop/package.json'), 'utf8');
   assert.equal(checkVersion(root).length, TARGETS.length - 1);
   const changed = syncVersion(root);
   assert.equal(changed.length, TARGETS.length - 1);
   assert.deepEqual(checkVersion(root), []);
   assert.deepEqual(syncVersion(root), []);
-  assert.equal(readFileSync(path.join(root, 'desktop/package.json'), 'utf8'), before.replace('"version": "1.0.0-beta.1"', '"version": "1.2.0-rc.3"'));
+  assert.equal(readFileSync(path.join(root, 'desktop/package.json'), 'utf8'), before.split(`"version": "${current}"`).join('"version": "1.2.0-rc.3"'));
   const lock = JSON.parse(readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
   assert.equal(lock.version, '1.2.0-rc.3');
   assert.equal(lock.packages[''].version, '1.2.0-rc.3');
