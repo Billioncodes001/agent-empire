@@ -90,7 +90,7 @@ export function startUpdateFixture(opts: UpdateFixtureOptions): Promise<{ server
   ]);
   if (opts.older) releases.set(opts.older, { version: opts.older, zip: gameZipFrom(opts.game, opts.older), broken: false });
   let tamper: TamperMode = 'off';
-  const apkName = (v: string) => `Agent-Empire-${v}-android-debug-signed.apk`;
+  const apkName = (_v: string) => 'Agent-Empire-Android.apk'; // signing state is in the channel (signed: false), not the name
   const coordinator = opts.coordinator === undefined ? readFileSync(join(opts.game, 'cloud/agent-empire-coordinator.mjs'), 'utf8') : opts.coordinator;
   let latest = good;
   const log: string[] = [];
