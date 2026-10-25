@@ -17,7 +17,7 @@
         { "name": "jump_start", "from": "Jump_Start", "start": 0.07, "end": 0.5, "lift": 0.04, "calm": 0.5 },
         { "name": "jump_air", "from": "Jump_Loop", "lift": 0.04, "calm": 0.5 },
         { "name": "jump_land", "from": "Jump_Land", "start": 0.03, "end": 0.8, "lift": 0.02, "calm": 0.5 },
-        { "name": "drive_seated", "from": "Driving_Loop", "drop": 1, "lift": 0.02, "shift": 0, "plant": false }
+        { "name": "drive_seated", "from": "Driving_Loop", "drop": 1, "lift": 0.02, "shift": 0, "plant": false, "pelvisFrom": "sit_chair_idle_neutral_01" }
       ]
     }
   }

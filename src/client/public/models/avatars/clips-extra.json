@@ -16,7 +16,7 @@
     "clips-extra-male.glb": {
       "pack": "ual1",
       "bytes": 83432,
-      "sha256": "8b589d3a29a7312f267d599cbb4db7360d32d88760d1abd81f767936c22efc6c",
+      "sha256": "db22a858af2cf282683f433e1acb45adc9d767cb8416394515a45d92e245862d",
       "licence": "CC0-1.0",
       "source": "https://opengameart.org/content/universal-animation-library",
       "clips": {
@@ -29,7 +29,7 @@
     "clips-extra-female.glb": {
       "pack": "ual1",
       "bytes": 82988,
-      "sha256": "b0528bb8567d5cf178c7ec37c655c4bedbfa5d41abdc64fdb3b854a51d653fde",
+      "sha256": "1f55074f21f8796f883c43fef11d844ced3bb4167cb32935a0e6851498ebc168",
       "licence": "CC0-1.0",
       "source": "https://opengameart.org/content/universal-animation-library",
       "clips": {

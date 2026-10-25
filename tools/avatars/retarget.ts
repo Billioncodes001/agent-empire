@@ -69,6 +69,8 @@ export interface ClipSpec {
   plant?: boolean;
   /** Share (0–1) of the source's arm movement kept, relative to the standing idle (default: all of it). */
   calm?: number;
+  /** Take the pelvis position from this target clip's first frame (a seat), instead of the source's hips. */
+  pelvisFrom?: string;
   /** Sample rate before key reduction. */
   fps?: number;
 }
@@ -185,6 +187,22 @@ export function retarget(source: GLTF, sourceIdle: string, target: GLTF, targetI
     const times = new Float32Array(frames);
     const rotations = new Map<string, Float32Array>(dstOrder.map((b) => [b.name, new Float32Array(frames * 4)]));
     const pelvis = new Float32Array(frames * 3);
+    // A seat clip can take its hip position from one of the target's own clips (the chair sit the car seat and its
+    // driver placement were fitted to), so the body sits at the same height and spot in the same seat.
+    let seat: THREE.Vector3 | null = null;
+    if (spec.pelvisFrom) {
+      const from = target.animations.find((a) => a.name === spec.pelvisFrom);
+      if (!from) throw new Error(`target has no ${spec.pelvisFrom}`);
+      const m = new THREE.AnimationMixer(dst);
+      m.clipAction(from).play();
+      m.setTime(0);
+      seat = tPelvis.position.clone();
+      m.stopAllAction();
+      m.uncacheRoot(dst);
+      for (const b of dstOrder) b.quaternion.copy(tRefLocal.get(b.name)!);
+      tPelvis.position.copy(tPelvisLocalRef);
+      dst.updateMatrixWorld(true);
+    }
     for (let f = 0; f < frames; f++) {
       const t = start + ((end - start) * f) / (frames - 1);
       times[f] = t - start;
@@ -210,6 +228,7 @@ export function retarget(source: GLTF, sourceIdle: string, target: GLTF, targetI
       sPelvis.getWorldPosition(p).sub(sPelvisRef).setY(0).applyQuaternion(R).multiplyScalar(scale * (spec.shift ?? 1)).clampLength(0, MAX_SHIFT);
       p.add(tPelvisRef).setY(tPelvisRef.y + dy);
       tPelvis.parent!.worldToLocal(p);
+      if (seat) p.copy(seat);
       p.toArray(pelvis, f * 3);
       tPelvis.position.copy(p);
       tPelvis.updateMatrixWorld(true);

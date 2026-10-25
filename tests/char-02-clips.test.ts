@@ -43,8 +43,8 @@ for (const id of AVATAR_IDS) test(`${id}: CC0 jump and driving clips are in plac
     // A T-pose spreads the hands well beyond 1.5 m at shoulder height.
     const span = at('Bip01_L_Hand').distanceTo(at('Bip01_R_Hand'));
     assert.ok(span < 1.5, `${c.name} hands ${span.toFixed(2)} m apart`);
-    // Feet never sink below the floor.
-    for (const f of ['Bip01_L_Foot', 'Bip01_R_Foot']) assert.ok(at(f).y > 0.06, `${c.name} ${f} at ${at(f).y.toFixed(3)}`);
+    // Feet never sink below the floor (at the wheel the feet are placed on the pedals by IK, Human.update).
+    if (c.name !== 'drive_seated') for (const f of ['Bip01_L_Foot', 'Bip01_R_Foot']) assert.ok(at(f).y > 0.06, `${c.name} ${f} at ${at(f).y.toFixed(3)}`);
   }
   // Landing: from the first contact the feet stay planted where they touched down (no slide, no float).
   sample(clip('jump_land'), 0.15);
@@ -71,9 +71,11 @@ for (const id of AVATAR_IDS) test(`${id}: CC0 jump and driving clips are in plac
   }
   // Driving: seated about as low as the chair sit, hips over the same spot.
   sample(clip('drive_seated'), 0.5);
-  const seat = at('Bip01_Pelvis');
+  const seat = at('Bip01_Pelvis'), head = at('Bip01_Head');
   sample(base.animations.find((c) => c.name === 'sit_chair_idle_neutral_01')!, 0);
-  const chair = at('Bip01_Pelvis');
+  const chair = at('Bip01_Pelvis'), chairHead = at('Bip01_Head');
+  // The sedan's cabin was fitted to the chair sit: the head must not rise into the roof.
+  assert.ok(head.y < chairHead.y + 0.03, `driving head ${head.y.toFixed(2)} vs chair ${chairHead.y.toFixed(2)}`);
   assert.ok(Math.abs(seat.y - chair.y) < 0.1, `driving seat height ${seat.y.toFixed(2)} vs chair ${chair.y.toFixed(2)}`);
   assert.ok(Math.hypot(seat.x - chair.x, seat.z - chair.z) < 0.05, 'driving hips over the chair-sit spot');
 });
