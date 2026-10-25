@@ -1,5 +1,5 @@
 /**
- * CITY-09: the city architect's world-additions document and the rules every change must pass. Pure data and pure
+ * CITY-10: the city architect's world-additions document and the rules every change must pass. Pure data and pure
  * functions, shared by the office host (which writes `<dataDir>/world/additions.json`) and the game (which validates it
  * again before rendering). Data only: nothing here or in the document is ever executed.
  *

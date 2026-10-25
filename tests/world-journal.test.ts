@@ -1,4 +1,4 @@
-/** CITY-09: the world journal (memory): seeding, size limits, summaries, owner feedback, export and prompt block. */
+/** CITY-10: the world journal (memory): seeding, size limits, summaries, owner feedback, export and prompt block. */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { LOTS, applyChanges, emptyWorld, type AppliedChange } from '../src/shared/world';

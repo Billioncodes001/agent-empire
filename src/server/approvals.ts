@@ -188,10 +188,10 @@ export class ApprovalInbox {
   /** FREE-10: the owner of lesson items (organizational memory). */
   setLessons(port: LessonActionPort) { this.lessons = port; }
 
-  /** CITY-09: the city architect, which reverts a run when its summary is declined. */
+  /** CITY-10: the city architect, which reverts a run when its summary is declined. */
   setArchitect(port: { revert(runId: string, actor: string): string }) { this.architect = port; }
 
-  /** CITY-09: raises a run's daily summary. Idempotent by `source`; answers the id, or undefined while storage is broken. */
+  /** CITY-10: raises a run's daily summary. Idempotent by `source`; answers the id, or undefined while storage is broken. */
   raiseArchitect(fields: { source: string; title: string; detail: string; architect: NonNullable<Approval['architect']> }): string | undefined {
     if (this.storageError) return undefined;
     const existing = this.data.items.find((i) => i.source === fields.source);
@@ -202,7 +202,7 @@ export class ApprovalInbox {
     return this.data.items.find((i) => i.source === fields.source)?.id;
   }
 
-  /** CITY-09: a pending summary whose run was undone elsewhere (Settings): resolved with a note. */
+  /** CITY-10: a pending summary whose run was undone elsewhere (Settings): resolved with a note. */
   resolveArchitect(id: string, note: string) {
     if (this.storageError) return;
     const item = this.data.items.find((i) => i.id === id);
@@ -373,7 +373,7 @@ export class ApprovalInbox {
           this.save();
         };
       } else if (item.kind === 'architect_summary') {
-        // CITY-09: Keep records the acknowledgement; declining is saved first, then the architect reverts the run.
+        // CITY-10: Keep records the acknowledgement; declining is saved first, then the architect reverts the run.
         if (decision === 'rejected' && !this.architect) throw new ApprovalError(503, 'The city architect is not available on this host, so this day cannot be reverted here.');
         this.record(item, decision, who, requestId);
         this.save();

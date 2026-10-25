@@ -1,5 +1,5 @@
 /**
- * CITY-09: the city architect's settings and the state the office host reports (shared by server and client).
+ * CITY-10: the city architect's settings and the state the office host reports (shared by server and client).
  * Off by default; own-server installs only. Provider spend is an estimate with its own caps and is never city credits.
  */
 import type { AppliedChange, ArchitectEngine, AvoidRule, WorldDocument } from './world.js';

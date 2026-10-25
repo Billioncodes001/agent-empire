@@ -1,5 +1,5 @@
 /**
- * CITY-09: the city architect service (src/server/architect.ts). Fake model clients only; any network call fails the
+ * CITY-10: the city architect service (src/server/architect.ts). Fake model clients only; any network call fails the
  * test. Clocks are injected in local time, as the host schedules in its own time zone.
  */
 import assert from 'node:assert/strict';

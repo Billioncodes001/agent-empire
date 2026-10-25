@@ -1,5 +1,5 @@
 /**
- * CITY-09: the city architect. On an own-server install (an office host or a VPS), and only when the owner turns it on,
+ * CITY-10: the city architect. On an own-server install (an office host or a VPS), and only when the owner turns it on,
  * it grows the open world with a few data-only changes a day while the owner is away.
  *
  * - It edits one declarative document, `<dataDir>/world/additions.json` (schema and rules in shared/world.ts). Nothing

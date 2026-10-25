@@ -1,5 +1,5 @@
 /**
- * CITY-09: rule-based growth, the architect's free engine and default fallback. Deterministic for a seed (the host uses
+ * CITY-10: rule-based growth, the architect's free engine and default fallback. Deterministic for a seed (the host uses
  * the local day and the document revision), it follows the journal's style guide and avoid-rules, and only ever
  * proposes changes `applyChanges` accepts:
  * 1. repairs first: an addition the rules no longer accept is moved within its lot, or removed;

@@ -1,10 +1,10 @@
-# CITY-09: the city architect
+# CITY-10: the city architect
 
 Owner request (2026-10-25), in their words: "it automatically continues building itself on the server… a memory file… for users that pick setting it up on a server… continue working on its open world design, continue building structures, buildings, office assets, even when user is offline… through maybe an API key… make sure not to exhaust the user's API credit… little updates per day… reviews, improvements, fixes… for buildings."
 
-Base: `codex/empire-world` at `cb70e5f`. Branch: `claude/city-09-architect`. Report: [reports/city-09.md](reports/city-09.md).
+Base: `codex/empire-world` at `cb70e5f`. Branch: `claude/city-09-architect`. Report: [reports/city-10.md](reports/city-10.md).
 
-> ID note: `TASKS.md` already lists a backlog row `CITY-09 · Cross-device voice, continuity and platform acceptance`. The coordinator assigned this slice as CITY-09 as well. The architect row is added separately and the clash is flagged for the coordinator; the existing row is not renamed here.
+> ID: the coordinator assigned this slice CITY-10 (CITY-09 is the existing cross-device voice and platform row). The branch keeps its name, `claude/city-09-architect`.
 
 ## Decisions (made by the coordinator; kept as written)
 
@@ -17,7 +17,7 @@ Base: `codex/empire-world` at `cb70e5f`. Branch: `claude/city-09-architect`. Rep
 3. **Cadence.** At most one run per local day, at a configurable hour (default 03:00), plus **Run now**. At most N changes per run (default 3). The last-run day is persisted before the run starts, so restarts never run a day twice.
 4. **Memory: the world journal.** `<dataDir>/world/journal.json` plus a readable `journal.md`: a style guide seeded from the current districts, what was built (when, why), an ideas backlog and owner feedback (undo and "don't build X" become avoid-rules). Size-capped; old entries are summarised. It reaches the model prompt as a clearly marked data block, as FREE-10 lessons do. A new install seeds it from the current world on first use.
 5. **Auto-apply, visible and reversible.** Changes apply automatically. Each run writes one inbox item, **City architect daily summary** (changes, cost, engine). Undo one change, revert a whole day, pause and resume. Undo history is kept for 30 days. The city labels the additions ("Built by the city architect"). Provider money never passes the caps; fictional city credits are never touched (deliberate choice: none).
-6. **Where it runs.** Own-server installs only (a local office host or a VPS). Off by default. Offered as an optional card at the end of onboarding and in Settings as "Let the city grow while you're away". Cloud mode shows "not available in cloud mode".
+6. **Where it runs.** Own-server installs only (a local office host or a VPS). Off by default. Offered in Settings as "Let the city grow while you're away". Cloud mode shows "not available in cloud mode".
 7. **Client.** The game loads the additions, validates them again and renders them instanced with the shipped kit models, after the district kits have loaded, with no new downloads. Old saves and installs without the file load unchanged. Desktop and phone; Save-Data and Low quality thin or skip decor.
 
 ## The additions document (`src/shared/world.ts`)
@@ -91,3 +91,10 @@ Schema validation and every rejection rule; money caps (daily, monthly), changes
 - Interior office decor (no indoor models are shipped; would need a new pinned pack). The anchors are building façades and terraces.
 - Cloud mode (GitHub Actions) and the cloud coordinator.
 - Growing the founding district.
+- The onboarding step (coordinator, 2026-10-25: added after devtest-02 merges, to avoid overlap). Settings is the only entry point in this slice.
+
+## Coordinator answers (2026-10-25)
+
+- ID: CITY-10 everywhere; branch name unchanged.
+- Onboarding card: skipped in this slice.
+- Fallback: when a premium cap is hit or a model call fails, the day still grows with rule-based growth (US$0) and the summary says why. A malformed model answer is a rejected run with no changes.

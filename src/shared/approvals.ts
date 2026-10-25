@@ -33,7 +33,7 @@ export interface LessonApproval {
 }
 
 /**
- * CITY-09 `architect_summary`: one per city architect run. The changes were already applied (data only, reversible).
+ * CITY-10 `architect_summary`: one per city architect run. The changes were already applied (data only, reversible).
  * Approving ("Keep changes") records the acknowledgement; declining ("Revert this day") undoes every change of the run.
  */
 export interface ArchitectSummary {
@@ -117,7 +117,7 @@ export interface Approval {
   outreach?: OutreachApproval;
   /** FREE-02 chief_proposal: the chief's suggestion and its optional one-click action. */
   proposal?: ChiefProposal;
-  /** CITY-09 architect_summary: the run's changes. Keep records it; declining reverts that day. */
+  /** CITY-10 architect_summary: the run's changes. Keep records it; declining reverts that day. */
   architect?: ArchitectSummary;
   /** FREE-10 lesson: the proposed lesson, its scope and provenance. */
   lesson?: LessonApproval;

@@ -1,5 +1,5 @@
 /**
- * CITY-09: the shared world-additions rules (src/shared/world.ts) and the rule-based generator. Pure; no rendering,
+ * CITY-10: the shared world-additions rules (src/shared/world.ts) and the rule-based generator. Pure; no rendering,
  * no model, no network. The district layout is the game's own pure layout, so "clear of the world" is the same check
  * the game makes.
  */

@@ -1,5 +1,5 @@
 /**
- * CITY-09: the world journal, the architect's memory (`<dataDir>/world/journal.json`, exported as `journal.md`).
+ * CITY-10: the world journal, the architect's memory (`<dataDir>/world/journal.json`, exported as `journal.md`).
  * A style guide seeded from the shipped districts, what was built (when and why), an ideas backlog and owner feedback
  * as avoid-rules. Bounded: old runs are summarised by month and the file never passes JOURNAL_LIMITS.bytes. It reaches
  * a model only as delimited data (server/architect.ts), like FREE-10 lessons.
