@@ -77,3 +77,95 @@ for (const id of AVATAR_IDS) test(`${id}: CC0 jump and driving clips are in plac
   assert.ok(Math.abs(seat.y - chair.y) < 0.1, `driving seat height ${seat.y.toFixed(2)} vs chair ${chair.y.toFixed(2)}`);
   assert.ok(Math.hypot(seat.x - chair.x, seat.z - chair.z) < 0.05, 'driving hips over the chair-sit spot');
 });
+
+// ---- The state machine driving a real body -------------------------------------------------------------------------
+async function body(id: string, withExtra: boolean) {
+  const { Human } = await import('../src/client/world/human');
+  const kind = avatarDef(id as (typeof AVATAR_IDS)[number]).body;
+  const [mesh, base, extra] = await Promise.all([load(`${id}.glb`), load(`clips-${kind}.glb`), load(`clips-extra-${kind}.glb`)]);
+  const model = clone(mesh.scene);
+  const mixer = prepareHumanModel(model, base.animations, (mesh.scene.userData.height as number | undefined) ?? 1.78);
+  const bones = new Map<string, THREE.Bone>();
+  model.traverse((o) => { if (o instanceof THREE.Bone) bones.set(o.name.replace(/[^a-z0-9]/gi, '').toLowerCase(), o); });
+  const clips = [...base.animations, ...(withExtra ? extra.animations : [])];
+  const actions = new Map(clips.map((c) => [c.name, mixer.clipAction(c)]));
+  const flight = base.animations.find((c) => c.name === 'run_neutral')!.clone();
+  flight.name = 'airborne_flight';
+  actions.set(flight.name, mixer.clipAction(flight));
+  const human = Object.create(Human.prototype) as InstanceType<typeof Human>, parent = new THREE.Group(), root = new THREE.Group();
+  parent.add(root); root.add(model);
+  Object.assign(human, { root, model, mixer, bones, actions, ready: true, current: actions.get('idle_neutral_01'), motion: 'idle_neutral_01', transition: null, seatedBaseZ: model.position.z, typingBlend: 0, gestureTime: 0, turnLean: 0, reachRemaining: 0 });
+  const at = (b: string) => { root.updateWorldMatrix(true, true); return bones.get(b)!.getWorldPosition(new THREE.Vector3()); };
+  return { human, root, model, at };
+}
+/** The player's jump (player.ts JUMP_V 6.4 m/s, GRAVITY 18 m/s²); returns the clip sequence. */
+function jump(h: Awaited<ReturnType<typeof body>>, frames = 120) {
+  const dt = 1 / 60, seen: string[] = [];
+  for (let i = 0; i < 30; i++) h.human.update(dt, 0);
+  seen.push(h.root.userData.clip as string);
+  let y = 0, vy = 6.4;
+  for (let i = 0; i < frames; i++) {
+    vy -= 18 * dt;
+    y = Math.max(0, y + vy * dt);
+    h.root.position.y = y;
+    h.human.setAirborne(y > 0);
+    h.human.update(dt, 0);
+    const clip = h.root.userData.clip as string;
+    if (seen.at(-1) !== clip) seen.push(clip);
+  }
+  return seen;
+}
+
+test('CHAR-02: a jump plays take-off, airborne and landing clips in order, then stands', async () => {
+  const h = await body('business-m02', true);
+  assert.deepEqual(jump(h), ['idle_neutral_01', 'jump_start', 'jump_air', 'jump_land', 'idle_neutral_01']);
+});
+
+test('CHAR-02: without the extra clips (not loaded yet, failed, Save-Data) the CHAR-01 jump plays', async () => {
+  const h = await body('business-f02', false);
+  assert.deepEqual(jump(h), ['idle_neutral_01', 'airborne_flight', 'idle_neutral_01']);
+});
+
+test('CHAR-02: reduced motion keeps the calm jump even with the clips loaded', async () => {
+  const { setHumanReducedMotion } = await import('../src/client/world/human');
+  setHumanReducedMotion(true);
+  try {
+    const h = await body('business-m01', true);
+    assert.deepEqual(jump(h), ['idle_neutral_01', 'airborne_flight', 'idle_neutral_01']);
+  } finally { setHumanReducedMotion(false); }
+});
+
+test('CHAR-02: landing feet stay planted while the crouch plays', async () => {
+  const h = await body('business-f01', true);
+  const dt = 1 / 60;
+  jump(h, 44); // up to touchdown (0.71 s) and a frame past it
+  const planted = [h.at('bip01lfoot'), h.at('bip01rfoot')];
+  let worst = 0;
+  for (let i = 0; i < 40; i++) {
+    h.human.setAirborne(false);
+    h.human.update(dt, 0);
+    if (i > 8) [h.at('bip01lfoot'), h.at('bip01rfoot')].forEach((p, k) => { worst = Math.max(worst, Math.abs(p.y - planted[k].y)); });
+  }
+  assert.equal(h.root.userData.clip, 'jump_land');
+  assert.ok(worst < 0.04, `feet stay on the floor (${worst.toFixed(3)} m)`);
+});
+
+test('CHAR-02: climbing and descending stairs is a stairs state on the stride clip, with a lean', async () => {
+  const h = await body('business-m04', true);
+  const dt = 1 / 60;
+  for (let i = 0; i < 20; i++) h.human.update(dt, 1.6);
+  for (let i = 0; i < 60; i++) { h.root.position.y += 0.6 * dt; h.human.update(dt, 1.6); }
+  assert.equal(h.root.userData.stairs, 'up');
+  assert.equal(h.root.userData.clip, 'walk_neutral');
+  for (let i = 0; i < 60; i++) { h.root.position.y -= 0.6 * dt; h.human.update(dt, 1.6); }
+  assert.equal(h.root.userData.stairs, 'down');
+  for (let i = 0; i < 60; i++) h.human.update(dt, 1.6);
+  assert.equal(h.root.userData.stairs, null, 'level ground again');
+});
+
+test('CHAR-02: the car seat plays the driving pose, the chair sit without it', async () => {
+  const withClip = await body('business-m05', true), without = await body('business-f03', false);
+  for (let i = 0; i < 30; i++) { withClip.human.update(1 / 60, 0, true, false, true); without.human.update(1 / 60, 0, true, false, true); }
+  assert.equal(withClip.root.userData.clip, 'drive_seated');
+  assert.equal(without.root.userData.clip, 'sit_chair_idle_neutral_01');
+});

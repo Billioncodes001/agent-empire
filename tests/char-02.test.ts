@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import { jumpPhase, selectMotion, stairsState, EXTRA_CLIPS, type MotionInput } from '../src/client/world/anim-state';
 
-const ALL = new Set(['idle_neutral_01', 'walk_neutral', 'run_neutral', 'sit_chair_idle_neutral_01', 'airborne_flight', ...EXTRA_CLIPS]);
+const ALL = new Set(['idle_neutral_01', 'walk_neutral', 'run_neutral', 'sit_chair_idle_neutral_01', 'sit_down_chair_01', 'airborne_flight', ...EXTRA_CLIPS]);
 const BASE = new Set(['idle_neutral_01', 'walk_neutral', 'run_neutral', 'sit_chair_idle_neutral_01', 'airborne_flight']);
 const input = (o: Partial<MotionInput> = {}, clips = ALL): MotionInput => ({
   speed: 0, previous: 'idle_neutral_01', turnRate: 0, seated: false, driving: false, transition: null,
