@@ -19,7 +19,8 @@ export interface PadActions {
 export const NO_PAD: PadActions = { forward: false, backward: false, left: false, right: false, run: false, jump: false, interact: false, camera: false, map: false, menu: false, lookX: 0, lookY: 0 };
 const DEAD = 0.18;
 
-export function gamepadActions(pad: PadState | null | undefined, prev: PadActions = NO_PAD): PadActions {
+/** `mode` 'fly': the run action means descend there, so only B or LT hold it, never a full stick push (review 3). */
+export function gamepadActions(pad: PadState | null | undefined, prev: PadActions = NO_PAD, mode: 'walk' | 'drive' | 'fly' = 'walk'): PadActions {
   if (!pad) return NO_PAD;
   const b = (i: number) => !!pad.buttons[i] && (pad.buttons[i].pressed || pad.buttons[i].value > 0.5);
   const a = (i: number) => pad.axes[i] ?? 0;
@@ -28,7 +29,7 @@ export function gamepadActions(pad: PadState | null | undefined, prev: PadAction
   const look = (v: number) => (Math.abs(v) < DEAD ? 0 : (Math.sign(v) * (Math.abs(v) - DEAD)) / (1 - DEAD));
   return {
     forward: stick.forward || b(12), backward: stick.backward || b(13), left: stick.left || b(14), right: stick.right || b(15),
-    run: stick.run || b(1) || b(6),
+    run: (stick.run && mode !== 'fly') || b(1) || b(6),
     jump: b(0), interact: b(2), camera: b(3), map: b(8), menu: b(9),
     lookX: look(a(2)), lookY: look(a(3)),
   };
@@ -45,8 +46,9 @@ export interface GamepadTarget {
  * Polls the pad once a frame (call `update` from the render loop). Does nothing without the Gamepad API or before a
  * pad connects. `blocked()` (a window open, text being typed) releases everything held.
  */
-export function mountGamepad(opts: { player: GamepadTarget; interact(): void; changeView(): void; openMap(): void; openMenu(): void; blocked(): boolean }) {
-  let connected = false, prev: PadActions = NO_PAD;
+export function mountGamepad(opts: { player: GamepadTarget; interact(): void; changeView(): void; openMap(): void; openMenu(): void; blocked(): boolean; flying(): boolean }) {
+  // Review 6: a pad connected before the page loaded fires no event; look for it now.
+  let connected = !!readPad(), prev: PadActions = NO_PAD;
   if (typeof window !== 'undefined' && typeof navigator !== 'undefined' && typeof navigator.getGamepads === 'function') {
     window.addEventListener('gamepadconnected', () => { connected = true; document.documentElement.classList.add('ae-gamepad'); });
     window.addEventListener('gamepaddisconnected', () => { connected = !!readPad(); if (!connected) { release(); document.documentElement.classList.remove('ae-gamepad'); } });
@@ -60,7 +62,7 @@ export function mountGamepad(opts: { player: GamepadTarget; interact(): void; ch
     update(dt: number) {
       if (!connected) return;
       if (opts.blocked() || !opts.player.enabled) { release(); return; }
-      const next = gamepadActions(readPad(), prev);
+      const next = gamepadActions(readPad(), prev, opts.flying() ? 'fly' : 'walk');
       for (const a of HELD) if (next[a] !== prev[a]) opts.player.setAction(a, next[a]);
       if (next.interact && !prev.interact) opts.interact();
       if (next.camera && !prev.camera) opts.changeView();

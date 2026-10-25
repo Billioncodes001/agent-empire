@@ -99,7 +99,7 @@ test('review 4: the foot probe is foot-sized, so a foot beside a step is not lif
   const { player } = controller(districtLayout().colliders);
   assert.equal(player.floorAt(fx, fz, 0.35), 0);
   assert.ok(Math.abs(player.floorAt(first.maxX - 0.1, fz, 0.35) - first.top) < 1e-9);
-  assert.ok(groundAt(districtLayout().colliders, fx, fz, 0.35) === 0);
+  assert.ok(groundAt(districtLayout().colliders, fx, fz, 0.35) > 0, 'the body-sized probe (the bug) does see the step');
 });
 
 test('review 5: a walker boxed in around a car is never frozen', () => {

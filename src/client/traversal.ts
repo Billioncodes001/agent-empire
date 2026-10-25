@@ -38,6 +38,8 @@ export class Traversal {
   /** The ride being boarded, driven or left. */
   private active: Ride | null = null;
   private cooldown = 0;
+  /** The ride within reach this frame (updated once in update()). */
+  private nearby: Ride | undefined;
   private hint = h('div.traversal-hint', { 'aria-live': 'polite' });
   private fade = h('div.door-fade');
   constructor(
@@ -202,16 +204,17 @@ export class Traversal {
   /** CHAR-01: what the touch Use button does here: Exit a vehicle, Enter a car, Board the helicopter, or Use. */
   useLabel(): 'Exit' | 'Enter' | 'Board' | 'Use' {
     const p = this.player;
-    if (this.current) return p.driving || this.current.kind === 'enter-car' ? 'Exit' : 'Use';
+    // Review 7: nothing to press during a boarding or exit animation; the label changes once it finishes.
+    if (this.current) return 'Use';
     if (p.driving) return 'Exit';
     if (p.pos.z < 30) return 'Use';
-    const r = this.near();
+    const r = this.nearby;
     if (!r || r.locked) return 'Use';
     return r.spec.kind === 'helicopter' ? 'Board' : 'Enter';
   }
   /** What the hint says next to a ride, or ''. */
   private rideHint(): string {
-    const p = this.player, r = this.near();
+    const p = this.player, r = this.nearby;
     if (!r) return '';
     if (r.locked) return r.locked;
     if (r.key === 'sedan') return `${keyLabel(p.bindings.interact)} Enter vehicle at driver’s door`;
@@ -239,7 +242,9 @@ export class Traversal {
       else if (Math.abs(p.pos.x - front.x) < 1.12 && p.pos.z > front.z && p.pos.z < front.z + 1.3 && Math.cos(p.facing) < -0.25)
         this.begin('enter-office');
     }
-    const rideHint = !p.driving && p.pos.z >= 30 ? this.rideHint() : '';
+    // Review 7: the nearest ride once a frame, shared by the hint and the touch Use label.
+    this.nearby = !p.driving && p.pos.z >= 30 ? this.near() : undefined;
+    const rideHint = this.nearby ? this.rideHint() : '';
     const k = p.bindings;
     if (p.flying) {
       const floor = airframeFloor(this.office.colliders, p.pos.x, p.pos.z, p.facing, p.ride.half, p.pos.y);

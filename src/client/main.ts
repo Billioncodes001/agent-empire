@@ -354,6 +354,7 @@ const gamepad = mountGamepad({
   openMap: () => empireUI.openMap(),
   openMenu: () => document.getElementById('btn-menu')?.click(),
   blocked: () => modalOpen() || player.scripted || isTyping(),
+  flying: () => player.flying,
 });
 
 let firstWelcome = true;

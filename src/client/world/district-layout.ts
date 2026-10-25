@@ -204,6 +204,25 @@ export function sedanCollider(car: { position: { x: number; y: number; z: number
   return box;
 }
 /**
+ * CHAR-01 review 5: the sedan's collider, deferred like the bay cars. After the founder steps out it turns solid only
+ * once nobody stands inside its box (at a diagonal heading the world-aligned box reaches past the doors, and turning
+ * solid at once would push the founder about a metre). Once solid it stays solid until the sedan is driven again.
+ */
+export class SedanBody {
+  readonly collider: Box = sedanCollider({ position: { x: 5, y: 0, z: 45 }, rotation: { y: 0 } }, false);
+  private solid = true;
+  update(car: { position: { x: number; y: number; z: number }; rotation: { y: number } }, driven: boolean, walker: { x: number; y: number; z: number } | null, bodies: readonly CarPose[]): Box {
+    const box = sedanCollider(car, false);
+    if (driven) this.solid = false;
+    else if (!this.solid) {
+      const near = walker && Math.abs(walker.y - car.position.y) < 2 ? walker : { x: 1e6, z: 1e6 };
+      this.solid = slotClear(box, bodies, near, false);
+    }
+    if (!this.solid) box.top = box.bottom!;
+    return Object.assign(this.collider, box);
+  }
+}
+/**
  * CITY-06: where a bought vehicle stands. A pose from this session (where the founder parked it) wins; otherwise the
  * slot its save records: its kerb slot after "Bring out", else its bay. Parked poses are not saved, so a reload
  * returns every vehicle to its slot.
