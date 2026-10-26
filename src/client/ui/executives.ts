@@ -6,6 +6,8 @@ import { openInbox } from './inbox';
 import { researchPanel } from './research';
 import { ORG_CAPABILITIES, cloudGapMessage, type OrgFeature } from '../../shared/org-capabilities';
 import { openCloudMemory } from './cloud-memory';
+import { openCloudBrain } from './cloud-brain';
+import { openCloudOutreach } from './cloud-outreach';
 
 /** Where each executive's waiting items are handled: the approval inbox (ORG-03) or the task queue. */
 const ATTENTION: Partial<Record<ExecutiveRole, { label: (n: number) => string; inbox?: true; queue?: true }>> = {
@@ -86,8 +88,11 @@ const CLOUD_RULE_NOTE = `Rule-based: ${ORG_CAPABILITIES.executives.cloudSummary}
 /** FREE-07: per-office cloud notes with the specific reason, plus memory (which works in cloud) on the chief's card. */
 function cloudNotes(role: ExecutiveRole, beforeOpen?: () => void): HTMLElement[] {
   const note = (feature: OrgFeature) => h('p.exec-note.exec-cloud-gap', { 'data-gap': feature }, cloudGapMessage(feature));
-  if (role === 'chief_of_staff') return [note('chief_brain'), h('p.exec-note', {}, `${ORG_CAPABILITIES.memory.cloudSummary} `, h('button.btn.exec-link', { type: 'button', 'data-key': 'memory', onclick: () => { beforeOpen?.(); openCloudMemory(); } }, 'Open memory'))];
-  if (role === 'marketing_sales') return [note('outreach')];
+  if (role === 'chief_of_staff') return [
+    h('p.exec-note.exec-cloud-gap', { 'data-gap': 'chief_brain' }, `${ORG_CAPABILITIES.chief_brain.cloudSummary} `, h('button.btn.exec-link', { type: 'button', 'data-key': 'brain', onclick: () => { beforeOpen?.(); openCloudBrain(); } }, 'Open the chief’s brain')),
+    h('p.exec-note', {}, `${ORG_CAPABILITIES.memory.cloudSummary} `, h('button.btn.exec-link', { type: 'button', 'data-key': 'memory', onclick: () => { beforeOpen?.(); openCloudMemory(); } }, 'Open memory'))];
+  // FREE-12: outreach works in cloud mode; the card names its limits and opens the outreach panel.
+  if (role === 'marketing_sales') return [h('p.exec-note.exec-cloud-gap', { 'data-gap': 'outreach' }, `${ORG_CAPABILITIES.outreach.cloudSummary} `, h('button.btn.exec-link', { type: 'button', 'data-key': 'outreach', onclick: () => { beforeOpen?.(); openCloudOutreach(); } }, 'Open outreach'))];
   if (role === 'finance') return [note('budget_increase')];
   if (role === 'research') return [h('p.exec-note', {}, ORG_CAPABILITIES.research.cloudSummary)];
   return [];

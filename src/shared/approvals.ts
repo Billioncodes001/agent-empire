@@ -74,6 +74,25 @@ export interface OutreachApproval {
   recipients: string[];
   excluded: OutreachExcluded;
   draftedBy: string;
+  /** FREE-12 cloud mode: at most this many messages per coordinator run (the coordinator runs every 15–60 minutes). */
+  perRun?: number;
+}
+
+/**
+ * FREE-11: a plan the chief's model proposed in cloud mode, shown in full (every prompt). Cloud mode has no consultancy
+ * journal, so approving records the decision only; each item becomes paid work only when the CEO submits it through the
+ * ordinary paid-job confirmation.
+ */
+export interface CloudPlanApproval {
+  requestId: string;
+  client?: string;
+  title: string;
+  summary?: string;
+  items: { title: string; prompt: string; phase: string; role: string; parallel: boolean; dependsOn: number[] }[];
+  /** The approved lessons the chief was given, and the ids the plan says it relies on (a subset). */
+  lessons?: { id: string; text: string }[];
+  citedLessons?: string[];
+  costLabel: string;
 }
 /** `resolved`: the hold an increase was raised for cleared without any recorded budget raise (no decision is implied). */
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'resolved';
@@ -123,6 +142,8 @@ export interface Approval {
   lesson?: LessonApproval;
   /** FREE-02 job_plan: set when the chief's model proposed the plan, e.g. "Model-backed · gpt-oss:20b · proposals only". */
   proposedBy?: string;
+  /** FREE-11 cloud job_plan: the model's plan, every prompt included. */
+  plan?: CloudPlanApproval;
 }
 
 export interface ApprovalsState {
@@ -170,6 +191,8 @@ export function approvalFingerprint(item: Approval): string {
     id: item.id, kind: item.kind, title: item.title, detail: item.detail, jobId: item.jobId, createdAt: item.createdAt,
     estimate: item.estimate ?? null, spentUsd: item.spentUsd ?? null, approvedBudgetUsd: item.approvedBudgetUsd ?? null,
     tool: item.tool ?? null, lesson: item.lesson ?? null, proposal: item.proposal ?? null, outreach: item.outreach?.snapshotHash ?? null,
+    // FREE-11: a cloud plan's every item and prompt (added only when present, so existing fingerprints are unchanged).
+    ...(item.plan ? { plan: item.plan, proposedBy: item.proposedBy ?? null } : {}),
   };
   return fnv64(JSON.stringify(seen));
 }

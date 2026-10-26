@@ -53,3 +53,20 @@ export async function installJobWorkflow(client: GitHubClient, target: JobWorkfl
   await client.request('PUT', base, { message: 'Agent Empire: install the job workflow', content: encodeBase64Utf8(yaml), branch: target.baseBranch, ...(sha ? { sha } : {}) });
   return 'installed';
 }
+
+/**
+ * FREE-11/12: which of these Actions secret names exist in the state repository (for the brain's key and the outreach
+ * SMTP URL). Names and dates only: GitHub never returns values, and there is no parameter that could take one.
+ */
+export async function checkStateSecrets(client: GitHubClient, repo: { owner: string; name: string }, names: readonly string[]): Promise<{ present: Record<string, boolean>; error?: string }> {
+  const present = Object.fromEntries(names.map((n) => [n, false]));
+  try {
+    const { data } = await client.request('GET', `/repos/${repo.owner}/${repo.name}/actions/secrets?per_page=100`);
+    const list: unknown[] = Array.isArray(data?.secrets) ? data.secrets : [];
+    for (const s of list) { const n = (s as { name?: unknown })?.name; if (typeof n === 'string' && n in present) present[n] = true; }
+    return { present };
+  } catch (error) {
+    const status = error instanceof GitHubError ? error.status : 0;
+    return { present, error: status === 403 || status === 404 ? `Your GitHub sign-in can’t list secret names on ${repo.owner}/${repo.name} (it needs Secrets: read). Check the secret under the repository’s Settings → Secrets and variables → Actions instead.` : 'GitHub could not be reached to check the secret names. Try again.' };
+  }
+}

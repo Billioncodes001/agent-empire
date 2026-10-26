@@ -851,7 +851,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
         const jobSettings = actionsSettingsFor(state).settings;
         estimate.textContent = `About ${e.minutes.toLocaleString()} GitHub Actions minutes a month for scheduled runs` +
           (e.included ? `, ${Math.round((e.share ?? 0) * 100)}% of the ${e.included.toLocaleString()} included on GitHub ${plan} for private repositories.${over ? ' Minutes beyond that are billed to your GitHub account; choose a longer interval to stay inside it.' : ''}` : plan ? ` (your plan: ${plan}; check its included minutes in GitHub billing).` : '. GitHub Free includes 2,000 a month for private repositories, Pro 3,000.') +
-          ' Each run bills at least a minute; waking it from the app adds runs.' +
+          ' Each run bills at least a minute; waking it from the app adds runs. Email outreach, if you turn it on, adds at least a minute on each run that sends email.' +
           (jobSettings ? ` Each job adds its own run on top: up to ${jobMinutesCap(jobSettings)} minutes per job on private repositories (free on public ones${jobSettings.modelSource === 'self_hosted_ollama' ? '; the agent part uses none on your own runner' : ''}).` : '') +
           ' Figures are estimates.';
       };

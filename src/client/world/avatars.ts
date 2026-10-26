@@ -59,6 +59,23 @@ export function loadClips(body: 'male' | 'female'): Promise<THREE.AnimationClip[
   return sharedLoad(clipLoads, body, () => avatarLoader().loadAsync(clipsUrl(body)).then((gltf) => gltf.animations));
 }
 
+/** CHAR-02: the CC0 jump and driving clips (tools/avatars/build-clips.mts), about 77 KiB per body. */
+export const extraClipsUrl = (body: 'male' | 'female') => `${AVATAR_BASE}/clips-extra-${body}.glb`;
+const extraLoads = new Map<string, Promise<THREE.AnimationClip[]>>();
+let extraWarned = false;
+/**
+ * Loads a body's extra clips once, after the body itself, outside the splash's loading manager. Save-Data skips them.
+ * Resolves to [] on failure (logged once): the state machine falls back to the recorded clips, so nothing breaks.
+ */
+export function loadExtraClips(body: 'male' | 'female'): Promise<THREE.AnimationClip[]> {
+  if (typeof navigator !== 'undefined' && (navigator as Navigator & { connection?: { saveData?: boolean } }).connection?.saveData) return Promise.resolve([]);
+  return sharedLoad(extraLoads, body, () => new GLTFLoader(new THREE.LoadingManager()).loadAsync(extraClipsUrl(body)).then((gltf) => gltf.animations))
+    .catch((error) => {
+      if (!extraWarned) { extraWarned = true; console.warn('Extra animation clips could not load; using the recorded clips', error); }
+      return [];
+    });
+}
+
 const masks = new Map<AvatarId, THREE.Texture>();
 function maskTexture(id: AvatarId): THREE.Texture {
   let t = masks.get(id);

@@ -237,7 +237,7 @@ test('cloud org schema: an older snapshot without org.json loads; an empty org i
   h.advance(60_000); await h.tick();
   assert.ok(files(h.store)[ORG_FILE]);
   const raw = JSON.parse(files(h.store)[ORG_FILE]);
-  raw.approvals[0].kind = 'job_plan';
+  raw.approvals[0].kind = 'budget_increase'; // FREE-11/12: job_plan is raised in cloud now; budget increases never are
   assert.throws(() => validateOrg(raw), /not raised in cloud mode/);
   const f = serializeState(initialCloudState(T0, { execution: EXECUTION }));
   // Review fix: an unreadable org.json is quarantined (reason kept, file untouched), never fatal for the city or jobs.
