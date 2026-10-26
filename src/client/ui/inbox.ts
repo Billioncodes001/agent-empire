@@ -75,7 +75,7 @@ function cloudPlanBlock(item: Approval): HTMLElement | null {
 /** FREE-02: a job's model-proposed plan structure and the chief's reviews of its finished items. */
 function chiefBlocks(item: Approval): HTMLElement[] {
   if (item.kind !== 'job_plan') return [];
-  if (item.plan) return [cloudPlanBlock(item)].filter((x): x is HTMLElement => !!x);
+  if (item.plan) return []; // FREE-11: shown in place of the money facts
   const plan = chiefPlanFor(item.jobId);
   const reviews = chiefReviewsBlock(chiefReviewsFor(item.jobId));
   return [plan ? chiefPlanBlock(plan) : null, reviews].filter((x): x is HTMLElement => !!x);
@@ -233,7 +233,7 @@ export function openInbox(focusId?: string) {
       h('h3', { tabindex: -1, id: 'inbox-detail-title' }, item.title),
       h('p.inbox-raised', {}, `Raised by ${EXECUTIVES[item.raisedBy].name} `, raisedTag(item)),
       h('p.inbox-detail-text', {}, item.detail),
-      item.kind === 'external_action' ? outreachFacts(item) : item.kind === 'chief_proposal' ? proposalFacts(item) : item.kind === 'lesson' ? lessonFacts(item) : item.kind === 'architect_summary' ? architectFacts(item) : moneyFacts(item),
+      item.kind === 'external_action' ? outreachFacts(item) : item.plan ? cloudPlanBlock(item)! : item.kind === 'chief_proposal' ? proposalFacts(item) : item.kind === 'lesson' ? lessonFacts(item) : item.kind === 'architect_summary' ? architectFacts(item) : moneyFacts(item),
       ...chiefBlocks(item),
     ];
     const verdict = { approved: '✓ Approved', rejected: '✕ Declined', resolved: '○ Resolved', pending: '' }[item.status];
