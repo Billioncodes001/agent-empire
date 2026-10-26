@@ -144,8 +144,53 @@ I ran `scratch/mac/upgrade-sim.cjs` with the **released beta.2 app's own `update
 
 I reverted the screenshots the checks regenerate under other reports' folders. In `docs/team/reports/setup/`, only `*-05-repos.jpg` (the new repository rows) and `*-14-settings.jpg` (the build line) are updated. The evidence for this round is in `docs/team/reports/device-bugs-03/`.
 
+## Review round 1
+
+All eight items are fixed. `origin/codex/empire-world` (FREE-11/12, #57) was merged first. Each item had a failing check first where one applies.
+
+| # | Item | Result |
+| --- | --- | --- |
+| 1 | The sweep couldn't see overflow inside scrolling bodies | **Fixed.** Ancestors with `overflow-x: auto/scroll` fail when `scrollWidth > clientWidth + 1`; only `hidden`/`clip` clamp. `.su-cmd code` scrolls by design. **Proof:** I put repository descriptions back on one unwrapped line and the sweep failed 21 cases ("`.su-body` scrolls sideways"), which the clamp-only version passed. Then I restored the rule. |
+| 2 | Sweep coverage | **Fixed.** Closed `<details>` are opened while measuring. Added: the create step while running (installer held at the secrets step) and after success (the 900 ms hand-over held), "Open my Empire" (`mountCloudUnlock`), limits, review and create in the desktop and web paths, desktop "Run on this computer" cancelled and failing, and 1440×900. **567 sweep cases:** 27 screens × 7 sizes × 3 text cases. |
+| 3 | Icon-rail steps had no accessible names | **Fixed.** Labels are visually hidden instead of `display: none`, in both the icon rail and the portrait top bar, and keep their done/current status. `setup-ui-check` reads the rail's accessibility tree at 667×375, 375×812 and 915×412: nameless list items before the fix, "Projects (current step)" after. |
+| 4 | A font-scale change reset the setup on Android | **Fixed.** `configChanges` adds `fontScale\|fontWeightAdjustment`. The review's `fontWeightAdjust` doesn't exist, and aapt2 rejected it; I caught that by building the APK. **On the emulator:** font scale 1.3 keeps the same process and the setup stays on Projects. Test: `tests/android-shell.test.ts`. |
+| 5 | A display-size change, or a reload or kill, lost the setup | **Fixed.** See details below. |
+| 6 | Version-line guard | **Fixed.** The page's build is shown only when `s.game` equals the page's compiled version. Test in `tests/game-build.test.ts`. |
+| 7 | Git-less test runs | **Fixed.** The two Git-dependent tests skip when `git rev-parse` fails. |
+| 8 | The new `game-version.json` shape with the old readers | **Fixed.** See details below. |
+
+**Item 5 in detail:**
+- **What is saved.** The setup saves its non-secret progress in localStorage on every change: step, mode, server address, GitHub login, repositories, limits, schedule and engine choices. It never saves tokens, keys, the project token or the cost confirmation.
+- **The restore.** A fresh launch takes the token back only from secure storage. It stops at the first step whose requirements are missing again, and never lands on create.
+- **The density change.** Reloading the WebView wasn't enough: on the emulator it stayed at 915 CSS px with DPR 3.25. So `MainActivity` now **recreates** itself on a density change.
+- **On the emulator.** After `wm density 520` the new WebView lays out at 739×333, and the setup comes back on Projects with "1 selected" (`android-emulator/after-review-density-change-recreated-projects-restored.jpg`). The emulator was offline for this step, so nothing reached `api.github.com`.
+- **Tests:**
+  - `tests/setup-progress.test.ts`: 6 cases;
+  - `tests/android-shell.test.ts`;
+  - `setup-ui-check` reload checks, 4 of 4. They were red with the restore disabled (the reload landed on the welcome screen).
+
+**Item 8 in detail:**
+- `tools/update-fixture.ts` keeps the rest of `game-version.json`, including the build, when it relabels the game.
+- `tests/release-compat.test.ts`:
+  - the frozen beta.1 desktop store installs and serves a `{version, build}` bundle;
+  - the frozen Android and iOS readers read only `"version"`, within Android's 4 KB limit.
+- The fixture case was red before the fix.
+
+**Checks after the review:**
+
+| Check | Result |
+| --- | --- |
+| typecheck | pass |
+| `npm test` | 1221 tests: 1220 pass, 1 skipped, 0 fail |
+| `npm run build` | pass |
+| Debug APK build | pass (`MainActivity` compiles, policy tests run) |
+| `setup-ui-check` | **705/705**: 567 sweep cases, 4 reload checks, 3 accessibility checks and the existing flows |
+| `mobile-ui-check` | 411/411 |
+| `cloud-ui-check` | 171/171 |
+| `onboarding-ui-check` | 60/60 |
+
 ## Not done
 
 - **The Mac GUI past the first screen** in the scratch profile, because of the Keychain prompt described above. A test run would need a differently named scratch build, or an approved Keychain item.
 - **The projects step on the released APK itself.** It needs a real GitHub sign-in.
-- **The runtime display-size relayout and the font-scale restart on Android.** Both are described above and not fixed here.
+- ~~The runtime display-size relayout and the font-scale restart on Android.~~ Both are fixed in review round 1 (items 4 and 5).
