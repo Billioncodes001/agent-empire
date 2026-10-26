@@ -5,12 +5,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { UpgradeState, VersionInfo } from '../shared/protocol.js';
 
+export const APP_NAMES = new Set(['agent-empire', 'agent-office']);
+
 /** The install this server runs from (deploy/aws.sh makes it a git checkout). */
-function findAppDir(): string | undefined {
+export function findAppDir(): string | undefined {
   let dir = path.dirname(fileURLToPath(import.meta.url));
   for (let i = 0; i < 5; i++, dir = path.dirname(dir)) {
     try {
-      if (JSON.parse(readFileSync(path.join(dir, 'package.json'), 'utf8')).name === 'agent-office') return dir;
+      // The package was renamed from agent-office; the old name stays accepted for existing checkouts.
+      if (APP_NAMES.has(JSON.parse(readFileSync(path.join(dir, 'package.json'), 'utf8')).name)) return dir;
     } catch {
       // keep looking
     }

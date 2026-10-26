@@ -7,6 +7,7 @@
  */
 import { h, modalOpen, onModalChange, openModal, timeAgo, toast, type Modal } from '../ui/dom';
 import { setMenuUpdateEntry } from '../ui/game-menu';
+import { renderNotes } from './notes';
 import { noticeGate, promptGate, isTextEntry } from './gate';
 import type { UpdateService, UpdateState } from './service';
 import type { Channel } from './channel';
@@ -201,7 +202,7 @@ export function openUpdateDialog(service: UpdateService, opts: { check?: boolean
     if (!service.canCheck) nodes.push(h('p.setting-note', {}, 'In a browser the game comes from your Empire’s server, so it updates with the server. The Agent Empire apps check GitHub releases for updates.'));
     if (s.phase === 'checking') nodes.push(h('p.upgrade-status.busy', {}, h('span.spinner'), 'Checking for updates…'));
     if (s.error && s.phase !== 'checking') nodes.push(h('p.upgrade-status.error', { role: 'alert' }, s.error));
-    const notes = o?.notes ? h('div.update-notes', {}, h('strong', {}, `What’s new in ${o.version}`), h('p', {}, o.notes)) : null;
+    const notes = o?.notes ? h('div.update-notes', {}, h('strong', {}, `What’s new in ${o.version}`), ...renderNotes(o.notes)) : null;
 
     if (s.installed) {
       const restart = h('button.btn.primary', { type: 'button', onclick: () => void service.restart().catch((e) => toast(e instanceof Error ? e.message : 'Restart failed', 'error')) }, 'Restart now');

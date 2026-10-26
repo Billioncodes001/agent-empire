@@ -151,7 +151,7 @@ async function serverMode(browser: import('playwright-core').Browser, fixture: a
   await page.waitForFunction(() => /Update available|Checking/.test(document.querySelector('.update-settings')?.textContent ?? ''), null, { timeout: 30_000 });
   await page.waitForFunction(() => /Update available/.test(document.querySelector('.update-settings')?.textContent ?? ''), null, { timeout: 30_000 });
   const settingsText = (await page.locator('.update-settings').innerText()).replace(/\s+/g, ' ');
-  ok(/Game 0\.1\.0/.test(settingsText) && /Android app 0\.3\.0/.test(settingsText) && /Stable channel/.test(settingsText), `${size.tag} Settings shows installed game and app versions and the channel (${settingsText.slice(0, 120)})`);
+  ok(/Game 0\.1\.0/.test(settingsText) && /Android app 0\.3\.0/.test(settingsText) && /(Stable|Beta) channel/.test(settingsText) /* a pre-release build defaults to Beta */, `${size.tag} Settings shows installed game and app versions and the channel (${settingsText.slice(0, 120)})`);
   ok(await page.locator('.update-settings [role=radio]').count() === 2, `${size.tag} Settings has the Stable / Beta channel choice`);
   await page.locator('.settings-modal .body').evaluate((el) => el.scrollTo(0, el.scrollHeight));
   await shot(page, `${size.tag}-01-settings-updates`);
