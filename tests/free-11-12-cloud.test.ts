@@ -791,3 +791,86 @@ test('review: the UI seed keeps every coordinator time inside one UTC day, whate
   }
   assert.equal(seedTimeline(Date.parse('2026-10-26T15:00:00Z')).t0, Date.parse('2026-10-26T12:00:00Z'));
 });
+
+// ================================================================ re-review fixes (on e89822e)
+
+test('re-review A/B: cancelling the run stops sends; a failed tick still lets the send job look for committed claims', () => {
+  const send = coordinatorWorkflow().split(/\n  send:\n/)[1];
+  assert.match(send, /if: \$\{\{ !cancelled\(\) && \(needs\.tick\.outputs\.send == 'true' \|\| needs\.tick\.result == 'failure'\) \}\}/);
+  assert.doesNotMatch(send, /always\(\)/);
+});
+
+test('re-review B: with no claims for its run, the send job reads once, writes nothing and returns', async () => {
+  const r = await outreachRig();
+  const reads = r.store.reads;
+  const commits = r.store.commits.length;
+  const res = await sendJob(r, new FakeSmtp(), 'run-nothing');
+  assert.equal(res.skipped, 'no_claims');
+  assert.equal(r.store.reads - reads, 1);
+  assert.equal(r.store.commits.length, commits);
+});
+
+test('re-review C: a superseded or resolved campaign-send item keeps no recipient or sample', async () => {
+  const r = await outreachRig();
+  let s = await r.state();
+  const first = s.org.approvals.find((a) => a.kind === 'external_action')!;
+  push(r.store, intent(4, { kind: 'outreach_leads', leads: [{ email: 'fay@clinic.example', name: 'Fay', company: 'F', tags: ['dentists'] }] } as any));
+  r.advance(60_000);
+  await r.tick();
+  s = await r.state();
+  const old = s.org.approvals.find((a) => a.id === first.id)!;
+  assert.equal(old.status, 'resolved');
+  assert.deepEqual(old.outreach!.recipients, []);
+  assert.deepEqual(old.outreach!.samples, []);
+  // A suppression that resolves a pending item clears all of its addresses, not just the suppressed one.
+  const second = s.org.approvals.find((a) => a.kind === 'external_action' && a.status === 'pending')!;
+  push(r.store, intent(5, { kind: 'outreach_suppress', hash: suppressionHash(s.outreach.salt, 'bob@clinic.example'), reason: 'manual' } as any));
+  r.advance(60_000);
+  await r.tick();
+  s = await r.state();
+  const resolved = s.org.approvals.find((a) => a.id === second.id)!;
+  assert.equal(resolved.status, 'resolved');
+  assert.deepEqual(resolved.outreach!.recipients, []);
+  assert.deepEqual(resolved.outreach!.samples, []);
+  const pendingNow = s.org.approvals.filter((a) => a.kind === 'external_action' && a.status === 'pending');
+  const resolvedText = JSON.stringify(s.org.approvals.filter((a) => a.status === 'resolved'));
+  assert.equal(resolvedText.includes('@clinic.example'), false);
+  assert.equal(pendingNow.length, 1);
+});
+
+test('re-review D: the rolling window counts 31 calendar days, erring conservative', () => {
+  const day = new Date(T0).toISOString().slice(0, 10);
+  const b = { ...emptyBrain(), days: { [day]: 1000 } };
+  assert.equal(brainSpend(b as any, T0 + 30 * DAY).rollingMicros, 1000, 'still counted 30 days later');
+  assert.equal(brainSpend(b as any, T0 + 31 * DAY).rollingMicros, 0);
+});
+
+test('re-review note: an older brain file with a paid OpenRouter model in free mode stays readable, calls nothing, and can be turned off', async () => {
+  const brain = { ...emptyBrain(), settings: { ...emptyBrain().settings, mode: 'free', provider: 'openrouter', model: 'anthropic/claude-paid', termsAccepted: { provider: 'openrouter', at: T0 } } };
+  const store = makeStore();
+  store.push([{ path: BRAIN_FILE, content: JSON.stringify(brain, null, 2) + '\n' }]);
+  const r = rig({ store, answers: [PLAN] });
+  push(r.store, planReq(1));
+  await r.tick();
+  let s = await r.state();
+  assert.equal(s.brainError, undefined, 'not quarantined');
+  assert.equal(r.brain.calls.length, 0, 'no call with a paid model on a free setting');
+  assert.match(s.brain.requests[0].reason ?? '', /:free/);
+  push(r.store, intent(2, { kind: 'brain_settings', settings: { mode: 'off' } } as any));
+  r.advance(60_000);
+  await r.tick();
+  s = await r.state();
+  assert.equal(s.brain.settings.mode, 'off');
+});
+
+test('re-review note: checks run their extra ticks on the seed’s clock, inside the seed’s UTC day', () => {
+  const day = (t: number) => new Date(t).toISOString().slice(0, 10);
+  for (const iso of ['2026-10-26T00:05:00Z', '2026-10-26T00:11:59Z', '2026-10-26T00:12:30Z', '2026-10-26T15:00:00Z']) {
+    const tl = seedTimeline(Date.parse(iso));
+    const after = [0, 10_000, 60_000, 200_000, 300_000].map((ms) => tl.after(ms));
+    assert.ok(after.every((t) => day(t) === day(tl.last)), `${iso}: the checks' ticks stay in the seed's UTC day`);
+    assert.ok(after.every((t, i) => i === 0 || t > after[i - 1]), `${iso}: strictly increasing`);
+  }
+  const normal = seedTimeline(Date.parse('2026-10-26T15:00:00Z'));
+  assert.equal(normal.after(60_000), normal.last + 60_000, 'unchanged outside the first minutes of a day');
+});
