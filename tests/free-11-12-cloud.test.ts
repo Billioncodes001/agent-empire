@@ -17,7 +17,7 @@ import * as serverEmail from '../src/server/email';
 import * as sharedRender from '../src/shared/outreach-render';
 import * as serverOutreach from '../src/server/outreach';
 import { parseIntent, intentPath } from '../src/cloud/intents';
-import { BRAIN_FILE, BRAIN_PROVIDERS, brainSecretName, brainSpend, DEFAULT_BRAIN_SETTINGS, trustedClock } from '../src/cloud/brain';
+import { BRAIN_FILE, BRAIN_PROVIDERS, brainSecretName, brainSpend, brainStatus, DEFAULT_BRAIN_SETTINGS, trustedClock } from '../src/cloud/brain';
 import { brainKeysFromEnv } from '../src/cloud/brain-call';
 import { OUTREACH_FILE, deliveryEstimate, suppressionHash } from '../src/cloud/outreach';
 import { runSendJob } from '../src/cloud/outreach-send';
@@ -29,6 +29,17 @@ import { runCoordinatorTick, type BrainCaller } from '../src/cloud/tick';
 import { readCloudView } from '../src/cloud/client';
 import { FakeProvider, T0, intent, makeStore, newJob, push, uuid } from './cloud-fixtures';
 import type { MailMessage } from '../src/server/email';
+import { openAiCompatibleCaller } from '../src/cloud/brain-call';
+import { githubTimeFromEnv, main as cliMain, tickOutput } from '../src/cloud/cli';
+import { emptyBrain } from '../src/cloud/brain';
+import { outreachMinutesNote } from '../src/cloud/outreach';
+import { seedTimeline } from '../tools/cloud-seed';
+import { seed as seedEmpire, FULL as SEED_FULL } from '../tools/cloud-seed';
+import { GitHubStateStore } from '../src/cloud/store';
+import { CloudRepo } from '../src/client/cloud/repo';
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const DAY = 24 * 3600_000;
 const p = (body: Record<string, unknown>, n = 1) => () => { const i = { schemaVersion: 1, id: uuid(700 + n), createdAt: T0, ...body }; return parseIntent(intentPath(i.id), JSON.stringify(i)); };
@@ -481,6 +492,11 @@ test('outreach: approved sends are paced per run and per day, suppression is rec
   assert.equal(smtp.sent.length, 2);
   assert.equal(s.outreach.campaigns[0].state, 'done');
   assert.equal(JSON.stringify(s.outreach.campaigns[0]).includes('@clinic.example'), false, 'a finished campaign keeps counts, not addresses');
+  // Review 3: the campaign's inbox item keeps no recipient or rendered sample either.
+  assert.equal((r.store.files['state/org.json'] ?? '').includes('@clinic.example'), false, 'a finished campaign’s inbox item is scrubbed');
+  // Review (dropped claims): the uncertain message is surfaced on the campaign's inbox item, not lost silently.
+  const decided = s.org.approvals.find((a) => a.kind === 'external_action')!;
+  assert.match(decided.note ?? '', /uncertain/);
 });
 
 test('outreach: the send job revalidates — a tampered message or suppressed address is refused, and a missing SMTP secret releases the claims', async () => {
@@ -585,4 +601,193 @@ test('cloud org: new kinds validate strictly, and a plan item fingerprint covers
   r.store.push([{ path: 'state/org.json', content: JSON.stringify(o) }]);
   const v = await readCloudView(r.store, r.now);
   assert.match(v.state.orgError ?? '', /unexpected/);
+});
+
+// ================================================================ security review fixes (on 5474d04)
+
+const approveCampaign = async (r: Awaited<ReturnType<typeof outreachRig>>, n: number) => {
+  const s = await r.state();
+  const item = s.org.approvals.find((a) => a.kind === 'external_action' && a.status === 'pending')!;
+  push(r.store, intent(n, { kind: 'approval_decision', approvalId: item.id, decision: 'approve', seen: approvalFingerprint(item) } as any));
+  r.advance(60_000);
+  return r.tick();
+};
+
+test('review 1: the send job runs only when this run committed claims; least privilege; honest minutes', async () => {
+  const yaml = coordinatorWorkflow();
+  const [tick, send] = yaml.split(/\n  send:\n/);
+  assert.match(tick, /\n    outputs:\n      send: \$\{\{ steps\.tick\.outputs\.send \}\}/);
+  assert.match(tick, /- name: Coordinator tick\n        id: tick/);
+  assert.match(send, /if: \$\{\{ always\(\) && needs\.tick\.outputs\.send == 'true' \}\}/);
+  assert.match(send, /\n    permissions:\n      contents: write\n/);
+  assert.match(yaml, /send job runs only on runs that send email/);
+  // The tick reports how many messages its committed phase 1 claimed, and says so as soon as that commit lands.
+  const r = await outreachRig();
+  let report = await r.tick();
+  assert.equal(report.claimed, 0);
+  assert.equal(tickOutput(report.claimed), 'send=false\n');
+  const s = await r.state();
+  const item = s.org.approvals.find((a) => a.kind === 'external_action')!;
+  push(r.store, intent(4, { kind: 'approval_decision', approvalId: item.id, decision: 'approve', seen: approvalFingerprint(item) } as any));
+  r.advance(60_000);
+  const seen: { claimed: number; committed: boolean }[] = [];
+  report = await runCoordinatorTick({ store: r.store, provider: r.provider, now: () => r.now, runId: 'run-claims', retry: { sleep: async () => {} }, githubTime: async () => r.now,
+    onClaimsCommitted: (claimed) => seen.push({ claimed, committed: (r.store.files[OUTREACH_FILE] ?? '').includes('"runId": "run-claims"') }) });
+  assert.equal(report.claimed, 2);
+  assert.deepEqual(seen, [{ claimed: 2, committed: true }]);
+  assert.equal(tickOutput(report.claimed), 'send=true\n');
+  // Minutes: scheduled runs, plus at most one more billed minute on each run that sends.
+  const note = outreachMinutesNote(1440, true);
+  assert.match(note, /1,440/);
+  assert.match(note, /only on runs that send/);
+  assert.equal(outreachMinutesNote(1440, false), '');
+});
+
+test('review 1: the CLI send path sends nothing without the SMTP secret and records that, with no secret in its output', async () => {
+  const s = await seedEmpire();
+  const store = new GitHubStateStore(new GitHubClient('ghs_actions', { fetch: s.gh.fetch }), { owner: 'founder', repo: 'agent-empire-state', branch: 'main', workflowFile: 'agent-empire.yml' });
+  const client = new CloudRepo({ owner: 'founder', name: 'agent-empire-state' }, 'gho_FAKEFIXTURETOKEN000000000000000000', s.gh.fetch);
+  const now = Date.now();
+  await client.submit({ kind: 'outreach_settings', settings: { from: 'ceo@harbour.example', address: 'Harbour Ltd, 1 Quay St, Bristol', dailyCap: 5, perRunCap: 2 }, acknowledgePrivacy: true } as never, 'agent-empire-intent', now - 5000);
+  await client.submit({ kind: 'outreach_leads', leads: [{ email: 'ann@clinic.example', name: 'Ann', tags: ['dentists'] }] } as never, 'agent-empire-intent', now - 4000);
+  await client.submit({ kind: 'outreach_campaign', campaign: { title: 'Hello', subject: 'Hi {{name}}', body: 'Hello {{name}}.', audience: ['dentists'] } } as never, 'agent-empire-intent', now - 3000);
+  const tick = (runId: string) => runCoordinatorTick({ store, provider: s.provider, now: () => Date.now(), runId, retry: { sleep: async () => {} }, githubTime: async () => Date.now() });
+  await tick('70-1');
+  await client.poll();
+  const item = client.snapshot!.state.org.approvals.find((a) => a.kind === 'external_action')!;
+  await client.submit({ kind: 'approval_decision', approvalId: item.id, decision: 'approve', seen: approvalFingerprint(item) }, 'agent-empire-intent', Date.now());
+  assert.equal((await tick('71-1')).claimed, 1);
+  const env = { GITHUB_TOKEN: 'ghs_actions_token', GITHUB_REPOSITORY: SEED_FULL, GITHUB_REF_NAME: 'main', AGENT_EMPIRE_STATE_BRANCH: 'main', GITHUB_RUN_ID: '71', GITHUB_RUN_ATTEMPT: '1' };
+  const out: string[] = [];
+  assert.equal(await cliMain(['send'], env, (l) => out.push(l), s.gh.fetch), 0);
+  const receipt = JSON.parse(s.gh.files(SEED_FULL)[receiptPath('71-1')]);
+  assert.match(receipt.unavailable, /AGENT_EMPIRE_SMTP_URL/);
+  // An invalid SMTP URL is named without echoing it (it carries a password).
+  const out2: string[] = [];
+  assert.equal(await cliMain(['send'], { ...env, GITHUB_RUN_ID: '72', AGENT_EMPIRE_SMTP_URL: 'http://user:hunter2@mail.example' }, (l) => out2.push(l), s.gh.fetch), 0);
+  assert.match(out2.join('\n'), /not a valid smtp/);
+  assert.doesNotMatch(out.concat(out2).join('\n'), /hunter2|ghs_actions_token/);
+});
+
+test('review 2: a free tier cannot hide paid spend — OpenRouter only :free models; Gemini and Groq with a price are capped', () => {
+  const free = (extra: Record<string, unknown>) => p({ kind: 'brain_settings', settings: { mode: 'free', provider: 'openrouter', model: 'meta-llama/llama-4:free', dailyCapCents: 200, monthlyCapCents: 2000, acceptTerms: 'openrouter', ...extra } });
+  assert.equal(free({})().kind, 'brain_settings');
+  assert.throws(free({ model: 'anthropic/claude-fixture' }), /:free/);
+  assert.throws(free({ model: 'openrouter/auto' }), /:free/);
+  const gem = (extra: Record<string, unknown>) => p({ kind: 'brain_settings', settings: { mode: 'free', provider: 'gemini', model: 'gemini-fixture', dailyCapCents: 200, monthlyCapCents: 2000, acceptTerms: 'gemini', ...extra } });
+  assert.equal(gem({ price: [0.1, 0.4] })().kind, 'brain_settings');
+  assert.throws(gem({ price: [0, 0] }), /zero/);
+});
+
+test('review 2: a priced free tier is charged its worst case against the caps; an unpriced one says the key’s billing decides', async () => {
+  const r = rig({ answers: [PLAN] });
+  push(r.store, intent(1, { kind: 'brain_settings', settings: { mode: 'free', provider: 'gemini', model: 'gemini-fixture', price: [1, 2], dailyCapCents: 200, monthlyCapCents: 2000, acceptTerms: 'gemini' } } as any), planReq(2));
+  await r.tick();
+  const s = await r.state();
+  assert.equal(r.brain.calls.length, 1);
+  const atCall = JSON.parse(r.brain.calls[0].brainAtCall!);
+  assert.equal(atCall.log[0].basis, 'worst_case');
+  assert.ok(atCall.log[0].micros > 0);
+  assert.match(brainStatus(s.brain, r.now).note, /charged/i);
+  const unpriced = { ...emptyBrain(), settings: { ...emptyBrain().settings, mode: 'free' as const, provider: 'groq' as const, model: 'g', termsAccepted: { provider: 'groq' as const, at: 0 } } };
+  assert.match(brainStatus(unpriced, T0).note, /billing/);
+});
+
+test('review 3: a declined campaign keeps no recipient or sample in the inbox', async () => {
+  const r = await outreachRig();
+  const s = await r.state();
+  const item = s.org.approvals.find((a) => a.kind === 'external_action')!;
+  push(r.store, intent(4, { kind: 'approval_decision', approvalId: item.id, decision: 'reject', seen: approvalFingerprint(item) } as any));
+  r.advance(60_000);
+  await r.tick();
+  assert.equal((await r.state()).outreach.campaigns[0].state, 'rejected');
+  assert.equal(r.store.files['state/org.json'].includes('@clinic.example'), false);
+});
+
+test('review 4: the rolling cap counts per-day totals, so a long money log or many free calls cannot undercount it', () => {
+  const day = new Date(T0).toISOString().slice(0, 10);
+  const b = { ...emptyBrain(), days: { [day]: 1_234_567 }, log: [] };
+  assert.equal(brainSpend(b as any, T0).rollingMicros, 1_234_567);
+  assert.equal(brainSpend(b as any, T0).todayMicros, 1_234_567);
+  assert.equal(brainSpend(b as any, T0 + 31 * DAY).rollingMicros, 0);
+});
+
+test('review 5: an approved campaign keeps its approved pace, and a sender fix mid-campaign does not fail its messages', async () => {
+  const r = await outreachRig(); // frozen: 2 per run, 3 a day
+  await approveCampaign(r, 4); // run-2 claims ann and bob
+  const smtp = new FakeSmtp();
+  await sendJob(r, smtp, 'run-2');
+  // After approval the CEO raises the caps and fixes the postal address. The approved campaign keeps its approved pace
+  // (3 a day leaves 1), and the send job sends its frozen footer instead of refusing it.
+  push(r.store, SETTINGS(5, { dailyCap: 50, perRunCap: 10, address: 'Harbour Ltd, 1 Quay Street, Bristol' }));
+  r.advance(60_000);
+  await r.tick(); // run-3
+  const s = await r.state();
+  assert.equal(s.outreach.campaigns[0].sends!.filter((x) => x.status === 'claimed').length, 1, 'the approved daily cap (3) binds, not the raised one');
+  await sendJob(r, smtp, 'run-3');
+  assert.equal(smtp.sent.length, 3);
+  assert.ok(smtp.sent.every((m) => /Harbour Ltd, 1 Quay St, Bristol/.test(m.text)), 'the frozen footer is sent');
+});
+
+test('review 5: a message whose merged line passes 998 bytes is refused by the send job', async () => {
+  const r = rig();
+  push(r.store, SETTINGS(1), intent(2, { kind: 'outreach_leads', leads: [{ email: 'ann@clinic.example', name: 'Ann', company: 'é'.repeat(100), tags: ['dentists'] }] } as any),
+    intent(3, { kind: 'outreach_campaign', campaign: { title: 'Long', subject: 'Hi', body: `${'x'.repeat(880)}{{company}}`, audience: ['dentists'] } } as any));
+  await r.tick();
+  await approveCampaign(r, 4);
+  const smtp = new FakeSmtp();
+  await sendJob(r, smtp, 'run-2');
+  assert.equal(smtp.sent.length, 0);
+  assert.match(JSON.stringify(JSON.parse(r.store.files[receiptPath('run-2')])), /998/);
+});
+
+test('review: usage with no output tokens keeps the worst case; usage above the worst case is recorded as reported', async () => {
+  const r = rig({ answers: [{ text: PLAN, usage: { input: 500, output: 0 } }, { text: PLAN, usage: { input: 2_000_000, output: 3000 } }] });
+  push(r.store, premium(1, { dailyCapCents: 10_000, monthlyCapCents: 100_000 }), planReq(2), planReq(3, 'Two.'));
+  await r.tick();
+  const s = await r.state();
+  const [a, b] = s.brain.log;
+  assert.equal(a.basis, 'worst_case');
+  assert.equal(b.basis, 'reported');
+  assert.equal(b.micros, 2_000_000 * 3 + 3000 * 15);
+  assert.ok(b.micros > JSON.parse(r.brain.calls[1].brainAtCall!).log[1].micros, 'higher than its worst case, and counted');
+  assert.equal(brainSpend(s.brain, r.now).todayMicros, a.micros + b.micros);
+});
+
+test('review: the model client caps the response, redacts keys from errors and times out', async () => {
+  const keys = { ANTHROPIC_API_KEY: 'sk-ant-secret-0000000000' };
+  const call = { provider: 'anthropic' as const, model: 'm', messages: [{ role: 'user' as const, content: 'hi' }], maxTokens: 10 };
+  const big = openAiCompatibleCaller(keys, (async () => new Response('x'.repeat(1024 * 1024 + 10), { status: 200 })) as typeof fetch);
+  await assert.rejects(big(call), /larger than/);
+  const leak = openAiCompatibleCaller(keys, (async () => new Response('{"error":"bad key sk-ant-secret-0000000000"}', { status: 401 })) as typeof fetch);
+  await assert.rejects(leak(call), (e: Error) => /HTTP 401/.test(e.message) && /\[redacted\]/.test(e.message) && !e.message.includes('sk-ant-secret'));
+  const slow = openAiCompatibleCaller(keys, ((_u: string, init: RequestInit) => new Promise((_, reject) => init.signal!.addEventListener('abort', () => reject(new Error('aborted'))))) as unknown as typeof fetch, 30);
+  await assert.rejects(slow(call), /could not reach/);
+  const ok = openAiCompatibleCaller(keys, (async (_u: string, init: RequestInit) => { assert.equal((init.headers as Record<string, string>).authorization, 'Bearer sk-ant-secret-0000000000'); return new Response(JSON.stringify({ model: 'm2', choices: [{ message: { content: '{}' } }], usage: { prompt_tokens: 3, completion_tokens: 4 } }), { status: 200 }); }) as unknown as typeof fetch);
+  assert.deepEqual(await ok(call), { text: '{}', model: 'm2', usage: { input: 3, output: 4 } });
+  await assert.rejects(openAiCompatibleCaller({}, fetch)(call), /ANTHROPIC_API_KEY secret is not set/);
+});
+
+test('review: GitHub time comes from this run’s run_started_at, and is undefined when it cannot be read', async () => {
+  const env = { GITHUB_TOKEN: 't', GITHUB_REPOSITORY: 'founder/agent-empire-state', GITHUB_RUN_ID: '42' };
+  const seenUrls: string[] = [];
+  const t = githubTimeFromEnv(env, (async (u: string) => { seenUrls.push(String(u)); return new Response(JSON.stringify({ run_started_at: '2026-10-26T03:00:00Z' }), { status: 200, headers: { 'content-type': 'application/json' } }); }) as unknown as typeof fetch);
+  assert.equal(await t(), Date.parse('2026-10-26T03:00:00Z'));
+  assert.match(seenUrls[0], /\/repos\/founder\/agent-empire-state\/actions\/runs\/42$/);
+  assert.equal(await githubTimeFromEnv({ ...env, GITHUB_RUN_ID: undefined }, fetch)(), undefined);
+  assert.equal(await githubTimeFromEnv(env, (async () => new Response('no', { status: 500 })) as unknown as typeof fetch)(), undefined);
+  assert.equal(await githubTimeFromEnv(env, (async () => new Response('{"run_started_at":"soon"}', { status: 200 })) as unknown as typeof fetch)(), undefined);
+});
+
+test('review: the UI seed keeps every coordinator time inside one UTC day, whatever the time of day', () => {
+  const day = (t: number) => new Date(t).toISOString().slice(0, 10);
+  for (const iso of ['2026-10-26T00:30:00Z', '2026-10-26T00:13:00Z', '2026-10-26T02:47:00Z', '2026-10-26T15:00:00Z']) {
+    const now = Date.parse(iso);
+    const tl = seedTimeline(now);
+    const times = [tl.t0, tl.at(1000), tl.at(60_000), tl.at(120_000), tl.at(180_000), tl.at(40 * 60_000), tl.at(41 * 60_000), tl.at(50 * 60_000), tl.last];
+    assert.equal(tl.last, now - 12 * 60_000, iso);
+    assert.ok(times.every((t) => day(t) === day(tl.last)), `${iso}: one UTC day`);
+    assert.ok(times.every((t, i) => i === 0 || t > times[i - 1]), `${iso}: strictly increasing`);
+  }
+  assert.equal(seedTimeline(Date.parse('2026-10-26T15:00:00Z')).t0, Date.parse('2026-10-26T12:00:00Z'));
 });
