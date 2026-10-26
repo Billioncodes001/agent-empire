@@ -129,7 +129,7 @@ const FAKE_DESKTOP = (password: string) => `
  * width), so the lede, the descriptions and Next ran off the right edge. `scrollWidth` missed it (.su clips), so this
  * measures every element's visible right edge, honouring clipping ancestors inside the setup, and the primary button.
  */
-const SWEEP_SIZES = [{ w: 667, h: 375 }, { w: 800, h: 360 }, { w: 915, h: 412 }, { w: 375, h: 812 }, { w: 1024, h: 768 }];
+const SWEEP_SIZES = [{ w: 667, h: 375 }, { w: 800, h: 360 }, { w: 915, h: 412 }, { w: 375, h: 812 }, { w: 1024, h: 768 }, { w: 740, h: 332 }]; // 740x332: a 915x412 phone with a larger Android "Display size"
 /** Larger text: `zoom` scales the layout like Android "Display size"/browser zoom; `text` scales only the font sizes,
  * like Android font scale or Chrome's text scaling (WebView textZoom), which is the harsher case for fixed widths. */
 const TEXT_CASES = [{ name: '100%', zoom: 1, text: 1 }, { name: 'zoom 130%', zoom: 1.3, text: 1 }, { name: 'text 130%', zoom: 1, text: 1.3 }];
