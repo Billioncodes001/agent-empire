@@ -123,8 +123,170 @@ const FAKE_DESKTOP = (password: string) => `
   } };
 `;
 
+/**
+ * DEVICE-BUGS-03: every setup step at Android-like sizes and with larger text must fit the screen. On a real phone the
+ * cloud "Choose your projects" panel grew to its 760px maximum (a long repository description set its min-content
+ * width), so the lede, the descriptions and Next ran off the right edge. `scrollWidth` missed it (.su clips), so this
+ * measures every element's visible right edge, honouring clipping ancestors inside the setup, and the primary button.
+ */
+const SWEEP_SIZES = [{ w: 667, h: 375 }, { w: 800, h: 360 }, { w: 915, h: 412 }, { w: 375, h: 812 }, { w: 1024, h: 768 }];
+/** Larger text: `zoom` scales the layout like Android "Display size"/browser zoom; `text` scales only the font sizes,
+ * like Android font scale or Chrome's text scaling (WebView textZoom), which is the harsher case for fixed widths. */
+const TEXT_CASES = [{ name: '100%', zoom: 1, text: 1 }, { name: 'zoom 130%', zoom: 1.3, text: 1 }, { name: 'text 130%', zoom: 1, text: 1.3 }];
+const FITS = `(() => {
+  const W = innerWidth, H = innerHeight, root = document.querySelector('.su'); const bad = [];
+  for (const e of root.querySelectorAll('*')) {
+    if (e.closest('.su-bg, .su-sr, .su-leave') || !e.getClientRects().length) continue;
+    const r = e.getBoundingClientRect(); if (r.width === 0 || r.height === 0) continue;
+    let left = r.left, right = r.right;
+    for (let a = e.parentElement; a && a !== root; a = a.parentElement) {
+      if (getComputedStyle(a).overflowX === 'visible') continue;
+      const ar = a.getBoundingClientRect(); right = Math.min(right, ar.right); left = Math.max(left, ar.left);
+    }
+    if (right > W + 1 || (left < -1 && right > 0)) bad.push((typeof e.className === 'string' && e.className ? '.' + e.className.split(' ')[0] : e.tagName.toLowerCase()) + '@' + Math.round(left) + '..' + Math.round(right));
+  }
+  const p = [...document.querySelectorAll('.su-panel:not(.su-leave) .su-foot .su-primary, .su-hero .su-primary')].find((b) => b.getClientRects().length);
+  const pr = p && p.getBoundingClientRect();
+  const primary = !p || (pr.left >= -1 && pr.right <= W + 1 && pr.top >= -1 && pr.bottom <= H + 1);
+  return { bad: [...new Set(bad)].slice(0, 6), primary, page: document.documentElement.scrollWidth <= W };
+})()`;
+const SCALE_TEXT = (k: number) => `(() => { for (const e of document.querySelectorAll('.su *')) { e.style.removeProperty('font-size'); }
+  if (${k} === 1) return; const sizes = [...document.querySelectorAll('.su *')].map((e) => [e, parseFloat(getComputedStyle(e).fontSize)]);
+  for (const [e, px] of sizes) e.style.fontSize = (px * ${k}) + 'px'; })()`;
+const LONG_DESC = 'Customer-facing storefront, checkout and inventory sync for the whole catalogue, with the nightly price import and the admin tools';
+const longRepos = [
+  ...repos.slice(0, 3),
+  { ...repos[3], name: 'a-very-long-repository-name-that-has-no-spaces-anywhere-in-it', description: LONG_DESC },
+  { ...repos[4], description: `${LONG_DESC} ${LONG_DESC}` },
+  repos[8],
+];
+
+async function overflowSweep(browser: import('playwright-core').Browser) {
+  const sweepOut = process.env.SWEEP_OUT ? resolve(process.env.SWEEP_OUT) : null;
+  if (sweepOut) mkdirSync(sweepOut, { recursive: true });
+  const sweep = async (page: Page, step: string, restore: { w: number; h: number }) => {
+    for (const size of SWEEP_SIZES) for (const tc of TEXT_CASES) {
+      await page.setViewportSize({ width: size.w, height: size.h });
+      await page.evaluate(({ z }) => { document.documentElement.style.zoom = z === 1 ? '' : String(z); }, { z: tc.zoom });
+      await page.evaluate(SCALE_TEXT(tc.text));
+      await page.waitForTimeout(120);
+      const r: { bad: string[]; primary: boolean; page: boolean } = await page.evaluate(FITS);
+      ok(!r.bad.length && r.page && r.primary, `sweep ${step} ${size.w}x${size.h} ${tc.name}: nothing overflows horizontally and the primary action is on screen${r.bad.length ? ` (${r.bad.join(' ')})` : ''}${r.primary ? '' : ' (primary off screen)'}`);
+      // SWEEP_OUT=<dir> saves every case (docs/team/reports/device-bugs-03 keeps a selection); routine runs save none.
+      if (sweepOut) await page.screenshot({ path: resolve(sweepOut, `${step}-${size.w}x${size.h}${tc.name === '100%' ? '' : '-' + tc.name.replace(/\W+/g, '')}.jpg`), type: 'jpeg', quality: 78 });
+    }
+    await page.evaluate(SCALE_TEXT(1));
+    await page.evaluate(() => { document.documentElement.style.zoom = ''; });
+    await page.setViewportSize({ width: restore.w, height: restore.h });
+    await page.waitForTimeout(150);
+  };
+  const home = { w: 915, h: 412 };
+  const newPage = async (init: string, touch: boolean) => {
+    const context = await browser.newContext({ viewport: { width: home.w, height: home.h }, hasTouch: touch, isMobile: touch, deviceScaleFactor: touch ? 2 : 1 });
+    await context.addInitScript({ content: 'window.__name = (f) => f;' });
+    if (init) await context.addInitScript({ content: init });
+    return { context, page: await context.newPage() };
+  };
+  const primaryBtn = '.su-panel:not(.su-leave) .su-foot .su-primary';
+  // App shell (Android-like bridge semantics are identical through the shared native layer): the whole cloud path.
+  {
+    const { context, page } = await newPage(FAKE_BRIDGE.replace("platform: 'ios'", "platform: 'android'").replace('window.webkit = {', 'window.empireAndroid = { postMessage(j) { window.webkit.messageHandlers.empire.postMessage(JSON.parse(j)); } }; window.webkit = {'), true);
+    const gh = newGitHub();
+    gh.listed = longRepos;
+    await fakeGitHub(page, gh);
+    await page.goto(base);
+    await page.waitForSelector('.su-hero-title');
+    await page.waitForTimeout(1400);
+    await sweep(page, 'welcome', home);
+    await page.locator('text=Set up my Empire').click();
+    await page.waitForSelector('.su-card-cloud');
+    await page.waitForTimeout(450);
+    await sweep(page, 'mode', home);
+    await page.locator('.su-card-cloud').click();
+    await page.waitForSelector('text=Sign in with GitHub');
+    await page.waitForTimeout(450);
+    await sweep(page, 'github-device', home);
+    await page.locator('text=Sign in with GitHub').click();
+    await page.waitForSelector('.su-linked');
+    await sweep(page, 'github-linked', home);
+    await page.locator(primaryBtn).click();
+    await page.waitForSelector('.su-repo');
+    await page.locator('label[for="su-r-octo-founder-city-planner"]').click();
+    await page.waitForTimeout(300);
+    await sweep(page, 'repos', home);
+    await page.locator(primaryBtn).click();
+    await page.waitForSelector('#su-key-anthropic');
+    await page.fill('#su-key-anthropic', 'sk-ant-FAKE-fixture-only-000000000000');
+    await page.waitForTimeout(450);
+    await sweep(page, 'engine', home);
+    await page.locator(primaryBtn).click();
+    await page.waitForSelector('#su-daily');
+    await page.waitForTimeout(450);
+    await sweep(page, 'limits', home);
+    await page.locator(primaryBtn).click();
+    await page.waitForSelector('.su-panel:not(.su-leave) .su-review');
+    await page.waitForTimeout(450);
+    await sweep(page, 'review', home);
+    await page.locator('label[for="su-accept"]').click();
+    gh.failures.push({ method: 'PUT', path: /\/actions\/secrets\/ANTHROPIC_API_KEY$/, status: 502, times: 1 });
+    await page.locator(primaryBtn).click();
+    await page.waitForSelector('.su-result .su-error');
+    await sweep(page, 'create-failed', home);
+    await context.close();
+  }
+  // App shell: own server.
+  {
+    const { context, page } = await newPage(FAKE_BRIDGE, true);
+    await page.goto(base);
+    await page.waitForSelector('.su-hero-title');
+    await page.locator('text=Set up my Empire').click();
+    await page.locator('.su-card-server').click();
+    await page.waitForSelector('#su-address');
+    await page.fill('#su-address', base.replace(/\/$/, ''));
+    await page.fill('#su-password', 'wrong-password');
+    await page.locator(primaryBtn).click();
+    await page.waitForSelector('.su-error:not([hidden])');
+    await sweep(page, 'server', home);
+    await context.close();
+  }
+  // Desktop shell: three ways to run.
+  {
+    const { context, page } = await newPage(FAKE_DESKTOP(process.env.FIXTURE_PASSWORD || 'fixture-office'), false);
+    await page.goto(base);
+    await page.waitForSelector('.su-hero-title');
+    await page.locator('text=Set up my Empire').click();
+    await page.waitForSelector('.su-card-local');
+    await page.waitForTimeout(450);
+    await sweep(page, 'desktop-mode', home);
+    await context.close();
+  }
+  // Web / PWA (no native bridge): the token fallback and the web server step.
+  {
+    const { context, page } = await newPage('', true);
+    await page.route('**/api/whoami', (r) => r.fulfill({ status: 404, body: 'static host' }));
+    await page.goto(base);
+    await page.waitForSelector('.su-hero-title');
+    await page.locator('text=Set up my Empire').click();
+    await page.locator('.su-card-cloud').click();
+    await page.waitForSelector('#su-gh-token');
+    await page.waitForTimeout(450);
+    await sweep(page, 'web-github-token', home);
+    await page.keyboard.press('Escape');
+    await page.locator('.su-card-server').click();
+    await page.waitForTimeout(450);
+    await sweep(page, 'web-server', home);
+    await context.close();
+  }
+}
+
 async function run() {
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  await overflowSweep(browser);
+  if (process.env.SWEEP_ONLY) {
+    await browser.close();
+    console.log(failures.length ? `\n${failures.length} FAILED` : '\nALL PASS');
+    process.exit(failures.length ? 1 : 0);
+  }
   for (const size of sizes) {
     const tag = `${size.w}x${size.h}`;
     let textMode: unknown = null;

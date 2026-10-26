@@ -293,8 +293,10 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
 
   const STEP_VIEWS: Record<Step, () => { panel: HTMLElement; heading: HTMLElement }> = {
     welcome() {
-      const letters = 'AGENT EMPIRE'.split('').map((ch, i) => el('span', { class: 'su-letter', style: `--i:${i}`, 'aria-hidden': 'true', text: ch === ' ' ? ' ' : ch }));
-      const heading = el('h1', { class: 'su-hero-title', tabindex: '-1', 'aria-label': 'Agent Empire' }, ...letters);
+      // Each word stays whole; with large text the title wraps between the words instead of running off a phone.
+      const word = (w: string, from: number) => el('span', { class: 'su-hero-word', 'aria-hidden': 'true' },
+        ...w.split('').map((ch, i) => el('span', { class: 'su-letter', style: `--i:${from + i}`, text: ch })));
+      const heading = el('h1', { class: 'su-hero-title', tabindex: '-1', 'aria-label': 'Agent Empire' }, word('AGENT', 0), ' ', word('EMPIRE', 6));
       const start = primary('Set up my Empire', () => dispatch({ type: 'begin' }));
       const panel = el('section', { class: 'su-hero', 'aria-label': 'Welcome' },
         el('span', { class: 'su-hero-mark', 'aria-hidden': 'true', html: TOWER }),
