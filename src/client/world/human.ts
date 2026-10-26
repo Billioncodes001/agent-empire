@@ -2,7 +2,8 @@ import * as THREE from 'three';
 import type { GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { avatarDef, type Outfit } from '../../shared/outfit';
-import { avatarLoader, avatarUrl, hasTint, loadClips, sharedLoad, tintedMaterial, type AvatarExtras } from './avatars';
+import { avatarLoader, avatarUrl, hasTint, loadClips, loadExtraClips, sharedLoad, tintedMaterial, type AvatarExtras } from './avatars';
+import { FLIGHT, jumpPhase, landWithClip, selectMotion, stairsState, type JumpPhase, type MotionInput, type Stairs } from './anim-state';
 
 const assets = new Map<string, Promise<GLTF>>();
 export type VehiclePose = { phase: 'reach' | 'enter' | 'exit' | 'drive'; progress: number; steering?: number; handle?: THREE.Vector3; feet?: { l: THREE.Vector3; r: THREE.Vector3 } };
@@ -94,23 +95,19 @@ function repairSource(url: string, gltf: GLTF): Promise<boolean> {
  * measured on both rigs in models.test.ts). A held frame of it is the airborne base pose.
  */
 export const RUN_FLIGHT_PHASE = 0.16;
-/** Walk → run above this speed (m/s); run → walk below RUN_EXIT. The gap stops flicker at the boundary. */
-export const RUN_ENTER = 2.7;
-export const RUN_EXIT = 2.3;
+export { RUN_ENTER, RUN_EXIT, TURN_STEP, locomotionClip } from './anim-state';
 /** A fall shorter than this is a step or a stair edge: no airborne pose and no landing dip. */
 const MIN_FLIGHT = 0.12;
 const LANDING_TIME = 0.3;
 /** Ankle-bone height above the floor when standing, on both rigs (models.test.ts). */
 const ANKLE = 0.1;
-const FLIGHT = 'airborne_flight';
+/** CHAR-02: clips played once and held on their last frame (the state machine moves on when its phase ends). */
+const ONCE = new Set(['jump_start', 'jump_land']);
+const JUMP_CLIPS = new Set(['jump_start', 'jump_air', 'jump_land']);
 
-/** CHAR-01: turning on the spot faster than this (rad/s) steps the feet with a slow walk instead of spinning the idle. */
-export const TURN_STEP = 2.5;
-/** Which recorded clip a grounded, standing body plays at this speed, with hysteresis between walk and run. */
-export function locomotionClip(speed: number, previous: string, turnRate = 0): 'idle_neutral_01' | 'walk_neutral' | 'run_neutral' {
-  if (speed <= 0.08) return Math.abs(turnRate) > TURN_STEP ? 'walk_neutral' : 'idle_neutral_01';
-  return (previous === 'run_neutral' ? speed > RUN_EXIT : speed > RUN_ENTER) ? 'run_neutral' : 'walk_neutral';
-}
+let reducedMotion = false;
+/** CHAR-02: under reduced motion the calm CHAR-01 jump plays (held frame, small dip) and stair lean is halved. */
+export function setHumanReducedMotion(reduce: boolean) { reducedMotion = reduce; }
 
 /** Landing dip (m) over normalized landing time u: a quick drop, then an eased recovery. */
 export function landingDip(u: number, depth: number): number {
@@ -162,6 +159,13 @@ export class Human {
   private landing?: number;
   private landingDepth?: number;
   private baseY?: number;
+  // CHAR-02 state (all tolerate `undefined` for bare test instances).
+  private jump?: JumpPhase;
+  private stairs?: Stairs;
+  private stairLean?: number;
+  /** The current landing plays the jump_land clip (no procedural dip); decided at touchdown (landWithClip). */
+  private landClip?: boolean;
+  private scratch?: ReturnType<Human['makeScratch']>;
   private activity?: HumanActivity;
   private activityBlend?: number;
   private detail?: boolean;
@@ -194,7 +198,7 @@ export class Human {
           });
         }
         const model = clone(gltf.scene);
-        this.mixer = prepareHumanModel(model, clips, THREE.MathUtils.clamp(extras.height ?? 1.78, 1.6, 1.95));
+        const mixer = this.mixer = prepareHumanModel(model, clips, THREE.MathUtils.clamp(extras.height ?? 1.78, 1.6, 1.95));
         for (const clip of clips) this.actions.set(clip.name, this.mixer.clipAction(clip));
         this.model = model;
         this.applyTint(gltf, extras);
@@ -224,6 +228,13 @@ export class Human {
         this.baseY = model.position.y;
         this.ready = true;
         delete this.root.userData.assetError;
+        // CHAR-02: the CC0 jump and driving clips arrive lazily (skipped under Save-Data); until then, or if they
+        // never do, every state falls back to the recorded Rocketbox clips (anim-state.ts).
+        void loadExtraClips(avatarDef(this.outfit.avatar).body).then((extra) => {
+          if (this.disposed || !this.mixer || this.mixer !== mixer) return;
+          for (const clip of extra) if (!this.actions.has(clip.name)) this.actions.set(clip.name, mixer.clipAction(clip));
+          if (extra.length) this.root.userData.extraClips = extra.map((c) => c.name);
+        });
       })
       .catch((error) => {
         if (this.disposed) return;
@@ -260,6 +271,15 @@ export class Human {
   }
   reach() {
     this.reachRemaining = 0.6;
+  }
+  /** CHAR-02: the state machine's inputs, allocated once per body and refilled each frame. */
+  private makeScratch() {
+    const has = (n: string) => this.actions.has(n);
+    return {
+      phase: { flying: false, airTime: 0, vy: 0, landing: 0 },
+      land: { touchdownVy: 0, speed: 0, reducedMotion: false, has },
+      motion: { speed: 0, previous: '', turnRate: 0, seated: false, driving: false, transition: null, jump: null, landClip: false, stairs: null, reducedMotion: false, has } as MotionInput,
+    };
   }
   /** Airborne (jumping or falling) as the caller's physics sees it. `grace` absorbs a brief false "grounded" from interpolated peers. */
   setAirborne(airborne: boolean, grace = 0) {
@@ -352,7 +372,7 @@ export class Human {
     }
   }
   /** Track airborne time, vertical speed and landings; returns whether the flight pose applies. */
-  private updateFlight(dt: number): boolean {
+  private updateFlight(dt: number, speed: number): boolean {
     const y = this.root.getWorldPosition(_v).y;
     let rising = false;
     if (dt > 0 && this.lastRootY !== undefined) {
@@ -374,7 +394,15 @@ export class Human {
     if (!airborne && airTime > 0 && (this.groundedFor ?? 0) >= (this.landingGrace ?? 0)) {
       // Touchdown: a real flight earns a dip proportional to how fast it came down.
       if (airTime > MIN_FLIGHT) {
-        this.landing = LANDING_TIME;
+        // CHAR-02: decided once, here: a hard touchdown standing still lands with the recorded crouch (when the clip is
+        // here and motion is allowed); a soft or moving landing gets the procedural dip. The two never stack.
+        const land = this.actions?.get('jump_land');
+        const s = (this.scratch ??= this.makeScratch());
+        s.land.touchdownVy = this.minVy ?? 0;
+        s.land.speed = speed;
+        s.land.reducedMotion = reducedMotion;
+        this.landClip = !!land && landWithClip(s.land);
+        this.landing = this.landClip ? land!.getClip().duration : LANDING_TIME;
         this.landingDepth = THREE.MathUtils.clamp(-(this.minVy ?? 0) * 0.011, 0.03, 0.085);
       }
       this.airTime = 0;
@@ -387,27 +415,41 @@ export class Human {
   update(dt: number, moving: number | boolean = false, seated = false, typing = false, driving = false) {
     if (!this.mixer || !this.model) return;
     const speed = typeof moving === 'number' ? moving : moving ? 1.65 : 0;
-    const flying = !seated && !driving && !this.transition && this.updateFlight(dt);
+    const flying = !seated && !driving && !this.transition && this.updateFlight(dt, speed);
     // CHAR-01: how fast the body turns, smoothed; a quick turn on the spot steps the feet instead of spinning.
     const yaw = this.root.parent?.rotation.y ?? 0;
     const yawSpeed = this.lastYaw === undefined || dt <= 0 ? 0 : Math.atan2(Math.sin(yaw - this.lastYaw), Math.cos(yaw - this.lastYaw)) / dt;
     this.lastYaw = yaw;
     this.turnRate = THREE.MathUtils.damp(this.turnRate ?? 0, yawSpeed, 20, dt);
-    const name =
-      this.transition?.name ??
-      (seated ? 'sit_chair_idle_neutral_01' : flying && this.actions.has(FLIGHT) ? FLIGHT : locomotionClip(speed, this.motion, this.turnRate));
+    // CHAR-02: jump phase and stairs feed the pure state machine (anim-state.ts), which also picks every fallback.
+    const grounded = !flying && !seated && !driving && !this.transition;
+    // Scratch inputs, reused every frame (no per-frame objects or closures).
+    const s = (this.scratch ??= this.makeScratch());
+    if (!(this.landing ?? 0)) this.landClip = false;
+    s.phase.flying = flying; s.phase.airTime = this.airTime ?? 0; s.phase.vy = this.vy ?? 0; s.phase.landing = this.landing ?? 0;
+    this.jump = seated || driving || this.transition ? null : jumpPhase(s.phase);
+    this.stairs = grounded ? stairsState(this.stairs ?? null, speed, this.vy ?? 0) : null;
+    const m = s.motion;
+    m.speed = speed; m.previous = this.motion; m.turnRate = this.turnRate; m.seated = seated; m.driving = driving;
+    m.transition = this.transition?.name ?? null; m.jump = this.jump; m.landClip = !!this.landClip; m.stairs = this.stairs; m.reducedMotion = reducedMotion;
+    const name = selectMotion(m);
+    // The first frame the stride wins ends a clip landing: stopping later must never start a late crouch.
+    if (this.jump === 'land' && this.landClip && name !== 'jump_land') { this.landing = 0; this.landClip = false; }
     const next = this.actions.get(name) ?? this.actions.get('idle_neutral_01');
     if (next && name !== this.motion) {
       const old = this.current;
       const locomotion = (n: string) => n === 'walk_neutral' || n === 'run_neutral';
+      const airborne = (n: string) => n === FLIGHT || n === 'jump_air' || n === 'jump_start';
       // Walk and run share foot contacts at the same normalized phase, so switching keeps the stride.
       const phase = old && locomotion(this.motion) && locomotion(name) ? (old.time / old.getClip().duration) % 1
-        : this.motion === FLIGHT && locomotion(name) ? 0.45 : name === FLIGHT ? RUN_FLIGHT_PHASE : 0;
+        : airborne(this.motion) && locomotion(name) ? 0.45 : name === FLIGHT ? RUN_FLIGHT_PHASE : 0;
       next.reset().setEffectiveWeight(1).setEffectiveTimeScale(1).play();
       next.time = phase * next.getClip().duration;
       next.paused = false;
-      next.setLoop(THREE.LoopRepeat, Infinity);
-      const fade = this.transition ? 0.16 : name === FLIGHT ? 0.12 : this.motion === FLIGHT ? 0.08 : locomotion(name) && locomotion(this.motion) ? 0.3 : 0.22;
+      if (ONCE.has(name)) { next.setLoop(THREE.LoopOnce, 1); next.clampWhenFinished = true; } else next.setLoop(THREE.LoopRepeat, Infinity);
+      const fade = this.transition ? 0.16
+        : name === 'jump_start' ? 0.08 : name === 'jump_air' ? 0.15 : name === 'jump_land' ? 0.06 : this.motion === 'jump_land' ? 0.25
+          : name === FLIGHT ? 0.12 : airborne(this.motion) ? 0.08 : locomotion(name) && locomotion(this.motion) ? 0.3 : 0.22;
       if (old && old !== next) old.crossFadeTo(next, fade, false);
       this.current = next;
       this.motion = name;
@@ -484,6 +526,14 @@ export class Human {
       }
     }
     this.flightLayer(dt, flying);
+    // CHAR-02 stairs: a small forward lean climbing and an upright, slightly back-set torso descending, eased in and
+    // out (halved under reduced motion). Foot placement on the treads is Human.groundFeet (founder only).
+    const lean = this.stairs === 'up' ? 0.07 : this.stairs === 'down' ? -0.03 : 0;
+    this.stairLean = THREE.MathUtils.damp(this.stairLean ?? 0, lean * (reducedMotion ? 0.5 : 1), 6, dt);
+    if (Math.abs(this.stairLean) > 0.002) this.rotate('bip01spine', this.stairLean);
+    this.root.userData.clip = name;
+    this.root.userData.jump = this.jump ?? null;
+    this.root.userData.stairs = this.stairs ?? null;
     this.activityLayer(dt, seated && !driving);
     // Small upper-body balance during a turn; recorded pelvis, knee and foot tracks remain intact.
     this.turnLean = THREE.MathUtils.damp(this.turnLean, !seated && !flying && speed > .4 ? THREE.MathUtils.clamp(-yawSpeed * .015, -.07, .07) : 0, 6, dt);
@@ -506,7 +556,8 @@ export class Human {
   private flightLayer(dt: number, flying: boolean) {
     const model = this.model!;
     this.baseY ??= model.position.y;
-    this.air = THREE.MathUtils.damp(this.air ?? 0, flying ? 1 : 0, flying ? 16 : 60, dt);
+    // The procedural tuck shapes the held stride frame only; the CC0 jump clips carry their own.
+    this.air = THREE.MathUtils.damp(this.air ?? 0, flying && !JUMP_CLIPS.has(this.motion) ? 1 : 0, flying ? 16 : 60, dt);
     const air = this.air;
     if (air > .005) {
       const rise = THREE.MathUtils.clamp((this.vy ?? 0) / 6.4, -1, 1);
@@ -527,7 +578,8 @@ export class Human {
     let dip = 0;
     if ((this.landing ?? 0) > 0 && !flying) {
       this.landing = Math.max(0, this.landing! - dt);
-      dip = landingDip(1 - this.landing / LANDING_TIME, this.landingDepth ?? 0.05);
+      // The recorded landing clip carries its own crouch with planted feet; the dip is the fallback.
+      if (!this.landClip) dip = landingDip(1 - this.landing / LANDING_TIME, this.landingDepth ?? 0.05);
     } else if (flying) this.landing = 0;
     if (dip > 0.001) {
       // Record where the feet are, lower the hips, then bend the knees to keep the feet there.
