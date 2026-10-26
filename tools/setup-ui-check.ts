@@ -508,6 +508,11 @@ async function run() {
         const light: string[] = await page.evaluate(LIGHT_DIALOGS);
         seen.push(...light);
         if (item === 'Settings') await page.screenshot({ path: resolve(out, `${tag}-14-settings.jpg`), type: 'jpeg', quality: 82 });
+        if (item === 'Settings') {
+          // DEVICE-BUGS-03: Settings names the game build, so a release and a newer build of the same version differ.
+          const versions = (await page.locator('.update-versions').first().innerText().catch(() => '')).trim();
+          ok(/^Game \d+\.\d+\.\d+\S* \(build [0-9a-f]{7}\+?(, \d{1,2} \w{3} \d{4})?\)/.test(versions), `${tag} Settings shows the game version with its build (${versions})`);
+        }
         if (item === 'Controls') await page.screenshot({ path: resolve(out, `${tag}-15-controls.jpg`), type: 'jpeg', quality: 82 });
         ok(light.length === 0, `${tag} ${name} window uses the dark design (${light.join(', ') || 'dark'})`);
         for (let i = 0; i < 3 && (await page.locator('#modal-root .modal').count()); i++) {
