@@ -1269,7 +1269,10 @@ html.ae-cloud #hud .status-strip.cloud-strip .status-monitor { white-space: nowr
 .update-body .status-card p { margin: 6px 0 0; }
 .update-versions { margin: 0; }
 .update-notes { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; background: rgba(255, 255, 255, .03); }
-.update-notes p { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); }
+.update-notes p, .update-notes li { margin: 6px 0 0; overflow-wrap: anywhere; color: var(--muted); }
+.update-notes h4 { margin: 12px 0 0; font-size: 13px; color: var(--ink); }
+.update-notes ul { margin: 4px 0 0; padding-left: 20px; }
+.update-notes code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
 .menu-item.update { border-color: rgba(155, 209, 186, .7); }
 @media (prefers-reduced-motion: reduce) { #toasts .toast.update-toast { animation: none; } }
 /* ---- Corporate attire: CEO suit buttons and the hire dialog's outfit option ---- */
