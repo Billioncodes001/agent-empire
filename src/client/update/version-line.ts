@@ -29,8 +29,16 @@ export interface VersionState {
   channel: string;
 }
 
-export function versionLine(s: VersionState, build: GameBuild | null = builtGameBuild()): string {
-  const parts = [`Game ${s.game ?? 'version unknown'}${s.game && build?.commit ? ` (${buildLabel(build)})` : ''}`];
+declare const __AGENT_EMPIRE_GAME_VERSION__: string | undefined;
+const compiledVersion = (): string | null => (typeof __AGENT_EMPIRE_GAME_VERSION__ === 'string' ? __AGENT_EMPIRE_GAME_VERSION__ : null);
+
+/**
+ * `build` describes this page. It is shown only when the game version reported (`s.game`, which can come from the shell)
+ * is the version this page was compiled as; otherwise it would name another bundle's build.
+ */
+export function versionLine(s: VersionState, build: GameBuild | null = builtGameBuild(), pageVersion: string | null = compiledVersion()): string {
+  const ownBuild = !!s.game && !!build?.commit && pageVersion !== null && s.game === pageVersion;
+  const parts = [`Game ${s.game ?? 'version unknown'}${ownBuild ? ` (${buildLabel(build!)})` : ''}`];
   if (s.info) parts.push(`${PLATFORM_LABEL[s.info.platform] ?? 'App'} ${s.info.shellVersion}`);
   if (s.serverVersion) parts.push(`Server ${s.serverVersion}`);
   parts.push(`${s.channel === 'beta' ? 'Beta' : 'Stable'} channel`);

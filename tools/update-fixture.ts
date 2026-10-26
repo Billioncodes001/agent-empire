@@ -37,6 +37,16 @@ export interface FixtureRelease {
   broken: boolean;
 }
 
+/** game-version.json with a new version and everything else kept (DEVICE-BUGS-03: the `build` the app shows). */
+function relabel(text: string, version: string): string {
+  let doc: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) doc = parsed;
+  } catch {}
+  return `${JSON.stringify({ ...doc, version })}\n`;
+}
+
 /** The real game from `dir` (dist/public), relabelled as `version`. */
 export function gameZipFrom(dir: string, version: string): Buffer {
   const files: ZipFile[] = [];
@@ -47,7 +57,7 @@ export function gameZipFrom(dir: string, version: string): Buffer {
       if (statSync(full).isDirectory()) walk(full);
       else {
         const rel = relative(dir, full).split('\\').join('/');
-        files.push({ name: rel, data: rel === 'game-version.json' ? `${JSON.stringify({ version })}\n` : readFileSync(full) });
+        files.push({ name: rel, data: rel === 'game-version.json' ? relabel(readFileSync(full, 'utf8'), version) : readFileSync(full) });
       }
     }
   };

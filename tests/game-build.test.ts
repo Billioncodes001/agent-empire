@@ -13,8 +13,17 @@ import { gameBuild } from '../tools/release/game-build.mjs';
 import { versionLine, buildLabel } from '../src/client/update/version-line';
 
 const repo = path.resolve(import.meta.dirname, '..');
+/** Review 7: a source archive or a CI checkout without .git still runs the rest of the suite. */
+const noGit = (() => {
+  try {
+    execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, stdio: 'ignore' });
+    return false;
+  } catch {
+    return 'no Git checkout here';
+  }
+})();
 
-test('game build: the commit and commit date of the source tree', () => {
+test('game build: the commit and commit date of the source tree', { skip: noGit }, () => {
   const b = gameBuild({ cwd: repo, env: {} });
   const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
   assert.equal(b.commit, head.slice(0, 12));
@@ -22,7 +31,7 @@ test('game build: the commit and commit date of the source tree', () => {
   assert.equal(typeof b.dirty, 'boolean');
 });
 
-test('game build: CI can pin the commit (GITHUB_SHA or AGENT_EMPIRE_BUILD_COMMIT); junk is ignored', () => {
+test('game build: CI can pin the commit (GITHUB_SHA or AGENT_EMPIRE_BUILD_COMMIT); junk is ignored', { skip: noGit }, () => {
   assert.equal(gameBuild({ cwd: repo, env: { GITHUB_SHA: 'ABCDEF0123456789abcdef0123456789abcdef01' } }).commit, 'abcdef012345');
   assert.equal(gameBuild({ cwd: repo, env: { AGENT_EMPIRE_BUILD_COMMIT: '0123456789ab', GITHUB_SHA: 'ffffffffffff' } }).commit, '0123456789ab');
   const junk = gameBuild({ cwd: repo, env: { AGENT_EMPIRE_BUILD_COMMIT: '"><script>' } });
@@ -37,11 +46,19 @@ test('game build: outside a Git checkout there is no commit, and nothing throws'
 const state = { game: '1.0.0-beta.2', info: { platform: 'desktop', shellVersion: '1.0.0-beta.2' }, serverVersion: null, channel: 'beta' } as const;
 
 test('version line: names the game build, so a release and a newer build of the same version differ', () => {
-  const release = versionLine(state, { commit: '1fb8e12aaaaa', date: '2026-10-25T13:04:22Z', dirty: false });
-  const newer = versionLine(state, { commit: '64585f8bbbbb', date: '2026-10-25T15:52:00Z', dirty: false });
+  const release = versionLine(state, { commit: '1fb8e12aaaaa', date: '2026-10-25T13:04:22Z', dirty: false }, '1.0.0-beta.2');
+  const newer = versionLine(state, { commit: '64585f8bbbbb', date: '2026-10-25T15:52:00Z', dirty: false }, '1.0.0-beta.2');
   assert.equal(release, 'Game 1.0.0-beta.2 (build 1fb8e12, 25 Oct 2026) · desktop app 1.0.0-beta.2 · Beta channel');
   assert.notEqual(release, newer);
   assert.equal(buildLabel({ commit: '64585f8bbbbb', date: '2026-10-25T15:52:00Z', dirty: true }), 'build 64585f8+, 25 Oct 2026');
+});
+
+test('version line: the page build is shown only for the game version this page was compiled as', () => {
+  const build = { commit: '1fb8e12aaaaa', date: '2026-10-25T13:04:22Z', dirty: false };
+  // The shell reports another installed game than the page's own (e.g. a pending update): no build is claimed for it.
+  assert.equal(versionLine({ ...state, game: '1.0.0-beta.3' }, build, '1.0.0-beta.2'), 'Game 1.0.0-beta.3 · desktop app 1.0.0-beta.2 · Beta channel');
+  assert.equal(versionLine(state, build, '1.0.0-beta.2'), 'Game 1.0.0-beta.2 (build 1fb8e12, 25 Oct 2026) · desktop app 1.0.0-beta.2 · Beta channel');
+  assert.equal(versionLine(state, build, null), 'Game 1.0.0-beta.2 · desktop app 1.0.0-beta.2 · Beta channel', 'unknown page version: no build');
 });
 
 test('version line: without build information it reads as before', () => {
