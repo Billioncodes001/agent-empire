@@ -13,7 +13,8 @@
  */
 import { intentPath, parseIntent, type CloudIntent } from '../../cloud/intents';
 import { INTENT_PATH, OPTIONAL_STATE_FILES, parseStateFiles, STATE_PATHS, type CloudState } from '../../cloud/schema';
-import { encodeBase64Utf8 } from '../../cloud/store';
+import { encodeBase64Utf8, GitHubClient } from '../../cloud/store';
+import { checkStateSecrets } from '../../cloud/actions-setup';
 import { WORKFLOW_FILE } from '../../cloud/workflow';
 import { uuidv7 } from './uuid';
 import { githubApiBase } from './api-base';
@@ -82,6 +83,11 @@ export class CloudRepo {
     if (!parseRepo(repoLabel(repo))) throw new RepoError('invalid', 'Invalid state repository.');
     if (!token || /\s/.test(token)) throw new RepoError('unauthorized', 'Link GitHub to open your Empire.');
     this.branch = branch ?? null;
+  }
+
+  /** FREE-11/12: which Actions secret NAMES exist in the state repository (names only; values are never read). */
+  async secretNames(names: readonly string[]): Promise<{ present: Record<string, boolean>; error?: string }> {
+    return checkStateSecrets(new GitHubClient(this.token, { fetch: this.fetchImpl, apiBase: this.base, browser: true }), { owner: this.repo.owner, name: this.repo.name }, names);
   }
 
   private async call(method: string, path: string, body?: unknown, extra: Record<string, string> = {}): Promise<{ status: number; data: any; etag: string | null }> {

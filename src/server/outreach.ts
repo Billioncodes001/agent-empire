@@ -18,6 +18,10 @@ import { ApprovalError } from './approvals.js';
 import { artifactPath, readArtifact, type Frontmatter } from './artifacts.js';
 import { SmtpError, isEmailAddress, smtpConfigFromUrl, type MailMessage, type MailTransport, type SmtpConfig } from './email.js';
 import { writeJsonAtomic } from './persistence.js';
+// FREE-12: address and rendering rules shared with the cloud coordinator and send job; re-exported unchanged.
+import { normalizeEmail } from '../shared/email-address.js';
+import { MERGE, clean, mergeValue, outreachFooter, renderOutreach } from '../shared/outreach-render.js';
+export { normalizeEmail, mergeValue, outreachFooter, renderOutreach };
 
 const LEADS_FILE = 'leads.json';
 const OUTREACH_FILE = 'outreach.json';
@@ -35,7 +39,6 @@ export const DEFAULT_INTERVAL_MS = 10_000;
 const TAG = /^[A-Za-z0-9_.-]{1,40}$/;
 const LEAD_ID = /^L[1-9]\d{0,8}$/;
 const CAMPAIGN_ID = /^C[1-9]\d{0,8}$/;
-const MERGE = /\{\{\s*([^{}]*?)\s*\}\}/g;
 const ACTOR = 'Jordan · Marketing & sales (rule-based)';
 /** RCPT refusals in a row that look like a server or policy problem rather than bad addresses (review fix 2). */
 const PAUSE_AFTER_REFUSALS = 3;
@@ -44,13 +47,6 @@ const RECIPIENT_CODES = new Set(['550', '551', '553']);
 /** Each body line at most this many UTF-8 bytes (SMTP allows 998; leave room for merge values). */
 const MAX_LINE_BYTES = 900;
 
-/** One address as stored and compared: trimmed, Unicode NFC, lowercase. C0 controls are refused. Plus-addressing is distinct. */
-export function normalizeEmail(raw: unknown): string | undefined {
-  if (typeof raw !== 'string') return undefined;
-  const email = raw.trim().normalize('NFC').toLowerCase();
-  if (!email || email.length > 254 || /[\u0000-\u001f\u007f]/.test(email) || !isEmailAddress(email)) return undefined;
-  return email;
-}
 
 export class OutreachError extends Error {
   constructor(public readonly status: number, message: string) {
@@ -111,19 +107,6 @@ export function outreachConfig(env: NodeJS.ProcessEnv): OutreachConfig {
 
 // ---- Rendering ----------------------------------------------------------------------------------
 
-/** One merge-field value: no control characters (so no CR/LF), collapsed spaces, at most 100 characters. */
-export function mergeValue(value: string): string {
-  return clean(value, 100);
-}
-
-function clean(value: string, max: number): string {
-  return String(value).replace(/[\u0000-\u001f\u007f\u0085\u2028\u2029]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
-}
-
-/** The fixed footer the server appends to every email. The worker's draft cannot change it. */
-export function outreachFooter(cfg: Pick<OutreachConfig, 'address' | 'from' | 'fromName'>): string {
-  return `--\n${cfg.address}\nSent by ${cfg.fromName ? `${cfg.fromName} <${cfg.from}>` : cfg.from}.\n${STOP_LINE}`;
-}
 
 interface Recipient { email: string; name: string; company: string }
 
@@ -141,22 +124,6 @@ interface Snapshot {
   createdAt: number;
 }
 
-const fill = (template: string, r: Recipient, header = false) => template.replace(MERGE, (_m, field: string) => {
-  const value = mergeValue(field === 'name' ? r.name : r.company);
-  // In the Subject, a literal "=?…?=" would be decoded by mail clients; break it so the preview equals what is shown.
-  return header ? value.replace(/=\?/g, '= ?').replace(/\?=/g, '? =') : value;
-});
-
-/** Exactly what one recipient receives: one message, one To address, the fixed footer always last. */
-export function renderOutreach(s: Pick<Snapshot, 'subject' | 'body' | 'footer' | 'from' | 'fromName'>, r: Recipient): MailMessage {
-  return {
-    from: s.from,
-    ...(s.fromName ? { fromName: s.fromName } : {}),
-    to: r.email,
-    subject: clean(fill(s.subject, r, true), 200),
-    text: `${fill(s.body, r)}\n\n${s.footer}\n`,
-  };
-}
 
 // ---- CSV ----------------------------------------------------------------------------------------
 

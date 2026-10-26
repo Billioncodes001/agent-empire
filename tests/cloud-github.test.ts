@@ -127,8 +127,9 @@ test('cloud workflow: schedule, dispatch, one-at-a-time concurrency, least privi
   assert.match(yaml, /permissions:\n {2}contents: write\n {2}actions: write/);
   assert.match(yaml, /run: node coordinator\/agent-empire-coordinator\.mjs tick/);
   const secretLines = yaml.split('\n').filter(line => line.includes('secrets.'));
-  assert.equal(secretLines.length, 3);
-  for (const line of secretLines) assert.match(line, /^ {10}[A-Z_]+: \$\{\{ secrets\.(ANTHROPIC_API_KEY|OPENAI_API_KEY|PROJECT_GITHUB_TOKEN) \}\}$/);
+  // FREE-11/12: plus three opt-in free-tier brain keys in the tick job and the SMTP URL in the separate send job.
+  assert.equal(secretLines.length, 7);
+  for (const line of secretLines) assert.match(line, /^ {10}[A-Z_]+: \$\{\{ secrets\.(ANTHROPIC_API_KEY|OPENAI_API_KEY|PROJECT_GITHUB_TOKEN|OPENROUTER_API_KEY|GEMINI_API_KEY|GROQ_API_KEY|AGENT_EMPIRE_SMTP_URL) \}\}$/);
   assert.ok(!/echo|set -x/.test(yaml));
   const minimal = coordinatorWorkflow({ allowSelfDisable: false });
   assert.match(minimal, /permissions:\n {2}contents: write\n\n/);

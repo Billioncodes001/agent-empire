@@ -45,7 +45,8 @@ export function coordinatorWorkflow(options: WorkflowOptions = {}): string {
 # dispatches queued jobs and commits the new state. One run at a time.
 # Schedule: every ${interval} minutes ≈ ${estimate.runsPerMonth} runs/month ≈ ${estimate.billedMinutesPerMonth} billed
 # Actions minutes/month (estimate; each run is billed as at least one minute), plus runs the apps
-# trigger with repository_dispatch.
+# trigger with repository_dispatch. Outreach adds a send job only on runs that send email (at least one more
+# billed minute each).
 name: Agent Empire coordinator
 
 on:
@@ -67,6 +68,8 @@ jobs:
   tick:
     runs-on: ubuntu-latest
     timeout-minutes: 8
+    outputs:
+      send: \${{ steps.tick.outputs.send }}
     steps:
       - uses: actions/checkout@${PINNED_ACTIONS.checkout.sha} # ${PINNED_ACTIONS.checkout.version}
         with:
@@ -76,14 +79,47 @@ jobs:
         with:
           node-version: '${node}'
       - name: Coordinator tick
+        id: tick
         run: node ${COORDINATOR_BUNDLE_PATH} tick
         env:
           GITHUB_TOKEN: \${{ github.token }}
           ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: \${{ secrets.OPENAI_API_KEY }}
+          # FREE-11: optional free-tier keys for the chief's brain (opt-in; the CEO accepts the provider's terms first).
+          OPENROUTER_API_KEY: \${{ secrets.OPENROUTER_API_KEY }}
+          GEMINI_API_KEY: \${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: \${{ secrets.GROQ_API_KEY }}
           PROJECT_GITHUB_TOKEN: \${{ secrets.PROJECT_GITHUB_TOKEN }}
           AGENT_EMPIRE_STATE_BRANCH: \${{ github.event.repository.default_branch || github.ref_name }}
           AGENT_EMPIRE_WORKFLOW: ${WORKFLOW_FILE}
           AGENT_EMPIRE_SELF_DISABLE: '${selfDisable ? 'true' : 'false'}'
+
+  # FREE-12: approved outreach email, sent on a fresh runner that holds only the SMTP secret. It runs no model and no
+  # agent code: it sends exactly the messages the tick job claimed for this run, rechecks each one, and records a receipt.
+  # The send job runs only on runs that send email: the tick sets send=true right after it commits this run's claims,
+  # and other runs bill no extra minute. If the tick failed, the send job still looks for committed claims (it exits
+  # after one read when there are none), because a failed step's outputs may be lost. Cancelling the run stops it:
+  # claims of a cancelled run become uncertain and are never sent.
+  send:
+    needs: tick
+    if: \${{ !cancelled() && (needs.tick.outputs.send == 'true' || needs.tick.result == 'failure') }}
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@${PINNED_ACTIONS.checkout.sha} # ${PINNED_ACTIONS.checkout.version}
+        with:
+          persist-credentials: false
+          sparse-checkout: coordinator
+      - uses: actions/setup-node@${PINNED_ACTIONS.setupNode.sha} # ${PINNED_ACTIONS.setupNode.version}
+        with:
+          node-version: '${node}'
+      - name: Send approved outreach email
+        run: node ${COORDINATOR_BUNDLE_PATH} send
+        env:
+          GITHUB_TOKEN: \${{ github.token }}
+          AGENT_EMPIRE_SMTP_URL: \${{ secrets.AGENT_EMPIRE_SMTP_URL }}
+          AGENT_EMPIRE_STATE_BRANCH: \${{ github.event.repository.default_branch || github.ref_name }}
 `;
 }

@@ -1678,3 +1678,23 @@ html.ae-touch #hud .topbar .controls > #btn-inbox > span:not(.svc-count):not(.in
 .architect-facts .architect-changes { margin: 0; }
 @media (max-width: 720px) { .architect-form .chief-modes, .architect-form .chief-row, .architect-body > .chief-row { grid-template-columns: 1fr; } }
 @media (prefers-reduced-motion: no-preference) { .architect-run { transition: border-color .2s ease; } }
+
+/* FREE-11/12: the cloud brain and outreach panels. */
+.cloud-brain .brain-settings, .cloud-outreach .out-setup { display: grid; gap: 6px; }
+.brain-caps, .brain-price { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 6px 12px; align-items: end; }
+.brain-caps input, .brain-price input, .cloud-brain select, .cloud-brain input[type="text"], .cloud-outreach input[type="text"], .cloud-outreach input[type="email"] { width: 100%; min-width: 0; box-sizing: border-box; }
+.cloud-brain label.check, .cloud-outreach label.check { display: flex; gap: 8px; align-items: flex-start; }
+.brain-terms p { margin: 4px 0; }
+.brain-requests li[data-status="needs_attention"], .brain-requests li[data-status="uncertain"] { border-left: 3px solid var(--warn, #d9822b); padding-left: 8px; }
+.cloud-plan-items { padding-left: 1.2em; display: grid; gap: 10px; }
+.cloud-plan-items pre { white-space: pre-wrap; max-height: 12em; overflow: auto; }
+.out-privacy { font-weight: 500; }
+.out-delete { margin-top: 12px; }
+@media (max-width: 480px) { .brain-caps, .brain-price { grid-template-columns: 1fr; } }
+.cloud-brain :is(input:not([type="checkbox"]), select, textarea), .cloud-outreach :is(input:not([type="checkbox"]), select, textarea) {
+  width: 100%; min-width: 0; box-sizing: border-box; min-height: 40px; padding: 8px 10px; font: inherit; font-size: 14px;
+  color: #eef3ef; background: #0000003a; border: 1px solid #ffffff2e; border-radius: 6px;
+}
+.cloud-brain :is(input, select, textarea):focus-visible, .cloud-outreach :is(input, select, textarea):focus-visible { outline: 2px solid #c7d9bd; outline-offset: 1px; }
+.cloud-brain select option, .cloud-outreach select option { color: #111; }
+.cloud-brain input[type="checkbox"], .cloud-outreach input[type="checkbox"] { width: 20px; height: 20px; flex: none; margin-top: 1px; }

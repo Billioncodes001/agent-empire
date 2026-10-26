@@ -6,6 +6,8 @@ import { defaultApprovedBudget, isItemPhase, type BudgetHold, type ItemPhase, ty
 import type { QueueState, QueueTask } from '../shared/protocol.js';
 import type { PlannedItem } from './estimate.js';
 import { writeJsonAtomic } from './persistence.js';
+// FREE-11: shared with the cloud coordinator (src/shared/chief-rules.ts); re-exported unchanged.
+import { itemDependencies } from '../shared/chief-rules.js';
 
 const JOURNAL_FILE = 'consultancy.json';
 const MAX_REQUEST_ID = 120;
@@ -648,16 +650,7 @@ function canonicalTask(task: { title: string; prompt: string; parallel?: boolean
  * parallel, for the whole parallel run back to (and including) the ordered item it started beside. A parallel item
  * shares the dependencies of the item before it, so it runs alongside that item. The first item waits for nothing.
  */
-export function itemDependencies<T extends { parallel?: true }>(items: readonly T[], index: number): T[] {
-  if (index <= 0) return [];
-  if (items[index].parallel) return itemDependencies(items, index - 1);
-  const out: T[] = [];
-  for (let i = index - 1; i >= 0; i--) {
-    out.unshift(items[i]);
-    if (!items[i].parallel) break;
-  }
-  return out;
-}
+export { itemDependencies };
 
 /** Replaces the `{{jobId}}` token in task prompts (ORG-05 internal jobs); plans without it are unchanged. */
 function withJobId(input: CleanCreateInput, jobId: string): CleanCreateInput {
