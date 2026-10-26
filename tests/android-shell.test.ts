@@ -27,3 +27,12 @@ test('android shell: a display-size (density) change recreates the activity (a n
   // so the activity is recreated with a new WebView; the setup restores its progress from local storage.
   assert.match(handler, /recreate\(\)/, 'recreates the activity on a density change');
 });
+
+test('android shell: recreating the activity (density change) does not re-run the cold-start update logic', () => {
+  // Re-check 2: updater.launch() switches in a pending bundle and rolls back an unfinished trial. Run on every onCreate,
+  // a recreate() mid-trial would roll back a good update. It runs once per process.
+  const onCreate = activity.match(/protected void onCreate\(Bundle state\)\s*\{([\s\S]*?)\n    \}/)?.[1] ?? '';
+  assert.match(activity, /private static boolean (updatesLaunched|launched)\b/, 'a process-level flag');
+  assert.match(onCreate, /if \(!(updatesLaunched|launched)\) \{[^}]*updater\.launch\(/, 'updater.launch() only when the process has not launched yet');
+  assert.doesNotMatch(onCreate.replace(/if \(!(updatesLaunched|launched)\) \{[^}]*\}/, ''), /updater\.launch\(/, 'no unguarded launch()');
+});
