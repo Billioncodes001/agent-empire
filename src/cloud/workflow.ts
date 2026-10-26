@@ -45,7 +45,8 @@ export function coordinatorWorkflow(options: WorkflowOptions = {}): string {
 # dispatches queued jobs and commits the new state. One run at a time.
 # Schedule: every ${interval} minutes ≈ ${estimate.runsPerMonth} runs/month ≈ ${estimate.billedMinutesPerMonth} billed
 # Actions minutes/month (estimate; each run is billed as at least one minute), plus runs the apps
-# trigger with repository_dispatch.
+# trigger with repository_dispatch. Outreach adds a send job only on runs that send email (at least one more
+# billed minute each).
 name: Agent Empire coordinator
 
 on:
@@ -67,6 +68,8 @@ jobs:
   tick:
     runs-on: ubuntu-latest
     timeout-minutes: 8
+    outputs:
+      send: \${{ steps.tick.outputs.send }}
     steps:
       - uses: actions/checkout@${PINNED_ACTIONS.checkout.sha} # ${PINNED_ACTIONS.checkout.version}
         with:
@@ -76,6 +79,7 @@ jobs:
         with:
           node-version: '${node}'
       - name: Coordinator tick
+        id: tick
         run: node ${COORDINATOR_BUNDLE_PATH} tick
         env:
           GITHUB_TOKEN: \${{ github.token }}
@@ -92,8 +96,13 @@ jobs:
 
   # FREE-12: approved outreach email, sent on a fresh runner that holds only the SMTP secret. It runs no model and no
   # agent code: it sends exactly the messages the tick job claimed for this run, rechecks each one, and records a receipt.
+  # The send job runs only on runs that send email: the tick sets send=true right after it commits this run's claims
+  # (so a later failure of the tick still sends what it claimed), and other runs bill no extra minute.
   send:
     needs: tick
+    if: \${{ always() && needs.tick.outputs.send == 'true' }}
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

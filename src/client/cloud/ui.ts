@@ -9,6 +9,7 @@
 import { SITES, type SiteId } from '../../shared/empire';
 import { CANCELLABLE, cloudStatus, dollars, executionStatus, jobCostLabel, JOB_LABEL, JOB_TONE, jobCounts, SANDBOX_NOTE, shortAge, snapshotTime, todaySpend } from './map';
 import { DEFAULT_WORKER_MODEL, WORKER_MODELS, type WorkerModel } from '../../cloud/worker-spec';
+import { outreachMinutesNote } from '../../cloud/outreach';
 import { repoLabel } from './repo';
 import type { CloudNet, NewJobRequest } from './net';
 import { store } from '../state';
@@ -213,7 +214,7 @@ function statusTab(net: CloudNet, state: CloudState): HTMLElement[] {
       'section.empire-section',
       {},
       h('h3', {}, 'Schedule and costs ', h('span.empire-tag.real', {}, 'real')),
-      h('p.setting-note', {}, `Runs every ${meta.schedule.intervalMinutes} minutes: about ${meta.schedule.runsPerMonth.toLocaleString()} scheduled runs and ${meta.schedule.billedMinutesPerMonth.toLocaleString()} billed GitHub Actions minutes a month (an estimate; each run bills at least one minute). Waking the coordinator from the app adds runs. Provider usage is billed by your provider. Changing the schedule means running setup again.`),
+      h('p.setting-note', {}, `Runs every ${meta.schedule.intervalMinutes} minutes: about ${meta.schedule.runsPerMonth.toLocaleString()} scheduled runs and ${meta.schedule.billedMinutesPerMonth.toLocaleString()} billed GitHub Actions minutes a month (an estimate; each run bills at least one minute). Waking the coordinator from the app adds runs. Provider usage is billed by your provider. Changing the schedule means running setup again.${state.outreach.settings ? ` ${outreachMinutesNote(meta.schedule.runsPerMonth, true)}` : ''}`),
       h('p.setting-note', {}, `Limits: ${meta.limits.maxConcurrent} job${meta.limits.maxConcurrent === 1 ? '' : 's'} at once · ${dollars(meta.limits.perTaskBudgetCents)} allowance per job · ${dollars(meta.limits.dailyBudgetCents)} admitted per UTC day. The coordinator enforces them before it starts anything.`),
     ),
     h('section.empire-section', {}, h('h3', {}, 'Not available in cloud mode'), h('ul.cloud-limits', {}, ...CLOUD_LIMITS.map((t) => h('li', {}, t))), h('p.setting-note', {}, 'Connect your own server (Menu → Forget this device, then set up again) for live terminals and full capabilities.')),

@@ -77,9 +77,15 @@ export interface BrainRequest {
   approvalId?: string;
   model?: string;
 }
-export interface CloudBrain { schemaVersion: 1; settings: BrainSettings; clockAt: number; log: BrainCharge[]; requests: BrainRequest[] }
+export interface CloudBrain {
+  schemaVersion: 1; settings: BrainSettings; clockAt: number; log: BrainCharge[]; requests: BrainRequest[];
+  /** Review 4: micro-USD charged per UTC day. The caps use these totals, never the (capped) log. */
+  days: Record<string, number>;
+  /** Model calls per UTC day (the free tier's daily call limit). */
+  calls: Record<string, number>;
+}
 
-export const emptyBrain = (): CloudBrain => ({ schemaVersion: 1, settings: { ...DEFAULT_BRAIN_SETTINGS }, clockAt: 0, log: [], requests: [] });
+export const emptyBrain = (): CloudBrain => ({ schemaVersion: 1, settings: { ...DEFAULT_BRAIN_SETTINGS }, clockAt: 0, log: [], requests: [], days: {}, calls: {} });
 export const isEmptyBrain = (b: CloudBrain) => JSON.stringify(b) === JSON.stringify(emptyBrain());
 
 export class BrainRuleError extends Error {
@@ -117,18 +123,28 @@ export function checkBrainSettings(raw: Record<string, unknown>, opts: { confirm
   if (raw.mode === 'free') {
     if (!free) refuse('invalid_settings', 'A free tier is OpenRouter, Gemini or Groq with your own key; Anthropic and OpenAI keys are premium.');
     if (raw.acceptTerms !== provider) refuse('terms_not_accepted', `Read and accept ${BRAIN_PROVIDER_LABEL[provider]}’s data-use terms before turning it on.`);
-    if (raw.price !== undefined) refuse('invalid_settings', 'A free tier has no price.');
+    // Review 2: a free tier must not hide paid spend. OpenRouter bills any model that is not a free one to your credits,
+    // so only ids ending in :free are accepted. Gemini and Groq bill by the key's tier, so a price can be set: then each
+    // call is charged its worst case against the caps, exactly as premium.
+    if (provider === 'openrouter') {
+      if (!/:free$/.test(model)) refuse('not_free_model', 'On OpenRouter the free brain uses only free models (ids ending in :free); any other model is billed to your OpenRouter credits. Use premium for paid models.');
+      if (raw.price !== undefined) refuse('invalid_settings', 'OpenRouter free models have no price.');
+    }
+    const price = raw.price === undefined || raw.price === null ? undefined : checkPrice(raw.price);
     const freeCallsPerDay = raw.freeCallsPerDay === undefined ? DEFAULT_BRAIN_SETTINGS.freeCallsPerDay : int(raw.freeCallsPerDay, 1, BRAIN_LIMITS.maxFreeCalls, 'Free calls a day');
-    return { mode: 'free', provider, model, dailyCapCents, monthlyCapCents, freeCallsPerDay, acceptTerms: provider };
+    return { mode: 'free', provider, model, ...(price ? { price } : {}), dailyCapCents, monthlyCapCents, freeCallsPerDay, acceptTerms: provider };
   }
   if (free) refuse('invalid_settings', 'Premium uses your Anthropic or OpenAI API key.');
   if (opts.confirmPaid !== true) refuse('confirm_paid', 'Turning on the premium brain spends money: confirm the caps (confirmPaid).');
   if (raw.acceptTerms !== undefined) refuse('invalid_settings', 'acceptTerms is for a free tier.');
-  const p = raw.price;
-  if (p === undefined || p === null) refuse('invalid_settings', 'Set the price per million tokens so the caps can be enforced.');
+  if (raw.price === undefined || raw.price === null) refuse('invalid_settings', 'Set the price per million tokens so the caps can be enforced.');
+  return { mode: 'premium', provider, model, price: checkPrice(raw.price), dailyCapCents, monthlyCapCents, freeCallsPerDay: DEFAULT_BRAIN_SETTINGS.freeCallsPerDay };
+}
+
+function checkPrice(p: unknown): [number, number] {
   if (!Array.isArray(p) || p.length !== 2 || p.some((n) => typeof n !== 'number' || !Number.isFinite(n) || n < 0 || n > BRAIN_LIMITS.maxPrice)) refuse('invalid_settings', `The price must be [input, output] USD per million tokens, each 0–${BRAIN_LIMITS.maxPrice}.`);
   if ((p as number[])[0] === 0 || (p as number[])[1] === 0) refuse('zero_price', 'A paid API price cannot be zero; the caps could not be enforced.');
-  return { mode: 'premium', provider, model, price: [(p as number[])[0], (p as number[])[1]], dailyCapCents, monthlyCapCents, freeCallsPerDay: DEFAULT_BRAIN_SETTINGS.freeCallsPerDay };
+  return [(p as number[])[0], (p as number[])[1]];
 }
 
 export function applyBrainSettings(brain: CloudBrain, checked: ReturnType<typeof checkBrainSettings>, now: number): void {
@@ -168,15 +184,16 @@ export function trustedClock(github: number | undefined, runner: number, clockAt
   return { at: Math.max(github, clockAt) };
 }
 
+/** Review 4: from per-day totals. The rolling window counts whole UTC days (today and the 29 before), so it never undercounts. */
 export function brainSpend(brain: CloudBrain, at: number): { todayMicros: number; rollingMicros: number; callsToday: number } {
   const day = utcDayOf(at);
-  let todayMicros = 0; let rollingMicros = 0; let callsToday = 0;
-  for (const e of brain.log) {
-    if (utcDayOf(e.at) === day) { todayMicros += e.micros; callsToday++; }
-    if (e.at > at - ROLLING_MS) rollingMicros += e.micros;
-  }
-  return { todayMicros, rollingMicros, callsToday };
+  const from = utcDayOf(at - ROLLING_MS + 24 * 3600_000);
+  let rollingMicros = 0;
+  for (const [d, m] of Object.entries(brain.days ?? {})) if (d >= from && d <= day) rollingMicros += m;
+  return { todayMicros: brain.days?.[day] ?? 0, rollingMicros, callsToday: brain.calls?.[day] ?? 0 };
 }
+const addDay = (map: Record<string, number>, day: string, n: number) => { map[day] = Math.max(0, (map[day] ?? 0) + n); };
+const pruneDays = (map: Record<string, number>, at: number) => { const keep = utcDayOf(at - 40 * 24 * 3600_000); for (const d of Object.keys(map)) if (d < keep) delete map[d]; };
 
 const priceMicros = (price: [number, number], input: number, output: number) => Math.ceil(input * price[0] + output * price[1]);
 
@@ -252,13 +269,17 @@ export function chargeBrain(brain: CloudBrain, org: CloudOrg, jobs: readonly Clo
     if ('error' in built) { r.status = 'needs_attention'; note(r, built.error); continue; }
     const spend = brainSpend(brain, clock.at);
     let micros = 0;
-    if (s.mode === 'premium') {
-      if (!s.price || s.price[0] <= 0 || s.price[1] <= 0) { note(r, 'Waiting: no valid price is set, so the caps cannot be enforced.'); break; }
+    if (s.mode === 'premium' && (!s.price || s.price[0] <= 0 || s.price[1] <= 0)) { note(r, 'Waiting: no valid price is set, so the caps cannot be enforced.'); break; }
+    if (s.mode === 'free' && spend.callsToday >= s.freeCallsPerDay) { note(r, `Waiting: ${s.freeCallsPerDay} free-tier calls a day are already used (UTC day). It runs tomorrow, or raise the limit.`); break; }
+    if (s.price) {
       micros = priceMicros(s.price, inputTokenBound(built.messages), built.maxTokens);
       if (spend.todayMicros + micros > s.dailyCapCents * 10_000) { note(r, `Waiting: this call could cost up to ${usd(micros)}, which would pass today’s ${centsUsd(s.dailyCapCents)} daily cap (${usd(spend.todayMicros)} used, UTC day). It runs once there is room, or raise the cap.`); break; }
       if (spend.rollingMicros + micros > s.monthlyCapCents * 10_000) { note(r, `Waiting: this call could cost up to ${usd(micros)}, which would pass the ${centsUsd(s.monthlyCapCents)} cap for the last 30 days (${usd(spend.rollingMicros)} used). It runs once older charges roll out of the window, or raise the cap.`); break; }
-    } else if (spend.callsToday >= s.freeCallsPerDay) { note(r, `Waiting: ${s.freeCallsPerDay} free-tier calls a day are already used (UTC day). It runs tomorrow, or raise the limit.`); break; }
-    brain.log.push({ id: r.id, runId: ctx.runId, at: clock.at, micros, basis: s.mode === 'premium' ? 'worst_case' : 'free', provider: s.provider, model: s.model });
+    }
+    brain.log.push({ id: r.id, runId: ctx.runId, at: clock.at, micros, basis: s.price ? 'worst_case' : 'free', provider: s.provider, model: s.model });
+    brain.days ??= {}; brain.calls ??= {};
+    addDay(brain.days, utcDayOf(clock.at), micros);
+    addDay(brain.calls, utcDayOf(clock.at), 1);
     r.status = 'charged';
     r.charge = { runId: ctx.runId, at: clock.at, worstMicros: micros };
     delete r.reason;
@@ -266,6 +287,7 @@ export function chargeBrain(brain: CloudBrain, org: CloudOrg, jobs: readonly Clo
     planned.push({ requestId: r.id, provider: s.provider, model: s.model, ...built });
   }
   brain.log = brain.log.filter((e) => e.at > brain.clockAt - ROLLING_MS).slice(-BRAIN_LIMITS.log);
+  if ('at' in clock) { pruneDays(brain.days ??= {}, clock.at); pruneDays(brain.calls ??= {}, clock.at); }
   return planned;
 }
 
@@ -286,10 +308,16 @@ export function recordBrainResults(brain: CloudBrain, org: CloudOrg, jobs: reado
     const attention = (reason: string) => { r.status = 'needs_attention'; r.reason = short(reason, BRAIN_LIMITS.reason); };
     if ('error' in result) { attention(`The model call failed (${short(result.error, 160)}). ${entry && entry.micros > 0 ? 'It may still have been billed, so its worst case stays charged.' : 'Nothing was charged.'}`); continue; }
     const usage = result.ok.usage;
-    if (entry && entry.basis === 'worst_case' && s.price && usage.input + usage.output > 0) { entry.micros = priceMicros(s.price, usage.input, usage.output); entry.basis = 'reported'; }
+    // Review: the actual cost replaces the worst case only when the provider reported both input and output tokens
+    // (a prompt-only count could undercount). It may be higher than the worst case; then the higher figure counts.
+    if (entry && entry.basis === 'worst_case' && s.price && usage.input > 0 && usage.output > 0) {
+      const actual = priceMicros(s.price, usage.input, usage.output);
+      addDay(brain.days ??= {}, utcDayOf(entry.at), actual - entry.micros);
+      entry.micros = actual; entry.basis = 'reported';
+    }
     const model = cleanModel(result.ok.model, entry?.model ?? s.model);
     r.model = model;
-    const costLabel = !entry || entry.basis === 'free' ? 'US$0 · free tier (rate-limited)' : `≈ ${usd(entry.micros)} (${entry.basis === 'reported' ? 'estimate from reported usage' : 'worst case; no usage reported'})`;
+    const costLabel = !entry || entry.basis === 'free' ? 'free tier · not charged here (your key’s billing tier decides)' : `≈ ${usd(entry.micros)} (${entry.basis === 'reported' ? 'estimate from reported usage' : 'worst case; no usage reported'})`;
     const before = JSON.stringify(org);
     try {
       let approvalId: string;
@@ -349,7 +377,7 @@ const num = (v: unknown, what: string) => { if (typeof v !== 'number' || !Number
 const str = (v: unknown, max: number, what: string) => { if (typeof v !== 'string' || v.length > max) throw new BrainSchemaError(`invalid ${what}`); return v; };
 
 export function validateBrain(value: unknown): CloudBrain {
-  const b = obj(value, ['schemaVersion', 'settings', 'clockAt', 'log', 'requests'], 'brain');
+  const b = obj(value, ['schemaVersion', 'settings', 'clockAt', 'log', 'requests', 'days', 'calls'], 'brain');
   if (b.schemaVersion !== 1) throw new BrainSchemaError('unsupported schemaVersion');
   const s = obj(b.settings, ['mode', 'provider', 'model', 'price', 'dailyCapCents', 'monthlyCapCents', 'freeCallsPerDay', 'termsAccepted'], 'settings');
   if (!['off', 'free', 'premium'].includes(String(s.mode)) || !isBrainProvider(s.provider)) throw new BrainSchemaError('invalid settings');
@@ -359,6 +387,7 @@ export function validateBrain(value: unknown): CloudBrain {
   if (s.mode === 'premium' && (s.price === undefined || FREE_BRAIN_PROVIDERS.includes(s.provider as BrainProvider))) throw new BrainSchemaError('premium needs an API provider and a price');
   if (s.termsAccepted !== undefined) { const t = obj(s.termsAccepted, ['provider', 'at'], 'terms'); if (!isBrainProvider(t.provider)) throw new BrainSchemaError('invalid terms'); num(t.at, 'terms time'); }
   if (s.mode === 'free' && (s.termsAccepted as Rec | undefined)?.provider !== s.provider) throw new BrainSchemaError('a free tier needs its terms accepted');
+  if (s.mode === 'free' && s.provider === 'openrouter' && (s.price !== undefined || !/:free$/.test(String(s.model)))) throw new BrainSchemaError('an OpenRouter free brain uses only :free models');
   num(b.clockAt, 'clock');
   if (!Array.isArray(b.log) || b.log.length > BRAIN_LIMITS.log) throw new BrainSchemaError('invalid log');
   for (const e of b.log) {
@@ -384,7 +413,19 @@ export function validateBrain(value: unknown): CloudBrain {
     if (r.charge !== undefined) { const c = obj(r.charge, ['runId', 'at', 'worstMicros'], 'request charge'); str(c.runId, 80, 'charge run'); num(c.at, 'charge time'); num(c.worstMicros, 'charge'); }
     if (r.status === 'charged' && r.charge === undefined) throw new BrainSchemaError('a charged request needs its charge');
   }
-  return JSON.parse(JSON.stringify(b)) as CloudBrain;
+  const out = JSON.parse(JSON.stringify(b)) as CloudBrain;
+  for (const k of ['days', 'calls'] as const) {
+    if (b[k] === undefined) {
+      // Written before review 4: rebuild the day totals from the log.
+      out[k] = {};
+      for (const e of out.log) addDay(out[k], utcDayOf(e.at), k === 'days' ? e.micros : 1);
+      continue;
+    }
+    const m = obj(b[k], Object.keys(b[k] as object), k);
+    for (const [d, n] of Object.entries(m)) if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || typeof n !== 'number' || !Number.isFinite(n) || n < 0) throw new BrainSchemaError(`invalid ${k}`);
+    if (Object.keys(m).length > 60) throw new BrainSchemaError(`too many ${k}`);
+  }
+  return out;
 }
 
 /** The game's view of the brain: mode label, spend against the caps, and what is waiting. */
@@ -395,7 +436,10 @@ export function brainStatus(brain: CloudBrain, now: number): { label: string; re
     : s.mode === 'free' ? `Free · ${s.model} · ${BRAIN_PROVIDER_LABEL[s.provider]} · ${s.freeCallsPerDay} calls a day`
     : `Premium · ${s.model} · your ${s.provider === 'anthropic' ? 'Anthropic' : 'OpenAI'} key · ${centsUsd(s.dailyCapCents)}/day, ${centsUsd(s.monthlyCapCents)}/30 days`;
   const note = s.mode === 'off' ? 'No model calls. Plans, reviews and unblock ideas need the brain on.'
-    : s.mode === 'free' ? `US$0 · ${sp.callsToday} of ${s.freeCallsPerDay} free-tier calls today. ${BRAIN_PROVIDER_LABEL[s.provider]} may log or train on prompts: see its terms.`
+    : s.mode === 'free' ? (s.price
+      ? `${sp.callsToday} of ${s.freeCallsPerDay} calls today. Charged ${usd(sp.todayMicros)} today and ${usd(sp.rollingMicros)} in the last 30 days at your price (worst case until usage is reported), against your caps. ${BRAIN_PROVIDER_LABEL[s.provider]} may log or train on prompts: see its terms.`
+      : s.provider === 'openrouter' ? `US$0 · free models only (:free) · ${sp.callsToday} of ${s.freeCallsPerDay} calls today. OpenRouter may route free models to providers that log prompts: see its terms.`
+      : `${sp.callsToday} of ${s.freeCallsPerDay} calls today. Your key’s billing tier at ${BRAIN_PROVIDER_LABEL[s.provider]} decides the cost: free on its free tier, billed if billing is on, and these caps can’t see that spend. Set a price to have each call charged against the caps. It may log or train on prompts: see its terms.`)
     : `Charged ${usd(sp.todayMicros)} today and ${usd(sp.rollingMicros)} in the last 30 days (worst case until usage is reported; estimates from your price). Separate from city credits and job spend.`;
   return { label, ready: s.mode !== 'off', note, todayUsd: usd(sp.todayMicros), rollingUsd: usd(sp.rollingMicros), callsToday: sp.callsToday };
 }

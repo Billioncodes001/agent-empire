@@ -160,6 +160,18 @@ export function scrubOrgAddresses(org: CloudOrg, emails: Set<string> | 'all', no
 
 const finishCampaign = (c: CloudCampaign) => { if (c.snapshot) c.snapshot.recipients = c.snapshot.recipients.map(() => null); };
 
+/**
+ * Review 3: a finished, declined or cancelled campaign's inbox item keeps no recipient or rendered sample (the item, its
+ * snapshot hash and the counts stay). Run every tick after the outreach steps.
+ */
+export function scrubFinished(o: CloudOutreach, org: CloudOrg) {
+  for (const c of o.campaigns) {
+    if (!['done', 'rejected', 'cancelled'].includes(c.state) || !c.approvalId) continue;
+    const item = org.approvals.find((a) => a.id === c.approvalId);
+    if (item?.outreach && (item.outreach.recipients.length || item.outreach.samples.length)) { item.outreach.recipients = []; item.outreach.samples = []; }
+  }
+}
+
 export function suppress(o: CloudOutreach, org: CloudOrg, hash: string, reason: SuppressionReason, ctx: OutreachCtx): 'applied' | 'duplicate' {
   if (!o.salt) refuse('outreach_not_set_up', 'Set up outreach first.');
   if (o.suppression.some((s) => s.hash === hash)) return 'duplicate';
@@ -296,7 +308,7 @@ const settleDone = (c: CloudCampaign) => {
  * Applies the send jobs' receipts, then marks every claim of an earlier run that has no result as uncertain (its send job
  * stopped or never ran): it is never sent again. Returns the receipt paths to delete in the same commit.
  */
-export function consumeReceipts(o: CloudOutreach, files: { path: string; content: string }[], now: number): string[] {
+export function consumeReceipts(o: CloudOutreach, files: { path: string; content: string }[], now: number, org?: CloudOrg): string[] {
   const consumed: string[] = [];
   for (const f of files) {
     consumed.push(f.path);
@@ -319,11 +331,21 @@ export function consumeReceipts(o: CloudOutreach, files: { path: string; content
     }
   }
   for (const c of o.campaigns) {
+    const before = c.sends?.filter((s) => s.status === 'claimed').length ?? 0;
     c.sends?.forEach((s, i) => {
       if (s.status !== 'claimed') return;
       c.sends![i] = { status: 'uncertain', ...(s.runId ? { runId: s.runId } : {}), at: now, error: 'The send job for this run did not report; it may have been sent, so it is never re-sent.' };
       if (c.snapshot) c.snapshot.recipients[i] = null;
     });
+    // Review: dropped claims (the run that claimed them stopped before its send job reported) are surfaced on the
+    // campaign and on its inbox item, never lost silently.
+    if (before) {
+      const total = c.sends!.filter((s) => s.status === 'uncertain').length;
+      const text = `${plural(total, 'message')} uncertain: a coordinator run claimed ${total === 1 ? 'it' : 'them'} but its send job did not report, so ${total === 1 ? 'it' : 'they'} may or may not have been sent and ${total === 1 ? 'is' : 'are'} never re-sent.`;
+      c.note = short(text, OUTREACH_LIMITS.note);
+      const item = org && c.approvalId ? org.approvals.find((a) => a.id === c.approvalId) : undefined;
+      if (item) item.note = short(text, 300);
+    }
     settleDone(c);
   }
   return consumed;
@@ -335,11 +357,14 @@ export function claimSends(o: CloudOutreach, org: CloudOrg, ctx: { now: number; 
   if (!s || !running || 'reason' in clock) return 0;
   const day = utcDay(clock.at);
   let used = o.sent[day] ?? 0;
-  let budget = Math.min(s.perRunCap, s.dailyCap - used);
+  let runLeft = Math.min(s.perRunCap, s.dailyCap - used);
   let claimed = 0;
   const removed = new Set<string>();
   for (const c of [...o.campaigns].sort((a, b) => a.createdAt - b.createdAt)) {
     if (c.state !== 'sending' || !c.sends || !c.snapshot) continue;
+    // Review 5: an approved campaign keeps the pace it was approved with: the smaller of its snapshot caps and today's.
+    let budget = Math.max(0, Math.min(runLeft, c.snapshot.perRunCap, c.snapshot.dailyCap - used));
+    const start = budget;
     c.sends.forEach((send, i) => {
       if (send.status !== 'pending') return;
       const r = c.snapshot!.recipients[i];
@@ -349,6 +374,7 @@ export function claimSends(o: CloudOutreach, org: CloudOrg, ctx: { now: number; 
       c.sends![i] = { status: 'claimed', runId: ctx.runId, at: clock.at };
       budget--; used++; claimed++;
     });
+    runLeft -= start - budget;
     const left = c.sends.filter((x) => x.status === 'pending').length;
     if (left && budget <= 0 && !c.note?.startsWith('Waiting:')) c.note = short(`${plural(left, 'message')} still to send. ${deliveryEstimate(left, s, 0).text}`, OUTREACH_LIMITS.note);
     settleDone(c);
@@ -357,6 +383,15 @@ export function claimSends(o: CloudOutreach, org: CloudOrg, ctx: { now: number; 
   o.sent[day] = used;
   for (const d of Object.keys(o.sent).sort().slice(0, Math.max(0, Object.keys(o.sent).length - OUTREACH_LIMITS.sentDays))) delete o.sent[d];
   return claimed;
+}
+
+/**
+ * FREE-12 review 1: the extra GitHub Actions minutes outreach can bill. The send job runs only on runs that send email, so
+ * the scheduled estimate is unchanged when nothing is sent; each sending run bills at least one more minute.
+ */
+export function outreachMinutesNote(runsPerMonth: number, outreachOn: boolean): string {
+  if (!outreachOn) return '';
+  return `Outreach runs its send job only on runs that send email: each of those runs bills at least one more minute, up to about ${runsPerMonth.toLocaleString('en-US')} more a month if every run sends.`;
 }
 
 /** An honest delivery estimate: runs at the schedule, and the daily cap. Runs can start late on GitHub. */

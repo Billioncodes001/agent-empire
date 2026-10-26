@@ -360,7 +360,7 @@ test('brain: a request while the brain is off is refused; free tier calls cost U
   let s = await r.state();
   assert.equal(lastOutcome(s, off.id), 'rejected');
   assert.match(rejection(s, off.id), /off/);
-  push(r.store, intent(2, { kind: 'brain_settings', settings: { mode: 'free', provider: 'openrouter', model: 'free-fixture', dailyCapCents: 200, monthlyCapCents: 2000, freeCallsPerDay: 1, acceptTerms: 'openrouter' } } as any), planReq(3), planReq(4, 'Two.'));
+  push(r.store, intent(2, { kind: 'brain_settings', settings: { mode: 'free', provider: 'openrouter', model: 'free-fixture:free', dailyCapCents: 200, monthlyCapCents: 2000, freeCallsPerDay: 1, acceptTerms: 'openrouter' } } as any), planReq(3), planReq(4, 'Two.'));
   r.advance(60_000);
   await r.tick();
   r.advance(60_000);

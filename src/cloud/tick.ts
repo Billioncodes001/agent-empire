@@ -26,7 +26,7 @@ import { SITES, type SiteId } from '../shared/empire.js';
 import { addResearch, checkOrg, ORG_FILE, cloudResearchPrompt, decideApproval, OrgRuleError, proposeLesson, recordResearch, researchDue, researchPath, researchTitle, retireLesson, type BranchFile } from './org.js';
 import { isMoneyEngine } from './actions-spec.js';
 import { BRAIN_FILE, BrainRuleError, applyBrainSettings, chargeBrain, queueBrainRequest, recordBrainResults, trustedClock, type BrainResult, type PlannedCall } from './brain.js';
-import { OUTREACH_FILE, OutreachRuleError, RECEIPT_RE, addCampaign, addLeads, applyCampaignDecision, applyOutreachSettings, cancelCampaign, checkCampaignDecision, claimSends, consumeReceipts, deleteLeadData, reconcileCampaigns, suppress } from './outreach.js';
+import { OUTREACH_FILE, OutreachRuleError, RECEIPT_RE, addCampaign, addLeads, applyCampaignDecision, applyOutreachSettings, cancelCampaign, checkCampaignDecision, claimSends, consumeReceipts, deleteLeadData, scrubFinished, reconcileCampaigns, suppress } from './outreach.js';
 import { DEFAULT_WORKER_MODEL, WORKER_ENVIRONMENT, workerModelLabel } from './worker-spec.js';
 import {
   clone, PROVISION_RETRY_MS, FINAL_STATUSES, holdsSlot, LIMITS, parseStateFiles, promptHash, promptPreview, PROMPT_STATUSES, REVIEW_STATUSES, serializeState, sessionLive, SLOT_STATUSES, STATE_FILES, utcDay,
@@ -766,6 +766,8 @@ export interface CoordinatorDeps {
   brain?: BrainCaller;
   /** FREE-11/12: GitHub's time for this run (its run_started_at); without it no paid call or send is made. */
   githubTime?: () => Promise<number | undefined>;
+  /** FREE-12 review: called once phase 1 is committed, with how many messages it claimed for this run's send job. */
+  onClaimsCommitted?: (claimed: number) => void;
 }
 export interface TickReport {
   runId: string;
@@ -780,6 +782,8 @@ export interface TickReport {
   intentsTruncated: boolean;
   /** Automatic execution setup attempted this run. */
   provisioning?: 'ready' | 'failed' | 'waiting_for_key';
+  /** FREE-12: messages this run's committed phase 1 claimed for its send job. */
+  claimed: number;
 }
 
 export async function runCoordinatorTick(deps: CoordinatorDeps): Promise<TickReport> {
@@ -824,9 +828,10 @@ export async function runCoordinatorTick(deps: CoordinatorDeps): Promise<TickRep
     if (!state.outreachError && !state.orgError) {
       try {
         const outreach = clone(state.outreach); const org = clone(state.org);
-        receiptPaths = consumeReceipts(outreach, receiptFilesOf(snapshot), ctx1.now);
+        receiptPaths = consumeReceipts(outreach, receiptFilesOf(snapshot), ctx1.now, org);
         reconcileCampaigns(outreach, org, ctx1.now, state.meta.schedule.intervalMinutes);
         claimSends(outreach, org, ctx1, clock, state.meta.lifecycle.status === 'running');
+        scrubFinished(outreach, org);
         checkOrg(org);
         state.outreach = outreach; state.org = org;
       } catch (error) {
@@ -858,6 +863,9 @@ export async function runCoordinatorTick(deps: CoordinatorDeps): Promise<TickRep
   }, deps.retry);
   if (phase1.changed) commits++;
   let state = phase1.value.state;
+  // FREE-12 review 1: the send job runs only when this run's committed state holds claims for it.
+  const claimed = phase1.changed ? state.outreach.campaigns.reduce((n, c) => n + (c.sends?.filter((x) => x.status === 'claimed' && x.runId === deps.runId).length ?? 0), 0) : 0;
+  try { deps.onClaimsCommitted?.(claimed); } catch (error) { log(`send output could not be written (${error instanceof Error ? error.message.slice(0, 80) : 'error'})`); }
   if (provisionOutcome) log(`execution setup: ${provisionOutcome.ok ? `ready (agent ${provisionOutcome.result.agentCreated ? 'created' : 'reused'}, environment ${provisionOutcome.result.environmentCreated ? 'created' : 'reused'})` : `not finished (${provisionOutcome.attempted ? 'provider refused or unreachable' : 'no Anthropic key'})`}`);
   log(`phase 1 ${phase1.changed ? `commit ${phase1.sha.slice(0, 12)} after ${phase1.attempts} attempt(s)` : 'nothing to commit'}: ${phase1.value.outcomes.length} intent(s), ${observations?.length ?? 0} session(s) observed, ${phase1.value.planned.length} planned`);
 
@@ -937,6 +945,7 @@ export async function runCoordinatorTick(deps: CoordinatorDeps): Promise<TickRep
     migrated,
     commits,
     intentsTruncated: phase1.value.truncated,
+    claimed,
     ...(provisionOutcome ? { provisioning: provisionOutcome.ok ? 'ready' as const : provisionOutcome.attempted ? 'failed' as const : 'waiting_for_key' as const } : {}),
   };
 }

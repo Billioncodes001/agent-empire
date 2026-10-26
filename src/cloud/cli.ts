@@ -12,6 +12,7 @@ import { readCloudView } from './client.js';
 import { brainKeysFromEnv, openAiCompatibleCaller } from './brain-call.js';
 import { runSendJob } from './outreach-send.js';
 import { smtpConfigFromUrl, smtpTransport } from '../server/email.js';
+import { appendFileSync } from 'node:fs';
 
 export interface CliEnv { [key: string]: string | undefined }
 
@@ -66,6 +67,9 @@ export function githubTimeFromEnv(env: CliEnv, transport?: typeof fetch): () => 
   };
 }
 
+/** FREE-12 review 1: the tick job's step output; the send job runs only when it is send=true. */
+export const tickOutput = (claimed: number) => `send=${claimed > 0 ? 'true' : 'false'}\n`;
+
 export async function main(argv: string[], env: CliEnv, out: (line: string) => void = console.log, transport?: typeof fetch): Promise<number> {
   const command = argv[0];
   if (command !== 'tick' && command !== 'status' && command !== 'send') { out('usage: agent-empire-coordinator <tick|status|send>'); return 2; }
@@ -97,6 +101,7 @@ export async function main(argv: string[], env: CliEnv, out: (line: string) => v
     const report = await runCoordinatorTick({
       store, provider: providersFromEnv(env, transport), now: Date.now, runId,
       brain: openAiCompatibleCaller(brainKeysFromEnv(env), transport), githubTime: githubTimeFromEnv(env, transport),
+      onClaimsCommitted: (claimed) => { if (env.GITHUB_OUTPUT) appendFileSync(env.GITHUB_OUTPUT, tickOutput(claimed)); },
       allowSelfDisable: env.AGENT_EMPIRE_SELF_DISABLE === 'true', log: out,
     });
     out(JSON.stringify({ runId: report.runId, revision: report.revision, intents: report.intents.map(i => ({ id: i.id, kind: i.kind, outcome: i.outcome, reason: i.reason })), observed: report.observed, stopped: report.stopped, commits: report.commits, dispatched: report.dispatched, lifecycle: report.lifecycle, migrated: report.migrated, intentsTruncated: report.intentsTruncated, provisioning: report.provisioning }));

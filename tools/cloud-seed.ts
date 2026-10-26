@@ -48,11 +48,26 @@ export async function seedProvisioning(opts: { provision?: boolean } = {}) {
   return { gh, provider, tick };
 }
 
+/**
+ * The seed's coordinator times: normally 3 hours back to 12 minutes ago, but always inside one UTC day (the day of the
+ * last snapshot), so daily allowances never reset mid-seed and the checks don't depend on the time of day. Early in a
+ * UTC day the steps are compressed proportionally; their order never changes.
+ */
+export function seedTimeline(now: number) {
+  const last = now - 12 * 60_000;
+  const dayStart = Date.parse(new Date(last).toISOString().slice(0, 10) + "T00:00:00Z");
+  const t0 = Math.max(now - 3 * 3600_000, dayStart + 1);
+  const span = 51 * 60_000; // the latest step offset (50 min) plus a margin
+  const scale = Math.min(1, Math.max(0, last - t0 - 2) / span);
+  return { t0, last, at: (offset: number) => t0 + 1 + Math.floor(offset * scale) };
+}
+
 /** A state repository as a coordinator leaves it: founded city, jobs in several states, spend, journal. */
 export async function seed() {
   const gh = new FakeGitHub();
   const now = Date.now();
-  const t0 = now - 3 * 3600_000;
+  const tl = seedTimeline(now);
+  const t0 = tl.t0;
   await installStateRepository(new GitHubClient(TOKEN, { fetch: gh.fetch }), {
     secrets: { ANTHROPIC_API_KEY: 'sk-ant-fixture' }, limits: { maxConcurrent: 3, perTaskBudgetCents: 500, dailyBudgetCents: 2000 },
     execution: EXECUTION, coordinatorBundle: '// bundle\n', now: t0, sleep: async () => {},
@@ -62,21 +77,21 @@ export async function seed() {
   let run = 0;
   const tick = (at: number) => runCoordinatorTick({ store, provider, now: () => at, runId: `seed-${++run}`, allowSelfDisable: true, retry: { sleep: async () => {} } });
   const client = new CloudRepo({ owner: 'founder', name: 'agent-empire-state' }, TOKEN, gh.fetch);
-  await client.submit({ kind: 'empire_action', action: { kind: 'found', sites: ['hospital', 'cafe'] } }, 'agent-empire-intent', t0 + 1000);
-  await tick(t0 + 60_000);
+  await client.submit({ kind: 'empire_action', action: { kind: 'found', sites: ['hospital', 'cafe'] } }, 'agent-empire-intent', tl.at(1000));
+  await tick(tl.at(60_000));
   const snap = await client.poll();
   const rev = snap.changed ? snap.snapshot.state.meta.configRevision : 0;
   const titles = ['Fix the checkout total rounding', 'Write the clinic intake form', 'Draft the café menu page', 'Add a status badge to the README', 'Translate the onboarding emails'];
-  const ids = titles.map((_, i) => uuidv7(t0 + 120_000 + i));
+  const ids = titles.map((_, i) => uuidv7(tl.at(120_000) + i));
   for (const [i, title] of titles.entries())
-    await client.submit({ kind: 'new_job', job: { id: ids[i], title, prompt: `${title}. Work on a branch and open a pull request.`, ...(i === 1 ? { site: 'hospital' as const } : i === 2 ? { site: 'cafe' as const } : {}), configRevision: rev, confirmPaid: true } }, 'agent-empire-intent', t0 + 120_000 + i);
-  await tick(t0 + 180_000); // dispatches 3 (maxConcurrent)
+    await client.submit({ kind: 'new_job', job: { id: ids[i], title, prompt: `${title}. Work on a branch and open a pull request.`, ...(i === 1 ? { site: 'hospital' as const } : i === 2 ? { site: 'cafe' as const } : {}), configRevision: rev, confirmPaid: true } }, 'agent-empire-intent', tl.at(120_000) + i);
+  await tick(tl.at(180_000)); // dispatches 3 (maxConcurrent)
   provider.finish(ids[0], 'end_turn', 180);
   provider.finish(ids[1], 'end_turn', 95);
-  await tick(t0 + 40 * 60_000);
-  await client.submit({ kind: 'review', jobId: ids[1], decision: 'accept' }, 'agent-empire-intent', t0 + 41 * 60_000);
-  await tick(t0 + 50 * 60_000);
-  await tick(now - 12 * 60_000); // the last committed snapshot: 12 minutes old
+  await tick(tl.at(40 * 60_000));
+  await client.submit({ kind: 'review', jobId: ids[1], decision: 'accept' }, 'agent-empire-intent', tl.at(41 * 60_000));
+  await tick(tl.at(50 * 60_000));
+  await tick(tl.last); // the last committed snapshot: 12 minutes old
   return { gh, provider, ids, titles };
 }
 

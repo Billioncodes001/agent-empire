@@ -9,6 +9,7 @@
  */
 import { isEmailAddress } from '../shared/email-address.js';
 import { checkCampaignText, renderOutreach, type MailMessage } from '../shared/outreach-render.js';
+import { STOP_LINE } from '../shared/outreach.js';
 import { isSuppressed, OUTREACH_FILE, validateOutreach, type Receipt } from './outreach.js';
 import { receiptPath } from './schema.js';
 import { updateWithRetry, type RetryOptions, type StateStore } from './store.js';
@@ -54,10 +55,16 @@ export async function runSendJob(deps: SendJobDeps): Promise<{ sent: number; fai
       if ('error' in checked) { refuse(`not sent: ${checked.error}`); continue; }
       if (HEADER_UNSAFE.test(snap.from) || !isEmailAddress(snap.from) || (snap.fromName !== undefined && (HEADER_UNSAFE.test(snap.fromName) || /[<>"]/.test(snap.fromName)))) { refuse('not sent: the sender is not one plain address and name'); continue; }
       if (HEADER_UNSAFE.test(r.email) || !isEmailAddress(r.email)) { refuse('not sent: the recipient is not one plain address'); continue; }
-      if (!snap.footer.includes(o.settings?.address ?? '\u0000') || !/Reply STOP/.test(snap.footer)) { refuse('not sent: the compliance footer is missing'); continue; }
+      // Review 5: the footer is checked against the snapshot's own frozen sender, not today's settings, so fixing the
+      // postal address mid-campaign never fails the messages already approved.
+      const lines = snap.footer.split('\n');
+      const sentBy = `Sent by ${snap.fromName ? `${snap.fromName} <${snap.from}>` : snap.from}.`;
+      if (lines.length !== 4 || lines[0] !== '--' || !lines[1].trim() || lines[1].length > 300 || HEADER_UNSAFE.test(lines[1]) || lines[2] !== sentBy || lines[3] !== STOP_LINE) { refuse('not sent: the compliance footer (postal address, sender, STOP line) is not intact'); continue; }
       if (isSuppressed(o, r.email)) { refuse('not sent: the recipient opted out'); continue; }
       const message = renderOutreach(snap, r);
       if (HEADER_UNSAFE.test(message.subject) || message.text.length > 30_000) { refuse('not sent: the rendered message failed the final check'); continue; }
+      // Review: SMTP allows 998 bytes per line; merge values can lengthen a line past it.
+      if (message.text.split('\n').some((line) => new TextEncoder().encode(line).length > 998)) { refuse('not sent: a line is longer than 998 bytes after merging the name and company'); continue; }
       if (n > 0 && (deps.pauseMs ?? 1500) > 0) await new Promise((res) => setTimeout(res, deps.pauseMs ?? 1500));
       try { await deps.transport.send(message); receipt.results.push({ campaignId: c.id, index, status: 'sent' }); counts.sent++; }
       catch (error) {

@@ -39,6 +39,8 @@ export function openCloudBrain() {
   const confirmPaid = h('input', { id: 'brain-confirm-paid', type: 'checkbox' }) as HTMLInputElement;
   const secretLine = h('p.setting-note.brain-secret', { role: 'status' });
   const premiumRows = h('div.brain-premium');
+  const priceBox = h('div.brain-price-box');
+  const freeCost = h('p.setting-note.brain-free-cost');
   const freeRows = h('div.brain-free');
   const shared = h('div.brain-shared');
   const syncMode = () => {
@@ -48,6 +50,13 @@ export function openCloudBrain() {
     provider.replaceChildren(...options.map((p) => h('option', { value: p }, BRAIN_PROVIDER_LABEL[p])));
     provider.value = keep;
     premiumRows.hidden = m !== 'premium'; freeRows.hidden = m !== 'free'; shared.hidden = m === 'off';
+    // Review 2: OpenRouter's free brain takes only :free models; Gemini and Groq bill by the key's tier, so a price is offered.
+    const billedByTier = m === 'free' && provider.value !== 'openrouter';
+    priceBox.hidden = !(m === 'premium' || billedByTier);
+    model.placeholder = m === 'free' && provider.value === 'openrouter' ? 'A free model id ending in :free' : 'The provider’s model id';
+    freeCost.textContent = m !== 'free' ? '' : provider.value === 'openrouter'
+      ? 'Only free models (ids ending in :free) are accepted: any other OpenRouter model is billed to your credits.'
+      : 'Your key’s billing tier decides the cost: free on the provider’s free tier, billed if billing is on. Set a price to have each call charged against the caps below; without one, this app can’t see that spend.';
     const hosted = HOSTED_FREE.find((x) => x.id === provider.value);
     terms.replaceChildren(...(hosted ? [h('p', {}, h('strong', {}, `${hosted.name}: `), hosted.terms, ' ', h('a', { href: hosted.termsUrl, target: '_blank', rel: 'noopener' }, 'Read the terms ↗')), h('p.setting-note', {}, HOSTED_TERMS_CAVEAT)] : []));
     secretLine.textContent = m === 'off' ? '' : `Your key goes in the Actions secret ${brainSecretName(provider.value as BrainProvider)} of your state repository. Set it yourself (GitHub → Settings → Secrets and variables → Actions, or gh secret set); this app never asks for it. A Claude subscription is never used for the brain.`;
@@ -62,18 +71,19 @@ export function openCloudBrain() {
     secretLine.textContent = r.error ?? (r.present[name] ? `✓ The secret ${name} exists. (Only its name was checked.)` : `✕ No secret named ${name} yet. Add it in your state repository’s Actions secrets.`);
   } }, 'Check secret name');
   freeRows.append(
-    h('label', { for: 'brain-free-calls' }, 'Free-tier calls a day'), freeCalls, terms,
+    freeCost, h('label', { for: 'brain-free-calls' }, 'Calls a day'), freeCalls, terms,
     h('label.check', { for: 'brain-accept' }, accept, ' I read this provider’s data-use terms. My briefs and job summaries are sent to it.'));
-  premiumRows.append(
+  priceBox.append(
     h('div.brain-price', {}, h('label', { for: 'brain-price-in' }, 'Input US$ / million tokens'), priceIn, h('label', { for: 'brain-price-out' }, 'Output US$ / million tokens'), priceOut),
-    h('p.setting-note', {}, 'Your provider’s current price, so the caps can be enforced. It cannot be zero. Each call’s worst case is charged before it is made.'),
+    h('p.setting-note', {}, 'Your provider’s current price, so the caps can be enforced. It cannot be zero. Each call’s worst case is charged before it is made.'));
+  premiumRows.append(
     h('label.check', { for: 'brain-confirm-paid' }, confirmPaid, ' I understand each call spends money on my key, up to these caps.'));
   shared.append(
     h('label', { for: 'brain-provider' }, 'Provider'), provider, h('label', { for: 'brain-model' }, 'Model'), model,
     h('div.brain-caps', {}, h('label', { for: 'brain-daily' }, 'Daily cap (US$, UTC day)'), daily, h('label', { for: 'brain-monthly' }, 'Cap for the last 30 days (US$)'), monthly),
     secretLine, checkSecret);
   const saveBtn = h('button.btn.primary', { type: 'submit' }, 'Save brain settings') as HTMLButtonElement;
-  const settingsForm = h('form.brain-settings', {}, h('label', { for: 'brain-mode' }, 'Brain'), mode, freeRows, premiumRows, shared, h('div.research-actions', {}, saveBtn), formStatus);
+  const settingsForm = h('form.brain-settings', {}, h('label', { for: 'brain-mode' }, 'Brain'), mode, freeRows, priceBox, premiumRows, shared, h('div.research-actions', {}, saveBtn), formStatus);
   settingsForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const m = mode.value;
@@ -82,7 +92,13 @@ export function openCloudBrain() {
     if (m === 'off') settings = { mode: 'off' };
     else {
       settings = { mode: m, provider: provider.value, model: model.value.trim(), dailyCapCents: cents(daily.value), monthlyCapCents: cents(monthly.value) };
-      if (m === 'free') { if (!accept.checked) { formStatus.textContent = 'Not sent: accept the provider’s data-use terms first.'; accept.focus(); return; } Object.assign(settings, { freeCallsPerDay: Number(freeCalls.value), acceptTerms: provider.value }); }
+      if (m === 'free') {
+        if (!accept.checked) { formStatus.textContent = 'Not sent: accept the provider’s data-use terms first.'; accept.focus(); return; }
+        if (provider.value === 'openrouter' && !/:free$/.test(model.value.trim())) { formStatus.textContent = 'Not sent: on OpenRouter the free brain takes only free models (ids ending in :free).'; model.focus(); return; }
+        Object.assign(settings, { freeCallsPerDay: Number(freeCalls.value), acceptTerms: provider.value });
+        const fp = [Number(priceIn.value), Number(priceOut.value)];
+        if (provider.value !== 'openrouter' && fp[0] > 0 && fp[1] > 0) settings.price = fp;
+      }
       else {
         const p = [Number(priceIn.value), Number(priceOut.value)];
         if (!(p[0] > 0 && p[1] > 0)) { formStatus.textContent = 'Not sent: set both prices; a paid API price cannot be zero.'; priceIn.focus(); return; }
