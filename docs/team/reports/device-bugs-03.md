@@ -189,6 +189,29 @@ All eight items are fixed. `origin/codex/empire-world` (FREE-11/12, #57) was mer
 | `cloud-ui-check` | 171/171 |
 | `onboarding-ui-check` | 60/60 |
 
+## Re-check at 9918b49
+
+Each fix below had a failing check first.
+
+| Item | Result |
+| --- | --- |
+| 1. Restored repositories trusted their saved visibility | **Fixed.** Restored repositories come back without `private` (unknown), so the public-repository guard for a self-hosted runner fails closed. When the projects list loads, `reposListed` refreshes each selected repository's visibility and default branch from the live list. It drops repositories you can't push to, and, once the whole list has loaded, ones that are gone. The projects step names what was dropped ("No longer selected: …"). Tests: 3 in `setup-progress.test.ts`, plus a `setup-ui-check` reload case where a repository turned read-only. |
+| 2. A recreate re-ran the cold-start update step | **Fixed.** `updater.launch()` runs once per process (a static flag), so a `recreate()` mid-trial can't roll back a good update. A real process restart is still a cold start. A `savedInstanceState` check would be wrong after a process death, which also restores state. Test: `tests/android-shell.test.ts`. |
+| Optional: credentials at entry | **Fixed.** `hasCredentials()` catches `user:pass@` and key-like query parameters. The server address and the provider URL show a field error as they are typed, and the value is never saved in progress. |
+| Optional: re-validate the restored server address | **Fixed.** It is checked with `parseServerAddress` for the platform and dropped when invalid or credential-bearing. |
+| Optional: `clearProgress()` in `onWebServer` | **Fixed.** A UI check confirms the progress is gone after the hand-over to `/login`. |
+
+**Checks:**
+
+| Check | Result |
+| --- | --- |
+| typecheck | pass |
+| `npm test` | 1228 tests: 1227 pass, 1 skipped, 0 fail |
+| `npm run build` | pass |
+| Debug APK build | pass |
+| `setup-ui-check` | **709/709** |
+| `mobile-ui-check` | 411/411 |
+
 ## Not done
 
 - **The Mac GUI past the first screen** in the scratch profile, because of the Keychain prompt described above. A test run would need a differently named scratch build, or an approved Keychain item.
