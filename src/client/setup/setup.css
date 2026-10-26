@@ -322,7 +322,8 @@
   .su-shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
   .su-rail { flex-direction: row; align-items: center; padding: 0; gap: 12px; }
   .su-steps { flex-direction: row; gap: 4px; }
-  .su-steps::before, .su-step-label, .su-rail-note, .su-word { display: none; }
+  .su-steps::before, .su-rail-note, .su-word { display: none; }
+  .su-step-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
   .su-cards, .su-cards.su-cards-3, .su-limits { grid-template-columns: minmax(0, 1fr); }
   .su-review { grid-template-columns: minmax(0, 1fr); }
   .su-review dt { padding-bottom: 0; border-bottom: 0; }
@@ -334,7 +335,9 @@
 /* Narrow landscape phones (up to 800x360 and 820x...): an icon rail, so the panel gets the width. */
 @media (max-width: 820px) and (max-height: 500px) {
   .su-shell { grid-template-columns: 44px minmax(0, 1fr); }
-  .su-word, .su-step-label { display: none; }
+  .su-word { display: none; }
+  /* Review 3: hidden visually only, so each step keeps its accessible name ("Projects (current step)"). */
+  .su-step-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
 }
 
 /* On-screen keyboard open (touch, html.ae-kb from keyboard.ts): the setup fits the area above the keyboard, the panel body

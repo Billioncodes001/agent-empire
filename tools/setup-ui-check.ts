@@ -225,6 +225,18 @@ async function overflowSweep(browser: import('playwright-core').Browser) {
     await page.locator('label[for="su-r-octo-founder-city-planner"]').click();
     await page.waitForTimeout(300);
     if (all) await sweep(page, `${prefix}repos`, home);
+    if (all) {
+      // Review 3: in the icon rail (short landscape) and the portrait top bar the step labels are hidden visually, but
+      // every step still has an accessible name with its status.
+      for (const size of [{ w: 667, h: 375 }, { w: 375, h: 812 }, home]) {
+        await page.setViewportSize({ width: size.w, height: size.h });
+        await page.waitForTimeout(150);
+        const tree = await page.locator('nav.su-rail .su-steps').ariaSnapshot();
+        ok(/Choose \(done\)/.test(tree) && /GitHub \(done\)/.test(tree) && /Projects \(current step\)/.test(tree) && /Engine/.test(tree) && /Create/.test(tree),
+          `${prefix || 'app '}${size.w}x${size.h}: every setup step has an accessible name with its status (${tree.replace(/\s+/g, ' ').slice(0, 160)})`);
+      }
+      await page.setViewportSize({ width: home.w, height: home.h });
+    }
     await page.locator(primaryBtn).click();
     await page.waitForSelector('#su-key-anthropic');
     await page.fill('#su-key-anthropic', 'sk-ant-FAKE-fixture-only-000000000000');
