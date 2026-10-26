@@ -14,7 +14,8 @@ export const MAX_REPOS = 20;
 export interface RepoRef {
   owner: string;
   name: string;
-  private: boolean;
+  /** From the live GitHub list. Unknown (undefined) for a repository restored from saved progress until the list loads. */
+  private?: boolean;
   defaultBranch: string;
 }
 export const repoKey = (r: Pick<RepoRef, 'owner' | 'name'>) => `${r.owner}/${r.name}`.toLowerCase();
@@ -78,6 +79,8 @@ export interface SetupState {
   /** Claude in GitHub Actions: the user's plan (CLAUDE_CODE_OAUTH_TOKEN) or an API key secret (ANTHROPIC_API_KEY). */
   claudeAuth: 'subscription' | 'api-key';
   secretCheck: SecretCheckState;
+  /** Selected repositories the live list removed (gone, or no push access), shown on the projects step. */
+  droppedRepos?: string[];
 }
 
 export type Action =
@@ -89,6 +92,8 @@ export type Action =
   | { type: 'githubLinked'; login: string; token: string; via: 'device' | 'token'; plan?: string | null }
   | { type: 'githubUnlinked' }
   | { type: 'toggleRepo'; repo: RepoRef }
+  /** The projects list loaded (a page of it): refresh the selected repositories from it. */
+  | { type: 'reposListed'; repos: { owner: string; name: string; private: boolean; defaultBranch: string; canPush: boolean }[]; complete: boolean }
   | { type: 'setProvider'; id: ProviderId; value: string }
   | { type: 'setLimits'; patch: Partial<Limits> }
   | { type: 'setProjectToken'; value: string }
@@ -286,6 +291,20 @@ export function reduce(s: SetupState, a: Action): SetupState {
       if (!has && s.repos.length >= MAX_REPOS) return s;
       return { ...s, repos: has ? s.repos.filter((r) => repoKey(r) !== key) : [...s.repos, a.repo] };
     }
+    case 'reposListed': {
+      if (!s.repos.length) return s;
+      const live = new Map(a.repos.map((r) => [repoKey(r), r]));
+      const dropped: string[] = [];
+      const repos: RepoRef[] = [];
+      for (const r of s.repos) {
+        const l = live.get(repoKey(r));
+        if (l && !l.canPush) dropped.push(`${r.owner}/${r.name} (you can’t push to it)`);
+        else if (!l && a.complete) dropped.push(`${r.owner}/${r.name} (not found in your account)`);
+        else repos.push(l ? { owner: l.owner, name: l.name, private: l.private, defaultBranch: l.defaultBranch } : r);
+      }
+      const same = !dropped.length && repos.every((r, i) => r.private === s.repos[i].private && r.defaultBranch === s.repos[i].defaultBranch);
+      return same ? s : { ...s, repos, droppedRepos: [...(s.droppedRepos ?? []), ...dropped] };
+    }
     case 'setProvider':
       return { ...s, providers: { ...s.providers, [a.id]: a.value.slice(0, 600) } };
     case 'setLimits': {
@@ -329,19 +348,30 @@ export function progress(s: SetupState): { step: Step; label: string; state: 'do
 /** localStorage key for the setup's non-secret progress (view.ts writes it, boot.ts restores it). */
 export const PROGRESS_KEY = 'agent-empire.setup.progress';
 
+/**
+ * True when typed address text carries credentials: user:pass@ before the host, or a key-like query parameter. Such text
+ * is never saved (and the field says so at once); the step's own validation refuses it too.
+ */
+export function hasCredentials(text: string): boolean {
+  const t = text.trim();
+  if (/^([a-z][a-z0-9+.-]*:\/\/)?[^/?#]*@/i.test(t)) return true;
+  const q = t.indexOf('?');
+  return q >= 0 && /(^|[?&])[^=&]*(key|token|secret|password|passwd|pwd|auth|credential|signature|sig)[^=&]*=/i.test(t.slice(q));
+}
+
 /** What survives a reload: choices only. Never the GitHub token, API keys, project token or the cost confirmation. */
 export function progressSnapshot(s: SetupState) {
   return {
     v: 1 as const,
     step: s.step,
     mode: s.mode,
-    server: { address: s.server.address },
+    server: { address: hasCredentials(s.server.address) ? '' : s.server.address },
     github: { login: s.github.login, via: s.github.via, plan: s.github.plan },
     repos: s.repos.map((r) => ({ owner: r.owner, name: r.name, private: r.private, defaultBranch: r.defaultBranch })),
     limits: { ...s.limits },
     interval: s.interval,
     engine: s.engine,
-    free: { ...s.free },
+    free: { ...s.free, hostedBaseUrl: hasCredentials(s.free.hostedBaseUrl) ? DEFAULT_FREE.hostedBaseUrl : s.free.hostedBaseUrl },
     claudeAuth: s.claudeAuth,
   };
 }
@@ -354,7 +384,7 @@ const NAME = /^[A-Za-z0-9._-]{1,100}$/;
  * each step's requirements hold again (the token from secure storage, in-memory keys, the cost confirmation), and never
  * past the saved step or onto "create". Anything malformed gives `base` back unchanged.
  */
-export function restoreProgress(base: SetupState, saved: unknown, secure: { token?: string | null; login?: string | null }): SetupState {
+export function restoreProgress(base: SetupState, saved: unknown, secure: { token?: string | null; login?: string | null }, opts: { validAddress?: (address: string) => boolean } = {}): SetupState {
   if (!saved || typeof saved !== 'object') return base;
   const p = saved as Record<string, unknown>;
   const steps: Step[] = ['mode', 'server', ...CLOUD_STEPS];
@@ -365,7 +395,10 @@ export function restoreProgress(base: SetupState, saved: unknown, secure: { toke
   if (step !== 'mode' && (step === 'server') !== (mode === 'server')) return base;
   let s: SetupState = { ...base, mode };
   const server = p.server as Record<string, unknown> | undefined;
-  if (server && str(server.address) !== undefined) s.server = { address: str(server.address)! };
+  // Re-checked: a saved address is kept only when it carries no credentials and passes the server-address rules
+  // (boot.ts passes parseServerAddress for this platform); otherwise the field starts empty.
+  const address = server ? str(server.address) : undefined;
+  if (address && !hasCredentials(address) && (!opts.validAddress || opts.validAddress(address))) s.server = { address };
   if (mode !== 'cloud') return { ...s, step: step === 'server' ? 'server' : 'mode' };
 
   const gh = (p.github ?? {}) as Record<string, unknown>;
@@ -375,13 +408,14 @@ export function restoreProgress(base: SetupState, saved: unknown, secure: { toke
   if (repos === null || !limits || typeof limits !== 'object') return base;
   const okRepos = repos.filter((r): r is RepoRef => {
     const x = r as Partial<RepoRef> | null;
-    return !!x && typeof x === 'object' && NAME.test(String(x.owner)) && NAME.test(String(x.name)) && typeof x.private === 'boolean' && typeof x.defaultBranch === 'string';
+    return !!x && typeof x === 'object' && NAME.test(String(x.owner)) && NAME.test(String(x.name)) && typeof x.defaultBranch === 'string';
   }).slice(0, MAX_REPOS);
   if (okRepos.length !== repos.length || typeof limits.perJob !== 'string' || typeof limits.daily !== 'string' || typeof limits.approveEachJob !== 'boolean' || !Number.isInteger(limits.maxConcurrent)) return base;
   const sameAccount = !secure.login || !savedLogin || secure.login === savedLogin;
   s = {
     ...s,
-    repos: sameAccount ? okRepos.map((r) => ({ owner: r.owner, name: r.name, private: r.private, defaultBranch: r.defaultBranch.slice(0, 200) })) : [],
+    // Re-check 1: visibility is not taken from storage (anything on the origin can write it); the live list sets it.
+    repos: sameAccount ? okRepos.map((r) => ({ owner: r.owner, name: r.name, defaultBranch: r.defaultBranch.slice(0, 200) })) : [],
     limits: { maxConcurrent: Math.max(1, Math.min(LIMIT_BOUNDS.maxConcurrent, limits.maxConcurrent as number)), perJob: limits.perJob.slice(0, 20), daily: limits.daily.slice(0, 20), approveEachJob: limits.approveEachJob },
     interval: (INTERVALS as readonly number[]).includes(p.interval as number) ? (p.interval as Interval) : base.interval,
     engine: (ENGINE_CHOICES as readonly string[]).includes(p.engine as string) ? (p.engine as EngineChoice) : base.engine,
@@ -393,7 +427,7 @@ export function restoreProgress(base: SetupState, saved: unknown, secure: { toke
       selfHostedLabel: str(free.selfHostedLabel, 100) ?? base.free.selfHostedLabel,
       selfHostedModel: str(free.selfHostedModel, 200) ?? base.free.selfHostedModel,
       hostedOptIn: free.hostedOptIn === true,
-      hostedBaseUrl: str(free.hostedBaseUrl, 300) ?? base.free.hostedBaseUrl,
+      hostedBaseUrl: ((u) => (u && !hasCredentials(u) ? u : base.free.hostedBaseUrl))(str(free.hostedBaseUrl, 300)),
       hostedModel: str(free.hostedModel, 200) ?? base.free.hostedModel,
       cpuOptIn: free.cpuOptIn === true,
     };

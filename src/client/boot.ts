@@ -74,7 +74,9 @@ async function showSetup(decision: Exclude<LaunchDecision, { kind: 'game' } | { 
     const [token, login] = bridge.available
       ? await Promise.all([bridge.secureGet('github.token').catch(() => null), bridge.secureGet('github.login').catch(() => null)])
       : [null, null];
-    start = restoreProgress(start, saved, { token, login });
+    const { parseServerAddress } = await import('./setup/server-login');
+    const where = { platform: shell?.platform ?? null, devBuild: shell?.devBuild === true };
+    start = restoreProgress(start, saved, { token, login }, { validAddress: (a) => parseServerAddress(a, where).ok });
   }
   const view = mountSetup(start, {
     native: bridge,
@@ -88,7 +90,10 @@ async function showSetup(decision: Exclude<LaunchDecision, { kind: 'game' } | { 
       startGame();
       await view.leave();
     },
-    onWebServer: (host) => location.assign(host === location.origin ? '/login' : `${host}/login`),
+    onWebServer: (host) => {
+      clearProgress(); // the setup is done here; the server's own sign-in page takes over
+      location.assign(host === location.origin ? '/login' : `${host}/login`);
+    },
     onCloudCreated: async (repo, github) => {
       clearProgress();
       dismissKeyboard();

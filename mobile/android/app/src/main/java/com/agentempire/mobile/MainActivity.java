@@ -86,6 +86,8 @@ public final class MainActivity extends Activity implements NativeBridge.Host {
     private boolean debuggable;
     private FrameLayout root;
     private WebView web;
+    /** The cold-start update step (updater.launch) ran in this process; an activity recreate doesn't repeat it. */
+    private static boolean updatesLaunched;
     /** The density the page was laid out for (onConfigurationChanged). */
     private int densityDpi;
     private View splash;
@@ -111,7 +113,11 @@ public final class MainActivity extends Activity implements NativeBridge.Host {
         store = new SecureStore(this);
         updater = new GameUpdater(this, debuggable);
         // A pending bundle switches in now (a trial until the page reports booting); an unfinished trial rolls back.
-        updater.launch(System.currentTimeMillis());
+        // Once per process: a recreate() (density change) mid-trial must not roll back a good update (DEVICE-BUGS-03).
+        if (!updatesLaunched) {
+            updatesLaunched = true;
+            updater.launch(System.currentTimeMillis());
+        }
         gameAssets = new GameAssets(getAssets(), this::configScript, () -> updater.activeRoot());
         Window window = getWindow();
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
