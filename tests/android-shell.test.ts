@@ -18,10 +18,12 @@ test('android shell: font scale and font weight changes do not recreate the acti
   for (const change of ['fontScale', 'fontWeightAdjustment', 'orientation', 'screenSize', 'density']) assert.ok(configChanges.includes(change), `configChanges has ${change}`);
 });
 
-test('android shell: a display-size (density) change reloads the page safely instead of keeping a stale layout', () => {
+test('android shell: a display-size (density) change recreates the activity (a new WebView) instead of keeping a stale layout', () => {
   const handler = activity.match(/public void onConfigurationChanged\(Configuration[^)]*\)\s*\{([\s\S]*?)\n    \}/)?.[1] ?? '';
   assert.ok(handler, 'MainActivity overrides onConfigurationChanged');
   assert.match(handler, /super\.onConfigurationChanged/);
   assert.match(handler, /densityDpi/, 'compares the density');
-  assert.match(handler, /reload\(\)/, 'reloads the WebView on a density change (setup progress is restored from local storage)');
+  // A reload alone keeps the WebView's old density metrics (checked on the emulator: 915 CSS px at DPR 3.25 after it),
+  // so the activity is recreated with a new WebView; the setup restores its progress from local storage.
+  assert.match(handler, /recreate\(\)/, 'recreates the activity on a density change');
 });

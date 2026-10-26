@@ -561,15 +561,17 @@ public final class MainActivity extends Activity implements NativeBridge.Host {
 
     /**
      * DEVICE-BUGS-03: the activity handles density changes itself (configChanges), but the WebView kept laying the page
-     * out for the old density after Settings > Display size, so everything was scaled off screen. A density change
-     * reloads the page; the setup restores its progress from local storage and a signed-in game reconnects.
+     * out for the old density after Settings > Display size, so everything was scaled off screen. Reloading the page is
+     * not enough (the WebView keeps its old density metrics: 915 CSS px at DPR 3.25 on the emulator), so a density change
+     * recreates the activity with a new WebView; the setup restores its progress from local storage and a signed-in game
+     * reconnects. Other handled changes (rotation, font scale, keyboard) keep the page as it is.
      */
     @Override
     public void onConfigurationChanged(Configuration config) {
         super.onConfigurationChanged(config);
         if (config.densityDpi != densityDpi) {
             densityDpi = config.densityDpi;
-            if (web != null) web.reload();
+            recreate();
         }
     }
 
