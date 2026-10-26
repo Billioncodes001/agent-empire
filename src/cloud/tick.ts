@@ -22,8 +22,11 @@
 import { advanceEconomy, applyEmpireAction, rewardAcceptedJob, settleCapMs, syncManagers, syncWorkforce } from './economy.js';
 import { intentIdFromPath, parseIntent, sortIntents, IntentError, type CloudIntent } from './intents.js';
 import { DispatchFailure, ProvisionError, type ProviderAdapter, type ProviderObservation, type ProvisionResult } from './provider.js';
-import { SITES } from '../shared/empire.js';
+import { SITES, type SiteId } from '../shared/empire.js';
+import { addResearch, checkOrg, ORG_FILE, cloudResearchPrompt, decideApproval, OrgRuleError, proposeLesson, recordResearch, researchDue, researchPath, researchTitle, retireLesson, type BranchFile } from './org.js';
 import { isMoneyEngine } from './actions-spec.js';
+import { BRAIN_FILE, BrainRuleError, applyBrainSettings, chargeBrain, queueBrainRequest, recordBrainResults, trustedClock, type BrainResult, type PlannedCall } from './brain.js';
+import { OUTREACH_FILE, OutreachRuleError, RECEIPT_RE, addCampaign, addLeads, applyCampaignDecision, applyOutreachSettings, cancelCampaign, checkCampaignDecision, claimSends, consumeReceipts, deleteLeadData, scrubFinished, reconcileCampaigns, suppress } from './outreach.js';
 import { DEFAULT_WORKER_MODEL, WORKER_ENVIRONMENT, workerModelLabel } from './worker-spec.js';
 import {
   clone, PROVISION_RETRY_MS, FINAL_STATUSES, holdsSlot, LIMITS, parseStateFiles, promptHash, promptPreview, PROMPT_STATUSES, REVIEW_STATUSES, serializeState, sessionLive, SLOT_STATUSES, STATE_FILES, utcDay,
@@ -32,6 +35,30 @@ import {
 import { updateWithRetry, type FileChange, type RetryOptions, type StateSnapshot, type StateStore, type WorkflowControl } from './store.js';
 
 export interface TickContext { now: number; runId: string }
+/** FREE-11: one call to the chief's model (an OpenAI-compatible API with the user's own key). Tests inject a fake. */
+export type BrainCaller = (call: { provider: import('./brain.js').BrainProvider; model: string; messages: { role: 'system' | 'user' | 'assistant'; content: string }[]; maxTokens: number }) => Promise<{ text: string; model?: string; usage: { input: number; output: number } }>;
+
+/** FREE-07: at most this many research reports are read per run (read-only GitHub calls with the project token). */
+export const RESEARCH_READS_PER_TICK = 5;
+/** Intents that change state/org.json; their result must pass checkOrg before it is kept. */
+const ORG_INTENTS = new Set<string>(['approval_decision', 'lesson_propose', 'lesson_retire', 'research', 'outreach_suppress', 'outreach_cancel', 'outreach_delete_leads']);
+/** FREE-11/12: outreach intents can change the inbox too, so their result must pass checkOrg. */
+const OUTREACH_INTENTS = new Set<string>(['outreach_settings', 'outreach_leads', 'outreach_suppress', 'outreach_campaign', 'outreach_cancel', 'outreach_delete_leads']);
+/**
+ * Reads finished research reports from their task branches (read-only). A provider that cannot read branch files gives
+ * `unsupported`; a failed read gives `unknown` and is retried next run. Never sends model text anywhere.
+ */
+export async function readResearchReports(due: { jobId: string; branch: string }[], provider: ProviderAdapter, state: CloudState): Promise<Record<string, BranchFile>> {
+  const out: Record<string, BranchFile> = {};
+  for (const item of due.slice(0, RESEARCH_READS_PER_TICK)) {
+    const job = state.jobs.jobs.find(j => j.id === item.jobId);
+    const execution = state.meta.execution;
+    if (!job || !execution || !provider.readBranchFile) { out[item.jobId] = { state: 'unsupported' }; continue; }
+    try { out[item.jobId] = await provider.readBranchFile({ ...execution, repository: clone(job.repository) } as typeof execution, item.branch, researchPath(item.jobId)); }
+    catch { out[item.jobId] = { state: 'unknown', reason: 'GitHub could not be read with the project token' }; }
+  }
+  return out;
+}
 export const HEARTBEAT_MS = 60 * 60_000;
 
 // ---------------------------------------------------------------- small helpers
@@ -107,9 +134,8 @@ function applyOne(state: CloudState, intent: CloudIntent, ctx: TickContext): { o
   const reject = (code: string, message: string): never => { throw new IntentError(code, message); };
   const findJob = (id: string) => state.jobs.jobs.find(job => job.id === id) ?? reject('job_not_found', 'No such cloud job in the current job list (finished jobs are archived after 14 days).');
   const meta = state.meta;
-  switch (intent.kind) {
-    case 'new_job': {
-      const input = intent.job;
+  // Paid work: a new job, or a research question (FREE-07) on exactly the same checks, limits and confirmation.
+  const queueJob = (input: { id: string; title: string; prompt: string; site?: SiteId; configRevision: number }): { outcome: 'applied' | 'duplicate' } => {
       const hash = promptHash(input.prompt);
       // A job id that already reached the archive can never be dispatched (or paid) again.
       if (state.archivedJobIds.ids.includes(input.id)) return { outcome: 'duplicate' };
@@ -140,6 +166,65 @@ function applyOne(state: CloudState, intent: CloudIntent, ctx: TickContext): { o
       });
       journal(state, ctx, 'job', `${input.title}: queued (allowance ${meta.limits.perTaskBudgetCents} cents, estimate).`, { intentId: intent.id, jobId: input.id });
       return { outcome: 'applied' };
+  };
+  const orgCtx = { now: ctx.now, intentId: intent.id };
+  const orgRule = <T>(run: () => T): T => { try { return run(); } catch (error) { if (error instanceof OrgRuleError || error instanceof BrainRuleError || error instanceof OutreachRuleError) reject(error.code, error.message); throw error; } };
+  switch (intent.kind) {
+    case 'new_job': return queueJob(intent.job);
+    case 'research': {
+      const result = queueJob({ id: intent.job.id, title: researchTitle(intent.question), prompt: cloudResearchPrompt(intent.question, intent.job.id), configRevision: intent.job.configRevision });
+      if (result.outcome === 'applied') orgRule(() => addResearch(state.org, intent.job.id, intent.question, ctx.now));
+      return result;
+    }
+    case 'approval_decision': {
+      // FREE-12: a campaign send applies only to the exact snapshot it was raised for, and starts sending after it.
+      const target = state.org.approvals.find((a) => a.id === intent.approvalId);
+      const campaign = target?.kind === 'external_action' && target.status === 'pending';
+      if (campaign) {
+        if (state.outreachError) reject('outreach_unreadable', `The outreach file could not be read (${state.outreachError}), so nothing was decided.`);
+        orgRule(() => checkCampaignDecision(state.outreach, target!));
+      }
+      const outcome = orgRule(() => decideApproval(state.org, intent, orgCtx));
+      if (campaign && outcome === 'applied') applyCampaignDecision(state.outreach, target!, intent.decision === 'approve');
+      if (outcome === 'applied') journal(state, ctx, 'intent_applied', `Inbox ${intent.approvalId} ${intent.decision === 'approve' ? 'approved' : 'declined'} by the CEO.`, { intentId: intent.id });
+      return { outcome };
+    }
+    case 'lesson_propose': {
+      const lesson = orgRule(() => proposeLesson(state.org, intent.lesson, orgCtx, state.jobs.jobs));
+      journal(state, ctx, 'intent_applied', `Lesson ${lesson.id} proposed; it waits in the inbox as ${lesson.approvalId}.`, { intentId: intent.id });
+      return { outcome: 'applied' };
+    }
+    case 'lesson_retire': {
+      const outcome = orgRule(() => retireLesson(state.org, intent.lessonId, orgCtx));
+      if (outcome === 'applied') journal(state, ctx, 'intent_applied', `Lesson ${intent.lessonId} retired by the CEO.`, { intentId: intent.id });
+      return { outcome };
+    }
+    case 'brain_settings': {
+      if (state.brainError) reject('brain_unreadable', `The brain file could not be read (${state.brainError}), so nothing changed. Repair or remove ${BRAIN_FILE}.`);
+      applyBrainSettings(state.brain, intent.settings, ctx.now);
+      const st = state.brain.settings;
+      journal(state, ctx, 'intent_applied', st.mode === 'off' ? 'Chief’s brain turned off; the chief is rule-based.' : `Chief’s brain set to ${st.mode} (${st.provider} · ${st.model}); caps ${st.dailyCapCents} cents a day and ${st.monthlyCapCents} cents per 30 days. Its output is proposals only.`, { intentId: intent.id });
+      return { outcome: 'applied' };
+    }
+    case 'brain_request': {
+      if (state.brainError) reject('brain_unreadable', `The brain file could not be read (${state.brainError}), so nothing was asked.`);
+      const req = orgRule(() => queueBrainRequest(state.brain, intent.request, orgCtx, state.jobs.jobs));
+      journal(state, ctx, 'intent_applied', `Chief asked for a ${req.kind}; the coordinator charges its worst case before calling the model.`, { intentId: intent.id });
+      return { outcome: 'applied' };
+    }
+    case 'outreach_settings': case 'outreach_leads': case 'outreach_suppress': case 'outreach_campaign': case 'outreach_cancel': case 'outreach_delete_leads': {
+      if (state.outreachError) reject('outreach_unreadable', `The outreach file could not be read (${state.outreachError}), so nothing changed. Repair or remove ${OUTREACH_FILE}.`);
+      const o = state.outreach;
+      let message = '';
+      let outcome: 'applied' | 'duplicate' = 'applied';
+      if (intent.kind === 'outreach_settings') { applyOutreachSettings(o, intent.settings, orgCtx); message = `Outreach sender set to ${intent.settings.from}: at most ${intent.settings.perRunCap} per run and ${intent.settings.dailyCap} a day.`; }
+      else if (intent.kind === 'outreach_leads') { const r = orgRule(() => addLeads(o, intent.leads, orgCtx)); message = `${r.added} lead(s) added, ${r.skipped} skipped (duplicates or opted out).`; }
+      else if (intent.kind === 'outreach_suppress') { outcome = orgRule(() => suppress(o, state.org, intent.hash, intent.reason, orgCtx)); message = `An address was suppressed (${intent.reason}); it is kept only as a salted hash.`; }
+      else if (intent.kind === 'outreach_campaign') { const c = orgRule(() => addCampaign(o, intent.campaign, orgCtx)); message = `Campaign ${c.id} “${c.title}” written; it waits in the inbox for your approval of the exact message and recipients.`; }
+      else if (intent.kind === 'outreach_cancel') { outcome = orgRule(() => cancelCampaign(o, state.org, intent.campaignId, orgCtx)); message = `Campaign ${intent.campaignId} cancelled.`; }
+      else { deleteLeadData(o, state.org, orgCtx); message = 'Lead data deleted from the current files. Git history keeps old versions unless you rewrite it.'; }
+      if (outcome === 'applied') journal(state, ctx, 'intent_applied', message, { intentId: intent.id });
+      return { outcome };
     }
     case 'review': {
       const job = findJob(intent.jobId);
@@ -274,6 +359,11 @@ export function applyIntents(input: CloudState, files: IntentFile[], ctx: TickCo
     const scratch = clone(state);
     try {
       const { outcome } = applyOne(scratch, intent, ctx);
+      // FREE-07 review fix 1: an organization change is kept only if the result fits its budget and reads back.
+      if (ORG_INTENTS.has(intent.kind) || OUTREACH_INTENTS.has(intent.kind)) {
+        if (scratch.orgError) throw new IntentError('org_unreadable', `The organization file could not be read (${scratch.orgError}), so nothing was changed. Repair or remove state/org.json in the state repository.`);
+        try { checkOrg(scratch.org); } catch (error) { throw new IntentError(error instanceof OrgRuleError ? error.code : 'org_invalid', error instanceof Error ? error.message : 'The organization change was refused.'); }
+      }
       Object.assign(state, scratch);
       record(intent.id, outcome, intent.kind);
       outcomes.push({ path: item.path, id: intent.id, kind: intent.kind, outcome });
@@ -645,7 +735,8 @@ export function stateChanges(state: CloudState, snapshot: StateSnapshot, consume
   for (const path of consumedIntents) if (present.has(path)) changes.push({ path, content: null });
   return [...changes, ...extra];
 }
-const stateFilesOf = (snapshot: StateSnapshot) => Object.fromEntries(Object.entries(snapshot.files).filter(([path]) => !path.startsWith('intents/')));
+const stateFilesOf = (snapshot: StateSnapshot) => Object.fromEntries(Object.entries(snapshot.files).filter(([path]) => !path.startsWith('intents/') && !RECEIPT_RE.test(path)));
+const receiptFilesOf = (snapshot: StateSnapshot) => Object.entries(snapshot.files).filter(([path]) => RECEIPT_RE.test(path)).map(([path, content]) => ({ path, content }));
 const intentFilesOf = (snapshot: StateSnapshot): IntentFile[] => [
   ...Object.entries(snapshot.files).filter(([path]) => path.startsWith('intents/')).map(([path, content]) => ({ path, content })),
   ...snapshot.unreadableIntents.map(item => ({ path: item.path, unreadable: item.reason })),
@@ -657,7 +748,7 @@ function stamp(state: CloudState, ctx: TickContext) {
 /** True when a run changed anything beyond the city clock (which may wait for the next commit). */
 function meaningful(state: CloudState, snapshot: StateSnapshot): boolean {
   const next = serializeState(state);
-  for (const file of [STATE_FILES.jobs, STATE_FILES.ledger, STATE_FILES.journal, STATE_FILES.processed]) if (next[file] !== snapshot.files[file]) return true;
+  for (const file of [STATE_FILES.jobs, STATE_FILES.ledger, STATE_FILES.journal, STATE_FILES.processed, ORG_FILE, BRAIN_FILE, OUTREACH_FILE]) if (next[file] !== undefined && next[file] !== snapshot.files[file]) return true;
   const core = (text: string | undefined) => { if (!text) return ''; const { coordinator: _c, revision: _r, ...rest } = JSON.parse(text); return JSON.stringify(rest); };
   return core(next[STATE_FILES.meta]) !== core(snapshot.files[STATE_FILES.meta]);
 }
@@ -671,6 +762,12 @@ export interface CoordinatorDeps {
   allowSelfDisable?: boolean;
   retry?: RetryOptions;
   log?: (line: string) => void;
+  /** FREE-11: the chief's model client (only called for charges already committed for this run). */
+  brain?: BrainCaller;
+  /** FREE-11/12: GitHub's time for this run (its run_started_at); without it no paid call or send is made. */
+  githubTime?: () => Promise<number | undefined>;
+  /** FREE-12 review: called once phase 1 is committed, with how many messages it claimed for this run's send job. */
+  onClaimsCommitted?: (claimed: number) => void;
 }
 export interface TickReport {
   runId: string;
@@ -685,18 +782,23 @@ export interface TickReport {
   intentsTruncated: boolean;
   /** Automatic execution setup attempted this run. */
   provisioning?: 'ready' | 'failed' | 'waiting_for_key';
+  /** FREE-12: messages this run's committed phase 1 claimed for its send job. */
+  claimed: number;
 }
 
 export async function runCoordinatorTick(deps: CoordinatorDeps): Promise<TickReport> {
   const log = deps.log ?? (() => {});
   const ctx1: TickContext = { now: deps.now(), runId: deps.runId };
   let observations: ProviderResult[] | undefined;
+  let researchReads: Record<string, BranchFile> | undefined;
   let provisionOutcome: ProvisionOutcome | undefined;
   let migrated: string[] = [];
   let commits = 0;
+  let planned: PlannedCall[] = [];
+  let ghTime: { at: number | undefined } | undefined;
 
   const phase1 = await updateWithRetry(deps.store, async snapshot => {
-    const parsed = parseStateFiles(stateFilesOf(snapshot), ctx1.now);
+    const parsed = parseStateFiles(stateFilesOf(snapshot), ctx1.now, snapshot.unreadableState);
     migrated = parsed.migrated;
     let state = reconcileStaleDispatches(parsed.state, ctx1);
     // Read-only provider calls run once per tick, before intents, so a review or cancel is judged
@@ -705,6 +807,39 @@ export async function runCoordinatorTick(deps: CoordinatorDeps): Promise<TickRep
     state = recordObservations(state, observations, ctx1);
     const intents = applyIntents(state, intentFilesOf(snapshot), ctx1);
     state = intents.state;
+    // FREE-07 (review fix 2): research reports are imported AFTER intents, so decisions can always drain a full inbox,
+    // and nothing in an untrusted report can stop cancel, shutdown or the stops below. Reads are read-only and reused
+    // on a commit retry; any failure leaves the organization exactly as it was and is journaled.
+    if (!state.orgError) {
+      try {
+        researchReads ??= await readResearchReports(researchDue(state.org, state.jobs.jobs), deps.provider, state);
+        const org = clone(state.org);
+        recordResearch(org, state.jobs.jobs, researchReads, ctx1.now);
+        checkOrg(org);
+        state.org = org;
+      } catch (error) {
+        journal(state, ctx1, 'warning', `Research reports were not imported this run (${error instanceof Error ? error.message.slice(0, 160) : 'unexpected error'}).`);
+      }
+    }
+    // FREE-11/12: GitHub's time, read once per tick (a retry reuses it), is the clock for brain caps and the send day.
+    ghTime ??= { at: await deps.githubTime?.().catch(() => undefined) };
+    const clock = trustedClock(ghTime.at, ctx1.now, state.brain.clockAt);
+    let receiptPaths: string[] = [];
+    if (!state.outreachError && !state.orgError) {
+      try {
+        const outreach = clone(state.outreach); const org = clone(state.org);
+        receiptPaths = consumeReceipts(outreach, receiptFilesOf(snapshot), ctx1.now, org);
+        reconcileCampaigns(outreach, org, ctx1.now, state.meta.schedule.intervalMinutes);
+        claimSends(outreach, org, ctx1, clock, state.meta.lifecycle.status === 'running');
+        scrubFinished(outreach, org);
+        checkOrg(org);
+        state.outreach = outreach; state.org = org;
+      } catch (error) {
+        receiptPaths = [];
+        journal(state, ctx1, 'warning', `Outreach was not updated this run (${error instanceof Error ? error.message.slice(0, 160) : 'unexpected error'}).`);
+      }
+    }
+    planned = !state.brainError && !state.orgError ? chargeBrain(state.brain, state.org, state.jobs.jobs, ctx1, clock) : [];
     // Free control-plane calls, once per tick (a commit retry reuses the outcome), before dispatch planning.
     if (provisioningDue(state, ctx1.now)) {
       if (!provisionOutcome || provisionOutcome.key !== provisionKey(state)) provisionOutcome = await attemptProvisioning(state, deps.provider);
@@ -716,19 +851,34 @@ export async function runCoordinatorTick(deps: CoordinatorDeps): Promise<TickRep
     economyStep(state, ctx1);
     const archives = compactJobs(state, ctx1, 'p1');
     const heartbeatDue = state.heartbeat.lastRunAt === undefined || ctx1.now - state.heartbeat.lastRunAt >= HEARTBEAT_MS;
-    const commit = intents.consumed.length > 0 || archives.length > 0 || migrated.length > 0 || heartbeatDue || meaningful(state, snapshot);
+    const consumed = [...intents.consumed, ...receiptPaths];
+    const commit = consumed.length > 0 || planned.length > 0 || archives.length > 0 || migrated.length > 0 || heartbeatDue || meaningful(state, snapshot);
     if (commit) stamp(state, ctx1);
     const applied = intents.outcomes.filter(item => item.outcome === 'applied').length;
     return {
-      changes: commit ? stateChanges(state, snapshot, intents.consumed, archives) : [],
+      changes: commit ? stateChanges(state, snapshot, consumed, archives) : [],
       message: `Agent Empire coordinator ${ctx1.runId}: ${intents.outcomes.length} intent(s), ${applied} applied, ${plan.planned.length} to dispatch`,
       value: { state, planned: plan.planned, outcomes: intents.outcomes, disableWorkflow: lifecycle.disableWorkflow, truncated: snapshot.intentsTruncated, committed: commit },
     };
   }, deps.retry);
   if (phase1.changed) commits++;
   let state = phase1.value.state;
+  // FREE-12 review 1: the send job runs only when this run's committed state holds claims for it.
+  const claimed = phase1.changed ? state.outreach.campaigns.reduce((n, c) => n + (c.sends?.filter((x) => x.status === 'claimed' && x.runId === deps.runId).length ?? 0), 0) : 0;
+  try { deps.onClaimsCommitted?.(claimed); } catch (error) { log(`send output could not be written (${error instanceof Error ? error.message.slice(0, 80) : 'error'})`); }
   if (provisionOutcome) log(`execution setup: ${provisionOutcome.ok ? `ready (agent ${provisionOutcome.result.agentCreated ? 'created' : 'reused'}, environment ${provisionOutcome.result.environmentCreated ? 'created' : 'reused'})` : `not finished (${provisionOutcome.attempted ? 'provider refused or unreachable' : 'no Anthropic key'})`}`);
   log(`phase 1 ${phase1.changed ? `commit ${phase1.sha.slice(0, 12)} after ${phase1.attempts} attempt(s)` : 'nothing to commit'}: ${phase1.value.outcomes.length} intent(s), ${observations?.length ?? 0} session(s) observed, ${phase1.value.planned.length} planned`);
+
+  // FREE-11: model calls only for charges now durable in the state branch and naming this run.
+  const brainResults: BrainResult[] = [];
+  for (const call of planned) {
+    const req = state.brain.requests.find((r) => r.id === call.requestId);
+    if (!phase1.changed || req?.status !== 'charged' || req.charge?.runId !== deps.runId) continue;
+    if (!deps.brain) { brainResults.push({ requestId: call.requestId, lessonIds: call.lessonIds, error: 'this coordinator has no model client' }); continue; }
+    try { brainResults.push({ requestId: call.requestId, lessonIds: call.lessonIds, ok: await deps.brain({ provider: call.provider, model: call.model, messages: call.messages, maxTokens: call.maxTokens }) }); }
+    catch (error) { brainResults.push({ requestId: call.requestId, lessonIds: call.lessonIds, error: error instanceof Error ? error.message : 'unknown error' }); }
+  }
+  if (brainResults.length) log(`brain: ${brainResults.length} call(s) made`);
 
   // Mutating provider calls: only for intentions now durable in the state branch.
   const stopResults = await performStops(collectStops(state), deps.provider);
@@ -746,6 +896,7 @@ export async function runCoordinatorTick(deps: CoordinatorDeps): Promise<TickRep
   const ctx2: TickContext = { now: deps.now(), runId: deps.runId };
   const receipts = (input: CloudState) => {
     let next = recordObservations(input, stopResults, ctx2);
+    if (brainResults.length && !next.brainError && !next.orgError) recordBrainResults(next.brain, next.org, next.jobs.jobs, brainResults, ctx2);
     next = recordDispatches(next, dispatchResults, ctx2);
     return { state: next, lifecycle: lifecycleStep(next, ctx2) };
   };
@@ -758,17 +909,17 @@ export async function runCoordinatorTick(deps: CoordinatorDeps): Promise<TickRep
     catch (error) { log(`workflow disable failed: ${error instanceof Error ? error.message : 'unknown error'}`); }
   }
 
-  if (stopResults.length || dispatchResults.length || wantDisable) {
+  if (stopResults.length || dispatchResults.length || wantDisable || brainResults.length) {
     try {
       const phase2 = await updateWithRetry(deps.store, snapshot => {
-        const { state: next } = receipts(parseStateFiles(stateFilesOf(snapshot), ctx2.now).state);
+        const { state: next } = receipts(parseStateFiles(stateFilesOf(snapshot), ctx2.now, snapshot.unreadableState).state);
         if (wantDisable && next.meta.lifecycle.status === 'shutdown' && next.meta.lifecycle.workflow === 'disable_requested') {
           if (workflowDisabled) { next.meta.lifecycle.workflow = 'disabled'; journal(next, ctx2, 'lifecycle', 'Coordinator workflow disabled. Start the Empire from the app to re-enable it.'); }
           else journal(next, ctx2, 'warning', 'The coordinator could not disable its own workflow. The app disables it with your GitHub sign-in; scheduled runs do nothing while shut down.');
         }
         const archives = compactJobs(next, ctx2, 'p2');
         stamp(next, ctx2);
-        return { changes: stateChanges(next, snapshot, [], archives), message: `Agent Empire coordinator ${ctx2.runId}: ${stopResults.length} stop(s), ${dispatchResults.length} dispatch receipt(s)`, value: next };
+        return { changes: stateChanges(next, snapshot, [], archives), message: `Agent Empire coordinator ${ctx2.runId}: ${stopResults.length} stop(s), ${dispatchResults.length} dispatch receipt(s), ${brainResults.length} brain answer(s)`, value: next };
       }, deps.retry);
       if (phase2.changed) commits++;
       state = phase2.value;
@@ -794,6 +945,7 @@ export async function runCoordinatorTick(deps: CoordinatorDeps): Promise<TickRep
     migrated,
     commits,
     intentsTruncated: phase1.value.truncated,
+    claimed,
     ...(provisionOutcome ? { provisioning: provisionOutcome.ok ? 'ready' as const : provisionOutcome.attempted ? 'failed' as const : 'waiting_for_key' as const } : {}),
   };
 }

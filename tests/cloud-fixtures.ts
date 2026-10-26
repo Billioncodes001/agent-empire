@@ -70,6 +70,16 @@ export class FakeProvider implements ProviderAdapter {
   async archive(sessionId: string) { this.calls.push(`archive:${sessionId}`); const s = this.sessions.get(sessionId)!; if (s.status === 'idle') { s.archived = true; s.status = 'terminated'; } }
   /** Task-branch heads by job id; default: pushed (a head different from the source commit). */
   branches = new Map<string, 'missing' | 'unchanged' | 'error' | string>();
+  /** FREE-07: task-branch files by `<job id>:<path>`; 'error' throws (an unknown read). Absent: missing. */
+  files = new Map<string, string | 'error'>();
+  async readBranchFile(_execution: unknown, branch: string, path: string) {
+    const jobId = branch.replace('agent-empire/task-', '');
+    this.calls.push(`read:${jobId}:${path}`);
+    const file = this.files.get(`${jobId}:${path}`);
+    if (file === 'error') throw new Error('github down');
+    if (file === undefined) return { state: 'missing' as const };
+    return { state: 'found' as const, text: file, bytes: new TextEncoder().encode(file).length };
+  }
   async branchHead(_execution: unknown, branch: string) {
     this.calls.push(`branch:${branch}`);
     const setting = this.branches.get(branch.replace('agent-empire/task-', '')) ?? 'c'.repeat(40);

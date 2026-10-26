@@ -15,7 +15,7 @@
 import { safeExecutionError } from '../server/execution-errors.js';
 import { COMMIT } from '../server/execution-validation.js';
 import { ARTIFACT_MAX_BYTES, billingNote, isMoneyEngine, JOB_WORKFLOW_FILE, MAX_TASK_B64, parseRunResult, RESULT_ARTIFACT, RESULT_FILE, RESULT_MAX_BYTES, type CloudEngine, type RunResult } from './actions-spec.js';
-import { DispatchFailure, type DispatchRequest, type ProviderAdapter, type ProviderObservation } from './provider.js';
+import { DispatchFailure, readTaskBranchFile, type DispatchRequest, type ProviderAdapter, type ProviderObservation } from './provider.js';
 import type { ActionsCursor, CloudExecution, EventCursorState } from './schema.js';
 import { GitHubClient, GitHubError } from './store.js';
 
@@ -325,5 +325,11 @@ export class GitHubActionsAdapter implements ProviderAdapter {
       if (error instanceof GitHubError && error.status === 404) return { state: 'missing' };
       throw error;
     }
+  }
+
+  /** FREE-07: a research report from the task branch the publish job pushed (read-only, project token). */
+  async readBranchFile(execution: CloudExecution, branch: string, path: string) {
+    if (!this.githubToken) throw new Error('The project GitHub token is not configured.');
+    return readTaskBranchFile((method, route) => this.api(method, route), (e) => e instanceof GitHubError && e.status === 404, execution, branch, path);
   }
 }

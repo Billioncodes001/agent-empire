@@ -9,7 +9,7 @@ import type { LessonScope, LessonSource } from './memory.js';
  * `external_action` (ORG-04a): something leaves the Empire, e.g. a campaign send; approving acts on a frozen snapshot.
  * `tool_proposal` (ORG-05): a researched tool; approving only records the decision.
  */
-export type ApprovalKind = 'job_plan' | 'budget_increase' | 'external_action' | 'tool_proposal' | 'chief_proposal' | 'lesson';
+export type ApprovalKind = 'job_plan' | 'budget_increase' | 'external_action' | 'tool_proposal' | 'chief_proposal' | 'lesson' | 'architect_summary';
 
 /**
  * FREE-10 `lesson`: a proposed organizational-memory lesson (decision only). Approving makes it planning context for the
@@ -30,6 +30,22 @@ export interface LessonApproval {
    * the exact proposal (id, text, scope and nonce) it was raised for.
    */
   nonce?: string;
+}
+
+/**
+ * CITY-10 `architect_summary`: one per city architect run. The changes were already applied (data only, reversible).
+ * Approving ("Keep changes") records the acknowledgement; declining ("Revert this day") undoes every change of the run.
+ */
+export interface ArchitectSummary {
+  runId: string;
+  day: string;
+  engine: 'rules' | 'free' | 'premium';
+  engineLabel: string;
+  costLabel: string;
+  status: string;
+  reason?: string;
+  note?: string;
+  changes: { id: string; op: 'place' | 'move' | 'remove'; label: string; reason: string; repair: boolean }[];
 }
 
 /**
@@ -58,6 +74,25 @@ export interface OutreachApproval {
   recipients: string[];
   excluded: OutreachExcluded;
   draftedBy: string;
+  /** FREE-12 cloud mode: at most this many messages per coordinator run (the coordinator runs every 15–60 minutes). */
+  perRun?: number;
+}
+
+/**
+ * FREE-11: a plan the chief's model proposed in cloud mode, shown in full (every prompt). Cloud mode has no consultancy
+ * journal, so approving records the decision only; each item becomes paid work only when the CEO submits it through the
+ * ordinary paid-job confirmation.
+ */
+export interface CloudPlanApproval {
+  requestId: string;
+  client?: string;
+  title: string;
+  summary?: string;
+  items: { title: string; prompt: string; phase: string; role: string; parallel: boolean; dependsOn: number[] }[];
+  /** The approved lessons the chief was given, and the ids the plan says it relies on (a subset). */
+  lessons?: { id: string; text: string }[];
+  citedLessons?: string[];
+  costLabel: string;
 }
 /** `resolved`: the hold an increase was raised for cleared without any recorded budget raise (no decision is implied). */
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'resolved';
@@ -101,10 +136,14 @@ export interface Approval {
   outreach?: OutreachApproval;
   /** FREE-02 chief_proposal: the chief's suggestion and its optional one-click action. */
   proposal?: ChiefProposal;
+  /** CITY-10 architect_summary: the run's changes. Keep records it; declining reverts that day. */
+  architect?: ArchitectSummary;
   /** FREE-10 lesson: the proposed lesson, its scope and provenance. */
   lesson?: LessonApproval;
   /** FREE-02 job_plan: set when the chief's model proposed the plan, e.g. "Model-backed · gpt-oss:20b · proposals only". */
   proposedBy?: string;
+  /** FREE-11 cloud job_plan: the model's plan, every prompt included. */
+  plan?: CloudPlanApproval;
 }
 
 export interface ApprovalsState {
@@ -125,9 +164,39 @@ export const APPROVAL_KIND_LABEL: Record<ApprovalKind, string> = {
   tool_proposal: 'Tool proposal',
   chief_proposal: 'Chief proposal',
   lesson: 'Lesson',
+  architect_summary: 'City architect',
 };
 
 export const MAX_APPROVAL_BUDGET_USD = 100_000;
+
+/** Which executive raises each kind (server inbox and cloud coordinator alike). */
+export const RAISED_BY: Record<ApprovalKind, ExecutiveRole> = { job_plan: 'chief_of_staff', budget_increase: 'finance', external_action: 'marketing_sales', tool_proposal: 'research', chief_proposal: 'chief_of_staff', lesson: 'chief_of_staff', architect_summary: 'chief_of_staff' };
+
+/** 64-bit FNV-1a over UTF-16 code units, hex. Browser-safe and deterministic; not a security hash. */
+function fnv64(text: string): string {
+  let hash = 0xcbf29ce484222325n;
+  for (let i = 0; i < text.length; i++) { hash ^= BigInt(text.charCodeAt(i)); hash = (hash * 0x100000001b3n) & 0xffffffffffffffffn; }
+  return hash.toString(16).padStart(16, '0');
+}
+
+/**
+ * FREE-07: a fingerprint of everything the CEO is shown about a pending item and that a decision acts on (id, kind,
+ * title, detail, money, the tool, the lesson with its nonce, the chief's proposal, the campaign snapshot). A cloud
+ * decision carries the fingerprint of the item as displayed; the coordinator refuses it if the item changed since, so
+ * a decision can only ever apply to content the CEO saw. It guards against stale views, not forgery: anyone who could
+ * forge an intent can already write the state repository.
+ */
+export function approvalFingerprint(item: Approval): string {
+  const seen = {
+    id: item.id, kind: item.kind, title: item.title, detail: item.detail, jobId: item.jobId, createdAt: item.createdAt,
+    estimate: item.estimate ?? null, spentUsd: item.spentUsd ?? null, approvedBudgetUsd: item.approvedBudgetUsd ?? null,
+    tool: item.tool ?? null, lesson: item.lesson ?? null, proposal: item.proposal ?? null, outreach: item.outreach?.snapshotHash ?? null,
+    // FREE-11: a cloud plan's every item and prompt (added only when present, so existing fingerprints are unchanged).
+    ...(item.plan ? { plan: item.plan, proposedBy: item.proposedBy ?? null } : {}),
+  };
+  return fnv64(JSON.stringify(seen));
+}
+export const FINGERPRINT_RE = /^[a-f0-9]{16}$/;
 
 export const CLOUD_INBOX_NOTE = "The approval inbox isn't available in cloud mode yet.";
 

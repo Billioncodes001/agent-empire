@@ -18,7 +18,9 @@ export interface SmtpConfig { secure: boolean; host: string; port: number; user?
 export interface EmailConfig { smtp: SmtpConfig; to: string; from: string }
 export interface EmailStatus { state: 'not_configured' | 'configured' | 'failed'; label: string; lastSentAt?: number; lastFailedAt?: number; gaveUp?: number }
 
-const ADDRESS = /^[^\s<>@"',;]{1,64}@[A-Za-z0-9.-]{1,253}$/;
+// FREE-12: the address rules are shared with the cloud coordinator; re-exported unchanged.
+import { ADDRESS, isEmailAddress } from '../shared/email-address.js';
+export { isEmailAddress };
 const USAGE = 'Set AGENT_EMPIRE_SMTP_URL (smtp:// or smtps://user:pass@host:port) and AGENT_EMPIRE_NOTIFY_EMAIL (one address) together to enable email notifications.';
 
 export const NOT_CONFIGURED: EmailStatus = { state: 'not_configured', label: 'Email: not configured' };
@@ -37,8 +39,6 @@ export function emailConfig(env: NodeJS.ProcessEnv): EmailConfig | undefined {
   return { smtp, to, from };
 }
 
-/** Whether a string is one plain email address (no display name, no list, no CR/LF). */
-export const isEmailAddress = (s: string) => ADDRESS.test(s) && /\.[A-Za-z]{2,}$/.test(s) && !/[\u0000-\u001f\u007f]/.test(s);
 
 /** Parses AGENT_EMPIRE_SMTP_URL (ORG-03; reused by ORG-04a outreach). Errors never echo the URL, which holds a password. */
 export function smtpConfigFromUrl(raw: string, usage = USAGE): SmtpConfig {

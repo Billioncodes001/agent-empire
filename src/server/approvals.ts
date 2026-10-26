@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { APPROVAL_ID_RE, APPROVAL_KIND_LABEL, MAX_APPROVAL_BUDGET_USD, approveHint, type Approval, type ApprovalKind, type ApprovalsState, type ApprovalStatus } from '../shared/approvals.js';
+import { APPROVAL_ID_RE, APPROVAL_KIND_LABEL, MAX_APPROVAL_BUDGET_USD, RAISED_BY, approveHint, type Approval, type ApprovalKind, type ApprovalsState, type ApprovalStatus } from '../shared/approvals.js';
 import type { ConsultancyApproveOptions, ConsultancyJob, ConsultancySnapshot } from '../shared/consultancy.js';
 import { ACTUAL_SPEND_LABEL, EXECUTIVES, basisLabel, fmtDurationRange, fmtUsdRange, type ExecutiveRole } from '../shared/org.js';
 import { ConsultancyError } from './consultancy.js';
@@ -57,7 +57,7 @@ export class ApprovalError extends Error {
   }
 }
 
-const RAISED_BY: Record<ApprovalKind, ExecutiveRole> = { job_plan: 'chief_of_staff', budget_increase: 'finance', external_action: 'marketing_sales', tool_proposal: 'research', chief_proposal: 'chief_of_staff', lesson: 'chief_of_staff' };
+// RAISED_BY is shared with the cloud coordinator (src/shared/approvals.ts, FREE-07).
 
 /**
  * FREE-02: the owner of chief_proposal actions. `check` answers why the action no longer applies (the inbox answers 409
@@ -147,6 +147,7 @@ export class ApprovalInbox {
   private chief?: ChiefActionPort;
   private planOrigin?: (jobId: string) => string | undefined;
   private lessons?: LessonActionPort;
+  private architect?: { revert(runId: string, actor: string): string };
 
   constructor(dataDir: string, private readonly office: InboxConsultancy, private readonly onChange?: () => void, private readonly now = Date.now) {
     this.file = path.join(dataDir, FILE);
@@ -186,6 +187,29 @@ export class ApprovalInbox {
 
   /** FREE-10: the owner of lesson items (organizational memory). */
   setLessons(port: LessonActionPort) { this.lessons = port; }
+
+  /** CITY-10: the city architect, which reverts a run when its summary is declined. */
+  setArchitect(port: { revert(runId: string, actor: string): string }) { this.architect = port; }
+
+  /** CITY-10: raises a run's daily summary. Idempotent by `source`; answers the id, or undefined while storage is broken. */
+  raiseArchitect(fields: { source: string; title: string; detail: string; architect: NonNullable<Approval['architect']> }): string | undefined {
+    if (this.storageError) return undefined;
+    const existing = this.data.items.find((i) => i.source === fields.source);
+    if (existing) return existing.id;
+    this.add({ kind: 'architect_summary', jobId: 'city-architect', createdAt: this.now(), ...structuredClone(fields) });
+    this.trim();
+    try { this.save(); } catch { return undefined; }
+    return this.data.items.find((i) => i.source === fields.source)?.id;
+  }
+
+  /** CITY-10: a pending summary whose run was undone elsewhere (Settings): resolved with a note. */
+  resolveArchitect(id: string, note: string) {
+    if (this.storageError) return;
+    const item = this.data.items.find((i) => i.id === id);
+    if (!item || item.kind !== 'architect_summary' || item.status !== 'pending') return;
+    Object.assign(item, { status: 'resolved', decidedAt: this.now(), decidedBy: 'City architect', note: note.slice(0, 300) });
+    this.save();
+  }
 
   /** FREE-10: raises a lesson item. Idempotent by `source`; answers the id, or undefined while storage is broken. */
   raiseLesson(fields: { source: string; jobId: string; title: string; detail: string; lesson: NonNullable<Approval['lesson']> }): string | undefined {
@@ -302,6 +326,7 @@ export class ApprovalInbox {
     if (item.kind === 'external_action' && options.budgetUsd !== undefined && options.budgetUsd !== null) throw new ApprovalError(400, 'No budget applies to a campaign send. Approve it without an amount.');
     if (item.kind === 'chief_proposal' && options.budgetUsd !== undefined && options.budgetUsd !== null) throw new ApprovalError(400, 'No budget applies to a chief proposal. Decide it without an amount.');
     if (item.kind === 'lesson' && options.budgetUsd !== undefined && options.budgetUsd !== null) throw new ApprovalError(400, 'No budget applies to a lesson. Decide it without an amount.');
+    if (item.kind === 'architect_summary' && options.budgetUsd !== undefined && options.budgetUsd !== null) throw new ApprovalError(400, 'No budget applies to a city architect summary. Keep it or revert the day without an amount.');
     const budget = decision === 'approved' && options.budgetUsd !== undefined && options.budgetUsd !== null ? validBudget(options.budgetUsd) : undefined;
     let externalApply: (() => void) | undefined;
     let chiefApply: (() => void) | undefined;
@@ -345,6 +370,15 @@ export class ApprovalInbox {
         lessonApply = () => {
           try { item.note = this.lessons!.apply(publicItem(item), decision, who).slice(0, 300) || undefined; } catch (error) { item.note = `Recorded, but memory could not be updated yet: ${(error as Error).message}`.slice(0, 300); }
           if (item.note === undefined) delete item.note;
+          this.save();
+        };
+      } else if (item.kind === 'architect_summary') {
+        // CITY-10: Keep records the acknowledgement; declining is saved first, then the architect reverts the run.
+        if (decision === 'rejected' && !this.architect) throw new ApprovalError(503, 'The city architect is not available on this host, so this day cannot be reverted here.');
+        this.record(item, decision, who, requestId);
+        this.save();
+        if (decision === 'rejected') lessonApply = () => {
+          try { item.note = this.architect!.revert(item.architect!.runId, who).slice(0, 300); } catch (error) { item.note = `Recorded, but the day could not be reverted: ${(error as Error).message}`.slice(0, 300); }
           this.save();
         };
       } else if (item.kind === 'tool_proposal') {
@@ -514,7 +548,11 @@ function parseFile(value: unknown): StoredFile {
     const label = `item #${index + 1}`;
     if (!item || typeof item !== 'object') throw new Error(`${label} must be an object`);
     if (typeof item.id !== 'string' || !APPROVAL_ID_RE.test(item.id) || Number(item.id.slice(1)) >= (raw.nextSeq as number)) throw new Error(`${label} id is invalid`);
-    if (item.kind !== 'job_plan' && item.kind !== 'budget_increase' && item.kind !== 'external_action' && item.kind !== 'tool_proposal' && item.kind !== 'chief_proposal' && item.kind !== 'lesson') throw new Error(`${label} kind is invalid`);
+    if (item.kind !== 'job_plan' && item.kind !== 'budget_increase' && item.kind !== 'external_action' && item.kind !== 'tool_proposal' && item.kind !== 'chief_proposal' && item.kind !== 'lesson' && item.kind !== 'architect_summary') throw new Error(`${label} kind is invalid`);
+    if (item.kind === 'architect_summary') {
+      const a = item.architect as unknown as Record<string, unknown> | undefined;
+      if (!a || typeof a.runId !== 'string' || typeof a.day !== 'string' || typeof a.engineLabel !== 'string' || !Array.isArray(a.changes)) throw new Error(`${label} architect summary is invalid`);
+    }
     if (item.kind === 'lesson') {
       const l = item.lesson as unknown as Record<string, unknown> | undefined;
       if (!l || typeof l !== 'object' || ['lessonId', 'text', 'scope', 'proposedBy'].some((k) => typeof l[k] !== 'string' || (l[k] as string).length > 2000) || !l.source || typeof l.source !== 'object') throw new Error(`${label} lesson is invalid`);

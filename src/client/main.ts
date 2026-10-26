@@ -26,6 +26,7 @@ import { ExecutiveBodies } from './world/executives';
 import { executiveTitle, openExecutiveCard } from './ui/executives';
 import { mountInboxButton, openInbox, pendingApprovals } from './ui/inbox';
 import { Person, Worker } from './world/character';
+import { setHumanReducedMotion } from './world/human';
 import { OfficeLife } from './world/worker-life';
 import { Laptop } from './world/laptop';
 import { BoardTexture, QueueBoardTexture, ServicesBoardTexture } from './world/boards';
@@ -60,6 +61,7 @@ import { voiceSetupSection } from './ui/voice-setup';
 import { maybeOfferOnboarding, onboardingSection } from './ui/onboarding';
 import { openPhone } from './ui/phone';
 import { chiefBrainSection } from './ui/chief';
+import { architectSection } from './ui/architect';
 import { ENGINE_NAME, type WorkerEngine } from '../shared/engines';
 import { startUpdates, updateSettingsSection } from './update';
 import { connectionView } from './ui/continuity';
@@ -136,7 +138,7 @@ office.group.add(executives.group);
 executives.sync(store.org);
 store.on('org', () => executives.sync(store.org));
 // ORG-03: the inbox tray on the founder's desk shows the real pending count (dashes when there is no inbox).
-const syncTray = () => office.inboxTray.setCount(store.cloud || !store.approvals ? null : store.approvals.pending);
+const syncTray = () => office.inboxTray.setCount(!store.approvals ? null : store.approvals.pending);
 store.on('approvals', syncTray);
 store.on('cloud', syncTray);
 syncTray();
@@ -341,6 +343,9 @@ interface WorkerView {
 const workerViews = new Map<string, WorkerView>();
 // Worker routines (LIFE-03): desk ↔ amenities from real server state only. Reduced motion places bodies without walking.
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+// CHAR-02: bodies play the calm jump under reduced motion, following the setting live.
+setHumanReducedMotion(reducedMotion.matches);
+reducedMotion.addEventListener?.('change', () => setHumanReducedMotion(reducedMotion.matches));
 const life = new OfficeLife(office, {
   reducedMotion: () => reducedMotion.matches,
   detail: () => settings.quality !== 'low',
@@ -973,7 +978,7 @@ function renderHint() {
   else if (target.kind === 'inbox') {
     const n = pendingApprovals();
     k += `${n}|${!!store.cloud}`;
-    parts = [h('span.title', {}, `📥 CEO inbox${n ? ` · ${n} waiting` : ''}`), store.cloud ? h('span', { style: 'opacity:.75;font-weight:600' }, 'Not in cloud mode yet') : '', key('E', 'Open inbox')];
+    parts = [h('span.title', {}, `📥 CEO inbox${n ? ` · ${n} waiting` : ''}`), store.cloud ? h('span', { style: 'opacity:.75;font-weight:600' }, 'Cloud · decided on the next coordinator run') : '', key('E', 'Open inbox')];
   }
   else if (target.kind === 'executive' && target.role) {
     const e = store.org?.executives.find((x) => x.role === target!.role);
@@ -1332,7 +1337,7 @@ $('btn-settings').addEventListener('click', () =>
     },
     editProfile,
     () => sound.ding('done'),
-    combineSections(appPanel(net), onboardingSection(onboardingHooks()), voiceSetupSection(), linkedAccountsSection({ onSignIn: () => { closeAllModals(); signInToClaude(); } }), productsSection(), chiefBrainSection(), updateSettingsSection(updateService)),
+    combineSections(appPanel(net), onboardingSection(onboardingHooks()), voiceSetupSection(), linkedAccountsSection({ onSignIn: () => { closeAllModals(); signInToClaude(); } }), productsSection(), chiefBrainSection(), architectSection(), updateSettingsSection(updateService)),
   ),
 );
 
@@ -1543,6 +1548,6 @@ if (saved?.look) {
 }
 
 // Debug handle for quick checks from the console / headless screenshots.
-(window as any).__office = { store, player, camera, workerViews, scene, net, renderer, me, remotes, settings, gallery, hanger, city, empireUI, life, office, executives, traversal };
+(window as any).__office = { store, player, camera, workerViews, scene, net, renderer, me, remotes, settings, gallery, hanger, city, empireUI, life, office, executives, traversal, orgUI: { openExecutiveCard, openInbox } };
 (window as any).__voice = voice;
 (window as any).__sound = sound;

@@ -8,13 +8,14 @@ import { BridgeError } from '../native';
 import {
   actionsEstimate, blockers, CLOUD_STEPS, DEFAULT_LIMITS, dollars, INTERVALS, LIMIT_BOUNDS, linkedProviders, MAX_REPOS, parseCents, progress, PROVIDER_NAMES, reduce, repoKey,
   STATE_REPO_NAME, validateProjectToken, validateProviderKey, type Action, type ProviderId, type RepoRef, type SetupState, type Step,
-  actionsSettingsFor, ENGINE_CHOICES, jobMinutesNote, jobMinutesCap, type EngineChoice,
+  actionsSettingsFor, ENGINE_CHOICES, jobMinutesNote, jobMinutesCap, type EngineChoice, hasCredentials,
 } from './model';
 import { CPU_MODEL, JOB_PINS, requiredSecret, SECRETS, subscriptionChecklist } from '../../cloud/actions-spec';
 import { checkJobSecret } from '../../cloud/actions-setup';
 import { GitHubClient as CloudGitHubClient } from '../../cloud/store';
 import { GITHUB_API, githubApiBase } from '../cloud/api-base';
 import { PROJECT_TOKEN_GUIDANCE } from '../../cloud/installer';
+import { saveProgress } from './progress-store';
 import { defaultDeviceName, LoginFailure, parseServerAddress, revokeDevice, signInToServer, type ServerSession } from './server-login';
 import { GitHubClient, GitHubError, type RepoListing } from './github';
 import { ACTIONS_CREATE_STEPS, CloudSetupError, createEmpire, CREATE_STEPS, executionPlan, type CreateStep, type StateRepo } from './cloud-setup';
@@ -157,6 +158,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
     const next = reduce(state, a);
     if (next === state) return;
     state = next;
+    saveProgress(state); // DEVICE-BUGS-03: non-secret progress survives a reload or a killed app
     if (state.step !== shownStep) render();
     else refresh();
   };
@@ -293,8 +295,10 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
 
   const STEP_VIEWS: Record<Step, () => { panel: HTMLElement; heading: HTMLElement }> = {
     welcome() {
-      const letters = 'AGENT EMPIRE'.split('').map((ch, i) => el('span', { class: 'su-letter', style: `--i:${i}`, 'aria-hidden': 'true', text: ch === ' ' ? ' ' : ch }));
-      const heading = el('h1', { class: 'su-hero-title', tabindex: '-1', 'aria-label': 'Agent Empire' }, ...letters);
+      // Each word stays whole; with large text the title wraps between the words instead of running off a phone.
+      const word = (w: string, from: number) => el('span', { class: 'su-hero-word', 'aria-hidden': 'true' },
+        ...w.split('').map((ch, i) => el('span', { class: 'su-letter', style: `--i:${from + i}`, text: ch })));
+      const heading = el('h1', { class: 'su-hero-title', tabindex: '-1', 'aria-label': 'Agent Empire' }, word('AGENT', 0), ' ', word('EMPIRE', 6));
       const start = primary('Set up my Empire', () => dispatch({ type: 'begin' }));
       const panel = el('section', { class: 'su-hero', 'aria-label': 'Welcome' },
         el('span', { class: 'su-hero-mark', 'aria-hidden': 'true', html: TOWER }),
@@ -400,6 +404,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
       const action = primary(app ? 'Sign in' : 'Continue to sign-in', () => void submit());
       const form = el('form', { class: 'su-form', novalidate: true, onsubmit: (e: Event) => (e.preventDefault(), void submit()) },
         field('Server address', address, 'The HTTPS address of your Agent Empire server.'),
+        credentialWarning(address, 'your password goes in the field below, never in the address.'),
         app ? field('Office password', password, `Signs in this ${deps.shell?.platform === 'desktop' ? 'computer' : 'device'} only. The password isn’t stored; the app keeps a device sign-in in secure storage.`) : null,
         el('button', { type: 'submit', hidden: true, tabindex: '-1', 'aria-hidden': 'true' }),
       );
@@ -595,6 +600,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
       const search = el('input', { class: 'su-input', type: 'search', placeholder: 'Filter repositories', 'aria-label': 'Filter repositories', autocomplete: 'off', oninput: () => draw() });
       const more = el('button', { type: 'button', class: 'su-btn su-ghost su-small', hidden: true, onclick: () => void load() }, 'Load more');
       const count = el('span', { class: 'su-chip', 'aria-live': 'polite' });
+      const dropped = el('p', { class: 'su-callout', role: 'status', hidden: true });
       const next = primary('Choose engine', () => dispatch({ type: 'next' }));
       if (repoCache.login !== state.github.login) Object.assign(repoCache, { login: state.github.login, repos: [], page: 0, more: true, error: undefined });
 
@@ -620,6 +626,10 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
         );
         if (!shown.length && repoCache.repos.length) list.append(el('li', { class: 'su-empty', text: 'No repository matches that filter.' }));
         count.textContent = `${state.repos.length} selected`;
+        // Re-check 1: selected repositories the live list removed are named, not silently forgotten.
+        const gone = state.droppedRepos ?? [];
+        dropped.hidden = !gone.length;
+        dropped.replaceChildren(...(gone.length ? [icon(ICONS.warn, 'su-inline-ico'), `No longer selected: ${gone.join(', ')}.`] : []));
         more.hidden = !repoCache.more || busy;
         next.disabled = blockers(state).length > 0;
       }
@@ -636,6 +646,8 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
           repoCache.repos.push(...page.repos.filter((r) => !seen.has(repoKey(r))));
           repoCache.page += 1;
           repoCache.more = page.more;
+          // Re-check 1: visibility and default branch of the chosen repositories come from this live list.
+          dispatch({ type: 'reposListed', repos: repoCache.repos, complete: !repoCache.more });
           status.textContent = repoCache.repos.length ? `${repoCache.repos.length} repositories. Agents work on branches and open pull requests; nothing goes straight to your default branch.` : 'This account has no repositories yet. Create one on GitHub, then come back.';
         } catch (err) {
           status.textContent = '';
@@ -651,7 +663,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
         eyebrow: 'Cloud · step 2',
         title: STEP_TITLES.repos,
         lede: 'Pick the repositories your agents may work on. Only these are used, and only through branches and pull requests.',
-        body: [el('div', { class: 'su-row su-repo-tools' }, search, count), list, status, more, errors],
+        body: [el('div', { class: 'su-row su-repo-tools' }, search, count), dropped, list, status, more, errors],
         primary: next,
       });
       draw();
@@ -749,7 +761,8 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
         el('fieldset', { class: 'su-source' }, el('legend', { text: '2 · A free hosted tier (your key)' }),
           check('su-free-hosted', f.hostedOptIn, (v) => dispatch({ type: 'setFree', patch: { hostedOptIn: v } }), 'Use a free hosted key.', 'Free tiers may log prompts and code and use them for training. Read the provider’s data-use terms before you opt in; don’t use it for private code you can’t share.'),
           el('div', { class: 'su-row su-wrap' },
-            input('su-free-url', f.hostedBaseUrl, 'https://openrouter.ai/api/v1', (v) => dispatch({ type: 'setFree', patch: { hostedBaseUrl: v } }), 'OpenAI-compatible address'),
+            ((f2) => (f2.append(credentialWarning(f2.querySelector('input')!, 'the key goes in a GitHub secret (the command below), never in the address.')), f2))(
+              input('su-free-url', f.hostedBaseUrl, 'https://openrouter.ai/api/v1', (v) => dispatch({ type: 'setFree', patch: { hostedBaseUrl: v } }), 'OpenAI-compatible address')),
             input('su-free-hmodel', f.hostedModel, 'qwen/qwen3-coder:free', (v) => dispatch({ type: 'setFree', patch: { hostedModel: v } }), 'Model')),
           el('p', { class: 'su-note', text: `Store the key yourself, in your terminal: ` }), command(`gh secret set ${SECRETS.freeKey} --repo ${repoName}`)),
         el('fieldset', { class: 'su-source' }, el('legend', { text: '3 · Small CPU model on GitHub’s runner (slow)' }),
@@ -849,7 +862,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
         const jobSettings = actionsSettingsFor(state).settings;
         estimate.textContent = `About ${e.minutes.toLocaleString()} GitHub Actions minutes a month for scheduled runs` +
           (e.included ? `, ${Math.round((e.share ?? 0) * 100)}% of the ${e.included.toLocaleString()} included on GitHub ${plan} for private repositories.${over ? ' Minutes beyond that are billed to your GitHub account; choose a longer interval to stay inside it.' : ''}` : plan ? ` (your plan: ${plan}; check its included minutes in GitHub billing).` : '. GitHub Free includes 2,000 a month for private repositories, Pro 3,000.') +
-          ' Each run bills at least a minute; waking it from the app adds runs.' +
+          ' Each run bills at least a minute; waking it from the app adds runs. Email outreach, if you turn it on, adds at least a minute on each run that sends email.' +
           (jobSettings ? ` Each job adds its own run on top: up to ${jobMinutesCap(jobSettings)} minutes per job on private repositories (free on public ones${jobSettings.modelSource === 'self_hosted_ollama' ? '; the agent part uses none on your own runner' : ''}).` : '') +
           ' Figures are estimates.';
       };
@@ -981,6 +994,23 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
       return { panel, heading };
     },
   };
+
+  /**
+   * Re-check: an address with user:pass@ or a key in its query would be saved with the setup's progress. Say so as it is
+   * typed; the value is never saved (progressSnapshot) and the step's own validation refuses it.
+   */
+  function credentialWarning(input: HTMLInputElement, where: string): HTMLElement {
+    const note = el('p', { class: 'su-field-error', id: `${input.id}-cred`, role: 'alert' });
+    const check = () => {
+      const bad = hasCredentials(input.value);
+      note.textContent = bad ? `Leave out user names, passwords and keys: ${where}` : '';
+      if (bad) input.setAttribute('aria-invalid', 'true');
+      else input.removeAttribute('aria-invalid');
+    };
+    input.addEventListener('input', check);
+    check();
+    return note;
+  }
 
   function field(label: string, control: HTMLElement, hint?: string) {
     const input = control.matches('input') ? control : control.querySelector('input');

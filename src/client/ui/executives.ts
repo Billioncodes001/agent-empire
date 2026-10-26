@@ -4,6 +4,10 @@ import { h, openModal } from './dom';
 import { morphChildren } from './reconcile';
 import { openInbox } from './inbox';
 import { researchPanel } from './research';
+import { ORG_CAPABILITIES, cloudGapMessage, type OrgFeature } from '../../shared/org-capabilities';
+import { openCloudMemory } from './cloud-memory';
+import { openCloudBrain } from './cloud-brain';
+import { openCloudOutreach } from './cloud-outreach';
 
 /** Where each executive's waiting items are handled: the approval inbox (ORG-03) or the task queue. */
 const ATTENTION: Partial<Record<ExecutiveRole, { label: (n: number) => string; inbox?: true; queue?: true }>> = {
@@ -33,7 +37,8 @@ function tone(e: Executive) {
 
 /** One executive as a card: role, name, the honest Rule-based label, the summary and what waits on you. */
 export function executiveCard(e: Executive, opts: { openQueue?: () => void; beforeInbox?: () => void; heading?: 'h2' | 'strong' } = {}): HTMLElement {
-  const att = ATTENTION[e.role];
+  // FREE-07: in cloud mode the chief's waiting items are lessons (no client plans are raised there).
+  const att = store.cloud && e.role === 'chief_of_staff' ? { label: (n: number) => `${n} lesson${n === 1 ? '' : 's'} waiting for your decision`, inbox: true as const, queue: undefined } : ATTENTION[e.role];
   const attention = !e.active
     ? h('p.exec-note', {}, 'This office is furnished but nobody works here yet. It arrives in a later phase.')
     : e.attention > 0 && att
@@ -55,7 +60,9 @@ export function executiveCard(e: Executive, opts: { openQueue?: () => void; befo
     h('p.exec-summary', {}, h('span.status-dot', { 'aria-hidden': 'true' }), e.active ? e.summary : NOT_STAFFED),
     attention,
     e.monitor === 'model_backed' ? h('p.exec-note.exec-model-note', {}, 'Plans, reviews and unblock ideas from this chief are proposals: nothing starts, is accepted or spends without your approval.') : null,
-    e.role === 'marketing_sales' && e.active
+    // FREE-07: what this office can't do in cloud mode, and why (from the shared capability matrix).
+    ...(store.cloud ? cloudNotes(e.role, opts.beforeInbox) : []),
+    !store.cloud && e.role === 'marketing_sales' && e.active
       ? h('p.exec-note', {}, 'Coordinates email outreach; workers draft, you approve every send. ', h('a.btn.exec-link', { href: OUTREACH_DESK, target: '_blank', rel: 'noopener' }, 'Leads & campaigns ↗'))
       : null,
   );
@@ -63,18 +70,32 @@ export function executiveCard(e: Executive, opts: { openQueue?: () => void; befo
 
 /** The Management panel's "Executives" section. */
 export function executivesSection(org: OrgState | null, cloud: boolean, openQueue?: () => void): HTMLElement {
-  const body = cloud
-    ? h('p.setting-note', {}, 'Executives run on your own server. They are not available in cloud mode yet.')
-    : !org
-      ? h('p.setting-note', {}, 'This server has not reported its executives yet.')
+  const body = !org
+      ? h('p.setting-note', {}, cloud ? 'Waiting for the first snapshot from your cloud coordinator.' : 'This server has not reported its executives yet.')
       : h('div.exec-cards', {}, ...org.executives.map((e) => executiveCard(e, { openQueue })));
   return h(
     'section.empire-section',
     { 'aria-labelledby': 'empire-executives' },
     h('h3', { id: 'empire-executives' }, 'Executives ', h('span.empire-tag', {}, 'rule-based')),
     body,
-    h('p.setting-note', {}, `${RULE_NOTE} Their offices are upstairs in the loft; they never take a funded workstation.`),
+    h('p.setting-note', {}, cloud ? CLOUD_RULE_NOTE : `${RULE_NOTE} Their offices are upstairs in the loft; they never take a funded workstation.`),
   );
+}
+
+/** FREE-07: the cloud-mode evidence note: the snapshot, not live state. */
+const CLOUD_RULE_NOTE = `Rule-based: ${ORG_CAPABILITIES.executives.cloudSummary} No model is called. ${ORG_CAPABILITIES.executives.reason}`;
+
+/** FREE-07: per-office cloud notes with the specific reason, plus memory (which works in cloud) on the chief's card. */
+function cloudNotes(role: ExecutiveRole, beforeOpen?: () => void): HTMLElement[] {
+  const note = (feature: OrgFeature) => h('p.exec-note.exec-cloud-gap', { 'data-gap': feature }, cloudGapMessage(feature));
+  if (role === 'chief_of_staff') return [
+    h('p.exec-note.exec-cloud-gap', { 'data-gap': 'chief_brain' }, `${ORG_CAPABILITIES.chief_brain.cloudSummary} `, h('button.btn.exec-link', { type: 'button', 'data-key': 'brain', onclick: () => { beforeOpen?.(); openCloudBrain(); } }, 'Open the chief’s brain')),
+    h('p.exec-note', {}, `${ORG_CAPABILITIES.memory.cloudSummary} `, h('button.btn.exec-link', { type: 'button', 'data-key': 'memory', onclick: () => { beforeOpen?.(); openCloudMemory(); } }, 'Open memory'))];
+  // FREE-12: outreach works in cloud mode; the card names its limits and opens the outreach panel.
+  if (role === 'marketing_sales') return [h('p.exec-note.exec-cloud-gap', { 'data-gap': 'outreach' }, `${ORG_CAPABILITIES.outreach.cloudSummary} `, h('button.btn.exec-link', { type: 'button', 'data-key': 'outreach', onclick: () => { beforeOpen?.(); openCloudOutreach(); } }, 'Open outreach'))];
+  if (role === 'finance') return [note('budget_increase')];
+  if (role === 'research') return [h('p.exec-note', {}, ORG_CAPABILITIES.research.cloudSummary)];
+  return [];
 }
 
 /** Pressing E at an executive's desk: that executive's card, kept current while it is open. */
@@ -87,7 +108,7 @@ export function openExecutiveCard(role: ExecutiveRole, openQueue?: () => void) {
     morphChildren(slot, [
       e
         ? executiveCard(e, { heading: 'h2', openQueue: openQueue && (() => { modal.close(); openQueue(); }), beforeInbox: () => modal.close() })
-        : h('p.setting-note', {}, store.cloud ? 'Executives are not available in cloud mode yet.' : 'This server has not reported its executives yet.'),
+        : h('p.setting-note', {}, store.cloud ? 'Waiting for the first snapshot from your cloud coordinator.' : 'This server has not reported its executives yet.'),
     ]);
   };
   // ORG-05: the research office also lists its reports and takes questions.

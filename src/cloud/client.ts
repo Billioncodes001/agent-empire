@@ -18,7 +18,7 @@ export interface CloudView {
 export async function readCloudView(store: StateStore, now: number): Promise<CloudView> {
   const snapshot = await store.read();
   const stateFiles = Object.fromEntries(Object.entries(snapshot.files).filter(([path]) => !path.startsWith('intents/')));
-  const { state } = parseStateFiles(stateFiles, now);
+  const { state } = parseStateFiles(stateFiles, now, snapshot.unreadableState);
   // Runs with nothing to record skip their commit (heartbeat at least hourly), so this is the age of
   // the last committed observation, not proof the coordinator is currently running.
   const last = state.heartbeat.lastRunAt;
