@@ -55,23 +55,23 @@ async function seedOrg() {
   const client = new CloudRepo({ owner: 'founder', name: 'agent-empire-state' }, TOKEN, s.gh.fetch);
   const snap = async () => { await client.poll(); return client.snapshot!.state; };
   // The seeded jobs filled today's allowance; raise it (as the CEO would under Limits) so research can be dispatched.
-  await client.submit({ kind: 'limits', limits: { maxConcurrent: 3, perTaskBudgetCents: 500, dailyBudgetCents: 10_000 }, configRevision: (await snap()).meta.configRevision }, 'agent-empire-intent', now - 11.5 * 60_000);
-  await tick(now - 11.2 * 60_000);
+  await client.submit({ kind: 'limits', limits: { maxConcurrent: 3, perTaskBudgetCents: 500, dailyBudgetCents: 10_000 }, configRevision: (await snap()).meta.configRevision }, 'agent-empire-intent', s.clock.after(30_000));
+  await tick(s.clock.after(48_000));
   const rev = (await snap()).meta.configRevision;
-  const researchId = uuidv7(now - 11 * 60_000);
-  await client.submit({ kind: 'lesson_propose', lesson: { text: 'Every deploy plan names its rollback step.', scope: 'company' } }, 'agent-empire-intent', now - 11 * 60_000);
-  await client.submit({ kind: 'lesson_propose', lesson: { text: 'Harbour Dental wants plain-language patient emails.', scope: 'client', scopeValue: 'Harbour Dental' } }, 'agent-empire-intent', now - 11 * 60_000 + 1);
-  await client.submit({ kind: 'research', question: 'Can we offer appointment booking for dental practices?', job: { id: researchId, configRevision: rev, confirmPaid: true } }, 'agent-empire-intent', now - 11 * 60_000 + 2);
+  const researchId = uuidv7(s.clock.after(60_000));
+  await client.submit({ kind: 'lesson_propose', lesson: { text: 'Every deploy plan names its rollback step.', scope: 'company' } }, 'agent-empire-intent', s.clock.after(60_000));
+  await client.submit({ kind: 'lesson_propose', lesson: { text: 'Harbour Dental wants plain-language patient emails.', scope: 'client', scopeValue: 'Harbour Dental' } }, 'agent-empire-intent', s.clock.after(60_000) + 1);
+  await client.submit({ kind: 'research', question: 'Can we offer appointment booking for dental practices?', job: { id: researchId, configRevision: rev, confirmPaid: true } }, 'agent-empire-intent', s.clock.after(60_000) + 2);
   // Free the concurrency slots (the seeded jobs finish their turns), so the research job is dispatched to the fake.
   for (const sess of s.provider.sessions.values()) if (sess.status === 'running') s.provider.finish(sess.jobId, 'end_turn', 50);
-  await tick(now - 10 * 60_000);
+  await tick(s.clock.after(120_000));
   const first = (await snap()).org.approvals.find((a) => a.lesson?.lessonId === 'L1')!;
-  await client.submit({ kind: 'approval_decision', approvalId: first.id, decision: 'approve', seen: approvalFingerprint(first) }, 'agent-empire-intent', now - 9 * 60_000);
-  await tick(now - 8.5 * 60_000);
+  await client.submit({ kind: 'approval_decision', approvalId: first.id, decision: 'approve', seen: approvalFingerprint(first) }, 'agent-empire-intent', s.clock.after(180_000));
+  await tick(s.clock.after(210_000));
   s.provider.files.set(`${researchId}:${researchPath(researchId)}`, REPORT);
   if (s.provider.sessionFor(researchId)) s.provider.finish(researchId, 'end_turn', 60);
-  await tick(now - 8 * 60_000);
-  await tick(now - 7 * 60_000);
+  await tick(s.clock.after(240_000));
+  await tick(s.clock.after(300_000));
   const final = await snap();
   const rj = final.jobs.jobs.find((j) => j.id === researchId);
   console.log(`      seed: research job ${rj?.status ?? 'absent'}; report ${final.org.research[0]?.status ?? 'absent'} ${final.org.research[0]?.reason ?? ''}; inbox ${final.org.approvals.map((a) => `${a.id}:${a.kind}:${a.status}`).join(' ')}; rejected ${final.journal.entries.filter((e) => e.kind === 'intent_rejected').map((e) => e.message).join(' | ')}`);
@@ -148,8 +148,8 @@ async function run() {
     ok(!/isn.t available in cloud mode yet/.test(inboxText), `${T} the old blanket "not available" note is gone`);
     await page.locator('.inbox-cloud-gaps summary').click();
     const gaps = await page.locator('.inbox-cloud-gaps li').allInnerTexts();
-    ok(gaps.length === 4, `${T} four inbox kinds are listed as not raised in cloud mode (${gaps.length})`);
-    ok(gaps.some((g) => /per-job allowance/.test(g)) && gaps.some((g) => /SMTP/.test(g)) && gaps.some((g) => /paid confirmation/.test(g)) && gaps.some((g) => /model/.test(g)), `${T} each missing kind names its specific reason`);
+    ok(gaps.length === 2, `${T} two inbox kinds are listed as not raised in cloud mode (${gaps.length}); FREE-11/12 raise plans, chief proposals and campaign sends`);
+    ok(gaps.some((g) => /per-job allowance/.test(g)) && gaps.some((g) => /architect/.test(g)), `${T} each missing kind names its specific reason`);
     ok(await noOverflow(page), `${T} no horizontal overflow (inbox)`);
     await shot('01-cloud-inbox');
 
@@ -174,7 +174,7 @@ async function run() {
     await page.waitForSelector('.exec-modal .exec-card');
     const chief = (await page.locator('.exec-modal').innerText()).replace(/\s+/g, ' ');
     ok(/Rule-based/.test(chief) && /queued/.test(chief) && /awaiting your review/.test(chief), `${T} chief card: rule-based, summarised from cloud jobs`);
-    ok(/Ollama/.test(chief) && /Actions secret/.test(chief), `${T} chief card names why there is no planning brain in cloud mode`);
+    ok(/worst case/.test(chief) && /proposals only/.test(chief), `${T} chief card says how the cloud brain spends and that it proposes only (FREE-11)`);
     ok(!/not available in cloud mode yet/.test(chief), `${T} no blanket "not available" executive note`);
     ok(await noOverflow(page), `${T} no horizontal overflow (chief card)`);
     await shot('03-chief-card');
@@ -182,7 +182,7 @@ async function run() {
     await page.waitForSelector('.cloud-memory');
     const mem = (await page.locator('.cloud-memory').innerText()).replace(/\s+/g, ' ');
     ok(/L1/.test(mem) && /Approved · in use/.test(mem) && /L2/.test(mem) && /Waiting for your approval/.test(mem), `${T} memory lists the approved and the waiting lesson`);
-    ok(/No plan cites a lesson in cloud mode/.test(mem), `${T} memory says why lessons are not used for planning in cloud mode`);
+    ok(/cite the approved lessons/.test(mem), `${T} memory says the cloud brain cites approved lessons (FREE-11)`);
     const w2 = gh.writes.length;
     await page.locator('#cloud-lesson-text').fill('Hidden​instruction');
     await page.locator('.cloud-memory button[type="submit"]').click();
@@ -193,7 +193,7 @@ async function run() {
     await page.evaluate(() => (window as any).__office.orgUI.openExecutiveCard('marketing_sales'));
     await page.waitForSelector('.exec-modal .exec-card');
     const mkt = (await page.locator('.exec-modal').innerText()).replace(/\s+/g, ' ');
-    ok(/SMTP/.test(mkt) && /personal data/.test(mkt) && !(await page.locator('.exec-modal a[href*="consultancy.html"]').count()), `${T} marketing card explains why outreach can't run in cloud mode and links nowhere broken`);
+    ok(/SMTP secret/.test(mkt) && /approval/.test(mkt) && !(await page.locator('.exec-modal a[href*="consultancy.html"]').count()), `${T} marketing card describes cloud outreach (FREE-12) and links nowhere broken`);
     await shot('05-marketing-card');
     await closeModals(page);
 

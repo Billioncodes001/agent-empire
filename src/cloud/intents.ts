@@ -13,6 +13,8 @@ import { APPROVAL_ID_RE, FINGERPRINT_RE } from '../shared/approvals.js';
 import { checkLesson } from '../shared/lesson-rules.js';
 import type { LessonScope } from '../shared/memory.js';
 import { checkQuestion } from './org.js';
+import { BrainRuleError, checkBrainRequest, checkBrainSettings, type BrainRequest } from './brain.js';
+import { OutreachRuleError, SUPPRESSION_REASONS, checkCampaign, checkLeads, checkOutreachSettings, type CloudCampaign, type CloudLead, type OutreachSettings, type SuppressionReason } from './outreach.js';
 
 export const MAX_INTENT_BYTES = 64 * 1024;
 
@@ -42,14 +44,28 @@ export type CloudIntent = IntentBase & (
   | { kind: 'lesson_retire'; lessonId: string }
   /** FREE-07: a research question as paid cloud work; `job` carries the same paid confirmation as `new_job`. */
   | { kind: 'research'; question: string; job: { id: string; configRevision: number; confirmPaid: true } }
+  /** FREE-11: the chief's brain settings. Premium carries the paid confirmation; a free tier names the terms accepted. */
+  | { kind: 'brain_settings'; settings: ReturnType<typeof checkBrainSettings>; confirmPaid?: true }
+  /** FREE-11: ask the chief's model for a plan, a review of a finished job, or an unblock idea. Always a proposal. */
+  | { kind: 'brain_request'; request: Pick<BrainRequest, 'kind' | 'title' | 'client' | 'brief' | 'jobId'> }
+  /** FREE-12: sender identity and caps; acknowledgePrivacy confirms the CEO read the personal-data warning. */
+  | { kind: 'outreach_settings'; settings: Omit<OutreachSettings, 'acknowledgedAt'>; acknowledgePrivacy: true }
+  | { kind: 'outreach_leads'; leads: Omit<CloudLead, 'id' | 'addedAt'>[] }
+  /** FREE-12: an opt-out as its salted hash only (the game hashes the address), so the address never enters the repository. */
+  | { kind: 'outreach_suppress'; hash: string; reason: SuppressionReason }
+  | { kind: 'outreach_campaign'; campaign: Pick<CloudCampaign, 'title' | 'subject' | 'body' | 'audience'> }
+  | { kind: 'outreach_cancel'; campaignId: string }
+  | { kind: 'outreach_delete_leads'; confirm: true }
 );
 export type IntentKind = CloudIntent['kind'];
-export const INTENT_KINDS: readonly IntentKind[] = ['new_job', 'review', 'cancel', 'resolve_uncertain', 'shutdown', 'start', 'limits', 'configure', 'provision', 'empire_action', 'approval_decision', 'lesson_propose', 'lesson_retire', 'research'];
+export const INTENT_KINDS: readonly IntentKind[] = ['new_job', 'review', 'cancel', 'resolve_uncertain', 'shutdown', 'start', 'limits', 'configure', 'provision', 'empire_action', 'approval_decision', 'lesson_propose', 'lesson_retire', 'research', 'brain_settings', 'brain_request', 'outreach_settings', 'outreach_leads', 'outreach_suppress', 'outreach_campaign', 'outreach_cancel', 'outreach_delete_leads'];
 
 export class IntentError extends Error {
   constructor(readonly code: string, message: string) { super(message); this.name = 'IntentError'; }
 }
 const bad = (message: string, code = 'invalid_intent') => new IntentError(code, message);
+/** FREE-11/12: a rule refusal becomes an intent refusal with the same user-safe message. */
+const rule = <T>(run: () => T): T => { try { return run(); } catch (error) { if (error instanceof BrainRuleError || error instanceof OutreachRuleError) throw bad(error.message, error.code); throw error; } };
 
 function rec(value: unknown, keys: readonly string[]): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw bad('Intent fields must be objects.');
@@ -79,7 +95,7 @@ export function parseIntent(path: string, text: string): CloudIntent {
   if (text.length > MAX_INTENT_BYTES) throw bad('Intent file is larger than 64 KiB.');
   let value: unknown;
   try { value = JSON.parse(text); } catch { throw bad('Intent file is not valid JSON.'); }
-  const base = rec(value, ['schemaVersion', 'id', 'createdAt', 'kind', 'job', 'jobId', 'decision', 'note', 'resolution', 'sessionId', 'limits', 'configRevision', 'execution', 'repository', 'model', 'action', 'approvalId', 'seen', 'lesson', 'lessonId', 'question']);
+  const base = rec(value, ['schemaVersion', 'id', 'createdAt', 'kind', 'job', 'jobId', 'decision', 'note', 'resolution', 'sessionId', 'limits', 'configRevision', 'execution', 'repository', 'model', 'action', 'approvalId', 'seen', 'lesson', 'lessonId', 'question', 'settings', 'confirmPaid', 'request', 'acknowledgePrivacy', 'leads', 'hash', 'reason', 'campaign', 'campaignId', 'confirm']);
   if (base.schemaVersion !== 1) throw bad('Unsupported intent schemaVersion.');
   if (typeof base.id !== 'string' || !TASK_ID.test(base.id)) throw bad('Intent id must be a UUID.');
   if (base.id.toLowerCase() !== fileId.toLowerCase()) throw bad('Intent id does not match its file name.');
@@ -189,6 +205,43 @@ export function parseIntent(path: string, text: string): CloudIntent {
       catch (error) { throw bad(error instanceof ExecutionError ? error.message : 'Invalid research job.', error instanceof ExecutionError ? error.code : 'invalid_intent'); }
       return { ...common, kind: 'research', question, job: { id: submit.id, configRevision: submit.configRevision, confirmPaid: true } };
     }
+    case 'brain_settings': {
+      allow(['settings', 'confirmPaid']);
+      if (base.confirmPaid !== undefined && base.confirmPaid !== true) throw bad('confirmPaid must be true when present.');
+      if (!base.settings || typeof base.settings !== 'object' || Array.isArray(base.settings)) throw bad('Brain settings must be an object.');
+      const settings = rule(() => checkBrainSettings(base.settings as Record<string, unknown>, { confirmPaid: base.confirmPaid }));
+      return { ...common, kind: 'brain_settings', settings, ...(base.confirmPaid === true ? { confirmPaid: true as const } : {}) };
+    }
+    case 'brain_request': {
+      allow(['request']);
+      if (!base.request || typeof base.request !== 'object' || Array.isArray(base.request)) throw bad('A brain request must be an object.');
+      return { ...common, kind: 'brain_request', request: rule(() => checkBrainRequest(base.request as Record<string, unknown>, (v) => typeof v === 'string' && TASK_ID.test(v))) };
+    }
+    case 'outreach_settings': {
+      allow(['settings', 'acknowledgePrivacy']);
+      if (base.acknowledgePrivacy !== true) throw bad('Acknowledge the privacy warning first (acknowledgePrivacy): leads and opt-outs are personal data kept in your state repository and its git history.');
+      if (!base.settings || typeof base.settings !== 'object' || Array.isArray(base.settings)) throw bad('Outreach settings must be an object.');
+      return { ...common, kind: 'outreach_settings', settings: rule(() => checkOutreachSettings(base.settings as Record<string, unknown>)), acknowledgePrivacy: true };
+    }
+    case 'outreach_leads':
+      allow(['leads']);
+      return { ...common, kind: 'outreach_leads', leads: rule(() => checkLeads(base.leads)) };
+    case 'outreach_suppress':
+      allow(['hash', 'reason']);
+      if (typeof base.hash !== 'string' || !/^[a-f0-9]{64}$/.test(base.hash)) throw bad('An opt-out is sent as its salted hash (64 hex characters), never as an address.');
+      if (!SUPPRESSION_REASONS.includes(base.reason as SuppressionReason)) throw bad(`The reason must be one of ${SUPPRESSION_REASONS.join(', ')}.`);
+      return { ...common, kind: 'outreach_suppress', hash: base.hash, reason: base.reason as SuppressionReason };
+    case 'outreach_campaign':
+      allow(['campaign']);
+      return { ...common, kind: 'outreach_campaign', campaign: rule(() => checkCampaign(base.campaign)) };
+    case 'outreach_cancel':
+      allow(['campaignId']);
+      if (typeof base.campaignId !== 'string' || !/^C[1-9]\d{0,8}$/.test(base.campaignId)) throw bad('campaignId must look like C3.');
+      return { ...common, kind: 'outreach_cancel', campaignId: base.campaignId };
+    case 'outreach_delete_leads':
+      allow(['confirm']);
+      if (base.confirm !== true) throw bad('Deleting lead data needs confirm: true.');
+      return { ...common, kind: 'outreach_delete_leads', confirm: true };
     default: throw bad('Unknown intent kind.');
   }
 }
