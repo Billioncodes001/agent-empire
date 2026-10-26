@@ -148,8 +148,8 @@ async function run() {
     ok(!/isn.t available in cloud mode yet/.test(inboxText), `${T} the old blanket "not available" note is gone`);
     await page.locator('.inbox-cloud-gaps summary').click();
     const gaps = await page.locator('.inbox-cloud-gaps li').allInnerTexts();
-    ok(gaps.length === 4, `${T} four inbox kinds are listed as not raised in cloud mode (${gaps.length})`);
-    ok(gaps.some((g) => /per-job allowance/.test(g)) && gaps.some((g) => /SMTP/.test(g)) && gaps.some((g) => /paid confirmation/.test(g)) && gaps.some((g) => /model/.test(g)), `${T} each missing kind names its specific reason`);
+    ok(gaps.length === 2, `${T} two inbox kinds are listed as not raised in cloud mode (${gaps.length}); FREE-11/12 raise plans, chief proposals and campaign sends`);
+    ok(gaps.some((g) => /per-job allowance/.test(g)) && gaps.some((g) => /architect/.test(g)), `${T} each missing kind names its specific reason`);
     ok(await noOverflow(page), `${T} no horizontal overflow (inbox)`);
     await shot('01-cloud-inbox');
 
@@ -174,7 +174,7 @@ async function run() {
     await page.waitForSelector('.exec-modal .exec-card');
     const chief = (await page.locator('.exec-modal').innerText()).replace(/\s+/g, ' ');
     ok(/Rule-based/.test(chief) && /queued/.test(chief) && /awaiting your review/.test(chief), `${T} chief card: rule-based, summarised from cloud jobs`);
-    ok(/Ollama/.test(chief) && /Actions secret/.test(chief), `${T} chief card names why there is no planning brain in cloud mode`);
+    ok(/worst case/.test(chief) && /proposals only/.test(chief), `${T} chief card says how the cloud brain spends and that it proposes only (FREE-11)`);
     ok(!/not available in cloud mode yet/.test(chief), `${T} no blanket "not available" executive note`);
     ok(await noOverflow(page), `${T} no horizontal overflow (chief card)`);
     await shot('03-chief-card');
@@ -182,7 +182,7 @@ async function run() {
     await page.waitForSelector('.cloud-memory');
     const mem = (await page.locator('.cloud-memory').innerText()).replace(/\s+/g, ' ');
     ok(/L1/.test(mem) && /Approved · in use/.test(mem) && /L2/.test(mem) && /Waiting for your approval/.test(mem), `${T} memory lists the approved and the waiting lesson`);
-    ok(/No plan cites a lesson in cloud mode/.test(mem), `${T} memory says why lessons are not used for planning in cloud mode`);
+    ok(/cite the approved lessons/.test(mem), `${T} memory says the cloud brain cites approved lessons (FREE-11)`);
     const w2 = gh.writes.length;
     await page.locator('#cloud-lesson-text').fill('Hidden​instruction');
     await page.locator('.cloud-memory button[type="submit"]').click();
@@ -193,7 +193,7 @@ async function run() {
     await page.evaluate(() => (window as any).__office.orgUI.openExecutiveCard('marketing_sales'));
     await page.waitForSelector('.exec-modal .exec-card');
     const mkt = (await page.locator('.exec-modal').innerText()).replace(/\s+/g, ' ');
-    ok(/SMTP/.test(mkt) && /personal data/.test(mkt) && !(await page.locator('.exec-modal a[href*="consultancy.html"]').count()), `${T} marketing card explains why outreach can't run in cloud mode and links nowhere broken`);
+    ok(/SMTP secret/.test(mkt) && /approval/.test(mkt) && !(await page.locator('.exec-modal a[href*="consultancy.html"]').count()), `${T} marketing card describes cloud outreach (FREE-12) and links nowhere broken`);
     await shot('05-marketing-card');
     await closeModals(page);
 
