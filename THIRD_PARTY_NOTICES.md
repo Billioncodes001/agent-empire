@@ -80,3 +80,13 @@ Nothing found prevents public redistribution. SignPath Foundation additionally r
 | Car Kit | https://kenney.nl/assets/car-kit | `fac7dacac5c7874348cf19729af3ef205f3d366493edaf0a827d93f4fdf3d0c4` | hatchback-sports; sedan-sports; suv-luxury; van; delivery; taxi |
 
 CITY-06/08 (drivable garage vehicles and the company helicopter) adds no third-party files. The drivable cars reuse the Car Kit models above; their door leaves and cabin framing are generated at runtime. The pinned packs contain no helicopter, so the helicopter, the helipad and the garage staircase are original procedural geometry in `src/client/world/helicopter.ts` and `src/client/world/districts.ts`, under the project licence.
+
+## Quaternius Universal Animation Library (CC0)
+
+`src/client/public/models/avatars/clips-extra-male.glb` and `clips-extra-female.glb` hold four clips retargeted by `tools/avatars/build-clips.mts` (CHAR-02) from the **Universal Animation Library [Standard]** by Quaternius (quaternius.com), released under [Creative Commons Zero (CC0 1.0)](https://creativecommons.org/publicdomain/zero/1.0/). The licence was checked on 2026-10-25 on the [OpenGameArt page](https://opengameart.org/content/universal-animation-library), on the [author's page](https://quaternius.com/packs/universalanimationlibrary.html) and in the archive's `License.txt`. Attribution is optional; we credit Quaternius gladly. No Mixamo, Human Generator or paid asset is used, and no body was added: the clips are retargeted onto the existing Rocketbox skeletons.
+
+| Archive | SHA-256 | Source clip → shipped clip |
+| --- | --- | --- |
+| https://opengameart.org/sites/default/files/universal_animation_librarystandard.zip | `18ff1a7215f4852b320203e8aaf02a1578b5c8eef9027fbaedfcedc7b85a3ac2` | `Jump_Start` → `jump_start` (0.07–0.50 s), `Jump_Loop` → `jump_air`, `Jump_Land` → `jump_land` (0.03–0.80 s), `Driving_Loop` → `drive_seated` |
+
+The archive is a build input in the git-ignored `.cache/quaternius/` and is not committed. Only rotation tracks of the mapped bones and the pelvis height/hip shift are shipped (no mesh). Per-file checksums are in `src/client/public/models/avatars/clips-extra.json`.

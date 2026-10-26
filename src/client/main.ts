@@ -26,6 +26,7 @@ import { ExecutiveBodies } from './world/executives';
 import { executiveTitle, openExecutiveCard } from './ui/executives';
 import { mountInboxButton, openInbox, pendingApprovals } from './ui/inbox';
 import { Person, Worker } from './world/character';
+import { setHumanReducedMotion } from './world/human';
 import { OfficeLife } from './world/worker-life';
 import { Laptop } from './world/laptop';
 import { BoardTexture, QueueBoardTexture, ServicesBoardTexture } from './world/boards';
@@ -342,6 +343,9 @@ interface WorkerView {
 const workerViews = new Map<string, WorkerView>();
 // Worker routines (LIFE-03): desk ↔ amenities from real server state only. Reduced motion places bodies without walking.
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+// CHAR-02: bodies play the calm jump under reduced motion, following the setting live.
+setHumanReducedMotion(reducedMotion.matches);
+reducedMotion.addEventListener?.('change', () => setHumanReducedMotion(reducedMotion.matches));
 const life = new OfficeLife(office, {
   reducedMotion: () => reducedMotion.matches,
   detail: () => settings.quality !== 'low',
