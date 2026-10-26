@@ -32,10 +32,11 @@ async function startCloudGame(session: { token: string; repo: string; login?: st
 async function showSetup(decision: Exclude<LaunchDecision, { kind: 'game' } | { kind: 'redirect' }>) {
   if (splash) splash.style.display = 'none';
   document.documentElement.dataset.boot = 'setup';
-  const [{ mountSetup, mountCloudUnlock }, { initialState }, { githubClientId }] = await Promise.all([
+  const [{ mountSetup, mountCloudUnlock }, { initialState, restoreProgress }, { githubClientId }, { readProgress, clearProgress }] = await Promise.all([
     import('./setup/view'),
     import('./setup/model'),
     import('./setup/config'),
+    import('./setup/progress-store'),
   ]);
   const bridge = native();
   const shell = shellInfo();
@@ -43,6 +44,7 @@ async function showSetup(decision: Exclude<LaunchDecision, { kind: 'game' } | { 
   const changeSetup = async () => {
     const { forgetSavedSnapshots } = await import('./cloud/session');
     forgetSavedSnapshots();
+    clearProgress();
     await Promise.allSettled([bridge.secureDelete('mode'), bridge.secureDelete('state.repo'), bridge.secureDelete('github.token'), bridge.secureDelete('github.login')]);
     location.reload();
   };
@@ -64,11 +66,22 @@ async function showSetup(decision: Exclude<LaunchDecision, { kind: 'game' } | { 
   }
 
   reportBootOk();
-  const view = mountSetup(initialState({ step: decision.step, mode: decision.mode, notice: decision.notice, address: decision.address }), {
+  // DEVICE-BUGS-03: a fresh launch resumes the setup where it was (a reload, an Android display-size change, a killed
+  // app). The GitHub token comes back only from the app's secure storage; nothing secret was in localStorage.
+  let start = initialState({ step: decision.step, mode: decision.mode, notice: decision.notice, address: decision.address });
+  const saved = decision.step === 'welcome' && !decision.notice ? readProgress() : null;
+  if (saved) {
+    const [token, login] = bridge.available
+      ? await Promise.all([bridge.secureGet('github.token').catch(() => null), bridge.secureGet('github.login').catch(() => null)])
+      : [null, null];
+    start = restoreProgress(start, saved, { token, login });
+  }
+  const view = mountSetup(start, {
     native: bridge,
     shell,
     clientId: githubClientId(),
     onServerSession: async (session) => {
+      clearProgress();
       dismissKeyboard();
       setSessionConfig({ host: session.host, token: session.token, deviceId: session.deviceId, platform: shell?.platform ?? 'ios' });
       document.documentElement.dataset.boot = 'loading';
@@ -77,6 +90,7 @@ async function showSetup(decision: Exclude<LaunchDecision, { kind: 'game' } | { 
     },
     onWebServer: (host) => location.assign(host === location.origin ? '/login' : `${host}/login`),
     onCloudCreated: async (repo, github) => {
+      clearProgress();
       dismissKeyboard();
       await startCloudGame({ token: github.token, login: github.login, repo: `${repo.owner}/${repo.name}` });
       await view.leave();

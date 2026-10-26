@@ -10,6 +10,7 @@ import { setMenuUpdateEntry } from '../ui/game-menu';
 import { noticeGate, promptGate, isTextEntry } from './gate';
 import type { UpdateService, UpdateState } from './service';
 import type { Channel } from './channel';
+import { versionLine } from './version-line';
 
 const DISMISSED_KEY = 'agent-empire.update.dismissed';
 /** One-off update notices stay up longer than an ordinary toast. */
@@ -29,14 +30,7 @@ function sessionSet(key: string, value: string) {
   } catch {}
 }
 
-/** "Game 1.0.0-beta.1 · Android app 1.0.0-beta.1 · Beta channel" */
-export function versionLine(s: UpdateState): string {
-  const parts = [`Game ${s.game ?? 'version unknown'}`];
-  if (s.info) parts.push(`${PLATFORM_LABEL[s.info.platform] ?? 'App'} ${s.info.shellVersion}`);
-  if (s.serverVersion) parts.push(`Server ${s.serverVersion}`);
-  parts.push(`${s.channel === 'beta' ? 'Beta' : 'Stable'} channel`);
-  return parts.join(' · ');
-}
+export { versionLine } from './version-line'; // DEVICE-BUGS-03: names the game build too
 
 /** The one-line summary for the toast and the menu entry; null when there is nothing new. */
 export function offerSummary(s: UpdateState): string | null {
@@ -156,7 +150,7 @@ export function mountUpdateUi(service: UpdateService, opts: UpdateUiOptions = {}
     const summary = offerSummary(service.state);
     return {
       label: summary ? 'Update available' : 'Check for updates',
-      detail: summary ?? (service.state.checkedAt ? `${versionLine(service.state)}` : 'Game and app versions'),
+      detail: summary ?? versionLine(service.state), // DEVICE-BUGS-03: the game build is always one tap away
       run: () => openUpdateDialog(service, { check: !summary }),
       cls: summary ? '.update' : '',
     };

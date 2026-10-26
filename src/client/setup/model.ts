@@ -323,3 +323,84 @@ export function progress(s: SetupState): { step: Step; label: string; state: 'do
   const at = s.step === 'welcome' ? -1 : path.indexOf(s.step);
   return path.map((step, i) => ({ step, label: step === 'mode' ? 'Choose' : labels[step]!, state: i < at ? 'done' : i === at ? 'current' : 'ahead' }));
 }
+
+// ---- Progress across reloads (DEVICE-BUGS-03) ----------------------------------------------------------
+
+/** localStorage key for the setup's non-secret progress (view.ts writes it, boot.ts restores it). */
+export const PROGRESS_KEY = 'agent-empire.setup.progress';
+
+/** What survives a reload: choices only. Never the GitHub token, API keys, project token or the cost confirmation. */
+export function progressSnapshot(s: SetupState) {
+  return {
+    v: 1 as const,
+    step: s.step,
+    mode: s.mode,
+    server: { address: s.server.address },
+    github: { login: s.github.login, via: s.github.via, plan: s.github.plan },
+    repos: s.repos.map((r) => ({ owner: r.owner, name: r.name, private: r.private, defaultBranch: r.defaultBranch })),
+    limits: { ...s.limits },
+    interval: s.interval,
+    engine: s.engine,
+    free: { ...s.free },
+    claudeAuth: s.claudeAuth,
+  };
+}
+
+const str = (v: unknown, max = 300) => (typeof v === 'string' && v.length <= max ? v : undefined);
+const NAME = /^[A-Za-z0-9._-]{1,100}$/;
+
+/**
+ * Rebuilds a setup state from a snapshot. Starting at the first step of the chosen path, it moves forward only while
+ * each step's requirements hold again (the token from secure storage, in-memory keys, the cost confirmation), and never
+ * past the saved step or onto "create". Anything malformed gives `base` back unchanged.
+ */
+export function restoreProgress(base: SetupState, saved: unknown, secure: { token?: string | null; login?: string | null }): SetupState {
+  if (!saved || typeof saved !== 'object') return base;
+  const p = saved as Record<string, unknown>;
+  const steps: Step[] = ['mode', 'server', ...CLOUD_STEPS];
+  if (p.v !== 1 || typeof p.step !== 'string' || !steps.includes(p.step as Step)) return base;
+  const mode = p.mode === 'cloud' || p.mode === 'server' ? p.mode : undefined;
+  const step = p.step as Step;
+  if (step !== 'mode' && !mode) return base;
+  if (step !== 'mode' && (step === 'server') !== (mode === 'server')) return base;
+  let s: SetupState = { ...base, mode };
+  const server = p.server as Record<string, unknown> | undefined;
+  if (server && str(server.address) !== undefined) s.server = { address: str(server.address)! };
+  if (mode !== 'cloud') return { ...s, step: step === 'server' ? 'server' : 'mode' };
+
+  const gh = (p.github ?? {}) as Record<string, unknown>;
+  const savedLogin = str(gh.login, 100);
+  const repos = Array.isArray(p.repos) ? (p.repos as unknown[]) : null;
+  const limits = p.limits as Record<string, unknown> | undefined;
+  if (repos === null || !limits || typeof limits !== 'object') return base;
+  const okRepos = repos.filter((r): r is RepoRef => {
+    const x = r as Partial<RepoRef> | null;
+    return !!x && typeof x === 'object' && NAME.test(String(x.owner)) && NAME.test(String(x.name)) && typeof x.private === 'boolean' && typeof x.defaultBranch === 'string';
+  }).slice(0, MAX_REPOS);
+  if (okRepos.length !== repos.length || typeof limits.perJob !== 'string' || typeof limits.daily !== 'string' || typeof limits.approveEachJob !== 'boolean' || !Number.isInteger(limits.maxConcurrent)) return base;
+  const sameAccount = !secure.login || !savedLogin || secure.login === savedLogin;
+  s = {
+    ...s,
+    repos: sameAccount ? okRepos.map((r) => ({ owner: r.owner, name: r.name, private: r.private, defaultBranch: r.defaultBranch.slice(0, 200) })) : [],
+    limits: { maxConcurrent: Math.max(1, Math.min(LIMIT_BOUNDS.maxConcurrent, limits.maxConcurrent as number)), perJob: limits.perJob.slice(0, 20), daily: limits.daily.slice(0, 20), approveEachJob: limits.approveEachJob },
+    interval: (INTERVALS as readonly number[]).includes(p.interval as number) ? (p.interval as Interval) : base.interval,
+    engine: (ENGINE_CHOICES as readonly string[]).includes(p.engine as string) ? (p.engine as EngineChoice) : base.engine,
+    claudeAuth: p.claudeAuth === 'api-key' ? 'api-key' : 'subscription',
+  };
+  const free = p.free as Record<string, unknown> | undefined;
+  if (free && typeof free === 'object') {
+    s.free = {
+      selfHostedLabel: str(free.selfHostedLabel, 100) ?? base.free.selfHostedLabel,
+      selfHostedModel: str(free.selfHostedModel, 200) ?? base.free.selfHostedModel,
+      hostedOptIn: free.hostedOptIn === true,
+      hostedBaseUrl: str(free.hostedBaseUrl, 300) ?? base.free.hostedBaseUrl,
+      hostedModel: str(free.hostedModel, 200) ?? base.free.hostedModel,
+      cpuOptIn: free.cpuOptIn === true,
+    };
+  }
+  if (secure.token && secure.login && sameAccount) s.github = { login: secure.login, token: secure.token, via: gh.via === 'token' ? 'token' : 'device', plan: str(gh.plan, 40) ?? null };
+  s.step = 'github';
+  const target = Math.min(CLOUD_STEPS.indexOf(step === 'mode' ? 'github' : step), CLOUD_STEPS.indexOf('review'));
+  while (CLOUD_STEPS.indexOf(s.step) < target && !blockers(s).length) s = { ...s, step: CLOUD_STEPS[CLOUD_STEPS.indexOf(s.step) + 1] };
+  return s;
+}

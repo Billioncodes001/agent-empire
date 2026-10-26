@@ -15,6 +15,7 @@ import { checkJobSecret } from '../../cloud/actions-setup';
 import { GitHubClient as CloudGitHubClient } from '../../cloud/store';
 import { GITHUB_API, githubApiBase } from '../cloud/api-base';
 import { PROJECT_TOKEN_GUIDANCE } from '../../cloud/installer';
+import { saveProgress } from './progress-store';
 import { defaultDeviceName, LoginFailure, parseServerAddress, revokeDevice, signInToServer, type ServerSession } from './server-login';
 import { GitHubClient, GitHubError, type RepoListing } from './github';
 import { ACTIONS_CREATE_STEPS, CloudSetupError, createEmpire, CREATE_STEPS, executionPlan, type CreateStep, type StateRepo } from './cloud-setup';
@@ -157,6 +158,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
     const next = reduce(state, a);
     if (next === state) return;
     state = next;
+    saveProgress(state); // DEVICE-BUGS-03: non-secret progress survives a reload or a killed app
     if (state.step !== shownStep) render();
     else refresh();
   };
@@ -293,8 +295,10 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
 
   const STEP_VIEWS: Record<Step, () => { panel: HTMLElement; heading: HTMLElement }> = {
     welcome() {
-      const letters = 'AGENT EMPIRE'.split('').map((ch, i) => el('span', { class: 'su-letter', style: `--i:${i}`, 'aria-hidden': 'true', text: ch === ' ' ? ' ' : ch }));
-      const heading = el('h1', { class: 'su-hero-title', tabindex: '-1', 'aria-label': 'Agent Empire' }, ...letters);
+      // Each word stays whole; with large text the title wraps between the words instead of running off a phone.
+      const word = (w: string, from: number) => el('span', { class: 'su-hero-word', 'aria-hidden': 'true' },
+        ...w.split('').map((ch, i) => el('span', { class: 'su-letter', style: `--i:${from + i}`, text: ch })));
+      const heading = el('h1', { class: 'su-hero-title', tabindex: '-1', 'aria-label': 'Agent Empire' }, word('AGENT', 0), ' ', word('EMPIRE', 6));
       const start = primary('Set up my Empire', () => dispatch({ type: 'begin' }));
       const panel = el('section', { class: 'su-hero', 'aria-label': 'Welcome' },
         el('span', { class: 'su-hero-mark', 'aria-hidden': 'true', html: TOWER }),
