@@ -14,7 +14,8 @@ const activity = readFileSync(path.join(root, 'mobile/android/app/src/main/java/
 const configChanges = (manifest.match(/android:configChanges="([^"]+)"/)?.[1] ?? '').split('|');
 
 test('android shell: font scale and font weight changes do not recreate the activity (the setup is kept)', () => {
-  for (const change of ['fontScale', 'fontWeightAdjust', 'orientation', 'screenSize', 'density']) assert.ok(configChanges.includes(change), `configChanges has ${change}`);
+  // The manifest flag is fontWeightAdjustment (aapt2 rejects 'fontWeightAdjust' and the APK would not build).
+  for (const change of ['fontScale', 'fontWeightAdjustment', 'orientation', 'screenSize', 'density']) assert.ok(configChanges.includes(change), `configChanges has ${change}`);
 });
 
 test('android shell: a display-size (density) change reloads the page safely instead of keeping a stale layout', () => {
