@@ -23,6 +23,8 @@ export interface GitHubUser {
   plan?: string | null;
 }
 export interface RepoListing extends RepoRef {
+  /** Always known in a live listing (RepoRef.private is unknown after a restore). */
+  private: boolean;
   description?: string | null;
   pushedAt?: string | null;
   canPush: boolean;

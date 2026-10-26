@@ -7,6 +7,7 @@ import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
+import android.content.res.Configuration;
 import android.graphics.Typeface;
 import android.net.Uri;
 import android.net.http.SslError;
@@ -85,6 +86,10 @@ public final class MainActivity extends Activity implements NativeBridge.Host {
     private boolean debuggable;
     private FrameLayout root;
     private WebView web;
+    /** The cold-start update step (updater.launch) ran in this process; an activity recreate doesn't repeat it. */
+    private static boolean updatesLaunched;
+    /** The density the page was laid out for (onConfigurationChanged). */
+    private int densityDpi;
     private View splash;
     private boolean revealed;
     private long lastGestureAt;
@@ -103,11 +108,16 @@ public final class MainActivity extends Activity implements NativeBridge.Host {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        densityDpi = getResources().getConfiguration().densityDpi;
         debuggable = (getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
         store = new SecureStore(this);
         updater = new GameUpdater(this, debuggable);
         // A pending bundle switches in now (a trial until the page reports booting); an unfinished trial rolls back.
-        updater.launch(System.currentTimeMillis());
+        // Once per process: a recreate() (density change) mid-trial must not roll back a good update (DEVICE-BUGS-03).
+        if (!updatesLaunched) {
+            updatesLaunched = true;
+            updater.launch(System.currentTimeMillis());
+        }
         gameAssets = new GameAssets(getAssets(), this::configScript, () -> updater.activeRoot());
         Window window = getWindow();
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -554,6 +564,22 @@ public final class MainActivity extends Activity implements NativeBridge.Host {
     }
 
     // ---- Lifecycle -----------------------------------------------------------------------------------------------
+
+    /**
+     * DEVICE-BUGS-03: the activity handles density changes itself (configChanges), but the WebView kept laying the page
+     * out for the old density after Settings > Display size, so everything was scaled off screen. Reloading the page is
+     * not enough (the WebView keeps its old density metrics: 915 CSS px at DPR 3.25 on the emulator), so a density change
+     * recreates the activity with a new WebView; the setup restores its progress from local storage and a signed-in game
+     * reconnects. Other handled changes (rotation, font scale, keyboard) keep the page as it is.
+     */
+    @Override
+    public void onConfigurationChanged(Configuration config) {
+        super.onConfigurationChanged(config);
+        if (config.densityDpi != densityDpi) {
+            densityDpi = config.densityDpi;
+            recreate();
+        }
+    }
 
     @Override
     protected void onResume() {

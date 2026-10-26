@@ -100,7 +100,7 @@ async function fakeGitHub(target: Page | BrowserContext, gh: FakeGitHub) {
 }
 
 /** Desktop shell with "Run on this computer": app.runLocal is cancelled once, then signs in to the fixture like the shell would. */
-const FAKE_DESKTOP = (password: string) => `
+const FAKE_DESKTOP = (password: string, opts: { localError?: boolean } = {}) => `
   window.AGENT_EMPIRE_APP = Object.freeze({ platform: 'desktop', deviceName: 'Fixture Mac', localAvailable: true });
   window.__runLocalCalls = 0; const store = {};
   window.empireDesktop = { postMessage(m) {
@@ -112,19 +112,376 @@ const FAKE_DESKTOP = (password: string) => `
         case 'secure.delete': delete store[m.params.key]; return N().resolve(m.id, true);
         case 'app.runLocal': {
           if (window.__runLocalCalls++ === 0) return N().reject(m.id, 'cancelled: Running on this computer was cancelled. Nothing was started.');
+          if (${JSON.stringify(!!opts.localError)}) return N().reject(m.id, 'The Empire couldn’t start on this computer: Git is required to prepare this project. Install Git, then reopen the app.');
           const res = await fetch(location.origin + '/api/device/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: ${JSON.stringify(password)}, deviceName: 'Fixture Mac (local)' }) });
           const body = await res.json();
           store.mode = 'local';
           return N().resolve(m.id, { mode: 'local', host: location.origin, token: body.token, deviceId: body.deviceId });
         }
+        case 'github.deviceFlow': return setTimeout(() => N().resolve(m.id, { token: 'gho_FAKEFIXTURETOKEN000000000000000000', login: 'octo-founder' }), 300);
         default: return N().resolve(m.id, true);
       }
     }, 20);
   } };
 `;
 
+/**
+ * DEVICE-BUGS-03: every setup step at Android-like sizes and with larger text must fit the screen. On a real phone the
+ * cloud "Choose your projects" panel grew to its 760px maximum (a long repository description set its min-content
+ * width), so the lede, the descriptions and Next ran off the right edge. `scrollWidth` missed it (.su clips), so this
+ * measures every element's visible right edge, honouring clipping ancestors inside the setup, and the primary button.
+ */
+const SWEEP_SIZES = [{ w: 667, h: 375 }, { w: 800, h: 360 }, { w: 915, h: 412 }, { w: 375, h: 812 }, { w: 1024, h: 768 }, { w: 740, h: 332 }, { w: 1440, h: 900 }]; // 740x332: a 915x412 phone with a larger Android "Display size"
+/** Larger text: `zoom` scales the layout like Android "Display size"/browser zoom; `text` scales only the font sizes,
+ * like Android font scale or Chrome's text scaling (WebView textZoom), which is the harsher case for fixed widths. */
+const TEXT_CASES = [{ name: '100%', zoom: 1, text: 1 }, { name: 'zoom 130%', zoom: 1.3, text: 1 }, { name: 'text 130%', zoom: 1, text: 1.3 }];
+/** Horizontal scrollers that scroll by design: a one-line shell command the player copies (.su-cmd). */
+const SCROLLS_BY_DESIGN = '.su-cmd code';
+const FITS = `(() => {
+  const W = innerWidth, H = innerHeight, root = document.querySelector('.su'); const bad = [];
+  const name = (e) => (typeof e.className === 'string' && e.className ? '.' + e.className.split(' ')[0] : e.tagName.toLowerCase());
+  // Review 1: a scrolling body (overflow-x auto/scroll) hides overflow behind a horizontal scrollbar, so clamping to it
+  // would pass a panel whose content is wider than the body. Those fail on scrollWidth; only hidden/clip clamp.
+  for (const a of [root, ...root.querySelectorAll('*')]) {
+    if (a.closest('.su-bg, .su-sr, .su-leave') || !a.getClientRects().length || a.matches(${JSON.stringify(SCROLLS_BY_DESIGN)})) continue;
+    const ox = getComputedStyle(a).overflowX;
+    if ((ox === 'auto' || ox === 'scroll') && a.scrollWidth > a.clientWidth + 1) bad.push(name(a) + ' scrolls sideways (' + a.scrollWidth + ' > ' + a.clientWidth + ')');
+  }
+  for (const e of root.querySelectorAll('*')) {
+    if (e.closest('.su-bg, .su-sr, .su-leave') || !e.getClientRects().length) continue;
+    const r = e.getBoundingClientRect(); if (r.width === 0 || r.height === 0) continue;
+    let left = r.left, right = r.right;
+    for (let a = e.parentElement; a && a !== root; a = a.parentElement) {
+      if (getComputedStyle(a).overflowX === 'visible') continue;
+      const ar = a.getBoundingClientRect(); right = Math.min(right, ar.right); left = Math.max(left, ar.left);
+    }
+    if (right > W + 1 || (left < -1 && right > 0)) bad.push((typeof e.className === 'string' && e.className ? '.' + e.className.split(' ')[0] : e.tagName.toLowerCase()) + '@' + Math.round(left) + '..' + Math.round(right));
+  }
+  const p = [...document.querySelectorAll('.su-panel:not(.su-leave) .su-foot .su-primary, .su-hero .su-primary')].find((b) => b.getClientRects().length);
+  const pr = p && p.getBoundingClientRect();
+  const primary = !p || (pr.left >= -1 && pr.right <= W + 1 && pr.top >= -1 && pr.bottom <= H + 1);
+  return { bad: [...new Set(bad)].slice(0, 6), primary, page: document.documentElement.scrollWidth <= W };
+})()`;
+const SCALE_TEXT = (k: number) => `(() => { for (const e of document.querySelectorAll('.su *')) { e.style.removeProperty('font-size'); }
+  if (${k} === 1) return; const sizes = [...document.querySelectorAll('.su *')].map((e) => [e, parseFloat(getComputedStyle(e).fontSize)]);
+  for (const [e, px] of sizes) e.style.fontSize = (px * ${k}) + 'px'; })()`;
+const LONG_DESC = 'Customer-facing storefront, checkout and inventory sync for the whole catalogue, with the nightly price import and the admin tools';
+const longRepos = [
+  ...repos.slice(0, 3),
+  { ...repos[3], name: 'a-very-long-repository-name-that-has-no-spaces-anywhere-in-it', description: LONG_DESC },
+  { ...repos[4], description: `${LONG_DESC} ${LONG_DESC}` },
+  repos[8],
+];
+
+async function overflowSweep(browser: import('playwright-core').Browser) {
+  const sweepOut = process.env.SWEEP_OUT ? resolve(process.env.SWEEP_OUT) : null;
+  if (sweepOut) mkdirSync(sweepOut, { recursive: true });
+  const sweep = async (page: Page, step: string, restore: { w: number; h: number }) => {
+    // Review 2: content inside closed <details> (the token fallback, how-tos) is measured too; closed again afterwards.
+    await page.evaluate(() => { for (const d of document.querySelectorAll<HTMLDetailsElement>('.su details:not([open])')) { d.dataset.sweepOpened = '1'; d.open = true; } });
+    for (const size of SWEEP_SIZES) for (const tc of TEXT_CASES) {
+      await page.setViewportSize({ width: size.w, height: size.h });
+      await page.evaluate(({ z }) => { document.documentElement.style.zoom = z === 1 ? '' : String(z); }, { z: tc.zoom });
+      await page.evaluate(SCALE_TEXT(tc.text));
+      await page.waitForTimeout(120);
+      const r: { bad: string[]; primary: boolean; page: boolean } = await page.evaluate(FITS);
+      ok(!r.bad.length && r.page && r.primary, `sweep ${step} ${size.w}x${size.h} ${tc.name}: nothing overflows horizontally and the primary action is on screen${r.bad.length ? ` (${r.bad.join(' ')})` : ''}${r.primary ? '' : ' (primary off screen)'}`);
+      // SWEEP_OUT=<dir> saves every case (docs/team/reports/device-bugs-03 keeps a selection); routine runs save none.
+      if (sweepOut) await page.screenshot({ path: resolve(sweepOut, `${step}-${size.w}x${size.h}${tc.name === '100%' ? '' : '-' + tc.name.replace(/\W+/g, '')}.jpg`), type: 'jpeg', quality: 78 });
+    }
+    await page.evaluate(SCALE_TEXT(1));
+    await page.evaluate(() => { document.documentElement.style.zoom = ''; for (const d of document.querySelectorAll<HTMLDetailsElement>('.su details[data-sweep-opened]')) { d.open = false; delete d.dataset.sweepOpened; } });
+    await page.setViewportSize({ width: restore.w, height: restore.h });
+    await page.waitForTimeout(150);
+  };
+  const home = { w: 915, h: 412 };
+  const newPage = async (init: string, touch: boolean) => {
+    const context = await browser.newContext({ viewport: { width: home.w, height: home.h }, hasTouch: touch, isMobile: touch, deviceScaleFactor: touch ? 2 : 1 });
+    await context.addInitScript({ content: 'window.__name = (f) => f;' });
+    if (init) await context.addInitScript({ content: init });
+    return { context, page: await context.newPage() };
+  };
+  const primaryBtn = '.su-panel:not(.su-leave) .su-foot .su-primary';
+  /** Holds the installer's secrets step until released, so the create step can be measured while it runs. */
+  const gate = () => { let open!: () => void; const p = new Promise<void>((r) => (open = r)); return { p, open }; };
+  async function fakeGitHubHeld(page: Page, gh: FakeGitHub, hold: Promise<void>) {
+    await page.route('https://api.github.com/**', async (route) => {
+      const req = route.request();
+      const cors = { 'access-control-allow-origin': '*', 'access-control-expose-headers': 'ETag' };
+      if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: { ...cors, 'access-control-allow-headers': '*', 'access-control-allow-methods': '*' } });
+      if (req.method() === 'PUT' && /\/actions\/secrets\//.test(req.url())) await hold;
+      const res = await gh.handle(new URL(req.url()), { method: req.method(), headers: req.headers(), body: req.postData() ?? undefined });
+      const headers: Record<string, string> = { ...cors };
+      res.headers.forEach((v, k) => (headers[k] = v));
+      return route.fulfill({ status: res.status, headers, body: Buffer.from(await res.arrayBuffer()) });
+    });
+  }
+  /** Linked account → projects → engine → limits → review → create (failed, or running then done), sweeping each step. */
+  async function cloudSteps(page: Page, gh: FakeGitHub, release: () => void, prefix: string, all: boolean) {
+    await page.waitForSelector('.su-linked');
+    if (all) await sweep(page, `${prefix}github-linked`, home);
+    await page.locator(primaryBtn).click();
+    await page.waitForSelector('.su-repo');
+    await page.locator('label[for="su-r-octo-founder-city-planner"]').click();
+    await page.waitForTimeout(300);
+    if (all) await sweep(page, `${prefix}repos`, home);
+    if (all) {
+      // Review 3: in the icon rail (short landscape) and the portrait top bar the step labels are hidden visually, but
+      // every step still has an accessible name with its status.
+      for (const size of [{ w: 667, h: 375 }, { w: 375, h: 812 }, home]) {
+        await page.setViewportSize({ width: size.w, height: size.h });
+        await page.waitForTimeout(150);
+        const tree = await page.locator('nav.su-rail .su-steps').ariaSnapshot();
+        ok(/Choose \(done\)/.test(tree) && /GitHub \(done\)/.test(tree) && /Projects \(current step\)/.test(tree) && /Engine/.test(tree) && /Create/.test(tree),
+          `${prefix || 'app '}${size.w}x${size.h}: every setup step has an accessible name with its status (${tree.replace(/\s+/g, ' ').slice(0, 160)})`);
+      }
+      await page.setViewportSize({ width: home.w, height: home.h });
+    }
+    await page.locator(primaryBtn).click();
+    await page.waitForSelector('#su-key-anthropic');
+    await page.fill('#su-key-anthropic', 'sk-ant-FAKE-fixture-only-000000000000');
+    await page.waitForTimeout(450);
+    if (all) await sweep(page, `${prefix}engine`, home);
+    await page.locator(primaryBtn).click();
+    await page.waitForSelector('#su-daily');
+    await page.waitForTimeout(450);
+    await sweep(page, `${prefix}limits`, home);
+    await page.locator(primaryBtn).click();
+    await page.waitForSelector('.su-panel:not(.su-leave) .su-review');
+    await page.waitForTimeout(450);
+    await sweep(page, `${prefix}review`, home);
+    await page.locator('label[for="su-accept"]').click();
+    if (all) {
+      gh.failures.push({ method: 'PUT', path: /\/actions\/secrets\/ANTHROPIC_API_KEY$/, status: 502, times: 1 });
+      release();
+      await page.locator(primaryBtn).click();
+      await page.waitForSelector('.su-result .su-error');
+      await sweep(page, `${prefix}create-failed`, home);
+      return;
+    }
+    // The success panel shows for 900 ms before the game takes over (view.ts); hold that one timer while it is measured.
+    await page.evaluate(() => {
+      const w = window as unknown as { setTimeout: typeof setTimeout; __held: (() => void)[] };
+      const real = w.setTimeout.bind(window);
+      w.__held = [];
+      w.setTimeout = ((fn: () => void, ms?: number, ...rest: unknown[]) => (ms === 900 ? (w.__held.push(fn), 0) : real(fn, ms, ...rest))) as typeof setTimeout;
+    });
+    await page.locator(primaryBtn).click();
+    await page.waitForSelector('.su-prog.is-running');
+    await sweep(page, `${prefix}create-running`, home);
+    release();
+    await page.waitForSelector('.su-result .su-success', { timeout: 20000 });
+    await sweep(page, `${prefix}create-done`, home);
+  }
+  const android = FAKE_BRIDGE.replace("platform: 'ios'", "platform: 'android'").replace('window.webkit = {', 'window.empireAndroid = { postMessage(j) { window.webkit.messageHandlers.empire.postMessage(JSON.parse(j)); } }; window.webkit = {');
+  // App shell (Android-like bridge semantics are identical through the shared native layer): the whole cloud path,
+  // with a first create that fails and is measured there.
+  {
+    const { context, page } = await newPage(android, true);
+    const gh = newGitHub();
+    gh.listed = longRepos;
+    const g = gate();
+    await fakeGitHubHeld(page, gh, g.p);
+    await page.goto(base);
+    await page.waitForSelector('.su-hero-title');
+    await page.waitForTimeout(1400);
+    await sweep(page, 'welcome', home);
+    await page.locator('text=Set up my Empire').click();
+    await page.waitForSelector('.su-card-cloud');
+    await page.waitForTimeout(450);
+    await sweep(page, 'mode', home);
+    await page.locator('.su-card-cloud').click();
+    await page.waitForSelector('text=Sign in with GitHub');
+    await page.waitForTimeout(450);
+    await sweep(page, 'github-device', home);
+    await page.locator('text=Sign in with GitHub').click();
+    await cloudSteps(page, gh, g.open, '', true);
+    await context.close();
+  }
+  // App shell: the same path to a create that runs (held at the secrets step) and then succeeds.
+  {
+    const { context, page } = await newPage(android, true);
+    const gh = newGitHub();
+    gh.listed = longRepos;
+    const g = gate();
+    await fakeGitHubHeld(page, gh, g.p);
+    await page.goto(base);
+    await page.waitForSelector('.su-hero-title');
+    await page.locator('text=Set up my Empire').click();
+    await page.locator('.su-card-cloud').click();
+    await page.locator('text=Sign in with GitHub').click();
+    await cloudSteps(page, gh, g.open, 'app-', false);
+    await context.close();
+  }
+  // App shell: an Empire already set up in the cloud opens on "Open my Empire" (mountCloudUnlock).
+  {
+    const unlock = android.replace('const store = {};', "const store = { mode: 'cloud', 'state.repo': 'octo-founder/agent-empire-state' };");
+    const { context, page } = await newPage(unlock, true);
+    await page.goto(base);
+    await page.waitForSelector('.su-shell-center .su-panel');
+    await page.waitForTimeout(450);
+    await sweep(page, 'cloud-unlock', home);
+    await context.close();
+  }
+  // App shell: own server.
+  {
+    const { context, page } = await newPage(FAKE_BRIDGE, true);
+    await page.goto(base);
+    await page.waitForSelector('.su-hero-title');
+    await page.locator('text=Set up my Empire').click();
+    await page.locator('.su-card-server').click();
+    await page.waitForSelector('#su-address');
+    await page.fill('#su-address', base.replace(/\/$/, ''));
+    await page.fill('#su-password', 'wrong-password');
+    await page.locator(primaryBtn).click();
+    await page.waitForSelector('.su-error:not([hidden])');
+    await sweep(page, 'server', home);
+    await context.close();
+  }
+  // Desktop shell: three ways to run, "Run on this computer" cancelled and then failing, and the cloud path.
+  {
+    const { context, page } = await newPage(FAKE_DESKTOP(process.env.FIXTURE_PASSWORD || 'fixture-office', { localError: true }), false);
+    const gh = newGitHub();
+    gh.listed = longRepos;
+    const g = gate();
+    await fakeGitHubHeld(page, gh, g.p);
+    await page.goto(base);
+    await page.waitForSelector('.su-hero-title');
+    await page.locator('text=Set up my Empire').click();
+    await page.waitForSelector('.su-card-local');
+    await page.waitForTimeout(450);
+    await sweep(page, 'desktop-mode', home);
+    await page.locator('.su-card-local').click();
+    await page.waitForFunction(() => (window as unknown as { __runLocalCalls: number }).__runLocalCalls === 1);
+    await page.waitForTimeout(300);
+    await page.locator('.su-card-local').click();
+    await page.waitForSelector('.su-panel:not(.su-leave) .su-error:not([hidden])');
+    await sweep(page, 'desktop-local-error', home);
+    await page.locator('.su-card-cloud').click();
+    await page.locator('text=Sign in with GitHub').click();
+    await cloudSteps(page, gh, g.open, 'desktop-', false);
+    await context.close();
+  }
+  // Web / PWA (no native bridge): the web server step, the token fallback and the cloud path on a token.
+  {
+    const { context, page } = await newPage('', true);
+    await page.route('**/api/whoami', (r) => r.fulfill({ status: 404, body: 'static host' }));
+    const gh = newGitHub();
+    gh.listed = longRepos;
+    const g = gate();
+    await fakeGitHubHeld(page, gh, g.p);
+    await page.goto(base);
+    await page.waitForSelector('.su-hero-title');
+    await page.locator('text=Set up my Empire').click();
+    await page.locator('.su-card-server').click();
+    await page.waitForTimeout(450);
+    await sweep(page, 'web-server', home);
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('.su-card-cloud');
+    await page.locator('.su-card-cloud').click();
+    await page.waitForSelector('#su-gh-token');
+    await page.waitForTimeout(450);
+    await sweep(page, 'web-github-token', home);
+    await page.fill('#su-gh-token', 'github_pat_FAKEFIXTUREONLY000000000000000000000000000000000000');
+    await page.locator('button:has-text("Check token")').click();
+    await cloudSteps(page, gh, g.open, 'web-', false);
+    await context.close();
+  }
+}
+
+/**
+ * DEVICE-BUGS-03 review 5: a reload (Android display-size change, renderer restart, killed app) resumes the setup.
+ * The fake native store survives the reload like the real Keychain/Keystore; localStorage only ever holds choices.
+ */
+async function reloadChecks(browser: import('playwright-core').Browser) {
+  const persistent = FAKE_BRIDGE.replace('const store = {};', "const store = new Proxy(JSON.parse(sessionStorage.getItem('__fakeSecure') || '{}'), { set(t, k, v) { t[k] = v; sessionStorage.setItem('__fakeSecure', JSON.stringify(t)); return true; }, deleteProperty(t, k) { delete t[k]; sessionStorage.setItem('__fakeSecure', JSON.stringify(t)); return true; } });");
+  const primaryBtn = '.su-panel:not(.su-leave) .su-foot .su-primary';
+  const current = (page: Page) => page.evaluate(() => (document.querySelector('.su-step.is-current .su-step-label')?.textContent ?? (document.querySelector('.su-hero-title') ? 'Welcome' : '?')).replace(/\(.*\)/, '').trim());
+  const stored = (page: Page) => page.evaluate(() => localStorage.getItem('agent-empire.setup.progress') ?? '');
+  {
+    const context = await browser.newContext({ viewport: { width: 915, height: 412 }, hasTouch: true, isMobile: true });
+    await context.addInitScript({ content: 'window.__name = (f) => f;' });
+    await context.addInitScript({ content: persistent });
+    const page = await context.newPage();
+    const gh = newGitHub();
+    await fakeGitHub(page, gh);
+    await page.goto(base);
+    await page.waitForSelector('.su-hero-title');
+    await page.locator('text=Set up my Empire').click();
+    await page.locator('.su-card-cloud').click();
+    await page.locator('text=Sign in with GitHub').click();
+    await page.waitForSelector('.su-linked');
+    await page.locator(primaryBtn).click();
+    await page.waitForSelector('.su-repo');
+    await page.locator('label[for="su-r-octo-founder-city-planner"]').click();
+    await page.reload();
+    await page.waitForSelector('.su-repo', { timeout: 15000 }).catch(() => {});
+    ok((await current(page)) === 'Projects' && (await page.locator('#su-r-octo-founder-city-planner').isChecked().catch(() => false)),
+      `reload on the projects step comes back on it with the project still chosen (now: ${await current(page)})`);
+    // Re-check 1: the live list decides. A chosen repository that became read-only is dropped and named after a reload.
+    gh.listed = repos.map((r) => (r.name === 'city-planner' ? { ...r, permissions: { push: false, admin: false } } : r));
+    await page.reload();
+    await page.waitForSelector('.su-repo', { timeout: 15000 }).catch(() => {});
+    await page.waitForTimeout(400);
+    const droppedNote = (await page.locator('.su-panel:not(.su-leave) .su-callout:not([hidden])').first().innerText().catch(() => '')).trim();
+    ok(/No longer selected: octo-founder\/city-planner \(you can’t push to it\)/.test(droppedNote) && /0 selected/.test(await page.locator('.su-chip').innerText()),
+      `a restored repository that is now read-only is dropped and named (${droppedNote})`);
+    gh.listed = repos;
+    await page.locator('label[for="su-r-octo-founder-storefront"]').click();
+    await page.locator(primaryBtn).click();
+    await page.fill('#su-key-anthropic', 'sk-ant-FAKE-fixture-only-000000000000');
+    await page.locator(primaryBtn).click();
+    await page.waitForSelector('#su-daily');
+    await page.fill('#su-daily', '12.50');
+    await page.locator('#su-daily').blur();
+    const saved = await stored(page);
+    ok(saved.includes('"step":"limits"') && !/gho_|sk-ant|github_pat_/.test(saved), `setup progress is saved without any token or key (${saved.slice(0, 120)})`);
+    await page.reload();
+    await page.waitForSelector('#su-key-anthropic', { timeout: 15000 }).catch(() => {});
+    ok((await current(page)) === 'Engine' && (await page.locator('#su-key-anthropic').inputValue().catch(() => 'x')) === '',
+      `reload after the engine step asks for the in-memory API key again (now: ${await current(page)})`);
+    await context.close();
+  }
+  {
+    const context = await browser.newContext({ viewport: { width: 915, height: 412 } });
+    const page = await context.newPage();
+    await page.route('**/api/whoami', (r) => r.fulfill({ status: 404, body: 'static host' }));
+    await page.goto(base);
+    await page.waitForSelector('.su-hero-title');
+    await page.locator('text=Set up my Empire').click();
+    await page.locator('.su-card-server').click();
+    await page.waitForSelector('#su-address');
+    await page.fill('#su-address', 'https://office.example.com');
+    await page.locator('#su-address').blur();
+    await page.reload();
+    await page.waitForSelector('#su-address', { timeout: 15000 }).catch(() => {});
+    ok((await page.locator('#su-address').inputValue().catch(() => '')) === 'https://office.example.com', 'web: reload on the server step keeps the typed address');
+    // Re-check: credentials typed into the address are flagged at once and never saved; a reload starts the field empty.
+    await page.fill('#su-address', 'https://ada:hunter2@office.example.com');
+    const credNote = (await page.locator('#su-address-cred').innerText().catch(() => '')).trim();
+    ok(/Leave out user names, passwords and keys/.test(credNote) && !(await stored(page)).includes('hunter2'), `web: an address with a password is flagged as typed and not saved (${credNote.slice(0, 60)})`);
+    await page.reload();
+    await page.waitForSelector('#su-address', { timeout: 15000 }).catch(() => {});
+    ok((await page.locator('#su-address').inputValue().catch(() => 'x')) === '', 'web: the address with a password does not come back after a reload');
+    // Re-check: handing over to the server's own sign-in page clears the saved progress.
+    await page.fill('#su-address', base.replace(/\/$/, ''));
+    await page.locator(primaryBtn).click();
+    await page.waitForURL(/\/login/, { timeout: 15000 }).catch(() => {});
+    ok(/\/login/.test(page.url()) && (await stored(page)) === '', `web: continuing to the server's sign-in clears the saved setup progress (${page.url()})`);
+    await context.close();
+  }
+}
+
 async function run() {
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  await reloadChecks(browser);
+  if (!process.env.RELOAD_ONLY) await overflowSweep(browser);
+  if (process.env.RELOAD_ONLY) process.env.SWEEP_ONLY = '1';
+  if (process.env.SWEEP_ONLY) {
+    await browser.close();
+    console.log(failures.length ? `\n${failures.length} FAILED` : '\nALL PASS');
+    process.exit(failures.length ? 1 : 0);
+  }
   for (const size of sizes) {
     const tag = `${size.w}x${size.h}`;
     let textMode: unknown = null;
@@ -346,6 +703,11 @@ async function run() {
         const light: string[] = await page.evaluate(LIGHT_DIALOGS);
         seen.push(...light);
         if (item === 'Settings') await page.screenshot({ path: resolve(out, `${tag}-14-settings.jpg`), type: 'jpeg', quality: 82 });
+        if (item === 'Settings') {
+          // DEVICE-BUGS-03: Settings names the game build, so a release and a newer build of the same version differ.
+          const versions = (await page.locator('.update-versions').first().innerText().catch(() => '')).trim();
+          ok(/^Game \d+\.\d+\.\d+\S* \(build [0-9a-f]{7}\+?(, \d{1,2} \w{3} \d{4})?\)/.test(versions), `${tag} Settings shows the game version with its build (${versions})`);
+        }
         if (item === 'Controls') await page.screenshot({ path: resolve(out, `${tag}-15-controls.jpg`), type: 'jpeg', quality: 82 });
         ok(light.length === 0, `${tag} ${name} window uses the dark design (${light.join(', ') || 'dark'})`);
         for (let i = 0; i < 3 && (await page.locator('#modal-root .modal').count()); i++) {

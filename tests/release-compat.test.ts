@@ -7,7 +7,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { gameZipFrom } from '../tools/update-fixture';
+import { makeZip } from './update-fixtures';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -308,4 +310,45 @@ test('beta.1 client on its default stable channel: reaches the next 1.0.0 pre-re
   // A beta.1 player who chose beta still gets it: the listing no longer marks it a pre-release, but beta also reads stable.
   const beta = await fetchChannel('beta', gh.client, { publicKey: KEY });
   assert.equal(beta?.file.version, V);
+});
+
+// DEVICE-BUGS-03 review 8: game-version.json now also names the build ({version, build: {commit, date, dirty}}).
+// The frozen beta.1 readers must still take a bundle in that shape, and the update fixture must serve it unchanged.
+const NEW_SHAPE = (version: string) => `${JSON.stringify({ version, build: { commit: 'd2376fd0c0de', date: '2026-10-26T03:10:39Z', dirty: false } })}\n`;
+
+test('beta.1 desktop shell: installs and serves a bundle whose game-version.json carries the build', async () => {
+  const root = temp('newshape');
+  const builtin = temp('newshape-builtin');
+  writeFileSync(path.join(builtin, 'index.html'), '<title>beta.1</title>');
+  writeFileSync(path.join(builtin, 'game-version.json'), JSON.stringify({ version: OLD }));
+  const zip = makeZip([{ name: 'index.html', data: `<title>${V}</title>` }, { name: 'game-version.json', data: NEW_SHAPE(V) }]);
+  const store = desktopStore.createBundleStore({ root, builtinRoot: builtin });
+  const url = `https://github.com/${REPO}/releases/download/${TAG}/agent-empire-game-${V}.zip`;
+  await store.install({ url, sha256: sha256(zip), version: V }, async () => zip);
+  assert.equal(desktopStore.createBundleStore({ root, builtinRoot: builtin }).launch(), null);
+  const again = desktopStore.createBundleStore({ root, builtinRoot: builtin });
+  assert.equal(again.servingRoot(), path.join(root, V));
+  assert.equal(desktopStore.bundleVersion(path.join(root, V)), V);
+});
+
+test('beta.1 Android and iOS shells: read only "version" from game-version.json, well within their size limit', () => {
+  const java = readFileSync(path.join(BETA1, 'mobile/android/app/src/main/java/com/agentempire/mobile/GameUpdater.java'), 'utf8');
+  const swift = readFileSync(path.join(BETA1, 'mobile/ios/AgentEmpire/GameUpdater.swift'), 'utf8');
+  assert.match(java, /new JSONObject\(new String\(readAll\(in, 4096\)[^)]*\)\)\.optString\("version", null\)/);
+  assert.match(swift, /JSONSerialization\.jsonObject\(with: data\) as\? \[String: Any\], let v = obj\["version"\] as\? String/);
+  assert.ok(Buffer.byteLength(NEW_SHAPE('1.0.0-beta.10')) < 4096, 'Android reads at most 4096 bytes');
+  const built = path.join(ROOT, 'dist/public/game-version.json');
+  if (existsSync(built)) assert.ok(statSync(built).size < 4096, 'the built file is small');
+});
+
+test('update fixture: relabelling the real game keeps the build in game-version.json', () => {
+  const dir = temp('fixture-game');
+  writeFileSync(path.join(dir, 'index.html'), '<title>game</title>');
+  writeFileSync(path.join(dir, 'game-version.json'), NEW_SHAPE('1.0.0-beta.2'));
+  const out = path.join(temp('fixture-unzip'), 'game');
+  desktopStore.extractZip(gameZipFrom(dir, '1.0.0-beta.9'), out);
+  const json = JSON.parse(readFileSync(path.join(out, 'game-version.json'), 'utf8'));
+  assert.equal(json.version, '1.0.0-beta.9');
+  assert.equal(json.build?.commit, 'd2376fd0c0de');
+  assert.equal(desktopStore.bundleVersion(out), '1.0.0-beta.9', 'the frozen reader reads the relabelled version');
 });
