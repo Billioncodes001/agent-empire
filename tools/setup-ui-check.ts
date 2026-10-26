@@ -418,6 +418,16 @@ async function reloadChecks(browser: import('playwright-core').Browser) {
     await page.waitForSelector('.su-repo', { timeout: 15000 }).catch(() => {});
     ok((await current(page)) === 'Projects' && (await page.locator('#su-r-octo-founder-city-planner').isChecked().catch(() => false)),
       `reload on the projects step comes back on it with the project still chosen (now: ${await current(page)})`);
+    // Re-check 1: the live list decides. A chosen repository that became read-only is dropped and named after a reload.
+    gh.listed = repos.map((r) => (r.name === 'city-planner' ? { ...r, permissions: { push: false, admin: false } } : r));
+    await page.reload();
+    await page.waitForSelector('.su-repo', { timeout: 15000 }).catch(() => {});
+    await page.waitForTimeout(400);
+    const droppedNote = (await page.locator('.su-panel:not(.su-leave) .su-callout:not([hidden])').first().innerText().catch(() => '')).trim();
+    ok(/No longer selected: octo-founder\/city-planner \(you can’t push to it\)/.test(droppedNote) && /0 selected/.test(await page.locator('.su-chip').innerText()),
+      `a restored repository that is now read-only is dropped and named (${droppedNote})`);
+    gh.listed = repos;
+    await page.locator('label[for="su-r-octo-founder-storefront"]').click();
     await page.locator(primaryBtn).click();
     await page.fill('#su-key-anthropic', 'sk-ant-FAKE-fixture-only-000000000000');
     await page.locator(primaryBtn).click();

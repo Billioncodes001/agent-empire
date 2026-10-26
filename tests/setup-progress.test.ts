@@ -6,7 +6,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { initialState, reduce, progressSnapshot, restoreProgress, type SetupState } from '../src/client/setup/model';
+import { blockers, initialState, reduce, progressSnapshot, restoreProgress, type SetupState } from '../src/client/setup/model';
 
 const repo = { owner: 'octo', name: 'shop', private: true, defaultBranch: 'main' };
 function walk(...actions: Parameters<typeof reduce>[1][]): SetupState {
@@ -44,13 +44,13 @@ test('restore: with the token back from secure storage, the steps whose requirem
   const r = restoreProgress(initialState(), snap, { token: 'gho_FROM_SECURE_STORE', login: 'octo' });
   assert.equal(r.step, 'repos');
   assert.equal(r.github.token, 'gho_FROM_SECURE_STORE');
-  assert.deepEqual(r.repos, [repo]);
+  assert.deepEqual(r.repos, [{ owner: repo.owner, name: repo.name, defaultBranch: repo.defaultBranch }], "visibility comes from the live list, not storage");
 });
 
 test('restore: no token (web, or signed out) goes back to the GitHub step and keeps the choices', () => {
   const r = restoreProgress(initialState(), JSON.parse(JSON.stringify(progressSnapshot(atLimits()))), {});
   assert.equal(r.step, 'github');
-  assert.deepEqual(r.repos, [repo]);
+  assert.deepEqual(r.repos, [{ owner: repo.owner, name: repo.name, defaultBranch: repo.defaultBranch }], "visibility comes from the live list, not storage");
   assert.equal(r.limits.daily, '12.50');
 });
 
@@ -80,4 +80,37 @@ test('restore: the server path keeps the typed address; junk and other accounts 
   const other = restoreProgress(initialState(), JSON.parse(JSON.stringify(progressSnapshot(atLimits()))), { token: 'gho_W', login: 'someone-else' });
   assert.equal(other.step, 'github', 'a different signed-in account starts at GitHub');
   assert.deepEqual(other.repos, [], 'and does not inherit the other account’s projects');
+});
+
+// ---- Re-check 1: a restored repository's visibility is not trusted ------------------------------------------------
+
+test('restore: repositories come back without their saved visibility, so the public-repo runner guard fails closed', () => {
+  const snap = JSON.parse(JSON.stringify(progressSnapshot(atLimits())));
+  snap.repos[0].private = true; // whatever was saved (or edited in localStorage)
+  const r = restoreProgress(initialState(), snap, { token: 'gho_Y', login: 'octo' });
+  assert.equal(r.repos[0].private, undefined, 'visibility is unknown until the live list says');
+  const selfHosted = reduce(reduce({ ...r, step: 'providers' }, { type: 'setEngine', engine: 'qwen-free' }), { type: 'setFree', patch: { selfHostedLabel: 'my-runner' } });
+  assert.ok(blockers({ ...selfHosted, projectToken: 'github_pat_' + 'A'.repeat(82) }).some((b) => /not known to be private/.test(b)), 'the self-hosted runner is refused until visibility is known');
+});
+
+const listing = (over: Partial<{ owner: string; name: string; private: boolean; defaultBranch: string; canPush: boolean }> = {}) => ({ owner: 'octo', name: 'shop', private: false, defaultBranch: 'trunk', canPush: true, ...over });
+
+test('projects list: selected repositories take their visibility and default branch from the live list', () => {
+  const s = { ...initialState(), step: 'repos' as const, mode: 'cloud' as const, repos: [{ owner: 'octo', name: 'shop', defaultBranch: 'main' } as never] };
+  const r = reduce(s, { type: 'reposListed', repos: [listing()], complete: true });
+  assert.deepEqual(r.repos, [{ owner: 'octo', name: 'shop', private: false, defaultBranch: 'trunk' }]);
+  assert.deepEqual(r.droppedRepos ?? [], []);
+});
+
+test('projects list: a selected repository that is gone or read-only is dropped and named', () => {
+  const two = [{ owner: 'octo', name: 'shop', private: true, defaultBranch: 'main' }, { owner: 'octo', name: 'gone', private: true, defaultBranch: 'main' }];
+  const s = { ...initialState(), step: 'repos' as const, mode: 'cloud' as const, repos: two };
+  const readOnly = reduce(s, { type: 'reposListed', repos: [listing({ canPush: false })], complete: false });
+  assert.deepEqual(readOnly.repos.map((x) => x.name), ['gone'], 'read-only: dropped even before the list is complete');
+  assert.deepEqual(readOnly.droppedRepos, ['octo/shop (you can’t push to it)']);
+  const partial = reduce(s, { type: 'reposListed', repos: [listing()], complete: false });
+  assert.deepEqual(partial.repos.map((x) => x.name), ['shop', 'gone'], 'not listed yet is not missing while more pages remain');
+  const full = reduce(s, { type: 'reposListed', repos: [listing()], complete: true });
+  assert.deepEqual(full.repos.map((x) => x.name), ['shop']);
+  assert.deepEqual(full.droppedRepos, ['octo/gone (not found in your account)']);
 });

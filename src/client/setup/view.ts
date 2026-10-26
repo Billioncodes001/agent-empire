@@ -599,6 +599,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
       const search = el('input', { class: 'su-input', type: 'search', placeholder: 'Filter repositories', 'aria-label': 'Filter repositories', autocomplete: 'off', oninput: () => draw() });
       const more = el('button', { type: 'button', class: 'su-btn su-ghost su-small', hidden: true, onclick: () => void load() }, 'Load more');
       const count = el('span', { class: 'su-chip', 'aria-live': 'polite' });
+      const dropped = el('p', { class: 'su-callout', role: 'status', hidden: true });
       const next = primary('Choose engine', () => dispatch({ type: 'next' }));
       if (repoCache.login !== state.github.login) Object.assign(repoCache, { login: state.github.login, repos: [], page: 0, more: true, error: undefined });
 
@@ -624,6 +625,10 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
         );
         if (!shown.length && repoCache.repos.length) list.append(el('li', { class: 'su-empty', text: 'No repository matches that filter.' }));
         count.textContent = `${state.repos.length} selected`;
+        // Re-check 1: selected repositories the live list removed are named, not silently forgotten.
+        const gone = state.droppedRepos ?? [];
+        dropped.hidden = !gone.length;
+        dropped.replaceChildren(...(gone.length ? [icon(ICONS.warn, 'su-inline-ico'), `No longer selected: ${gone.join(', ')}.`] : []));
         more.hidden = !repoCache.more || busy;
         next.disabled = blockers(state).length > 0;
       }
@@ -640,6 +645,8 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
           repoCache.repos.push(...page.repos.filter((r) => !seen.has(repoKey(r))));
           repoCache.page += 1;
           repoCache.more = page.more;
+          // Re-check 1: visibility and default branch of the chosen repositories come from this live list.
+          dispatch({ type: 'reposListed', repos: repoCache.repos, complete: !repoCache.more });
           status.textContent = repoCache.repos.length ? `${repoCache.repos.length} repositories. Agents work on branches and open pull requests; nothing goes straight to your default branch.` : 'This account has no repositories yet. Create one on GitHub, then come back.';
         } catch (err) {
           status.textContent = '';
@@ -655,7 +662,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
         eyebrow: 'Cloud · step 2',
         title: STEP_TITLES.repos,
         lede: 'Pick the repositories your agents may work on. Only these are used, and only through branches and pull requests.',
-        body: [el('div', { class: 'su-row su-repo-tools' }, search, count), list, status, more, errors],
+        body: [el('div', { class: 'su-row su-repo-tools' }, search, count), dropped, list, status, more, errors],
         primary: next,
       });
       draw();
