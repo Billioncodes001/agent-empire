@@ -389,9 +389,72 @@ async function overflowSweep(browser: import('playwright-core').Browser) {
   }
 }
 
+/**
+ * DEVICE-BUGS-03 review 5: a reload (Android display-size change, renderer restart, killed app) resumes the setup.
+ * The fake native store survives the reload like the real Keychain/Keystore; localStorage only ever holds choices.
+ */
+async function reloadChecks(browser: import('playwright-core').Browser) {
+  const persistent = FAKE_BRIDGE.replace('const store = {};', "const store = new Proxy(JSON.parse(sessionStorage.getItem('__fakeSecure') || '{}'), { set(t, k, v) { t[k] = v; sessionStorage.setItem('__fakeSecure', JSON.stringify(t)); return true; }, deleteProperty(t, k) { delete t[k]; sessionStorage.setItem('__fakeSecure', JSON.stringify(t)); return true; } });");
+  const primaryBtn = '.su-panel:not(.su-leave) .su-foot .su-primary';
+  const current = (page: Page) => page.evaluate(() => (document.querySelector('.su-step.is-current .su-step-label')?.textContent ?? (document.querySelector('.su-hero-title') ? 'Welcome' : '?')).replace(/\(.*\)/, '').trim());
+  const stored = (page: Page) => page.evaluate(() => localStorage.getItem('agent-empire.setup.progress') ?? '');
+  {
+    const context = await browser.newContext({ viewport: { width: 915, height: 412 }, hasTouch: true, isMobile: true });
+    await context.addInitScript({ content: 'window.__name = (f) => f;' });
+    await context.addInitScript({ content: persistent });
+    const page = await context.newPage();
+    const gh = newGitHub();
+    await fakeGitHub(page, gh);
+    await page.goto(base);
+    await page.waitForSelector('.su-hero-title');
+    await page.locator('text=Set up my Empire').click();
+    await page.locator('.su-card-cloud').click();
+    await page.locator('text=Sign in with GitHub').click();
+    await page.waitForSelector('.su-linked');
+    await page.locator(primaryBtn).click();
+    await page.waitForSelector('.su-repo');
+    await page.locator('label[for="su-r-octo-founder-city-planner"]').click();
+    await page.reload();
+    await page.waitForSelector('.su-repo', { timeout: 15000 }).catch(() => {});
+    ok((await current(page)) === 'Projects' && (await page.locator('#su-r-octo-founder-city-planner').isChecked().catch(() => false)),
+      `reload on the projects step comes back on it with the project still chosen (now: ${await current(page)})`);
+    await page.locator(primaryBtn).click();
+    await page.fill('#su-key-anthropic', 'sk-ant-FAKE-fixture-only-000000000000');
+    await page.locator(primaryBtn).click();
+    await page.waitForSelector('#su-daily');
+    await page.fill('#su-daily', '12.50');
+    await page.locator('#su-daily').blur();
+    const saved = await stored(page);
+    ok(saved.includes('"step":"limits"') && !/gho_|sk-ant|github_pat_/.test(saved), `setup progress is saved without any token or key (${saved.slice(0, 120)})`);
+    await page.reload();
+    await page.waitForSelector('#su-key-anthropic', { timeout: 15000 }).catch(() => {});
+    ok((await current(page)) === 'Engine' && (await page.locator('#su-key-anthropic').inputValue().catch(() => 'x')) === '',
+      `reload after the engine step asks for the in-memory API key again (now: ${await current(page)})`);
+    await context.close();
+  }
+  {
+    const context = await browser.newContext({ viewport: { width: 915, height: 412 } });
+    const page = await context.newPage();
+    await page.route('**/api/whoami', (r) => r.fulfill({ status: 404, body: 'static host' }));
+    await page.goto(base);
+    await page.waitForSelector('.su-hero-title');
+    await page.locator('text=Set up my Empire').click();
+    await page.locator('.su-card-server').click();
+    await page.waitForSelector('#su-address');
+    await page.fill('#su-address', 'https://office.example.com');
+    await page.locator('#su-address').blur();
+    await page.reload();
+    await page.waitForSelector('#su-address', { timeout: 15000 }).catch(() => {});
+    ok((await page.locator('#su-address').inputValue().catch(() => '')) === 'https://office.example.com', 'web: reload on the server step keeps the typed address');
+    await context.close();
+  }
+}
+
 async function run() {
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
-  await overflowSweep(browser);
+  await reloadChecks(browser);
+  if (!process.env.RELOAD_ONLY) await overflowSweep(browser);
+  if (process.env.RELOAD_ONLY) process.env.SWEEP_ONLY = '1';
   if (process.env.SWEEP_ONLY) {
     await browser.close();
     console.log(failures.length ? `\n${failures.length} FAILED` : '\nALL PASS');

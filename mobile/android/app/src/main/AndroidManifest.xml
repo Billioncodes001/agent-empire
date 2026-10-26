@@ -29,7 +29,7 @@
             android:exported="true"
             android:launchMode="singleTask"
             android:screenOrientation="sensorLandscape"
-            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density|fontScale|fontWeightAdjust"
             android:windowSoftInputMode="adjustResize"
             android:resizeableActivity="true">
             <intent-filter>

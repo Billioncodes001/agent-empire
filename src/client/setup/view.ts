@@ -15,6 +15,7 @@ import { checkJobSecret } from '../../cloud/actions-setup';
 import { GitHubClient as CloudGitHubClient } from '../../cloud/store';
 import { GITHUB_API, githubApiBase } from '../cloud/api-base';
 import { PROJECT_TOKEN_GUIDANCE } from '../../cloud/installer';
+import { saveProgress } from './progress-store';
 import { defaultDeviceName, LoginFailure, parseServerAddress, revokeDevice, signInToServer, type ServerSession } from './server-login';
 import { GitHubClient, GitHubError, type RepoListing } from './github';
 import { ACTIONS_CREATE_STEPS, CloudSetupError, createEmpire, CREATE_STEPS, executionPlan, type CreateStep, type StateRepo } from './cloud-setup';
@@ -157,6 +158,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
     const next = reduce(state, a);
     if (next === state) return;
     state = next;
+    saveProgress(state); // DEVICE-BUGS-03: non-secret progress survives a reload or a killed app
     if (state.step !== shownStep) render();
     else refresh();
   };
