@@ -184,10 +184,13 @@ export function trustedClock(github: number | undefined, runner: number, clockAt
   return { at: Math.max(github, clockAt) };
 }
 
-/** Review 4: from per-day totals. The rolling window counts whole UTC days (today and the 29 before), so it never undercounts. */
+/**
+ * Review 4: from per-day totals. Re-review D: the rolling window counts whole UTC days from the day 30 days ago through
+ * today (31 calendar days), so it errs conservative and never undercounts.
+ */
 export function brainSpend(brain: CloudBrain, at: number): { todayMicros: number; rollingMicros: number; callsToday: number } {
   const day = utcDayOf(at);
-  const from = utcDayOf(at - ROLLING_MS + 24 * 3600_000);
+  const from = utcDayOf(at - ROLLING_MS);
   let rollingMicros = 0;
   for (const [d, m] of Object.entries(brain.days ?? {})) if (d >= from && d <= day) rollingMicros += m;
   return { todayMicros: brain.days?.[day] ?? 0, rollingMicros, callsToday: brain.calls?.[day] ?? 0 };
@@ -261,6 +264,12 @@ export function chargeBrain(brain: CloudBrain, org: CloudOrg, jobs: readonly Clo
   const queued = brain.requests.filter((r) => r.status === 'queued').sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1));
   if (s.mode === 'off') { for (const r of queued) { r.status = 'needs_attention'; note(r, 'The brain was turned off before this ran; nothing was charged.'); } return []; }
   if (!queued.length) return [];
+  // Re-review note: a file written before the :free rule stays readable (so it can be turned off or fixed), but a paid
+  // OpenRouter model on a free setting is never called.
+  if (s.mode === 'free' && s.provider === 'openrouter' && (s.price !== undefined || !/:free$/.test(s.model))) {
+    for (const r of queued) note(r, 'Waiting: on OpenRouter the free brain calls only free models (ids ending in :free). Choose one, switch to premium, or turn the brain off; nothing was charged.');
+    return [];
+  }
   if ('reason' in clock) { for (const r of queued) note(r, `Waiting: ${clock.reason}`); return []; }
   const planned: PlannedCall[] = [];
   for (const r of queued) {
@@ -387,7 +396,6 @@ export function validateBrain(value: unknown): CloudBrain {
   if (s.mode === 'premium' && (s.price === undefined || FREE_BRAIN_PROVIDERS.includes(s.provider as BrainProvider))) throw new BrainSchemaError('premium needs an API provider and a price');
   if (s.termsAccepted !== undefined) { const t = obj(s.termsAccepted, ['provider', 'at'], 'terms'); if (!isBrainProvider(t.provider)) throw new BrainSchemaError('invalid terms'); num(t.at, 'terms time'); }
   if (s.mode === 'free' && (s.termsAccepted as Rec | undefined)?.provider !== s.provider) throw new BrainSchemaError('a free tier needs its terms accepted');
-  if (s.mode === 'free' && s.provider === 'openrouter' && (s.price !== undefined || !/:free$/.test(String(s.model)))) throw new BrainSchemaError('an OpenRouter free brain uses only :free models');
   num(b.clockAt, 'clock');
   if (!Array.isArray(b.log) || b.log.length > BRAIN_LIMITS.log) throw new BrainSchemaError('invalid log');
   for (const e of b.log) {

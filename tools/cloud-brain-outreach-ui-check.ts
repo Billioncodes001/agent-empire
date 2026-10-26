@@ -43,27 +43,28 @@ async function seedBrainOutreach() {
   // The secrets the user set themselves (names only matter here): the brain's key and the SMTP URL.
   const repo = s.gh.repos.get(FULL)!;
   repo.secrets.set('AGENT_EMPIRE_SMTP_URL', { key_id: 'key-1', encrypted_value: 'sealed' });
-  const t = now - 12 * 60_000;
+  // Re-review note: the seed's clock keeps these ticks inside the seed's UTC day.
+  const at = s.clock.after;
   await client.submit({ kind: 'lesson_propose', lesson: { text: 'Every form labels each field for screen readers.', scope: 'company' } }, 'agent-empire-intent', t);
-  await tick(t + 10_000);
+  await tick(at(10_000));
   const lesson = (await snap()).org.approvals.find((a) => a.kind === 'lesson')!;
-  await client.submit({ kind: 'approval_decision', approvalId: lesson.id, decision: 'approve', seen: approvalFingerprint(lesson) }, 'agent-empire-intent', t + 20_000);
-  await client.submit({ kind: 'brain_settings', settings: { mode: 'premium', provider: 'anthropic', model: 'claude-fixture', price: [3, 15], dailyCapCents: 200, monthlyCapCents: 2000 }, confirmPaid: true } as never, 'agent-empire-intent', t + 21_000);
-  await client.submit({ kind: 'brain_request', request: { kind: 'plan', title: 'Reminder emails', client: 'Harbour Dental', brief: 'Patients forget appointments. Send a reminder email the day before, form a booking request form.' } } as never, 'agent-empire-intent', t + 22_000);
-  await client.submit({ kind: 'brain_request', request: { kind: 'plan', title: 'Booking form', client: 'Harbour Dental', brief: 'An accessible form for patients to request an appointment; the practice gets an email.' } } as never, 'agent-empire-intent', t + 23_000);
-  await client.submit({ kind: 'outreach_settings', settings: { from: 'hello@harbour.example', fromName: 'Harbour Studio', address: 'Harbour Studio Ltd, 1 Quay Street, Bristol BS1 4XX, UK', dailyCap: 50, perRunCap: 20 }, acknowledgePrivacy: true } as never, 'agent-empire-intent', t + 24_000);
+  await client.submit({ kind: 'approval_decision', approvalId: lesson.id, decision: 'approve', seen: approvalFingerprint(lesson) }, 'agent-empire-intent', at(20_000));
+  await client.submit({ kind: 'brain_settings', settings: { mode: 'premium', provider: 'anthropic', model: 'claude-fixture', price: [3, 15], dailyCapCents: 200, monthlyCapCents: 2000 }, confirmPaid: true } as never, 'agent-empire-intent', at(21_000));
+  await client.submit({ kind: 'brain_request', request: { kind: 'plan', title: 'Reminder emails', client: 'Harbour Dental', brief: 'Patients forget appointments. Send a reminder email the day before, form a booking request form.' } } as never, 'agent-empire-intent', at(22_000));
+  await client.submit({ kind: 'brain_request', request: { kind: 'plan', title: 'Booking form', client: 'Harbour Dental', brief: 'An accessible form for patients to request an appointment; the practice gets an email.' } } as never, 'agent-empire-intent', at(23_000));
+  await client.submit({ kind: 'outreach_settings', settings: { from: 'hello@harbour.example', fromName: 'Harbour Studio', address: 'Harbour Studio Ltd, 1 Quay Street, Bristol BS1 4XX, UK', dailyCap: 50, perRunCap: 20 }, acknowledgePrivacy: true } as never, 'agent-empire-intent', at(24_000));
   await client.submit({ kind: 'outreach_leads', leads: [
     { email: 'ann@clinic-a.example', name: 'Ann Patel', company: 'Clinic A', tags: ['dentists'] },
     { email: 'bob@clinic-b.example', name: 'Bob Ng', company: 'Clinic B', tags: ['dentists'] },
     { email: 'cat@clinic-c.example', name: 'Cat Ruiz', company: 'Clinic C', tags: ['dentists'] },
-  ] } as never, 'agent-empire-intent', t + 25_000);
-  await client.submit({ kind: 'outreach_campaign', campaign: { title: 'Spring check-up reminders', subject: 'Fewer missed appointments at {{company}}', body: 'Hi {{name}},\n\nWe build appointment reminders for dental practices like {{company}}. Would a 15-minute call next week help?\n\nThanks,\nJo', audience: ['dentists'] } } as never, 'agent-empire-intent', t + 26_000);
-  await tick(t + 60_000);
-  await tick(t + 120_000);
+  ] } as never, 'agent-empire-intent', at(25_000));
+  await client.submit({ kind: 'outreach_campaign', campaign: { title: 'Spring check-up reminders', subject: 'Fewer missed appointments at {{company}}', body: 'Hi {{name}},\n\nWe build appointment reminders for dental practices like {{company}}. Would a 15-minute call next week help?\n\nThanks,\nJo', audience: ['dentists'] } } as never, 'agent-empire-intent', at(26_000));
+  await tick(at(60_000));
+  await tick(at(120_000));
   let state = await snap();
   const approve = state.org.approvals.find((a) => a.kind === 'job_plan' && a.plan?.title === 'Reminder emails');
-  if (approve) await client.submit({ kind: 'approval_decision', approvalId: approve.id, decision: 'approve', seen: approvalFingerprint(approve) }, 'agent-empire-intent', t + 180_000);
-  await tick(t + 200_000);
+  if (approve) await client.submit({ kind: 'approval_decision', approvalId: approve.id, decision: 'approve', seen: approvalFingerprint(approve) }, 'agent-empire-intent', at(180_000));
+  await tick(at(200_000));
   state = await snap();
   console.log(`      seed: inbox ${state.org.approvals.map((a) => `${a.id}:${a.kind}:${a.status}`).join(' ')}; brain ${state.brain.requests.map((r) => `${r.kind}:${r.status}${r.reason ? `(${r.reason})` : ''}`).join(' ')}; campaigns ${state.outreach.campaigns.map((c) => `${c.id}:${c.state}`).join(' ')}; rejected ${state.journal.entries.filter((e) => e.kind === 'intent_rejected').map((e) => e.message).join(' | ')}`);
   return s;

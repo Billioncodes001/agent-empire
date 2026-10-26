@@ -146,6 +146,12 @@ export function addLeads(o: CloudOutreach, leads: Omit<CloudLead, 'id' | 'addedA
   return { added, skipped };
 }
 
+/** Re-review C: a campaign-send item that is resolved keeps no recipient or rendered sample. */
+export function resolveSendItem(item: CloudOrg['approvals'][number], now: number, note: string) {
+  Object.assign(item, { status: 'resolved', decidedAt: now, note });
+  if (item.outreach) { item.outreach.recipients = []; item.outreach.samples = []; }
+}
+
 /** Removes stored addresses from campaign-send inbox items (`all`, or a set of addresses); a pending one is resolved. */
 export function scrubOrgAddresses(org: CloudOrg, emails: Set<string> | 'all', now: number, note: string) {
   for (const a of org.approvals) {
@@ -154,7 +160,7 @@ export function scrubOrgAddresses(org: CloudOrg, emails: Set<string> | 'all', no
     if (!hit) continue;
     a.outreach.recipients = emails === 'all' ? [] : a.outreach.recipients.filter((r) => !emails.has(r));
     a.outreach.samples = emails === 'all' ? [] : a.outreach.samples.filter((s) => !emails.has(s.to));
-    if (a.status === 'pending') Object.assign(a, { status: 'resolved', decidedAt: now, note });
+    if (a.status === 'pending') resolveSendItem(a, now, note);
   }
 }
 
@@ -208,7 +214,7 @@ export function cancelCampaign(o: CloudOutreach, org: CloudOrg, id: string, ctx:
   const c = o.campaigns.find((x) => x.id === id) ?? refuse('campaign_not_found', `There is no campaign ${id}.`);
   if (['done', 'cancelled', 'rejected'].includes(c.state)) return 'duplicate';
   const item = c.approvalId ? org.approvals.find((a) => a.id === c.approvalId) : undefined;
-  if (item?.status === 'pending') Object.assign(item, { status: 'resolved', decidedAt: ctx.now, note: 'The campaign was cancelled.' });
+  if (item?.status === 'pending') resolveSendItem(item, ctx.now, 'The campaign was cancelled.');
   c.sends?.forEach((s, i) => { if (s.status === 'pending') c.sends![i] = { status: 'cancelled', at: ctx.now }; });
   c.state = c.sends?.some((s) => s.status === 'claimed') ? c.state : 'cancelled';
   if (c.state === 'cancelled') finishCampaign(c);
@@ -247,7 +253,7 @@ export function reconcileCampaigns(o: CloudOutreach, org: CloudOrg, now: number,
     const item = c.approvalId ? org.approvals.find((a) => a.id === c.approvalId) : undefined;
     if (item?.status === 'rejected') { c.state = 'rejected'; finishCampaign(c); c.note = 'Declined by the CEO. Nothing was sent.'; continue; }
     const drop = (note: string) => {
-      if (item?.status === 'pending') Object.assign(item, { status: 'resolved', decidedAt: now, note });
+      if (item?.status === 'pending') resolveSendItem(item, now, note);
       delete c.approvalId; delete c.snapshot; c.state = 'draft';
     };
     if (!s) { drop('Outreach is not set up.'); c.note = 'Set up the sender first.'; continue; }
@@ -267,7 +273,7 @@ export function reconcileCampaigns(o: CloudOutreach, org: CloudOrg, now: number,
     const body = { subject: c.subject, body: c.body, footer: outreachFooter(s), from: s.from, ...(s.fromName ? { fromName: s.fromName } : {}), dailyCap: s.dailyCap, perRunCap: s.perRunCap, recipients, excluded };
     const hash = sha256Hex(JSON.stringify(body));
     if (item?.status === 'pending' && c.snapshot?.hash === hash) continue;
-    if (item?.status === 'pending') Object.assign(item, { status: 'resolved', decidedAt: now, note: 'What would be sent changed (recipients, suppression or sender settings); a new item replaces this one.' });
+    if (item?.status === 'pending') resolveSendItem(item, now, 'What would be sent changed (recipients, suppression or sender settings); a new item replaces this one.');
     const samples = recipients.slice(0, 2).map((r) => { const m = renderOutreach(body, r); return { to: m.to, subject: m.subject, text: m.text }; });
     const est = deliveryEstimate(recipients.length, s, intervalMinutes);
     const raised = raiseApproval(org, {

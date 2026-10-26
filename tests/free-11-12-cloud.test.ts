@@ -618,7 +618,8 @@ test('review 1: the send job runs only when this run committed claims; least pri
   const [tick, send] = yaml.split(/\n  send:\n/);
   assert.match(tick, /\n    outputs:\n      send: \$\{\{ steps\.tick\.outputs\.send \}\}/);
   assert.match(tick, /- name: Coordinator tick\n        id: tick/);
-  assert.match(send, /if: \$\{\{ always\(\) && needs\.tick\.outputs\.send == 'true' \}\}/);
+  // Re-review A/B replaced always(): cancelling the run stops sends; a failed tick still lets the send job look.
+  assert.match(send, /if: \$\{\{ !cancelled\(\) && \(needs\.tick\.outputs\.send == 'true' \|\| needs\.tick\.result == 'failure'\) \}\}/);
   assert.match(send, /\n    permissions:\n      contents: write\n/);
   assert.match(yaml, /send job runs only on runs that send email/);
   // The tick reports how many messages its committed phase 1 claimed, and says so as soon as that commit lands.

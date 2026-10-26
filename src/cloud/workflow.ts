@@ -96,11 +96,13 @@ jobs:
 
   # FREE-12: approved outreach email, sent on a fresh runner that holds only the SMTP secret. It runs no model and no
   # agent code: it sends exactly the messages the tick job claimed for this run, rechecks each one, and records a receipt.
-  # The send job runs only on runs that send email: the tick sets send=true right after it commits this run's claims
-  # (so a later failure of the tick still sends what it claimed), and other runs bill no extra minute.
+  # The send job runs only on runs that send email: the tick sets send=true right after it commits this run's claims,
+  # and other runs bill no extra minute. If the tick failed, the send job still looks for committed claims (it exits
+  # after one read when there are none), because a failed step's outputs may be lost. Cancelling the run stops it:
+  # claims of a cancelled run become uncertain and are never sent.
   send:
     needs: tick
-    if: \${{ always() && needs.tick.outputs.send == 'true' }}
+    if: \${{ !cancelled() && (needs.tick.outputs.send == 'true' || needs.tick.result == 'failure') }}
     permissions:
       contents: write
     runs-on: ubuntu-latest

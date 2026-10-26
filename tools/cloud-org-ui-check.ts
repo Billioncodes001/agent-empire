@@ -55,23 +55,23 @@ async function seedOrg() {
   const client = new CloudRepo({ owner: 'founder', name: 'agent-empire-state' }, TOKEN, s.gh.fetch);
   const snap = async () => { await client.poll(); return client.snapshot!.state; };
   // The seeded jobs filled today's allowance; raise it (as the CEO would under Limits) so research can be dispatched.
-  await client.submit({ kind: 'limits', limits: { maxConcurrent: 3, perTaskBudgetCents: 500, dailyBudgetCents: 10_000 }, configRevision: (await snap()).meta.configRevision }, 'agent-empire-intent', now - 11.5 * 60_000);
-  await tick(now - 11.2 * 60_000);
+  await client.submit({ kind: 'limits', limits: { maxConcurrent: 3, perTaskBudgetCents: 500, dailyBudgetCents: 10_000 }, configRevision: (await snap()).meta.configRevision }, 'agent-empire-intent', s.clock.after(30_000));
+  await tick(s.clock.after(48_000));
   const rev = (await snap()).meta.configRevision;
-  const researchId = uuidv7(now - 11 * 60_000);
-  await client.submit({ kind: 'lesson_propose', lesson: { text: 'Every deploy plan names its rollback step.', scope: 'company' } }, 'agent-empire-intent', now - 11 * 60_000);
-  await client.submit({ kind: 'lesson_propose', lesson: { text: 'Harbour Dental wants plain-language patient emails.', scope: 'client', scopeValue: 'Harbour Dental' } }, 'agent-empire-intent', now - 11 * 60_000 + 1);
-  await client.submit({ kind: 'research', question: 'Can we offer appointment booking for dental practices?', job: { id: researchId, configRevision: rev, confirmPaid: true } }, 'agent-empire-intent', now - 11 * 60_000 + 2);
+  const researchId = uuidv7(s.clock.after(60_000));
+  await client.submit({ kind: 'lesson_propose', lesson: { text: 'Every deploy plan names its rollback step.', scope: 'company' } }, 'agent-empire-intent', s.clock.after(60_000));
+  await client.submit({ kind: 'lesson_propose', lesson: { text: 'Harbour Dental wants plain-language patient emails.', scope: 'client', scopeValue: 'Harbour Dental' } }, 'agent-empire-intent', s.clock.after(60_000) + 1);
+  await client.submit({ kind: 'research', question: 'Can we offer appointment booking for dental practices?', job: { id: researchId, configRevision: rev, confirmPaid: true } }, 'agent-empire-intent', s.clock.after(60_000) + 2);
   // Free the concurrency slots (the seeded jobs finish their turns), so the research job is dispatched to the fake.
   for (const sess of s.provider.sessions.values()) if (sess.status === 'running') s.provider.finish(sess.jobId, 'end_turn', 50);
-  await tick(now - 10 * 60_000);
+  await tick(s.clock.after(120_000));
   const first = (await snap()).org.approvals.find((a) => a.lesson?.lessonId === 'L1')!;
-  await client.submit({ kind: 'approval_decision', approvalId: first.id, decision: 'approve', seen: approvalFingerprint(first) }, 'agent-empire-intent', now - 9 * 60_000);
-  await tick(now - 8.5 * 60_000);
+  await client.submit({ kind: 'approval_decision', approvalId: first.id, decision: 'approve', seen: approvalFingerprint(first) }, 'agent-empire-intent', s.clock.after(180_000));
+  await tick(s.clock.after(210_000));
   s.provider.files.set(`${researchId}:${researchPath(researchId)}`, REPORT);
   if (s.provider.sessionFor(researchId)) s.provider.finish(researchId, 'end_turn', 60);
-  await tick(now - 8 * 60_000);
-  await tick(now - 7 * 60_000);
+  await tick(s.clock.after(240_000));
+  await tick(s.clock.after(300_000));
   const final = await snap();
   const rj = final.jobs.jobs.find((j) => j.id === researchId);
   console.log(`      seed: research job ${rj?.status ?? 'absent'}; report ${final.org.research[0]?.status ?? 'absent'} ${final.org.research[0]?.reason ?? ''}; inbox ${final.org.approvals.map((a) => `${a.id}:${a.kind}:${a.status}`).join(' ')}; rejected ${final.journal.entries.filter((e) => e.kind === 'intent_rejected').map((e) => e.message).join(' | ')}`);

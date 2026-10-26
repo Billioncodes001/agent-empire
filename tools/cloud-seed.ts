@@ -59,7 +59,12 @@ export function seedTimeline(now: number) {
   const t0 = Math.max(now - 3 * 3600_000, dayStart + 1);
   const span = 51 * 60_000; // the latest step offset (50 min) plus a margin
   const scale = Math.min(1, Math.max(0, last - t0 - 2) / span);
-  return { t0, last, at: (offset: number) => t0 + 1 + Math.floor(offset * scale) };
+  // Re-review note: the checks' own later ticks use after(ms) (ms after the last seeded tick), which stays inside the
+  // same UTC day: near midnight the offsets are compressed into what is left of the day.
+  const dayEnd = dayStart + 24 * 3600_000 - 1;
+  const afterSpan = 10 * 60_000;
+  const afterScale = Math.min(1, Math.max(0, dayEnd - last - 1) / afterSpan);
+  return { t0, last, at: (offset: number) => t0 + 1 + Math.floor(offset * scale), after: (ms: number) => last + Math.floor(ms * afterScale) + (ms > 0 && afterScale < 1 ? 1 : 0) };
 }
 
 /** A state repository as a coordinator leaves it: founded city, jobs in several states, spend, journal. */
@@ -92,6 +97,6 @@ export async function seed() {
   await client.submit({ kind: 'review', jobId: ids[1], decision: 'accept' }, 'agent-empire-intent', tl.at(41 * 60_000));
   await tick(tl.at(50 * 60_000));
   await tick(tl.last); // the last committed snapshot: 12 minutes old
-  return { gh, provider, ids, titles };
+  return { gh, provider, ids, titles, clock: tl };
 }
 
