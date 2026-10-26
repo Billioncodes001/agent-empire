@@ -456,6 +456,18 @@ async function reloadChecks(browser: import('playwright-core').Browser) {
     await page.reload();
     await page.waitForSelector('#su-address', { timeout: 15000 }).catch(() => {});
     ok((await page.locator('#su-address').inputValue().catch(() => '')) === 'https://office.example.com', 'web: reload on the server step keeps the typed address');
+    // Re-check: credentials typed into the address are flagged at once and never saved; a reload starts the field empty.
+    await page.fill('#su-address', 'https://ada:hunter2@office.example.com');
+    const credNote = (await page.locator('#su-address-cred').innerText().catch(() => '')).trim();
+    ok(/Leave out user names, passwords and keys/.test(credNote) && !(await stored(page)).includes('hunter2'), `web: an address with a password is flagged as typed and not saved (${credNote.slice(0, 60)})`);
+    await page.reload();
+    await page.waitForSelector('#su-address', { timeout: 15000 }).catch(() => {});
+    ok((await page.locator('#su-address').inputValue().catch(() => 'x')) === '', 'web: the address with a password does not come back after a reload');
+    // Re-check: handing over to the server's own sign-in page clears the saved progress.
+    await page.fill('#su-address', base.replace(/\/$/, ''));
+    await page.locator(primaryBtn).click();
+    await page.waitForURL(/\/login/, { timeout: 15000 }).catch(() => {});
+    ok(/\/login/.test(page.url()) && (await stored(page)) === '', `web: continuing to the server's sign-in clears the saved setup progress (${page.url()})`);
     await context.close();
   }
 }

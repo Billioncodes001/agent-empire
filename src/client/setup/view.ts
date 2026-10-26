@@ -8,7 +8,7 @@ import { BridgeError } from '../native';
 import {
   actionsEstimate, blockers, CLOUD_STEPS, DEFAULT_LIMITS, dollars, INTERVALS, LIMIT_BOUNDS, linkedProviders, MAX_REPOS, parseCents, progress, PROVIDER_NAMES, reduce, repoKey,
   STATE_REPO_NAME, validateProjectToken, validateProviderKey, type Action, type ProviderId, type RepoRef, type SetupState, type Step,
-  actionsSettingsFor, ENGINE_CHOICES, jobMinutesNote, jobMinutesCap, type EngineChoice,
+  actionsSettingsFor, ENGINE_CHOICES, jobMinutesNote, jobMinutesCap, type EngineChoice, hasCredentials,
 } from './model';
 import { CPU_MODEL, JOB_PINS, requiredSecret, SECRETS, subscriptionChecklist } from '../../cloud/actions-spec';
 import { checkJobSecret } from '../../cloud/actions-setup';
@@ -404,6 +404,7 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
       const action = primary(app ? 'Sign in' : 'Continue to sign-in', () => void submit());
       const form = el('form', { class: 'su-form', novalidate: true, onsubmit: (e: Event) => (e.preventDefault(), void submit()) },
         field('Server address', address, 'The HTTPS address of your Agent Empire server.'),
+        credentialWarning(address, 'your password goes in the field below, never in the address.'),
         app ? field('Office password', password, `Signs in this ${deps.shell?.platform === 'desktop' ? 'computer' : 'device'} only. The password isn’t stored; the app keeps a device sign-in in secure storage.`) : null,
         el('button', { type: 'submit', hidden: true, tabindex: '-1', 'aria-hidden': 'true' }),
       );
@@ -760,7 +761,8 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
         el('fieldset', { class: 'su-source' }, el('legend', { text: '2 · A free hosted tier (your key)' }),
           check('su-free-hosted', f.hostedOptIn, (v) => dispatch({ type: 'setFree', patch: { hostedOptIn: v } }), 'Use a free hosted key.', 'Free tiers may log prompts and code and use them for training. Read the provider’s data-use terms before you opt in; don’t use it for private code you can’t share.'),
           el('div', { class: 'su-row su-wrap' },
-            input('su-free-url', f.hostedBaseUrl, 'https://openrouter.ai/api/v1', (v) => dispatch({ type: 'setFree', patch: { hostedBaseUrl: v } }), 'OpenAI-compatible address'),
+            ((f2) => (f2.append(credentialWarning(f2.querySelector('input')!, 'the key goes in a GitHub secret (the command below), never in the address.')), f2))(
+              input('su-free-url', f.hostedBaseUrl, 'https://openrouter.ai/api/v1', (v) => dispatch({ type: 'setFree', patch: { hostedBaseUrl: v } }), 'OpenAI-compatible address')),
             input('su-free-hmodel', f.hostedModel, 'qwen/qwen3-coder:free', (v) => dispatch({ type: 'setFree', patch: { hostedModel: v } }), 'Model')),
           el('p', { class: 'su-note', text: `Store the key yourself, in your terminal: ` }), command(`gh secret set ${SECRETS.freeKey} --repo ${repoName}`)),
         el('fieldset', { class: 'su-source' }, el('legend', { text: '3 · Small CPU model on GitHub’s runner (slow)' }),
@@ -992,6 +994,23 @@ export function mountSetup(initial: SetupState, deps: SetupDeps): { root: HTMLEl
       return { panel, heading };
     },
   };
+
+  /**
+   * Re-check: an address with user:pass@ or a key in its query would be saved with the setup's progress. Say so as it is
+   * typed; the value is never saved (progressSnapshot) and the step's own validation refuses it.
+   */
+  function credentialWarning(input: HTMLInputElement, where: string): HTMLElement {
+    const note = el('p', { class: 'su-field-error', id: `${input.id}-cred`, role: 'alert' });
+    const check = () => {
+      const bad = hasCredentials(input.value);
+      note.textContent = bad ? `Leave out user names, passwords and keys: ${where}` : '';
+      if (bad) input.setAttribute('aria-invalid', 'true');
+      else input.removeAttribute('aria-invalid');
+    };
+    input.addEventListener('input', check);
+    check();
+    return note;
+  }
 
   function field(label: string, control: HTMLElement, hint?: string) {
     const input = control.matches('input') ? control : control.querySelector('input');

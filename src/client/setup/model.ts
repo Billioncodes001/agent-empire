@@ -348,19 +348,30 @@ export function progress(s: SetupState): { step: Step; label: string; state: 'do
 /** localStorage key for the setup's non-secret progress (view.ts writes it, boot.ts restores it). */
 export const PROGRESS_KEY = 'agent-empire.setup.progress';
 
+/**
+ * True when typed address text carries credentials: user:pass@ before the host, or a key-like query parameter. Such text
+ * is never saved (and the field says so at once); the step's own validation refuses it too.
+ */
+export function hasCredentials(text: string): boolean {
+  const t = text.trim();
+  if (/^([a-z][a-z0-9+.-]*:\/\/)?[^/?#]*@/i.test(t)) return true;
+  const q = t.indexOf('?');
+  return q >= 0 && /(^|[?&])[^=&]*(key|token|secret|password|passwd|pwd|auth|credential|signature|sig)[^=&]*=/i.test(t.slice(q));
+}
+
 /** What survives a reload: choices only. Never the GitHub token, API keys, project token or the cost confirmation. */
 export function progressSnapshot(s: SetupState) {
   return {
     v: 1 as const,
     step: s.step,
     mode: s.mode,
-    server: { address: s.server.address },
+    server: { address: hasCredentials(s.server.address) ? '' : s.server.address },
     github: { login: s.github.login, via: s.github.via, plan: s.github.plan },
     repos: s.repos.map((r) => ({ owner: r.owner, name: r.name, private: r.private, defaultBranch: r.defaultBranch })),
     limits: { ...s.limits },
     interval: s.interval,
     engine: s.engine,
-    free: { ...s.free },
+    free: { ...s.free, hostedBaseUrl: hasCredentials(s.free.hostedBaseUrl) ? DEFAULT_FREE.hostedBaseUrl : s.free.hostedBaseUrl },
     claudeAuth: s.claudeAuth,
   };
 }
@@ -373,7 +384,7 @@ const NAME = /^[A-Za-z0-9._-]{1,100}$/;
  * each step's requirements hold again (the token from secure storage, in-memory keys, the cost confirmation), and never
  * past the saved step or onto "create". Anything malformed gives `base` back unchanged.
  */
-export function restoreProgress(base: SetupState, saved: unknown, secure: { token?: string | null; login?: string | null }): SetupState {
+export function restoreProgress(base: SetupState, saved: unknown, secure: { token?: string | null; login?: string | null }, opts: { validAddress?: (address: string) => boolean } = {}): SetupState {
   if (!saved || typeof saved !== 'object') return base;
   const p = saved as Record<string, unknown>;
   const steps: Step[] = ['mode', 'server', ...CLOUD_STEPS];
@@ -384,7 +395,10 @@ export function restoreProgress(base: SetupState, saved: unknown, secure: { toke
   if (step !== 'mode' && (step === 'server') !== (mode === 'server')) return base;
   let s: SetupState = { ...base, mode };
   const server = p.server as Record<string, unknown> | undefined;
-  if (server && str(server.address) !== undefined) s.server = { address: str(server.address)! };
+  // Re-checked: a saved address is kept only when it carries no credentials and passes the server-address rules
+  // (boot.ts passes parseServerAddress for this platform); otherwise the field starts empty.
+  const address = server ? str(server.address) : undefined;
+  if (address && !hasCredentials(address) && (!opts.validAddress || opts.validAddress(address))) s.server = { address };
   if (mode !== 'cloud') return { ...s, step: step === 'server' ? 'server' : 'mode' };
 
   const gh = (p.github ?? {}) as Record<string, unknown>;
@@ -413,7 +427,7 @@ export function restoreProgress(base: SetupState, saved: unknown, secure: { toke
       selfHostedLabel: str(free.selfHostedLabel, 100) ?? base.free.selfHostedLabel,
       selfHostedModel: str(free.selfHostedModel, 200) ?? base.free.selfHostedModel,
       hostedOptIn: free.hostedOptIn === true,
-      hostedBaseUrl: str(free.hostedBaseUrl, 300) ?? base.free.hostedBaseUrl,
+      hostedBaseUrl: ((u) => (u && !hasCredentials(u) ? u : base.free.hostedBaseUrl))(str(free.hostedBaseUrl, 300)),
       hostedModel: str(free.hostedModel, 200) ?? base.free.hostedModel,
       cpuOptIn: free.cpuOptIn === true,
     };
