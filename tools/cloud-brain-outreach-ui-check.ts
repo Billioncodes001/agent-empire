@@ -45,7 +45,7 @@ async function seedBrainOutreach() {
   repo.secrets.set('AGENT_EMPIRE_SMTP_URL', { key_id: 'key-1', encrypted_value: 'sealed' });
   // Re-review note: the seed's clock keeps these ticks inside the seed's UTC day.
   const at = s.clock.after;
-  await client.submit({ kind: 'lesson_propose', lesson: { text: 'Every form labels each field for screen readers.', scope: 'company' } }, 'agent-empire-intent', t);
+  await client.submit({ kind: 'lesson_propose', lesson: { text: 'Every form labels each field for screen readers.', scope: 'company' } }, 'agent-empire-intent', at(0));
   await tick(at(10_000));
   const lesson = (await snap()).org.approvals.find((a) => a.kind === 'lesson')!;
   await client.submit({ kind: 'approval_decision', approvalId: lesson.id, decision: 'approve', seen: approvalFingerprint(lesson) }, 'agent-empire-intent', at(20_000));
